@@ -1,0 +1,11 @@
+[package]
+name = "render-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "27"
+pollster = "0.4"
+
+[features]
+default = []

@@ -1,0 +1,12 @@
+[package]
+name = "pt-megakernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+log = "0.4"
+wgpu = "27"
+pt-core = { path = "../pt-core" }
+bvh-gpu = { path = "../bvh-gpu" }
+pt-wavefront = { path = "../pt-wavefront" }

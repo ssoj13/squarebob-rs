@@ -1,0 +1,28 @@
+[package]
+name = "treemap"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dirstat-core = { path = "../dirstat-core" }
+log = "0.4"
+rayon = "1.10"
+
+[dependencies.bytemuck]
+version = "1"
+features = ["derive"]
+optional = true
+
+[dependencies.wgpu]
+version = "27"
+optional = true
+
+[dependencies.render-core]
+path = "../render-core"
+optional = true
+
+[features]
+default = ["cpu"]
+cpu = []
+wgpu = ["dep:wgpu", "dep:bytemuck", "dep:render-core"]
+cuda = []

@@ -1,0 +1,20 @@
+[package]
+name = "render-3d"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+half = "2.7.1"
+bytemuck = { version = "1", features = ["derive"] }
+dirstat-core = { path = "../dirstat-core" }
+glam = "0.29"
+image = "0.25"
+log = "0.4"
+render-core = { path = "../render-core" }
+render-shared = { path = "../render-shared" }
+pt-core = { path = "../pt-core" }
+pt-megakernel = { path = "../pt-megakernel" }
+pt-mats = { path = "../pt-mats" }
+treemap = { path = "../treemap" }
+wgpu = "27"

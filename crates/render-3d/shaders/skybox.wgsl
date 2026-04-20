@@ -1,0 +1,70 @@
+// Skybox shader - renders equirectangular HDR environment map as background
+// Fullscreen triangle with ray-marching against unit sphere
+// Only renders where depth buffer is at clear value (no geometry)
+
+const PI: f32 = 3.141592653589793;
+
+struct Camera {
+    view_proj: mat4x4<f32>,
+    view: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
+    position: vec3<f32>,
+    xray_alpha: f32,
+    flat_shading: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+}
+
+struct EnvParams {
+    intensity: f32,
+    rotation: f32,
+    enabled: f32,
+    _pad: f32,
+}
+
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var env_map: texture_2d<f32>;
+@group(0) @binding(2) var env_sampler: sampler;
+@group(0) @binding(3) var<uniform> env: EnvParams;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+// Fullscreen triangle
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
+    var out: VertexOutput;
+    let x = f32(i32(vertex_idx & 1u) * 4 - 1);
+    let y = f32(i32(vertex_idx >> 1u) * 4 - 1);
+    out.position = vec4<f32>(x, y, 1.0, 1.0); // z=1.0 = far plane (behind geometry)
+    out.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+    return out;
+}
+
+// Direction to equirectangular UV
+fn dir_to_equirect_uv(dir: vec3<f32>, rotation: f32) -> vec2<f32> {
+    let d = normalize(dir);
+    let phi = atan2(d.z, d.x) + rotation;
+    let theta = acos(clamp(d.y, -1.0, 1.0));
+    return vec2<f32>((phi + PI) / (2.0 * PI), theta / PI);
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    if env.enabled < 0.5 {
+        return vec4<f32>(0.1, 0.1, 0.1, 1.0); // Default dark background
+    }
+
+    // Reconstruct world-space ray from screen UV using inverse view-projection
+    let ndc = vec4<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0, 1.0, 1.0);
+    let world = camera.inv_view_proj * ndc;
+    let dir = normalize(world.xyz / world.w - camera.position);
+
+    let uv = dir_to_equirect_uv(dir, env.rotation);
+    let color = textureSample(env_map, env_sampler, uv).rgb * env.intensity;
+
+    return vec4<f32>(color, 1.0);
+}

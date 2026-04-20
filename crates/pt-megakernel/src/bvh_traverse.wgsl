@@ -1,0 +1,925 @@
+// Instance-based BVH path tracing compute shader.
+//
+// Ray-box intersection against cube instances (no triangles).
+// Each instance stores inverse model matrix + color.
+// Progressive accumulation, GGX specular, HDR env map, NEE sun.
+
+struct BVHNode {
+    aabb_min: vec3<f32>,
+    left_or_first: u32,
+    aabb_max: vec3<f32>,
+    count: u32,
+};
+
+// GPU instance: 96 bytes, matches GpuInstance in Rust.
+struct Instance {
+    model_inv_0: vec4<f32>,
+    model_inv_1: vec4<f32>,
+    model_inv_2: vec4<f32>,
+    model_inv_3: vec4<f32>,
+    color: vec4<f32>,
+    object_id: u32,
+    material_id: u32,
+    _pad0: u32,
+    _pad1: u32,
+};
+
+// Material matching GpuMaterial layout (144 bytes, vec4-packed).
+struct Material {
+    base_color_weight: vec4<f32>,         // rgb=color, a=weight
+    specular_color_weight: vec4<f32>,     // rgb=color, a=weight
+    transmission_color_weight: vec4<f32>, // rgb=color, a=weight
+    subsurface_color_weight: vec4<f32>,   // rgb=color, a=weight
+    coat_color_weight: vec4<f32>,         // rgb=color, a=weight
+    emission_color_weight: vec4<f32>,     // rgb=color, a=weight (intensity in a)
+    opacity: vec4<f32>,                   // rgb=opacity, a=unused
+    params1: vec4<f32>,                   // x=diffuse_rough, y=metalness, z=spec_rough, w=spec_IOR
+    params2: vec4<f32>,                   // x=anisotropy, y=coat_rough, z=coat_IOR, w=visible
+};
+
+struct Camera {
+    inv_view: mat4x4<f32>,
+    inv_proj: mat4x4<f32>,
+    position: vec3<f32>,
+    _pad0: u32,
+    frame_count: u32,
+    max_bounces: u32,
+    max_transmission_depth: u32,
+    dof_enabled: u32,
+    aperture: f32,
+    focus_distance: f32,
+    _pad1: vec2<u32>,
+    // Slice plane params
+    slice_enabled: f32,
+    slice_position: f32,
+    slice_invert: f32,
+    _pad2: f32,
+    slice_normal: vec3<f32>,
+    _pad3: f32,
+    // Spectral options (PT only)
+    spectral_mode: u32,
+    spectral_samples: u32,
+    spectral_dispersion: u32,
+    _pad4: u32,
+};
+
+struct Ray {
+    origin: vec3<f32>,
+    dir: vec3<f32>,
+};
+
+struct HitInfo {
+    t: f32,
+    normal: vec3<f32>,
+    inst_idx: u32,
+    hit: bool,
+};
+
+struct EnvParams {
+    intensity: f32,
+    rotation: f32,
+    enabled: f32,
+    use_importance_sampling: f32,
+    env_width: f32,
+    env_height: f32,
+    global_opacity: f32,
+    time: f32,  // for procedural sky day/night cycle
+};
+
+@group(0) @binding(0) var<storage, read> nodes: array<BVHNode>;
+@group(0) @binding(1) var<storage, read> instances: array<Instance>;
+@group(0) @binding(2) var<uniform> camera: Camera;
+@group(0) @binding(3) var output: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(4) var<storage, read_write> accum: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> materials: array<Material>;
+@group(0) @binding(6) var env_map: texture_2d<f32>;
+@group(0) @binding(7) var env_sampler: sampler;
+@group(0) @binding(8) var<uniform> env: EnvParams;
+@group(0) @binding(9) var<storage, read> env_marginal_cdf: array<f32>;
+@group(0) @binding(10) var<storage, read> env_conditional_cdf: array<f32>;
+@group(0) @binding(11) var<storage, read> sample_map: array<u32>;
+
+const MAX_STACK_DEPTH: u32 = 32u;
+const T_MAX: f32 = 1e30;
+const EPSILON: f32 = 1e-6;
+const PI: f32 = 3.14159265359;
+
+const SUN_DIR: vec3<f32> = vec3<f32>(0.5, 0.8, 0.3);
+const SUN_COLOR: vec3<f32> = vec3<f32>(1.0, 0.98, 0.95);
+const SUN_INTENSITY: f32 = 5.0;
+const SUN_ANGULAR_RADIUS: f32 = 0.00465;
+
+// ---- RNG ----
+
+fn pcg_hash(input: u32) -> u32 {
+    var state = input * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+fn rand(state: ptr<function, u32>) -> f32 {
+    *state = pcg_hash(*state);
+    return f32(*state) / 4294967296.0;
+}
+
+// ---- Instance helpers ----
+
+// Reconstruct mat4 from 4 column vectors stored in Instance.
+fn inst_model_inv(inst: Instance) -> mat4x4<f32> {
+    return mat4x4<f32>(
+        inst.model_inv_0,
+        inst.model_inv_1,
+        inst.model_inv_2,
+        inst.model_inv_3,
+    );
+}
+
+// ---- Slice plane clipping ----
+
+// Check if point should be clipped by slice plane
+// Uses arbitrary normal direction via dot product
+fn slice_clip(pos: vec3<f32>) -> bool {
+    if camera.slice_enabled < 0.5 { return false; }
+    // Distance from origin along slice normal
+    let dist = dot(pos, camera.slice_normal) - camera.slice_position;
+    if camera.slice_invert > 0.5 {
+        return dist > 0.0;
+    }
+    return dist < 0.0;
+}
+
+// ---- Ray-box intersection ----
+
+// Intersect unit cube [-0.5, 0.5]^3 in local space.
+// Returns (t, normal_local). t < 0 means miss.
+fn intersect_unit_cube(ray_o: vec3<f32>, ray_d: vec3<f32>) -> vec2<f32> {
+    // Returns vec2(t_enter, t_exit). If t_enter > t_exit or t_exit < 0, miss.
+    let inv_d = 1.0 / ray_d;
+    let t0 = (vec3<f32>(-0.5) - ray_o) * inv_d;
+    let t1 = (vec3<f32>(0.5) - ray_o) * inv_d;
+    let tmin = min(t0, t1);
+    let tmax = max(t0, t1);
+    let t_enter = max(max(tmin.x, tmin.y), tmin.z);
+    let t_exit = min(min(tmax.x, tmax.y), tmax.z);
+    return vec2<f32>(t_enter, t_exit);
+}
+
+// Compute box face normal from hit point on unit cube.
+fn box_normal(p: vec3<f32>) -> vec3<f32> {
+    let a = abs(p);
+    // Which face was hit: the coordinate closest to 0.5
+    if a.x > a.y && a.x > a.z {
+        return vec3<f32>(sign(p.x), 0.0, 0.0);
+    } else if a.y > a.z {
+        return vec3<f32>(0.0, sign(p.y), 0.0);
+    } else {
+        return vec3<f32>(0.0, 0.0, sign(p.z));
+    }
+}
+
+// Ray-instance intersection: transform ray to local space, test unit cube.
+fn intersect_instance(ray: Ray, inst_idx: u32) -> HitInfo {
+    var hit: HitInfo;
+    hit.hit = false;
+    hit.t = T_MAX;
+    hit.inst_idx = inst_idx;
+
+    let inst = instances[inst_idx];
+    let m_inv = inst_model_inv(inst);
+
+    // Transform ray to local space
+    let o_local = (m_inv * vec4<f32>(ray.origin, 1.0)).xyz;
+    let d_local = (m_inv * vec4<f32>(ray.dir, 0.0)).xyz;
+
+    let tt = intersect_unit_cube(o_local, d_local);
+    let t_enter = tt.x;
+    let t_exit = tt.y;
+
+    if t_exit < 0.0 || t_enter > t_exit {
+        return hit;
+    }
+
+    // Pick t: prefer enter, fall back to exit if inside
+    let t_hit = select(t_enter, t_exit, t_enter < EPSILON);
+    if t_hit < EPSILON { return hit; }
+
+    // t is the same in local and world space (affine transform preserves t)
+    hit.t = t_hit;
+
+    // Compute world hit position and check slice plane
+    let hit_world = ray.origin + ray.dir * t_hit;
+    if slice_clip(hit_world) {
+        return hit; // clipped by slice plane
+    }
+
+    // Compute normal in local space, transform to world
+    let p_local = o_local + d_local * t_hit;
+    let n_local = box_normal(p_local);
+    // Normal transform: transpose(model_inv) * n (for non-uniform scale)
+    let n_world = normalize((transpose(m_inv) * vec4<f32>(n_local, 0.0)).xyz);
+    hit.normal = n_world;
+    hit.hit = true;
+
+    return hit;
+}
+
+// ---- BVH traversal ----
+
+fn intersect_aabb(ray: Ray, inv_dir: vec3<f32>, node: BVHNode, t_best: f32) -> bool {
+    let t1 = (node.aabb_min - ray.origin) * inv_dir;
+    let t2 = (node.aabb_max - ray.origin) * inv_dir;
+    let tmin = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
+    let tmax = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
+    return tmax >= max(tmin, 0.0) && tmin < t_best;
+}
+
+fn trace_ray(ray: Ray) -> HitInfo {
+    var best: HitInfo;
+    best.hit = false;
+    best.t = T_MAX;
+
+    let inv_dir = 1.0 / ray.dir;
+
+    var stack: array<u32, MAX_STACK_DEPTH>;
+    var sp: u32 = 1u;
+    stack[0] = 0u;
+    var loop_safety = 0u;
+
+    while sp > 0u {
+        loop_safety += 1u;
+        if loop_safety > 4096u { break; } // Safety break
+
+        sp -= 1u;
+        let node = nodes[stack[sp]];
+
+        if !intersect_aabb(ray, inv_dir, node, best.t) {
+            continue;
+        }
+
+        if node.count > 0u {
+            // Leaf: test instances
+            for (var i = 0u; i < node.count; i++) {
+                let hit = intersect_instance(ray, node.left_or_first + i);
+                if hit.hit && hit.t < best.t {
+                    best = hit;
+                }
+            }
+        } else {
+            if sp + 2u <= MAX_STACK_DEPTH {
+                stack[sp] = node.left_or_first + 1u;
+                sp += 1u;
+                stack[sp] = node.left_or_first;
+                sp += 1u;
+            }
+        }
+    }
+
+    return best;
+}
+
+fn trace_shadow_ray(ray: Ray, max_t: f32) -> bool {
+    let inv_dir = 1.0 / ray.dir;
+    var stack: array<u32, MAX_STACK_DEPTH>;
+    var sp: u32 = 1u;
+    stack[0] = 0u;
+    var loop_safety = 0u;
+
+    while sp > 0u {
+        loop_safety += 1u;
+        if loop_safety > 4096u { break; } // Safety break
+
+        sp -= 1u;
+        let node = nodes[stack[sp]];
+
+        if !intersect_aabb(ray, inv_dir, node, max_t) {
+            continue;
+        }
+
+        if node.count > 0u {
+            for (var i = 0u; i < node.count; i++) {
+                let hit = intersect_instance(ray, node.left_or_first + i);
+                if hit.hit && hit.t < max_t && hit.t > EPSILON {
+                    return true;
+                }
+            }
+        } else {
+            if sp + 2u <= MAX_STACK_DEPTH {
+                stack[sp] = node.left_or_first + 1u;
+                sp += 1u;
+                stack[sp] = node.left_or_first;
+                sp += 1u;
+            }
+        }
+    }
+
+    return false;
+}
+
+// ---- Sampling ----
+
+fn cosine_hemisphere(r1: f32, r2: f32) -> vec3<f32> {
+    let phi = 2.0 * PI * r1;
+    let cos_theta = sqrt(r2);
+    let sin_theta = sqrt(1.0 - r2);
+    return vec3<f32>(cos(phi) * sin_theta, cos_theta, sin(phi) * sin_theta);
+}
+
+fn sample_ggx(r1: f32, r2: f32, alpha: f32) -> vec3<f32> {
+    let a2 = alpha * alpha;
+    let phi = 2.0 * PI * r1;
+    let cos_theta = sqrt((1.0 - r2) / (1.0 + (a2 - 1.0) * r2));
+    let sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    return vec3<f32>(cos(phi) * sin_theta, cos_theta, sin(phi) * sin_theta);
+}
+
+fn ggx_d(ndoth: f32, alpha: f32) -> f32 {
+    let a2 = alpha * alpha;
+    let d = ndoth * ndoth * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d + EPSILON);
+}
+
+fn smith_g1(ndotv: f32, alpha: f32) -> f32 {
+    let a2 = alpha * alpha;
+    let denom = ndotv + sqrt(a2 + (1.0 - a2) * ndotv * ndotv);
+    return 2.0 * ndotv / (denom + EPSILON);
+}
+
+fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
+    let t = 1.0 - cos_theta;
+    let t2 = t * t;
+    return f0 + (1.0 - f0) * (t2 * t2 * t);
+}
+
+fn onb_from_normal(n: vec3<f32>) -> mat3x3<f32> {
+    var t: vec3<f32>;
+    if abs(n.y) < 0.999 {
+        t = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), n));
+    } else {
+        t = normalize(cross(vec3<f32>(1.0, 0.0, 0.0), n));
+    }
+    let b = cross(n, t);
+    return mat3x3<f32>(t, n, b);
+}
+
+fn sample_disk(r1: f32, r2: f32) -> vec2<f32> {
+    let theta = 2.0 * PI * r1;
+    let r = sqrt(r2);
+    return vec2<f32>(r * cos(theta), r * sin(theta));
+}
+
+fn sample_sun_direction(rng: ptr<function, u32>) -> vec3<f32> {
+    let sun_dir = normalize(SUN_DIR);
+    var t: vec3<f32>;
+    if abs(sun_dir.y) < 0.999 {
+        t = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), sun_dir));
+    } else {
+        t = normalize(cross(vec3<f32>(1.0, 0.0, 0.0), sun_dir));
+    }
+    let b = cross(sun_dir, t);
+    let r1 = rand(rng);
+    let r2 = rand(rng);
+    let r = SUN_ANGULAR_RADIUS * sqrt(r1);
+    let theta = 2.0 * PI * r2;
+    return normalize(sun_dir + r * (cos(theta) * t + sin(theta) * b));
+}
+
+// ---- Camera ----
+
+fn gen_ray(x: f32, y: f32, dims: vec2<f32>, jx: f32, jy: f32, rng: ptr<function, u32>) -> Ray {
+    let ndc = vec2<f32>(
+        (x + jx) / dims.x * 2.0 - 1.0,
+        1.0 - (y + jy) / dims.y * 2.0,
+    );
+
+    let near = camera.inv_proj * vec4<f32>(ndc, -1.0, 1.0);
+    let far  = camera.inv_proj * vec4<f32>(ndc,  1.0, 1.0);
+    let near3 = near.xyz / near.w;
+    let far3  = far.xyz / far.w;
+    let origin_view = near3;
+    let dir_view = normalize(far3 - near3);
+
+    var ray: Ray;
+
+    if camera.dof_enabled != 0u && camera.aperture > 0.0 {
+        let t_focus = camera.focus_distance / max(abs(dir_view.z), 0.001);
+        let focus_point_view = origin_view + dir_view * t_focus;
+        let lens_sample = sample_disk(rand(rng), rand(rng)) * camera.aperture;
+        let lens_origin_view = origin_view + vec3<f32>(lens_sample, 0.0);
+        let new_dir_view = normalize(focus_point_view - lens_origin_view);
+        ray.origin = (camera.inv_view * vec4<f32>(lens_origin_view, 1.0)).xyz;
+        ray.dir = normalize((camera.inv_view * vec4<f32>(new_dir_view, 0.0)).xyz);
+    } else {
+        ray.origin = (camera.inv_view * vec4<f32>(origin_view, 1.0)).xyz;
+        ray.dir = normalize((camera.inv_view * vec4<f32>(dir_view, 0.0)).xyz);
+    }
+
+    return ray;
+}
+
+// ---- Environment ----
+
+fn dir_to_equirect_uv(dir: vec3<f32>, rotation: f32) -> vec2<f32> {
+    let theta = atan2(dir.z, dir.x);
+    let phi = asin(clamp(dir.y, -1.0, 1.0));
+    var u = theta / (2.0 * PI) + 0.5 + rotation / (2.0 * PI);
+    let v = 0.5 - phi / PI;
+    u = u - floor(u);
+    return vec2<f32>(u, v);
+}
+
+fn equirect_uv_to_dir(uv: vec2<f32>) -> vec3<f32> {
+    let theta = (uv.x - 0.5) * 2.0 * PI;
+    let phi = (0.5 - uv.y) * PI;
+    let cos_phi = cos(phi);
+    return vec3<f32>(cos_phi * cos(theta), sin(phi), cos_phi * sin(theta));
+}
+
+// Atmospheric sky with Rayleigh + Mie scattering, day/night cycle
+fn atmospheric_sky(dir: vec3<f32>, time: f32) -> vec3<f32> {
+    // Sun orbits - full cycle every ~60 seconds
+    let sun_angle = time * 0.1;
+    let sun_height = sin(sun_angle) * 0.8 + 0.1;
+    let sun_x = cos(sun_angle) * 0.6;
+    let sun_z = sin(sun_angle * 0.7) * 0.4;
+    let sun_dir = normalize(vec3<f32>(sun_x, sun_height, sun_z));
+    let sun_dot = max(dot(dir, sun_dir), 0.0);
+
+    // Rayleigh scattering (blue sky)
+    let zenith = max(dir.y, 0.0);
+
+    // Mie scattering (sun halo)
+    let mie_g = 0.76;
+    let mie_phase = (1.0 - mie_g * mie_g) / pow(1.0 + mie_g * mie_g - 2.0 * mie_g * sun_dot, 1.5);
+    let mie = mie_phase * 0.003;
+
+    // Optical depth
+    let optical_depth = 1.0 / max(dir.y + 0.15, 0.05);
+    let extinction = exp(-optical_depth * 0.3);
+
+    // Day/night/sunset factors
+    let day_factor = clamp(sun_dir.y * 2.0 + 0.5, 0.0, 1.0);
+    let sunset_factor = clamp(1.0 - abs(sun_dir.y) * 3.0, 0.0, 1.0);
+
+    // Sky color
+    let day_sky = vec3<f32>(0.3, 0.5, 0.9);
+    let sunset_sky = vec3<f32>(0.9, 0.4, 0.2);
+    let night_sky = vec3<f32>(0.02, 0.02, 0.05);
+    let sky_base = mix(night_sky, mix(day_sky, sunset_sky, sunset_factor), day_factor);
+    let sky_blue = sky_base * (1.0 - extinction) * 2.0;
+
+    // Horizon glow
+    let horizon_color = mix(vec3<f32>(0.3, 0.2, 0.3), vec3<f32>(1.0, 0.5, 0.2), sunset_factor);
+    let horizon_glow = horizon_color * (1.0 - zenith) * extinction * (0.3 + sunset_factor * 0.7);
+
+    // Sun disk + corona + glow
+    let sun_color = mix(vec3<f32>(1.0, 0.3, 0.1), vec3<f32>(1.0, 0.95, 0.9), clamp(sun_dir.y * 2.0, 0.0, 1.0));
+    let sun_visible = select(0.0, 1.0, sun_dir.y > -0.1);
+    let sun_disk = pow(sun_dot, 512.0) * sun_color * 20.0 * sun_visible;
+    let corona = pow(sun_dot, 8.0) * sun_color * mie * 50.0 * sun_visible;
+    let glow = pow(sun_dot, 2.0) * mix(vec3<f32>(0.5, 0.2, 0.1), vec3<f32>(0.4, 0.3, 0.2), day_factor) * (1.0 - zenith) * sun_visible;
+
+    // Ground
+    let ground_color = mix(vec3<f32>(0.02, 0.02, 0.03), vec3<f32>(0.1, 0.08, 0.06), day_factor);
+    let ground = max(-dir.y, 0.0) * ground_color;
+
+    // Stars at night
+    let star_hash = fract(sin(dot(dir.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    let stars = select(0.0, star_hash * star_hash * 2.0, star_hash > 0.997) * (1.0 - day_factor);
+
+    return sky_blue + horizon_glow + sun_disk + corona + glow + ground + vec3<f32>(stars);
+}
+
+// ---- Spectral helpers (approximate) ----
+
+fn wavelength_to_rgb(lambda: f32) -> vec3<f32> {
+    var r: f32 = 0.0;
+    var g: f32 = 0.0;
+    var b: f32 = 0.0;
+
+    if lambda >= 380.0 && lambda < 440.0 {
+        r = -(lambda - 440.0) / (440.0 - 380.0);
+        g = 0.0;
+        b = 1.0;
+    } else if lambda >= 440.0 && lambda < 490.0 {
+        r = 0.0;
+        g = (lambda - 440.0) / (490.0 - 440.0);
+        b = 1.0;
+    } else if lambda >= 490.0 && lambda < 510.0 {
+        r = 0.0;
+        g = 1.0;
+        b = -(lambda - 510.0) / (510.0 - 490.0);
+    } else if lambda >= 510.0 && lambda < 580.0 {
+        r = (lambda - 510.0) / (580.0 - 510.0);
+        g = 1.0;
+        b = 0.0;
+    } else if lambda >= 580.0 && lambda < 645.0 {
+        r = 1.0;
+        g = -(lambda - 645.0) / (645.0 - 580.0);
+        b = 0.0;
+    } else if lambda >= 645.0 && lambda <= 720.0 {
+        r = 1.0;
+        g = 0.0;
+        b = 0.0;
+    }
+
+    var factor: f32 = 1.0;
+    if lambda > 700.0 {
+        factor = 0.3 + 0.7 * (720.0 - lambda) / 20.0;
+    } else if lambda < 420.0 {
+        factor = 0.3 + 0.7 * (lambda - 380.0) / 40.0;
+    }
+
+    return vec3<f32>(r, g, b) * factor;
+}
+
+fn spectral_tint(rng: ptr<function, u32>) -> vec3<f32> {
+    if camera.spectral_mode == 0u {
+        return vec3<f32>(1.0);
+    }
+    let n = max(1u, camera.spectral_samples);
+    var sum = vec3<f32>(0.0);
+    for (var i = 0u; i < n; i++) {
+        let l = mix(380.0, 720.0, rand(rng));
+        sum += wavelength_to_rgb(l);
+    }
+    return sum / f32(n);
+}
+
+fn sky_color(dir: vec3<f32>) -> vec3<f32> {
+    if env.enabled > 0.5 {
+        let uv = dir_to_equirect_uv(dir, env.rotation);
+        let color = textureSampleLevel(env_map, env_sampler, uv, 0.0).rgb;
+        return color * env.intensity;
+    } else {
+        return atmospheric_sky(dir, env.time) * env.intensity;
+    }
+}
+
+// ---- MIS helpers ----
+
+fn mis_power_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {
+    let a2 = pdf_a * pdf_a;
+    let b2 = pdf_b * pdf_b;
+    return a2 / (a2 + b2 + EPSILON);
+}
+
+fn pdf_cosine_hemisphere(cos_theta: f32) -> f32 {
+    return cos_theta / PI;
+}
+
+fn pdf_ggx(ndoth: f32, hdotv: f32, alpha: f32) -> f32 {
+    let d = ggx_d(ndoth, alpha);
+    return d * ndoth / (4.0 * hdotv + EPSILON);
+}
+
+// ---- Environment importance sampling ----
+
+fn binary_search_cdf(cdf_offset: u32, size: u32, xi: f32) -> u32 {
+    var lo = 0u;
+    var hi = size;
+    while lo < hi {
+        let mid = (lo + hi) / 2u;
+        if env_conditional_cdf[cdf_offset + mid] < xi {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    return min(lo, size - 1u);
+}
+
+fn binary_search_marginal(size: u32, xi: f32) -> u32 {
+    var lo = 0u;
+    var hi = size;
+    while lo < hi {
+        let mid = (lo + hi) / 2u;
+        if env_marginal_cdf[mid] < xi {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    return min(lo, size - 1u);
+}
+
+// Returns (direction.xyz, pdf.w)
+fn sample_env_direction(r1: f32, r2: f32) -> vec4<f32> {
+    let w = u32(max(env.env_width, 1.0));
+    let h = u32(max(env.env_height, 1.0));
+    let y = binary_search_marginal(h, r2);
+    let row_offset = y * w;
+    let x = binary_search_cdf(row_offset, w, r1);
+
+    let u = (f32(x) + 0.5) / f32(w);
+    let v = (f32(y) + 0.5) / f32(h);
+    let uv = vec2<f32>(u - env.rotation / (2.0 * PI), v);
+    let dir = equirect_uv_to_dir(uv);
+    let sin_theta = max(sin(PI * v), EPSILON);
+
+    var marginal_pdf: f32;
+    if y == 0u {
+        marginal_pdf = env_marginal_cdf[0];
+    } else {
+        marginal_pdf = env_marginal_cdf[y] - env_marginal_cdf[y - 1u];
+    }
+
+    var conditional_pdf: f32;
+    if x == 0u {
+        conditional_pdf = env_conditional_cdf[row_offset];
+    } else {
+        conditional_pdf = env_conditional_cdf[row_offset + x] - env_conditional_cdf[row_offset + x - 1u];
+    }
+
+    let pdf = max(marginal_pdf * conditional_pdf * f32(w) * f32(h) / (2.0 * PI * PI * sin_theta), EPSILON);
+    return vec4<f32>(dir, pdf);
+}
+
+// ---- Path tracing kernel ----
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = textureDimensions(output);
+    let w = dims.x;
+    let h = dims.y;
+    let px = gid.xy;
+
+    if px.x >= w || px.y >= h {
+        return;
+    }
+
+    let pixel_idx = px.y * w + px.x;
+    
+    // Check adaptive sampling limit using actual sample count from accum buffer
+    let spp_limit = sample_map[pixel_idx];
+    let current_samples = u32(accum[pixel_idx].w);
+    if spp_limit != 0u && current_samples >= spp_limit {
+        return;
+    }
+    var rng = pcg_hash(pixel_idx * 1973u + camera.frame_count * 6133u + 1u);
+
+    let jx = rand(&rng);
+    let jy = rand(&rng);
+    var ray = gen_ray(f32(px.x), f32(px.y), vec2<f32>(f32(w), f32(h)), jx, jy, &rng);
+
+    var throughput = vec3<f32>(1.0);
+    var radiance = vec3<f32>(0.0);
+    var transmission_depth = 0u;
+
+    for (var bounce = 0u; bounce <= camera.max_bounces; bounce++) {
+        let hit = trace_ray(ray);
+
+        if !hit.hit {
+            radiance += throughput * sky_color(ray.dir);
+            break;
+        }
+
+        let inst = instances[hit.inst_idx];
+        let mat = materials[inst.material_id];
+        let base_color = inst.color.rgb * mat.base_color_weight.rgb;
+        let p = ray.origin + ray.dir * hit.t;
+
+        // Ensure normal faces the ray
+        var normal = hit.normal;
+        if dot(normal, ray.dir) > 0.0 {
+            normal = -normal;
+        }
+
+        // Unpack material fields
+        let opacity = mat.opacity.x;
+        let go = env.global_opacity;
+
+        let base_weight = mat.base_color_weight.a * go * opacity;
+        let spec_color = mat.specular_color_weight.rgb;
+        let spec_weight = mat.specular_color_weight.a * go * opacity;
+        let transmission_color = mat.transmission_color_weight.rgb;
+        let transmission_weight = mat.transmission_color_weight.a * go * opacity;
+        let subsurface_color = mat.subsurface_color_weight.rgb;
+        let subsurface_weight = mat.subsurface_color_weight.a * go * opacity;
+        let coat_color = mat.coat_color_weight.rgb;
+        let coat_weight = mat.coat_color_weight.a * go * opacity;
+        let emission = mat.emission_color_weight.rgb * mat.emission_color_weight.a * opacity;
+        let metallic = mat.params1.y;
+        let roughness = max(mat.params1.z, 0.04);
+        let ior = mat.params1.w;
+        let dispersion = clamp(mat.params2.x, 0.0, 1.0);
+        let coat_roughness = max(mat.params2.y, 0.04);
+        let coat_ior = mat.params2.z;
+
+        let diffuse_color = (base_color * base_weight + subsurface_color * subsurface_weight) * (1.0 - metallic);
+
+        radiance += throughput * emission;
+
+        // Russian roulette after first bounce
+        if bounce > 0u {
+            let p_continue = max(max(throughput.x, throughput.y), throughput.z);
+            if rand(&rng) > p_continue {
+                break;
+            }
+            throughput /= p_continue;
+        }
+
+        let v_dir = -ray.dir;
+        let ndotv = max(dot(normal, v_dir), EPSILON);
+        let basis = onb_from_normal(normal);
+
+        // NEE: direct sun light (opaque surfaces)
+        if env.enabled < 0.5 {
+            let sun_dir_sample = sample_sun_direction(&rng);
+            let ndotl_sun = dot(normal, sun_dir_sample);
+
+            if ndotl_sun > 0.0 {
+                var shadow_ray: Ray;
+                shadow_ray.origin = p + normal * 0.001;
+                shadow_ray.dir = sun_dir_sample;
+
+                if !trace_shadow_ray(shadow_ray, T_MAX) {
+                    let f0_dielectric = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
+                    let f0_nee = mix(f0_dielectric * spec_color, base_color, metallic);
+                    let f_sun = fresnel_schlick(ndotl_sun, f0_nee);
+                    let diffuse_contrib = diffuse_color * (1.0 - f_sun) * ndotl_sun / PI;
+
+                    let alpha = roughness * roughness;
+                    let h_sun = normalize(v_dir + sun_dir_sample);
+                    let ndoth_sun = max(dot(normal, h_sun), EPSILON);
+                    let hdotv_sun = max(dot(h_sun, v_dir), EPSILON);
+                    let d_sun = ggx_d(ndoth_sun, alpha);
+                    let g_sun = smith_g1(ndotv, alpha) * smith_g1(ndotl_sun, alpha);
+                    let f_spec_sun = fresnel_schlick(hdotv_sun, f0_nee);
+                    let spec_contrib = spec_weight * f_spec_sun * d_sun * g_sun / (4.0 * ndotv * ndotl_sun + EPSILON);
+
+                    radiance += throughput * (diffuse_contrib + spec_contrib) * SUN_COLOR * SUN_INTENSITY;
+                }
+            }
+        }
+
+        // NEE: HDR environment importance sampling (opaque only)
+        if transmission_weight < 0.5 && env.enabled > 0.5 && env.use_importance_sampling > 0.5 {
+            let env_sample = sample_env_direction(rand(&rng), rand(&rng));
+            let env_dir = env_sample.xyz;
+            let env_pdf = env_sample.w;
+            let ndotl_env = dot(normal, env_dir);
+
+            if ndotl_env > 0.0 {
+                var shadow_ray: Ray;
+                shadow_ray.origin = p + normal * 0.001;
+                shadow_ray.dir = env_dir;
+
+                if !trace_shadow_ray(shadow_ray, T_MAX) {
+                    let env_radiance = sky_color(env_dir);
+                    let f0_dielectric = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
+                    let f0_env = mix(f0_dielectric * spec_color, base_color, metallic);
+                    let f_env = fresnel_schlick(ndotl_env, f0_env);
+                    let diffuse_contrib_env = diffuse_color * (1.0 - f_env) * ndotl_env / PI;
+
+                    let alpha_env = roughness * roughness;
+                    let h_env = normalize(v_dir + env_dir);
+                    let ndoth_env = max(dot(normal, h_env), EPSILON);
+                    let hdotv_env = max(dot(h_env, v_dir), EPSILON);
+                    let d_env = ggx_d(ndoth_env, alpha_env);
+                    let g_env = smith_g1(ndotv, alpha_env) * smith_g1(ndotl_env, alpha_env);
+                    let f_spec_env = fresnel_schlick(hdotv_env, f0_env);
+                    let spec_contrib_env = spec_weight * f_spec_env * d_env * g_env / (4.0 * ndotv * ndotl_env + EPSILON);
+
+                    let pdf_diffuse_env = pdf_cosine_hemisphere(ndotl_env);
+                    let pdf_spec_env = pdf_ggx(ndoth_env, hdotv_env, alpha_env);
+                    let spec_prob_env = mix(0.5, 1.0, metallic);
+                    let pdf_bsdf_env = mix(pdf_diffuse_env, pdf_spec_env, spec_prob_env);
+
+                    let mis_w = mis_power_heuristic(env_pdf, pdf_bsdf_env);
+                    let env_contrib = (diffuse_contrib_env + spec_contrib_env) * env_radiance * mis_w / max(env_pdf, EPSILON);
+                    radiance += throughput * env_contrib;
+                }
+            }
+        }
+
+        // Coat layer (clearcoat)
+        if coat_weight > 0.001 {
+            let coat_f0 = vec3<f32>(pow((coat_ior - 1.0) / (coat_ior + 1.0), 2.0));
+            let coat_fresnel = fresnel_schlick(ndotv, coat_f0);
+            let coat_reflect_prob = coat_weight * (coat_fresnel.x + coat_fresnel.y + coat_fresnel.z) / 3.0;
+
+            if rand(&rng) < coat_reflect_prob {
+                let coat_alpha = coat_roughness * coat_roughness;
+                let h_local = sample_ggx(rand(&rng), rand(&rng), coat_alpha);
+                let h_world = normalize(basis * h_local);
+                let hdotv = max(dot(h_world, v_dir), EPSILON);
+                let reflect_dir = reflect(-v_dir, h_world);
+                let ndotl = dot(normal, reflect_dir);
+
+                if ndotl > 0.0 {
+                    let ndoth = max(dot(normal, h_world), EPSILON);
+                    let f = fresnel_schlick(hdotv, coat_f0);
+                    let g = smith_g1(ndotv, coat_alpha) * smith_g1(ndotl, coat_alpha);
+                    let weight = f * g * hdotv / (ndotv * ndoth + EPSILON);
+                    throughput *= coat_color * weight / max(coat_reflect_prob, EPSILON);
+                    ray.origin = p + normal * 0.001;
+                    ray.dir = normalize(reflect_dir);
+                    continue;
+                }
+            }
+            throughput *= 1.0 - coat_weight * coat_fresnel;
+        }
+
+        // Specular vs Transmission vs Diffuse sampling
+        let f0_dielectric = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
+        let f0 = mix(f0_dielectric * spec_color, base_color, metallic);
+        let alpha = roughness * roughness;
+
+        let fresnel_estimate = fresnel_schlick(ndotv, f0);
+        let fresnel_avg = (fresnel_estimate.x + fresnel_estimate.y + fresnel_estimate.z) / 3.0;
+        let w_spec = spec_weight * fresnel_avg;
+        let w_trans = transmission_weight * (1.0 - fresnel_avg);
+        let ior_r = ior * (1.0 + dispersion * 0.15);
+        let ior_g = ior;
+        let ior_b = ior * (1.0 - dispersion * 0.15);
+        let trans_tint = vec3<f32>(ior_r, ior_g, ior_b) / max(ior, EPSILON);
+        let transmission_color_disp = transmission_color * trans_tint;
+        let w_diff = base_weight * (1.0 - metallic) * (1.0 - fresnel_avg);
+        let w_total = w_spec + w_trans + w_diff + EPSILON;
+        let p_spec = w_spec / w_total;
+        let p_trans = w_trans / w_total;
+        let lobe_rand = rand(&rng);
+
+        if lobe_rand < p_spec {
+            // GGX specular reflection
+            let r1 = rand(&rng);
+            let r2 = rand(&rng);
+            let h_local = sample_ggx(r1, r2, alpha);
+            let h_world = normalize(basis * h_local);
+            let hdotv = max(dot(h_world, v_dir), EPSILON);
+            let reflect_dir = reflect(-v_dir, h_world);
+            let ndotl = dot(normal, reflect_dir);
+
+            if ndotl <= 0.0 { break; }
+
+            let ndoth = max(dot(normal, h_world), EPSILON);
+            let f = fresnel_schlick(hdotv, f0);
+            let g = smith_g1(ndotv, alpha) * smith_g1(ndotl, alpha);
+            let weight = f * g * hdotv / (ndotv * ndoth + EPSILON);
+
+            throughput *= weight / max(p_spec, EPSILON);
+            ray.origin = p + normal * 0.001;
+            ray.dir = normalize(reflect_dir);
+        } else if lobe_rand < p_spec + p_trans {
+            // Transmission / refraction
+            if transmission_depth >= camera.max_transmission_depth {
+                break;
+            }
+            transmission_depth += 1u;
+            let eta = select(ior, 1.0 / ior, dot(normal, ray.dir) < 0.0);
+            let h_local = sample_ggx(rand(&rng), rand(&rng), alpha);
+            let h_world = normalize(basis * h_local);
+            let cos_i = dot(v_dir, h_world);
+            let sin2_t = eta * eta * (1.0 - cos_i * cos_i);
+            if sin2_t > 1.0 {
+                let reflect_dir = reflect(-v_dir, h_world);
+                throughput *= transmission_color_disp / max(p_trans, EPSILON);
+                ray.origin = p + normal * 0.001;
+                ray.dir = normalize(reflect_dir);
+            } else {
+                let cos_t = sqrt(1.0 - sin2_t);
+                let refr_dir = normalize(eta * -v_dir + (eta * cos_i - cos_t) * h_world);
+                throughput *= transmission_color_disp / max(p_trans, EPSILON);
+                ray.origin = p - normal * 0.001;
+                ray.dir = refr_dir;
+            }
+        } else {
+            // Lambert diffuse
+            let r1 = rand(&rng);
+            let r2 = rand(&rng);
+            let local_dir = cosine_hemisphere(r1, r2);
+            let world_dir = basis * local_dir;
+
+            let f_diffuse = fresnel_schlick(max(dot(normal, normalize(world_dir)), 0.0), f0);
+            let diff_weight = diffuse_color * (1.0 - f_diffuse);
+
+            throughput *= diff_weight / max(1.0 - p_spec - p_trans, EPSILON);
+            ray.origin = p + normal * 0.001;
+            ray.dir = normalize(world_dir);
+        }
+    }
+
+    // Spectral tint (approximate)
+    if camera.spectral_mode != 0u {
+        let base_tint = spectral_tint(&rng);
+        let dispersion_weight = f32(transmission_depth) * 0.15;
+        let dispersion_mix = select(0.0, dispersion_weight, camera.spectral_dispersion != 0u);
+        let cool_tint = vec3<f32>(base_tint.z, base_tint.y, base_tint.x);
+        let tint = mix(base_tint, cool_tint, clamp(dispersion_mix, 0.0, 1.0));
+        radiance *= tint;
+    }
+
+    // Progressive accumulation (running sum approach)
+    // Add current sample to accumulator: rgb = sum of radiance, w = sample count
+    let prev = accum[pixel_idx];
+    let new_accum = prev + vec4<f32>(radiance, 1.0);
+    
+    // Clamp accumulated radiance to prevent fireflies
+    let clamped_accum = clamp(new_accum, vec4<f32>(0.0), vec4<f32>(1000.0, 1000.0, 1000.0, 100000.0));
+    accum[pixel_idx] = clamped_accum;
+    
+    // Write normalized color to output (divide by sample count)
+    let sample_count = max(clamped_accum.w, 1.0);
+    let avg_color = clamped_accum.rgb / sample_count;
+    textureStore(output, vec2<i32>(px), vec4<f32>(avg_color, 1.0));
+}

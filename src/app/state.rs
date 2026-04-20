@@ -1,0 +1,337 @@
+//! App state definitions: App struct, PersistState, defaults.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+use crossbeam_channel::Receiver;
+use eframe::egui;
+use egui_dock::DockState;
+use serde::{Serialize, Deserialize};
+
+use super::DockTab;
+
+use crate::events::EventBus;
+use crate::exclusions::Exclusions;
+use crate::renderer::{
+    OrbitCamera, RenderBackend, Render3DOptions, RenderMode,
+};
+use super::presets::RenderPreset;
+use render_core::Viewport;
+use render_core::gpu::GpuContext;
+use treemap::GpuRenderer2D;
+use render_3d::Renderer3D;
+use crate::scanner::ScanMsg;
+use dirstat_core::DirEntry;
+use treemap::TreeMapOptions;
+
+/// Scanner backend selection.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ScannerMode {
+    Standard,
+    Ntfs,
+}
+
+/// Settings panel tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
+pub enum SettingsTab {
+    #[default]
+    General,
+    Rendering,
+    Exclusions,
+    Extensions,
+}
+
+
+/// Persistent settings saved between sessions
+#[derive(Serialize, Deserialize)]
+pub(super) struct PersistState {
+    pub scan_path: String,
+    pub show_settings: bool,
+    pub dark_mode: bool,
+    pub scanner_mode: ScannerMode,
+    pub filter_auto_rebuild: bool,
+    pub path_history: Vec<String>,
+    pub opts: SavedOpts,
+    #[serde(default = "default_tree_width")]
+    pub tree_panel_width: f32,
+    #[serde(default = "default_settings_width")]
+    pub settings_panel_width: f32,
+    #[serde(default)]
+    pub show_free_space: bool,
+    #[serde(default)]
+    pub render_backend: RenderBackend,
+    #[serde(default)]
+    pub render_mode: RenderMode,
+    #[serde(default)]
+    pub render_3d_opts: Render3DOptions,
+    #[serde(default = "crate::app::dock::default_dock_state")]
+    pub dock_state: DockState<DockTab>,
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+    #[serde(default)]
+    pub settings_tab: SettingsTab,
+    #[serde(default)]
+    pub ext_filter: Vec<String>,
+    #[serde(default)]
+    pub ext_filter_invert: bool,
+    #[serde(default = "default_settings_tint_mix")]
+    pub settings_tint_mix: f32,
+    #[serde(default)]
+    pub preset_autosave: bool,
+    #[serde(default = "default_autosave_interval")]
+    pub autosave_interval_secs: f32,
+}
+
+pub(super) fn default_autosave_interval() -> f32 { 5.0 }
+
+pub(super) fn default_font_size() -> f32 { 12.0 }
+pub(super) fn default_settings_tint_mix() -> f32 { 0.05 }
+
+pub(super) fn default_tree_width() -> f32 { 200.0 }
+pub(super) fn default_settings_width() -> f32 { 280.0 }
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct SavedOpts {
+    pub style: String,
+    pub grid: bool,
+    pub brightness: f64,
+    pub height: f64,
+    pub scale_factor: f64,
+    pub ambient_light: f64,
+    pub light_x: f64,
+    pub light_y: f64,
+}
+
+pub struct App {
+    pub(super) events: EventBus,
+    pub(super) scan_path: String,
+    pub(super) scan_rx: Option<Receiver<ScanMsg>>,
+    pub(super) scan_cancel: Option<Arc<AtomicBool>>,
+    pub(super) tree: Option<DirEntry>,
+    pub(super) filtered_tree: Option<DirEntry>,
+    pub(super) treemap_tex: Option<egui::TextureHandle>,
+    pub(super) last_render_size: (u32, u32),
+    pub(super) opts: TreeMapOptions,
+    pub(super) progress: ScanProgress,
+    pub(super) hovered: Option<HoverInfo>,
+    pub(super) last_wheel_zoom: std::time::Instant,
+    pub(super) selected_path: Option<PathBuf>,
+    pub(super) scroll_to_selected: bool,
+    pub(super) show_settings: bool,
+    pub(super) expanded: std::collections::HashSet<PathBuf>,
+    pub(super) needs_layout: bool,
+    pub(super) needs_render_3d: bool,
+    pub(super) dark_mode: bool,
+    pub(super) scanner_mode: ScannerMode,
+    pub(super) ctx_menu_path: Option<PathBuf>,
+    pub(super) ctx_menu_pos: Option<egui::Pos2>,
+    pub(super) ext_stats: Vec<(String, u64, u64)>,
+    pub(super) zoom_path: Option<PathBuf>,
+    pub(super) path_history: Vec<String>,
+    pub(super) filter_min: u64,
+    pub(super) filter_max: u64,
+    pub(super) filter_invert: bool,
+    pub(super) scan_min_size: u64,
+    pub(super) scan_max_size: u64,
+    pub(super) needs_filter_rebuild: bool,
+    pub(super) filter_auto_rebuild: bool,
+    pub(super) filter_changed_at: Option<std::time::Instant>,
+    pub(super) ext_sort: (usize, bool),
+    pub(super) search_text: String,
+    pub(super) show_search: bool,
+    pub(super) ext_search_text: String,
+    pub(super) ext_filter: Vec<String>,
+    pub(super) ext_filter_invert: bool,
+    pub(super) settings_tint_mix: f32,
+    pub(super) dock_state: DockState<DockTab>,
+    pub(super) tree_panel_width: f32,
+    pub(super) settings_panel_width: f32,
+    pub(super) cache_age: Option<u64>,
+    pub(super) show_free_space: bool,
+    pub(super) display_tree_cache: Option<DirEntry>,
+    pub(super) exclusions: Exclusions,
+    pub(super) show_excluded: bool,
+    pub(super) viewport: Viewport,
+    pub(super) render_backend: RenderBackend,
+    pub(super) render_mode: RenderMode,
+    pub(super) render_3d_opts: Render3DOptions,
+    // Presets
+    pub(super) presets: std::collections::HashMap<String, RenderPreset>,
+    pub(super) preset_name: String,
+    pub(super) preset_dropdown_open: bool,
+    pub(super) preset_autosave: bool,
+    pub(super) autosave_interval_secs: f32,
+    pub(super) preset_dirty: bool,
+    pub(super) preset_last_save: std::time::Instant,
+    pub(super) orbit_camera: OrbitCamera,
+    pub(super) gpu_context: Option<Arc<GpuContext>>,
+    pub(super) wgpu_render_state: Option<egui_wgpu::RenderState>,
+    pub(super) renderer_2d_gpu: Option<GpuRenderer2D>,
+    pub(super) renderer_3d: Option<Renderer3D>,
+    /// Zero-copy texture ID registered with egui
+    pub(super) render_texture_id: Option<egui::TextureId>,
+    pub(super) hovered_3d_id: u32,
+    /// Selected object IDs in 3D mode (left click adds/removes)
+    pub(super) selected_3d_ids: std::collections::HashSet<u32>,
+    /// Marquee selection start point (shift+drag)
+    pub(super) marquee_start: Option<egui::Pos2>,
+    pub(super) last_hover_pos_3d: Option<(f32, f32)>,
+    /// Throttle: last time a hover pick was issued
+    pub(super) last_pick_time_3d: std::time::Instant,
+    /// Sticky tooltip: cached path/size shown when mouse stops moving
+    pub(super) sticky_hover: Option<(PathBuf, u64)>,
+    pub(super) frame_count: u32,
+    pub(super) file_mask_text: String,
+    pub(super) use_file_mask: bool,
+    pub(super) last_search_text: String,
+    pub(super) last_file_mask_text: String,
+    pub(super) last_use_file_mask: bool,
+    pub(super) filtered_paths_cache: Option<std::collections::HashSet<PathBuf>>,
+    /// Global UI font size
+    pub(super) font_size: f32,
+    pub(super) settings_tab: SettingsTab,
+
+    // Screenshot/testing state
+    pub(super) screenshot_delay: Option<f32>,
+    pub(super) screenshot_path: Option<String>,
+    pub(super) exit_after_screenshot: bool,
+    pub(super) screenshot_start_time: Option<std::time::Instant>,
+    pub(super) screenshot_taken: bool,
+    pub(super) last_render_frame_3d: u32,
+    pub(super) last_render_instant_3d: Option<std::time::Instant>,
+    pub(super) render_tick_3d: bool,
+    pub(super) last_frame_ms: f32,
+    pub(super) last_fps: f32,
+    pub(super) last_samples_per_sec: f32,
+    pub(super) last_samples_per_frame: u32,
+    pub(super) mem_used_mb: u64,
+    pub(super) mem_total_mb: u64,
+    pub(super) last_mem_update: std::time::Instant,
+    pub(super) sys: sysinfo::System,
+    pub(super) wgpu_error_flag: Arc<AtomicBool>,
+    pub(super) pt_auto_spp_tick: std::time::Instant,
+}
+
+#[derive(Default)]
+pub(super) struct ScanProgress {
+    pub files: u64,
+    pub dirs: u64,
+    pub bytes: u64,
+    pub errors: u64,
+    pub scanning: bool,
+    pub error: Option<String>,
+    pub start_time: Option<std::time::Instant>,
+    pub elapsed_secs: f32,
+}
+
+pub(super) struct HoverInfo {
+    pub path: String,
+    pub size: u64,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            events: EventBus::new(),
+            scan_path: String::new(),
+            scan_rx: None,
+            scan_cancel: None,
+            tree: None,
+            filtered_tree: None,
+            treemap_tex: None,
+            last_render_size: (0, 0),
+            opts: TreeMapOptions::default(),
+            progress: ScanProgress::default(),
+            hovered: None,
+            last_wheel_zoom: std::time::Instant::now(),
+            selected_path: None,
+            scroll_to_selected: false,
+            show_settings: true,
+            expanded: std::collections::HashSet::new(),
+            needs_layout: false,
+            needs_render_3d: false,
+            dark_mode: true,
+            scanner_mode: ScannerMode::Standard,
+            ctx_menu_path: None,
+            ctx_menu_pos: None,
+            ext_stats: Vec::new(),
+            zoom_path: None,
+            path_history: Vec::new(),
+            filter_min: 0,
+            filter_max: u64::MAX,
+            filter_invert: false,
+            scan_min_size: 0,
+            scan_max_size: 0,
+            needs_filter_rebuild: false,
+            filter_auto_rebuild: true,
+            filter_changed_at: None,
+            ext_sort: (1, false),
+            search_text: String::new(),
+            show_search: false,
+            ext_search_text: String::new(),
+            ext_filter: Vec::new(),
+            ext_filter_invert: false,
+            settings_tint_mix: default_settings_tint_mix(),
+            dock_state: crate::app::dock::default_dock_state(),
+            tree_panel_width: 200.0,
+            settings_panel_width: 280.0,
+            cache_age: None,
+            show_free_space: false,
+            display_tree_cache: None,
+            exclusions: Exclusions::new(""),
+            show_excluded: false,
+            viewport: Viewport::default(),
+            render_backend: RenderBackend::default(),
+            render_mode: RenderMode::Mode3D,
+            render_3d_opts: Render3DOptions::default(),
+            presets: super::presets::load_all_presets(),
+            preset_name: String::new(),
+            preset_dropdown_open: false,
+            preset_autosave: false,
+            autosave_interval_secs: default_autosave_interval(),
+            preset_dirty: false,
+            preset_last_save: std::time::Instant::now(),
+            orbit_camera: OrbitCamera::default(),
+            gpu_context: None,
+            wgpu_render_state: None,
+            renderer_2d_gpu: None,
+            renderer_3d: None,
+            render_texture_id: None,
+            hovered_3d_id: 0,
+            selected_3d_ids: std::collections::HashSet::new(),
+            marquee_start: None,
+            last_hover_pos_3d: None,
+            last_pick_time_3d: std::time::Instant::now(),
+            sticky_hover: None,
+            frame_count: 0,
+            file_mask_text: String::new(),
+            use_file_mask: false,
+            last_search_text: String::new(),
+            last_file_mask_text: String::new(),
+            last_use_file_mask: false,
+            filtered_paths_cache: None,
+            font_size: default_font_size(),
+            settings_tab: SettingsTab::default(),
+            screenshot_delay: None,
+            screenshot_path: None,
+            exit_after_screenshot: false,
+            screenshot_start_time: None,
+            screenshot_taken: false,
+            last_render_frame_3d: 0,
+            last_render_instant_3d: None,
+            render_tick_3d: true,
+            last_frame_ms: 0.0,
+            last_fps: 0.0,
+            last_samples_per_sec: 0.0,
+            last_samples_per_frame: 0,
+            mem_used_mb: 0,
+            mem_total_mb: 0,
+            last_mem_update: std::time::Instant::now(),
+            sys: sysinfo::System::new(),
+            wgpu_error_flag: Arc::new(AtomicBool::new(false)),
+            pt_auto_spp_tick: std::time::Instant::now(),
+        }
+    }
+}

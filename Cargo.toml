@@ -1,0 +1,73 @@
+[package]
+name = "dirstat-rs"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = [
+    "crates/dirstat-core",
+    "crates/pt-core",
+    "crates/bvh-gpu",
+    "crates/pt-megakernel",
+    "crates/pt-wavefront",
+    "crates/pt-mats",
+    "crates/render-core",
+    "crates/render-shared",
+    "crates/render-3d",
+    "crates/treemap",
+]
+
+[dependencies]
+# https://dev.to/yeauty/double-your-performance-with-one-line-of-code-the-memory-superpower-every-rust-developer-should-1g93
+auto-allocator = { version = "*", features = ["secure"] }
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "persistence", "wgpu", "x11", "wayland"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+egui = "0.33"
+egui-wgpu = "0.33"
+egui_dock = { version = "0.18", features = ["serde"] }
+jwalk = "0.8"
+rayon = "1.10"
+crossbeam-channel = "0.5"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+num_cpus = "1"
+rfd = "0.17"
+open = "5"
+trash = "5"
+bincode = "1"
+directories = "5"
+sha2 = "0.10"
+wgpu = "27"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.29"
+pollster = "0.4"
+image = "0.25"
+half = "2.7.1"
+dirstat-core = { path = "crates/dirstat-core" }
+render-core = { path = "crates/render-core" }
+render-shared = { path = "crates/render-shared" }
+render-3d = { path = "crates/render-3d" }
+treemap = { path = "crates/treemap", features = ["wgpu"] }
+pt-core = { path = "crates/pt-core" }
+bvh-gpu = { path = "crates/bvh-gpu" }
+pt-megakernel = { path = "crates/pt-megakernel" }
+pt-wavefront = { path = "crates/pt-wavefront" }
+pt-mats = { path = "crates/pt-mats" }
+sysinfo = "0.33"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_Foundation",
+    "Win32_Security",
+] }
+
+[profile.release]
+opt-level = 3
