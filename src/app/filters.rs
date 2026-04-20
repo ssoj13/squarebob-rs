@@ -1,7 +1,7 @@
 //! # Filter Functions Module
 //!
 //! This module contains all filtering logic for the directory tree:
-//! - Size range filtering (min/max file size)
+//! - Size range filtering (min/max file size), optional LoD merge of out-of-range files
 //! - Exclusion filtering (excluded paths)
 //! - Mask/glob filtering (filename patterns)
 //! - Search result collection
@@ -11,8 +11,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::app::helpers::fmt_size;
 use crate::exclusions::Exclusions;
-use dirstat_core::DirEntry;
+use dirstat_core::{DirEntry, LodExpandInfo, LodKind};
 
 /// Collect all paths that match the search/mask filter (and their ancestors)
 pub(super) fn collect_matching_paths(
@@ -49,6 +50,17 @@ pub(super) fn collect_matching_paths(
 
 /// Check if filename matches any of the glob patterns
 pub(super) fn matches_any_mask(filename: &str, masks: &[String]) -> bool {
+    if filename.is_ascii() {
+        let bytes = filename.as_bytes();
+        let mut buf = [0u8; 512];
+        if bytes.len() <= buf.len() {
+            for (i, &b) in bytes.iter().enumerate() {
+                buf[i] = b.to_ascii_lowercase();
+            }
+            let lowered = std::str::from_utf8(&buf[..bytes.len()]).unwrap();
+            return masks.iter().any(|mask| glob_match(mask, lowered));
+        }
+    }
     let name_lc = filename.to_lowercase();
     masks.iter().any(|mask| glob_match(mask, &name_lc))
 }
@@ -86,6 +98,184 @@ pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
     pi == pat.len()
 }
 
+/// Count files strictly below `min` or strictly above `max` (recursive).
+pub(super) fn count_files_outside_range(node: &DirEntry, min: u64, max: u64) -> (u64, u64) {
+    if !node.is_dir {
+        if node.size < min {
+            return (1, 0);
+        }
+        if node.size > max {
+            return (0, 1);
+        }
+        return (0, 0);
+    }
+    let mut below = 0u64;
+    let mut above = 0u64;
+    for child in &node.children {
+        let (b, a) = count_files_outside_range(child, min, max);
+        below += b;
+        above += a;
+    }
+    (below, above)
+}
+
+/// Build a tree like [`filter_tree`] for the middle band, but instead of dropping
+/// files outside `[min, max]`, merge them into at most two synthetic leaves per directory
+/// (“below min” and “above max”). Keeps total sizes and file counts consistent for treemap layout.
+///
+/// Paths in `expanded` (typically `…/__dirstat_lod_small` / `…/__dirstat_lod_large`) are built as
+/// real directories listing individual files so the user can zoom into the bucket.
+pub(super) fn merge_tree_by_size_range(
+    src: &DirEntry,
+    min: u64,
+    max: u64,
+    expanded: &HashSet<PathBuf>,
+) -> DirEntry {
+    if !src.is_dir {
+        return DirEntry::new_file(
+            src.name.clone(),
+            src.path.clone(),
+            src.size,
+            src.ext.clone(),
+            src.modified_time,
+        );
+    }
+
+    let mut node = DirEntry::new_dir(src.name.clone(), src.path.clone());
+    let mut children: Vec<DirEntry> = Vec::new();
+
+    let mut small_sum = 0u64;
+    let mut small_n = 0u64;
+    let mut large_sum = 0u64;
+    let mut large_n = 0u64;
+
+    for child in &src.children {
+        if child.is_dir {
+            let merged = merge_tree_by_size_range(child, min, max, expanded);
+            if merged.size > 0 || !merged.children.is_empty() {
+                children.push(merged);
+            }
+        } else if child.size < min {
+            small_sum += child.size;
+            small_n += 1;
+        } else if child.size > max {
+            large_sum += child.size;
+            large_n += 1;
+        } else {
+            children.push(DirEntry::new_file(
+                child.name.clone(),
+                child.path.clone(),
+                child.size,
+                child.ext.clone(),
+                child.modified_time,
+            ));
+        }
+    }
+
+    let lod_small_path = src.path.join("__dirstat_lod_small");
+    if small_n > 0 {
+        let name = format!(
+            "{} file{} below {}",
+            small_n,
+            if small_n == 1 { "" } else { "s" },
+            fmt_size(min)
+        );
+        if expanded.contains(&lod_small_path) {
+            let mut dir = DirEntry::new_dir(name, lod_small_path.clone());
+            for child in &src.children {
+                if !child.is_dir && child.size < min {
+                    dir.children.push(DirEntry::new_file(
+                        child.name.clone(),
+                        child.path.clone(),
+                        child.size,
+                        child.ext.clone(),
+                        child.modified_time,
+                    ));
+                }
+            }
+            dir.sort_children_by_size_desc();
+            for c in &dir.children {
+                dir.size += c.size;
+                dir.file_count += c.file_count;
+                dir.dir_count += if c.is_dir { c.dir_count + 1 } else { 0 };
+            }
+            children.push(dir);
+        } else {
+            let mut syn = DirEntry::new_file(
+                name,
+                lod_small_path.clone(),
+                small_sum,
+                "lod_small".to_string(),
+                None,
+            );
+            syn.file_count = small_n;
+            syn.lod_expand = Some(LodExpandInfo {
+                parent_dir: src.path.clone(),
+                kind: LodKind::BelowMin,
+                min_threshold: min,
+                max_threshold: max,
+            });
+            children.push(syn);
+        }
+    }
+    let lod_large_path = src.path.join("__dirstat_lod_large");
+    if large_n > 0 {
+        let name = format!(
+            "{} file{} above {}",
+            large_n,
+            if large_n == 1 { "" } else { "s" },
+            fmt_size(max)
+        );
+        if expanded.contains(&lod_large_path) {
+            let mut dir = DirEntry::new_dir(name, lod_large_path.clone());
+            for child in &src.children {
+                if !child.is_dir && child.size > max {
+                    dir.children.push(DirEntry::new_file(
+                        child.name.clone(),
+                        child.path.clone(),
+                        child.size,
+                        child.ext.clone(),
+                        child.modified_time,
+                    ));
+                }
+            }
+            dir.sort_children_by_size_desc();
+            for c in &dir.children {
+                dir.size += c.size;
+                dir.file_count += c.file_count;
+                dir.dir_count += if c.is_dir { c.dir_count + 1 } else { 0 };
+            }
+            children.push(dir);
+        } else {
+            let mut syn = DirEntry::new_file(
+                name,
+                lod_large_path.clone(),
+                large_sum,
+                "lod_large".to_string(),
+                None,
+            );
+            syn.file_count = large_n;
+            syn.lod_expand = Some(LodExpandInfo {
+                parent_dir: src.path.clone(),
+                kind: LodKind::AboveMax,
+                min_threshold: min,
+                max_threshold: max,
+            });
+            children.push(syn);
+        }
+    }
+
+    for c in &children {
+        node.size += c.size;
+        node.file_count += c.file_count;
+        node.dir_count += if c.is_dir { c.dir_count + 1 } else { 0 };
+    }
+
+    node.children = children;
+    node.sort_children_by_size_desc();
+    node
+}
+
 /// Create a filtered copy of the tree, excluding files outside size range.
 /// BUG-1 fix: also filters leaf files at root level.
 pub(super) fn filter_tree(src: &DirEntry, min: u64, max: u64, invert: bool) -> DirEntry {
@@ -121,7 +311,7 @@ pub(super) fn filter_tree(src: &DirEntry, min: u64, max: u64, invert: bool) -> D
             }
         }
     }
-    node.children.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    node.sort_children_by_size_desc();
     node
 }
 
@@ -176,7 +366,7 @@ pub(super) fn filter_excluded_recursive(src: &DirEntry, exclusions: &Exclusions,
         node.children.push(filtered);
     }
     
-    node.children.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    node.sort_children_by_size_desc();
     node
 }
 
@@ -209,7 +399,7 @@ pub(super) fn filter_by_mask(src: &DirEntry, masks: &[String]) -> DirEntry {
         node.children.push(filtered);
     }
     
-    node.children.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    node.sort_children_by_size_desc();
     node
 }
 
@@ -238,7 +428,7 @@ pub(super) fn filter_by_extension(src: &DirEntry, exts: &HashSet<String>, invert
         node.dir_count += if filtered.is_dir { filtered.dir_count + 1 } else { 0 };
         node.children.push(filtered);
     }
-    node.children.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    node.sort_children_by_size_desc();
     node
 }
 
@@ -254,4 +444,75 @@ pub(super) fn count_files_in_range(node: &DirEntry, min: u64, max: u64, invert: 
         count += count_files_in_range(child, min, max, invert);
     }
     count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn file(name: &str, path: PathBuf, size: u64) -> DirEntry {
+        DirEntry::new_file(name.to_string(), path, size, "txt".to_string(), None)
+    }
+
+    #[test]
+    fn merge_buckets_outside_range() {
+        let root_path = PathBuf::from("/tmp");
+        let mut root = DirEntry::new_dir("tmp".to_string(), root_path.clone());
+        root.children.push(file("tiny", root_path.join("a"), 10));
+        root.children.push(file("mid", root_path.join("b"), 500));
+        root.children.push(file("huge", root_path.join("c"), 10_000));
+        root.size = 10 + 500 + 10_000;
+        root.file_count = 3;
+
+        let empty = HashSet::new();
+        let merged = merge_tree_by_size_range(&root, 100, 1000, &empty);
+        assert_eq!(merged.children.len(), 3);
+        assert_eq!(merged.size, root.size);
+        assert_eq!(merged.file_count, 3);
+
+        let names: Vec<_> = merged.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.iter().any(|n| n.contains("below")));
+        assert!(names.iter().any(|n| n.contains("above")));
+        assert!(names.contains(&"mid"));
+        let tiny = merged
+            .children
+            .iter()
+            .find(|c| c.path.ends_with("__dirstat_lod_small"))
+            .expect("lod small");
+        assert!(tiny.lod_expand.is_some());
+    }
+
+    #[test]
+    fn merge_expanded_small_is_directory() {
+        let root_path = PathBuf::from("/tmp");
+        let mut root = DirEntry::new_dir("tmp".to_string(), root_path.clone());
+        root.children.push(file("tiny", root_path.join("a"), 10));
+        root.children.push(file("mid", root_path.join("b"), 500));
+        root.size = 10 + 500;
+        root.file_count = 2;
+
+        let mut exp = HashSet::new();
+        exp.insert(root_path.join("__dirstat_lod_small"));
+        let merged = merge_tree_by_size_range(&root, 100, 1000, &exp);
+        let lod = merged
+            .children
+            .iter()
+            .find(|c| c.path.ends_with("__dirstat_lod_small"))
+            .expect("lod");
+        assert!(lod.is_dir);
+        assert_eq!(lod.children.len(), 1);
+        assert!(lod.lod_expand.is_none());
+    }
+
+    #[test]
+    fn count_outside_range() {
+        let root_path = PathBuf::from("/r");
+        let mut root = DirEntry::new_dir("r".to_string(), root_path.clone());
+        root.children.push(file("a", root_path.join("a"), 5));
+        root.children.push(file("b", root_path.join("b"), 500));
+        let (below, above) = count_files_outside_range(&root, 100, 1000);
+        assert_eq!(below, 1);
+        assert_eq!(above, 0);
+    }
 }

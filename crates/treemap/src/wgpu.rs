@@ -267,8 +267,8 @@ impl GpuRenderer2D {
         // Create pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("2D Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         // Create render pipeline with vertex + instance buffers
@@ -297,7 +297,7 @@ impl GpuRenderer2D {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -453,23 +453,38 @@ impl GpuRenderer2D {
         }
 
         // Log rectangle count and buffer size for debugging
-        let buffer_size = rects.len() * std::mem::size_of::<RectInstance>();
+        let bytes_per_rect = std::mem::size_of::<RectInstance>();
+        let needed_bytes = rects.len() * bytes_per_rect;
         debug!(
             "GPU 2D render: {} rects, buffer size: {} bytes ({:.2} MB), viewport: {}x{}",
             rects.len(),
-            buffer_size,
-            buffer_size as f64 / (1024.0 * 1024.0),
+            needed_bytes,
+            needed_bytes as f64 / (1024.0 * 1024.0),
             width,
             height
         );
 
-        // Create instance buffer
-        let instance_buffer = self.ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("2D Instance Buffer"),
-            contents: bytemuck::cast_slice(&rects),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        self.instance_buffer = Some(instance_buffer);
+        let needed_u64 = needed_bytes as u64;
+        let reuse = self.instance_buffer.as_ref().map_or(false, |b| b.size() >= needed_u64);
+        if reuse {
+            let buf = self.instance_buffer.as_ref().unwrap();
+            self.ctx
+                .queue
+                .write_buffer(buf, 0, bytemuck::cast_slice(&rects));
+        } else {
+            let min_bytes = (256 * bytes_per_rect) as u64;
+            let new_size = needed_u64.max(min_bytes).next_power_of_two();
+            let instance_buffer = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("2D Instance Buffer"),
+                size: new_size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.ctx
+                .queue
+                .write_buffer(&instance_buffer, 0, bytemuck::cast_slice(&rects));
+            self.instance_buffer = Some(instance_buffer);
+        }
 
         // Update uniforms
         let light_len = (opts.light_x * opts.light_x + opts.light_y * opts.light_y + 100.0).sqrt();
@@ -526,6 +541,7 @@ impl GpuRenderer2D {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(&self.pipeline);
