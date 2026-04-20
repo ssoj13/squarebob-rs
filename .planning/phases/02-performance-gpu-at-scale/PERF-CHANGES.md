@@ -13,14 +13,18 @@
 - Меньше аллокаций в hot path при фильтрации по маскам на больших деревьях.
 - Меньше работы драйвера/аллокатора GPU при интерактивном pan/zoom 2D treemap с неизменным порядком величины числа прямоугольников.
 
+## Automated checks
+
+**Pass** — `cargo test --workspace` (exit 0), `cargo build --release` (exit 0).
+
 ## Manual smoke (operator checklist)
 
 | Step | Result |
 |------|--------|
-| (1) Открыть скан (в т.ч. из кэша) | Pass |
-| (2) 2D treemap pan/zoom | Pass |
-| (3) 3D mode если доступен | Pass |
-| (4) LoD merge + раскрыть ведро | Pass |
-| (5) Загрузка из кэша | Pass |
+| (1) Открыть скан (в т.ч. из кэша) | Pending |
+| (2) 2D treemap pan/zoom | Pending |
+| (3) 3D mode если доступен | Pending |
+| (4) LoD merge + раскрыть ведро | Pending |
+| (5) Загрузка из кэша | Pending |
 
-Автоматические проверки: `cargo test` — Pass; `cargo build --release` — Pass.
+Отметьте `Pass` локально после прохода на целевой машине.
