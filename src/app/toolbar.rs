@@ -9,8 +9,9 @@ use super::helpers::rfd_pick_folder;
 
 impl App {
     /// Render top toolbar panel
-    pub(super) fn ui_toolbar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+    pub(super) fn ui_toolbar(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        egui::Panel::top("toolbar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 // === PATH SECTION ===
                 let mut start_scan = false;
@@ -136,11 +137,11 @@ impl App {
     }
 
     /// Render search bar (Ctrl+F)
-    pub(super) fn ui_search_bar(&mut self, ctx: &egui::Context) {
+    pub(super) fn ui_search_bar(&mut self, ui: &mut egui::Ui) {
         if !self.show_search {
             return;
         }
-        egui::TopBottomPanel::top("search_bar").show(ctx, |ui| {
+        egui::Panel::top("search_bar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
                 let resp = ui.add(

@@ -17,10 +17,11 @@ pub enum ScanMsg {
     Done(DirEntry),
     /// Error during scan
     Error(String),
-    /// NTFS failed, fell back to standard scanner
-    #[allow(dead_code)]   // used by NTFS scanner on Windows
+    /// NTFS fast path failed; standard scanner continues (Windows only).
+    #[cfg(windows)]
     NtfsFallback(String),
 }
+
 
 /// Launch a background scan of `root` path.
 /// Sends progress updates and final tree via `tx`.
@@ -48,8 +49,8 @@ pub fn scan_bg(root: PathBuf, tx: Sender<ScanMsg>) -> Arc<AtomicBool> {
     cancel
 }
 
-/// Public wrapper for scan_dir (used by NTFS fallback)
-#[allow(dead_code)]   // used by NTFS scanner on Windows
+/// Visible to the NTFS MFT module when it falls back to a standard walk (`scanner_ntfs`).
+#[cfg(windows)]
 pub fn scan_dir_public(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyhow::Result<DirEntry> {
     scan_dir(root, tx, cancel)
 }

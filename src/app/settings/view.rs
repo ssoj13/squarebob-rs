@@ -1,14 +1,14 @@
-//! View settings: display, layout, size filter.
+//! View settings: display, layout, and LoD (size band / merge).
 
 use eframe::egui;
 use treemap::LayoutStyle;
 use crate::app::App;
 use crate::app::helpers::{fmt_size, multibutton_exclusive, MultiButtonAxis};
-use crate::app::filters::count_files_in_range;
+use crate::app::filters::{count_files_in_range, count_files_outside_range};
 use super::LABEL_WIDTH;
 
 impl App {
-    /// View section (Display + Layout + Size Filter)
+    /// View (layout) + LoD (size band / merge) sections
     pub(super) fn ui_settings_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, changed: &mut bool) {
         egui::CollapsingHeader::new("View").default_open(true).show(ui, |ui| {
             egui::Grid::new("view_grid")
@@ -48,16 +48,19 @@ impl App {
                     });
                     ui.end_row();
                 });
-            
-            ui.separator();
-            
-            // Size filter
-            self.ui_size_filter(ui, ctx);
         });
+
+        ui.separator();
+
+        egui::CollapsingHeader::new("LoD")
+            .default_open(true)
+            .show(ui, |ui| {
+                self.ui_lod_settings(ui, ctx);
+            });
     }
 
-    /// Size filter controls
-    fn ui_size_filter(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
+    /// Level-of-detail: min/max size band, merge outside band, counts.
+    fn ui_lod_settings(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         let max_val = self.scan_max_size.max(1);
 
         egui::Grid::new("filter_grid")
@@ -74,6 +77,7 @@ impl App {
                     if self.filter_min > self.filter_max {
                         self.filter_max = self.filter_min;
                     }
+                    self.lod_expanded_paths.clear();
                     self.needs_filter_rebuild = true;
                     self.filter_changed_at = Some(std::time::Instant::now());
                 }
@@ -88,6 +92,7 @@ impl App {
                     if self.filter_max < self.filter_min {
                         self.filter_min = self.filter_max;
                     }
+                    self.lod_expanded_paths.clear();
                     self.needs_filter_rebuild = true;
                     self.filter_changed_at = Some(std::time::Instant::now());
                 }
@@ -114,11 +119,42 @@ impl App {
             }
             _ => (0, 0, false),
         };
-        let range_label = if self.filter_invert {
-            format!("Showing outside: {} - {} ({} / {} files)", fmt_size(self.filter_min), fmt_size(self.filter_max), sel_files, total_files)
-        } else {
-            format!("Showing {} - {} ({} / {} files)", fmt_size(self.filter_min), fmt_size(self.filter_max), sel_files, total_files)
-        };
+        let range_label =
+            if self.filter_merge_outside && !self.filter_invert {
+                match &self.tree {
+                    Some(root) => {
+                        let (below, above) =
+                            count_files_outside_range(root, self.filter_min, self.filter_max);
+                        let mid = count_files_in_range(root, self.filter_min, self.filter_max, false);
+                        format!(
+                            "LoD {}–{}: {} in-range files, {} below min, {} above max ({} total)",
+                            fmt_size(self.filter_min),
+                            fmt_size(self.filter_max),
+                            mid,
+                            below,
+                            above,
+                            root.file_count
+                        )
+                    }
+                    None => String::new(),
+                }
+            } else if self.filter_invert {
+                format!(
+                    "Showing outside: {} - {} ({} / {} files)",
+                    fmt_size(self.filter_min),
+                    fmt_size(self.filter_max),
+                    sel_files,
+                    total_files
+                )
+            } else {
+                format!(
+                    "Showing {} - {} ({} / {} files)",
+                    fmt_size(self.filter_min),
+                    fmt_size(self.filter_max),
+                    sel_files,
+                    total_files
+                )
+            };
         if is_preview {
             ui.colored_label(egui::Color32::from_rgb(255, 165, 0), range_label);
         } else {
@@ -127,9 +163,13 @@ impl App {
 
         ui.horizontal(|ui| {
             if ui.checkbox(&mut self.filter_invert, "Invert")
-                .on_hover_text("Show files OUTSIDE the size range")
+                .on_hover_text("Show files OUTSIDE the size range (hides excluded files; not combined with LoD merge)")
                 .changed()
             {
+                if self.filter_invert {
+                    self.filter_merge_outside = false;
+                    self.lod_expanded_paths.clear();
+                }
                 self.needs_filter_rebuild = true;
                 self.filter_changed_at = Some(std::time::Instant::now());
             }
@@ -140,6 +180,25 @@ impl App {
                     self.rebuild_filtered_tree();
                 }
         });
+
+        if ui
+            .add_enabled(
+                !self.filter_invert,
+                egui::Checkbox::new(&mut self.filter_merge_outside, "Merge outside range (LoD)"),
+            )
+            .on_hover_text(
+                "Per folder: merge files smaller than Min and files larger than Max into one block each; files between Min and Max stay separate. Same sliders as above.",
+            )
+            .changed()
+        {
+            if self.filter_merge_outside {
+                self.filter_invert = false;
+            } else {
+                self.lod_expanded_paths.clear();
+            }
+            self.needs_filter_rebuild = true;
+            self.filter_changed_at = Some(std::time::Instant::now());
+        }
 
         // Auto-apply logic
         if self.needs_filter_rebuild && self.filter_auto_rebuild {

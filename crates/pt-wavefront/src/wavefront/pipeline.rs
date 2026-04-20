@@ -181,7 +181,7 @@ impl WavefrontPipeline {
         let ray_sz = std::mem::size_of::<WfRay>() as u64;
         let hit_sz = std::mem::size_of::<WfHit>() as u64;
         let per_pixel = ray_sz.max(hit_sz).max(1);
-        let limit = device.limits().max_storage_buffer_binding_size as u64;
+        let limit = device.limits().max_storage_buffer_binding_size;
         let max_pixels = (limit / per_pixel).max(1);
         if n <= max_pixels {
             return (width, height);
@@ -251,8 +251,8 @@ fn create_pipeline(
     });
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(&format!("wf_{name}_pl")),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(&format!("wf_{name}_pipeline")),
@@ -383,8 +383,8 @@ fn create_finalize_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wg
 
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("wf_finalize_pl"),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
     });
 
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

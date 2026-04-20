@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+use crate::path_key;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Exclusions {
@@ -59,10 +60,7 @@ fn exclusions_dir() -> Option<PathBuf> {
 }
 
 fn exclusions_path(scan_path: &str) -> Option<PathBuf> {
-    let mut hasher = Sha256::new();
-    hasher.update(scan_path.as_bytes());
-    let hash = hasher.finalize();
-    exclusions_dir().map(|dir| dir.join(format!("{:x}.json", hash)))
+    exclusions_dir().map(|dir| dir.join(format!("{}.json", path_key::scan_path_id_hex(scan_path))))
 }
 
 pub fn load(scan_path: &str) -> Exclusions {

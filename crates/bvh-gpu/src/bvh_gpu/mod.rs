@@ -150,8 +150,8 @@ impl GpuBvhBuilder {
         });
         let morton_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bvh_morton_pl"),
-            bind_group_layouts: &[&morton_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&morton_bgl)],
+            immediate_size: 0,
         });
         let morton_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("bvh_morton_pipeline"),
@@ -178,8 +178,8 @@ impl GpuBvhBuilder {
         });
         let radix_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bvh_radix_pl"),
-            bind_group_layouts: &[&radix_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&radix_bgl)],
+            immediate_size: 0,
         });
         let radix_count_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("bvh_radix_count"),
@@ -213,8 +213,8 @@ impl GpuBvhBuilder {
         });
         let lbvh_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bvh_lbvh_pl"),
-            bind_group_layouts: &[&lbvh_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&lbvh_bgl)],
+            immediate_size: 0,
         });
         let lbvh_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("bvh_lbvh_pipeline"),
@@ -250,8 +250,8 @@ impl GpuBvhBuilder {
         });
         let aabb_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bvh_aabb_pl"),
-            bind_group_layouts: &[&aabb_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&aabb_bgl)],
+            immediate_size: 0,
         });
         let aabb_leaf_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("bvh_aabb_leaf"),

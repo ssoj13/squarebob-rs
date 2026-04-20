@@ -27,9 +27,10 @@ pub fn fmt_size(bytes: u64) -> String {
 
 /// Layout direction for multi-button groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum MultiButtonAxis {
     Horizontal,
+    /// Reserved for future compact toolbars (all call sites use horizontal today).
+    #[allow(dead_code)]
     Vertical,
 }
 
@@ -73,7 +74,7 @@ pub(super) fn compute_ext_stats(root: &DirEntry) -> Vec<(String, u64, u64)> {
     let mut stats: Vec<(String, u64, u64)> = map.into_iter()
         .map(|(ext, (size, count))| (ext, size, count))
         .collect();
-    stats.sort_by(|a, b| b.1.cmp(&a.1));
+    stats.sort_by_key(|b| std::cmp::Reverse(b.1));
     stats
 }
 

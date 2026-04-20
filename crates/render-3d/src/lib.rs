@@ -518,9 +518,6 @@ impl Renderer3D {
             return;
         }
 
-        // Get current hovered_id (set by previous frame's poll_result)
-        let hovered_id = self.picking.hovered_id;
-
         self.ensure_targets(width, height);
 
         // Check if we can reuse cached instances
@@ -532,8 +529,9 @@ impl Renderer3D {
 
         trace!("cache_valid: {}, opts_hash: 0x{:x}", cache_valid, opts_hash);
 
-        let instances = if cache_valid {
-            self.cached_instances.as_ref().unwrap()
+        // Own an `Arc` so we can call `pick_from_existing` (`&mut self`) without borrowing `cached_instances`.
+        let instances_arc: Arc<Vec<CubeInstance>> = if cache_valid {
+            Arc::clone(self.cached_instances.as_ref().unwrap())
         } else {
             log::debug!("cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
                 opts.animate,
@@ -552,15 +550,16 @@ impl Renderer3D {
 
             let arc = Arc::new(new_instances);
             if !opts.animate {
-                self.cached_instances = Some(arc);
+                self.cached_instances = Some(Arc::clone(&arc));
                 self.cached_opts_hash = opts_hash;
                 self.cached_layout_size = (width, height);
-                self.cached_instances.as_ref().unwrap()
             } else {
-                self.cached_instances = Some(arc);
-                self.cached_instances.as_ref().unwrap()
+                self.cached_instances = Some(Arc::clone(&arc));
             }
+            arc
         };
+
+        let instances: &[CubeInstance] = instances_arc.as_ref();
 
         self.instance_count = instances.len() as u32;
         info!("render_to_view: instance_count={}, cache_valid={}", self.instance_count, cache_valid);
@@ -593,6 +592,18 @@ impl Renderer3D {
 
         }
 
+        // Match outline/hover uniforms to the *current* cursor: read last frame's object_id buffer
+        // at pending pixel before encoding (full render still ends with readback from *this* frame).
+        if !opts.path_tracing && cache_valid && self.instance_count > 0 {
+            if let Some((px, py)) = self.picking.pending_pick {
+                self.picking.ensure_readback(&self.ctx.device, width);
+                self.pick_from_existing();
+                self.picking.request_pick(px, py);
+            }
+        }
+
+        let hovered_id = self.picking.hovered_id;
+
         self.update_uniforms(camera, opts, width, height, hovered_id);
         let cam_pos = camera.position();
         info!("render_to_view: camera pos=({:.1},{:.1},{:.1}), dist={:.1}", cam_pos.x, cam_pos.y, cam_pos.z, camera.distance);
@@ -606,9 +617,9 @@ impl Renderer3D {
             info!("render_to_view: PATH TRACING mode");
             drop(encoder);
             // Arc clone to break borrow conflict (cheap - only refcount bump)
-            let instances_arc = Arc::clone(instances);
-            let num_cubes = instances_arc.len();
-            pt::render_path_traced_no_readback(self.pt.pt_backend_kind, self, &instances_arc, camera, opts, width, height);
+            let instances_pt = Arc::clone(&instances_arc);
+            let num_cubes = instances_pt.len();
+            pt::render_path_traced_no_readback(self.pt.pt_backend_kind, self, &instances_pt, camera, opts, width, height);
             
             // Add outline pass for PT mode (render over PT result)
             if opts.hover_mode != HoverMode::None && hovered_id != 0 {
@@ -1431,7 +1442,7 @@ impl Renderer3D {
         self.selected_ids = ids.clone();
     }
 
-    /// Get hovered object ID (from previous frame's readback)
+    /// Last resolved object under the cursor (updated by GPU readback after `pick_from_existing` / `render_to_view`).
     pub fn hovered_id(&self) -> u32 {
         self.picking.hovered_id
     }

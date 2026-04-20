@@ -39,8 +39,6 @@ impl EventBus {
         std::mem::take(&mut self.queue)
     }
 
-    /// Check if any events are pending
-    #[allow(dead_code)]
     pub fn has_pending(&self) -> bool {
         !self.queue.is_empty()
     }

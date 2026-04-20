@@ -90,7 +90,7 @@ dirstat-rs --ntfs C:\
 
 ## Requirements
 
-- Rust 1.75+
+- Rust 1.95+ (pinned via `rust-toolchain.toml`)
 - GPU with Vulkan/DX12/Metal support (for 3D mode)
 - Windows (for NTFS MFT scanner, optional)
 

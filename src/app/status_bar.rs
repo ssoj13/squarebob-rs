@@ -8,8 +8,8 @@ use super::helpers::{fmt_size, disk_free_info};
 
 impl App {
     /// Render bottom status bar
-    pub(super) fn ui_status_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+    pub(super) fn ui_status_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("status").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.progress.scanning {
                     ui.spinner();

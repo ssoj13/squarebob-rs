@@ -99,11 +99,23 @@ impl App {
         if let Some(pos) = resp.hover_pos() {
             let lx_f = pos.x - resp.rect.left();
             let ly_f = pos.y - resp.rect.top();
+            let lx_u = lx_f.max(0.0) as u32;
+            let ly_u = ly_f.max(0.0) as u32;
+            // Raster mode: always feed cursor to the GPU picker so readback runs in render_3d_callback.
+            // (Throttling only applied below to expensive PT ray picks and animation pick rate.)
+            if !is_pt {
+                if let Some(r) = &mut self.renderer_3d {
+                    r.set_mouse_pos(lx_u, ly_u);
+                }
+            }
+            // Sub-pixel threshold so slow mouse motion still issues picks when the camera is idle
+            // (otherwise only camera motion forced `need_render` and hid the stale-hover effect).
+            const PICK_MOVE_EPS_SQ: f32 = 0.25; // 0.5 px
             let moved_enough = match self.last_hover_pos_3d {
                 Some((px, py)) => {
                     let dx = lx_f - px;
                     let dy = ly_f - py;
-                    dx * dx + dy * dy > 4.0
+                    dx * dx + dy * dy > PICK_MOVE_EPS_SQ
                 }
                 None => true,
             };
@@ -143,26 +155,9 @@ impl App {
                             }
                         }
                     }
-                } else if let Some(r) = &mut self.renderer_3d {
-                    // Update mouse pos for picking (no needs_layout - outline is post-process)
-                    let lx = lx_f.max(0.0) as u32;
-                    let ly = ly_f.max(0.0) as u32;
-                    r.set_mouse_pos(lx, ly);
-                    let id = r.hovered_id();
-                    if id != self.hovered_3d_id {
-                        self.hovered_3d_id = id;
-                        // Don't set needs_layout - hover outline doesn't need scene rebuild
-                    }
-                    // Update sticky_hover when file found
-                    if id != 0 {
-                        if let Some(path) = r.path_for_id(id) {
-                            let size = r.size_for_id(id).unwrap_or(0);
-                            self.sticky_hover = Some((path.clone(), size));
-                        } else {
-                            log::warn!("handle_3d_camera: id={} but path_for_id returned None!", id);
-                        }
-                    }
                 }
+                // Raster: hovered_id / sticky_hover are synced after GPU readback in render_3d_callback
+                // (same-frame hovered_id() here would always be stale).
             }
             // Show tooltip from sticky_hover (stable even during animation)
             if let Some((ref path, size)) = self.sticky_hover {
@@ -592,9 +587,10 @@ impl App {
                     hit.name.clone(),
                     hit.ext.clone(),
                     hit.rect.get(),
+                    hit.lod_expand.is_some(),
                 )
             });
-            if let Some((path_str, size, name, ext, [hx, hy, hw, hh])) = hit_data {
+            if let Some((path_str, size, name, ext, [hx, hy, hw, hh], is_lod_bucket)) = hit_data {
                 self.hovered = Some(HoverInfo {
                     path: path_str.clone(),
                     size,
@@ -631,6 +627,9 @@ impl App {
                             ui.label(format!(".{}", ext));
                         }
                         ui.label(&path_str);
+                        if is_lod_bucket {
+                            ui.small("Double-click or scroll to expand into files");
+                        }
                     },
                 );
             }
@@ -778,6 +777,29 @@ impl App {
         }
     }
 
+    /// After GPU object-id readback, mirror hover into egui state (tooltips). Not valid in the same
+    /// frame as `set_mouse_pos` — that only queues a pick; results appear after `pick_from_existing` / `render_to_view`.
+    fn sync_treemap_hover_from_3d_gpu(&mut self) {
+        let Some(r) = self.renderer_3d.as_ref() else {
+            return;
+        };
+        let id = r.hovered_id();
+        if id != self.hovered_3d_id {
+            self.hovered_3d_id = id;
+        }
+        if id != 0 {
+            if let Some(path) = r.path_for_id(id) {
+                let size = r.size_for_id(id).unwrap_or(0);
+                self.sticky_hover = Some((path.clone(), size));
+            } else {
+                self.sticky_hover = None;
+                log::debug!("sync_treemap_hover_from_3d_gpu: id={id} path_for_id None (id_map)");
+            }
+        } else {
+            self.sticky_hover = None;
+        }
+    }
+
     /// Zero-copy 3D rendering via register_native_texture
     fn render_3d_callback(&mut self, ui: &mut egui::Ui, w: u32, h: u32) {
         let ctx = ui.ctx().clone();
@@ -819,9 +841,21 @@ impl App {
             || (self.render_3d_opts.path_tracing && pt_tick_ready);
 
         if !need_render && hover_needs_pick {
-            // Fast path: scene unchanged, just read a different pixel from existing object_id texture
+            // Fast path: readback updates hovered_id (tooltip), but outline/hover uniforms only refresh
+            // in render_to_view — schedule a full pass when the hovered object changes.
             if let Some(r) = &mut self.renderer_3d {
+                let id_before = r.hovered_id();
                 r.pick_from_existing();
+                let id_after = r.hovered_id();
+                if self.render_3d_opts.hover_mode != crate::renderer::HoverMode::None
+                    && id_after != id_before
+                {
+                    self.needs_render_3d = true;
+                    ctx.request_repaint();
+                }
+            }
+            if !self.render_3d_opts.path_tracing {
+                self.sync_treemap_hover_from_3d_gpu();
             }
         }
 
@@ -829,7 +863,7 @@ impl App {
             let t0 = std::time::Instant::now();
 
             let render_state = self.wgpu_render_state.as_ref().unwrap();
-            render_state.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let error_scope = render_state.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
             // When layout changes, invalidate instances and mark PT scene dirty
             if self.needs_layout {
@@ -882,7 +916,7 @@ impl App {
                 }
             }
             #[cfg(debug_assertions)]
-            if let Some(err) = pollster::block_on(render_state.device.pop_error_scope()) {
+            if let Some(err) = pollster::block_on(error_scope.pop()) {
                 log::error!("wgpu validation error after 3D render: {:?}", err);
                 self.wgpu_error_flag.store(true, Ordering::SeqCst);
             }
@@ -916,6 +950,10 @@ impl App {
                 (t_tex - t_render).as_secs_f64() * 1000.0,
                 total_ms
             );
+
+            if !self.render_3d_opts.path_tracing {
+                self.sync_treemap_hover_from_3d_gpu();
+            }
             
             self.viewport.width = w;
             self.viewport.height = h;

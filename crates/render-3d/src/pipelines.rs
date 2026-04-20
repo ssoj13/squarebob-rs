@@ -145,8 +145,8 @@ impl BindGroupLayouts {
 fn depth_stencil(write: bool, compare: wgpu::CompareFunction) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth32Float,
-        depth_write_enabled: write,
-        depth_compare: compare,
+        depth_write_enabled: Some(write),
+        depth_compare: Some(compare),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     }
@@ -197,7 +197,7 @@ fn create_cube_pipeline(device: &wgpu::Device, cfg: CubePipelineConfig) -> wgpu:
         },
         depth_stencil: Some(depth_stencil(cfg.depth_write, cfg.depth_compare)),
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -236,7 +236,7 @@ fn create_fullscreen_pipeline(
         },
         depth_stencil: depth,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -260,23 +260,23 @@ impl Pipelines {
         // Pipeline layouts
         let pbr_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("PBR Layout"),
-            bind_group_layouts: &[&layouts.pbr_group0, &layouts.env],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layouts.pbr_group0), Some(&layouts.env)],
+            immediate_size: 0,
         });
         let obj_id_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ObjID Layout"),
-            bind_group_layouts: &[&layouts.object_id_group0],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layouts.object_id_group0)],
+            immediate_size: 0,
         });
         let outline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Outline Layout"),
-            bind_group_layouts: &[&layouts.outline],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layouts.outline)],
+            immediate_size: 0,
         });
         let skybox_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Skybox Layout"),
-            bind_group_layouts: &[&layouts.skybox],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layouts.skybox)],
+            immediate_size: 0,
         });
 
         let rgba8 = wgpu::TextureFormat::Rgba8Unorm;

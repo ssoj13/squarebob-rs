@@ -58,7 +58,10 @@ pub use dock::{DockTab, DockTabs};
 // Render3DResources removed - using egui native texture display
 use state::{PersistState, SavedOpts, ScanProgress};
 use helpers::{fmt_size, compute_ext_stats, compute_size_range, find_node_by_path};
-use filters::{filter_tree, filter_excluded, filter_by_mask, filter_by_extension, collect_matching_paths};
+use filters::{
+    collect_matching_paths, filter_by_extension, filter_by_mask, filter_excluded, filter_tree,
+    merge_tree_by_size_range,
+};
 
 impl App {
     pub fn new(
@@ -92,6 +95,7 @@ impl App {
                     app.settings_tint_mix = s.settings_tint_mix;
                     app.preset_autosave = s.preset_autosave;
                     app.autosave_interval_secs = s.autosave_interval_secs;
+                    app.filter_merge_outside = s.filter_merge_outside;
                     app.opts.grid = s.opts.grid;
                     app.opts.brightness = s.opts.brightness;
                     app.opts.height = s.opts.height;
@@ -288,11 +292,7 @@ impl App {
         // Try cache
         if let Some(cached) = cache::load_cache(&self.scan_path) {
             info!("Loaded cache for: {}", self.scan_path);
-            let age = std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_secs().saturating_sub(cached.timestamp))
-                .unwrap_or(0);
-            self.cache_age = Some(age);
+            self.cache_age = Some(cache::age_secs_from_cached(&cached));
             self.ext_stats = compute_ext_stats(&cached.tree);
             let (smin, smax) = compute_size_range(&cached.tree);
             self.scan_min_size = smin;
@@ -413,6 +413,7 @@ impl App {
                     }
                     self.needs_layout = true;
                 }
+                #[cfg(windows)]
                 ScanMsg::NtfsFallback(msg) => {
                     self.scanner_mode = ScannerMode::Standard;
                     self.progress.error = Some(format!("NTFS failed ({}), using standard scanner", msg));
@@ -434,6 +435,9 @@ impl App {
 
     /// Process queued events
     fn handle_events(&mut self, ctx: &egui::Context) {
+        if !self.events.has_pending() {
+            return;
+        }
         for event in self.events.poll() {
             if let Some(e) = downcast::<NavigateIntoEvent>(&event) {
                 self.nav_to(e.0.clone());
@@ -485,6 +489,19 @@ impl App {
     }
 
     pub(super) fn zoom_step_toward(&mut self, target: &PathBuf) {
+        if let Some(tree) = self.active_tree() {
+            if let Some(node) = find_node_by_path(tree, target) {
+                if node.lod_expand.is_some() && !node.is_dir {
+                    self.lod_expanded_paths.insert(target.clone());
+                    self.rebuild_filtered_tree();
+                    self.zoom_path = Some(target.clone());
+                    self.needs_layout = true;
+                    self.select(target.clone());
+                    return;
+                }
+            }
+        }
+
         let tree = self.active_tree_cloned_path();
         let Some((_tree_path, zoom_root_path)) = tree else { return };
         if *target == zoom_root_path { return; }
@@ -542,7 +559,19 @@ impl App {
 
     pub(super) fn rebuild_filtered_tree(&mut self) {
         if let Some(tree) = &self.tree {
-            let filtered = filter_tree(tree, self.filter_min, self.filter_max, self.filter_invert);
+            if !self.filter_merge_outside || self.filter_invert {
+                self.lod_expanded_paths.clear();
+            }
+            let filtered = if self.filter_merge_outside && !self.filter_invert {
+                merge_tree_by_size_range(
+                    tree,
+                    self.filter_min,
+                    self.filter_max,
+                    &self.lod_expanded_paths,
+                )
+            } else {
+                filter_tree(tree, self.filter_min, self.filter_max, self.filter_invert)
+            };
             self.ext_stats = compute_ext_stats(&filtered);
             self.filtered_tree = Some(filtered);
             self.rebuild_display_tree();
@@ -654,7 +683,7 @@ impl App {
         free_entry.file_count = 0;
         wrapper.children.push(free_entry);
         wrapper.size += free;
-        wrapper.children.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+        wrapper.sort_children_by_size_desc();
 
         self.display_tree_cache = Some(wrapper);
     }
@@ -962,53 +991,9 @@ impl App {
             }
         }
     }
-}
 
-// ── eframe::App impl ──
-
-impl eframe::App for App {
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        let state = PersistState {
-            scan_path: self.scan_path.clone(),
-            show_settings: self.show_settings,
-            dark_mode: self.dark_mode,
-            scanner_mode: self.scanner_mode,
-            filter_auto_rebuild: self.filter_auto_rebuild,
-            path_history: self.path_history.clone(),
-            opts: SavedOpts {
-                style: match self.opts.style {
-                    LayoutStyle::KDirStat => "kdirstat".into(),
-                    LayoutStyle::SequoiaView => "sequoia".into(),
-                },
-                grid: self.opts.grid,
-                brightness: self.opts.brightness,
-                height: self.opts.height,
-                scale_factor: self.opts.scale_factor,
-                ambient_light: self.opts.ambient_light,
-                light_x: self.opts.light_x,
-                light_y: self.opts.light_y,
-            },
-            tree_panel_width: self.tree_panel_width,
-            settings_panel_width: self.settings_panel_width,
-            show_free_space: self.show_free_space,
-            render_backend: self.render_backend,
-            render_mode: self.render_mode,
-            render_3d_opts: self.render_3d_opts.clone(),
-            dock_state: self.dock_state.clone(),
-            font_size: self.font_size,
-            settings_tab: self.settings_tab,
-            ext_filter: self.ext_filter.clone(),
-            ext_filter_invert: self.ext_filter_invert,
-            settings_tint_mix: self.settings_tint_mix,
-            preset_autosave: self.preset_autosave,
-            autosave_interval_secs: self.autosave_interval_secs,
-        };
-        if let Ok(json) = serde_json::to_string(&state) {
-            storage.set_string("dirstat_state", json);
-        }
-    }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn run_frame(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         self.frame_count = self.frame_count.saturating_add(1);
         if self.wgpu_error_flag.swap(false, Ordering::SeqCst) {
             log::warn!("wgpu error flagged; resetting GPU renderers and textures");
@@ -1034,11 +1019,11 @@ impl eframe::App for App {
             } else {
                 egui::Visuals::light()
             });
-            self.apply_font_size(ctx);
+            self.apply_font_size(&ctx);
         }
 
         self.poll_scan();
-        self.handle_events(ctx);
+        self.handle_events(&ctx);
 
         // Mark preset dirty when settings change
         if self.needs_layout || self.needs_render_3d {
@@ -1060,7 +1045,7 @@ impl eframe::App for App {
         }
 
         // Keyboard shortcuts
-        let kb_ok = !ctx.wants_keyboard_input();
+        let kb_ok = !ctx.egui_wants_keyboard_input();
 
         if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             if self.zoom_path.is_some() {
@@ -1185,15 +1170,15 @@ impl eframe::App for App {
         }
 
         // UI panels (order matters for egui layout)
-        self.ui_toolbar(ctx);
-        self.ui_search_bar(ctx);
-        self.ui_status_bar(ctx);
+        self.ui_toolbar(ui);
+        self.ui_search_bar(ui);
+        self.ui_status_bar(ui);
 
         // Sync dock visibility before rendering
         self.sync_dock_tabs_visibility();
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let dock_style = egui_dock::Style::from_egui(ctx.style().as_ref());
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            let dock_style = egui_dock::Style::from_egui(ui.global_style().as_ref());
             let mut dock_state = std::mem::replace(&mut self.dock_state, dock::default_dock_state());
             {
                 let mut tabs = DockTabs { app: self };
@@ -1205,7 +1190,57 @@ impl eframe::App for App {
         });
 
         // Screenshot handling
-        self.handle_screenshot(ctx);
+        self.handle_screenshot(&ctx);
+    }
+}
+
+// ── eframe::App impl ──
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.run_frame(ui, frame);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let state = PersistState {
+            scan_path: self.scan_path.clone(),
+            show_settings: self.show_settings,
+            dark_mode: self.dark_mode,
+            scanner_mode: self.scanner_mode,
+            filter_auto_rebuild: self.filter_auto_rebuild,
+            path_history: self.path_history.clone(),
+            opts: SavedOpts {
+                style: match self.opts.style {
+                    LayoutStyle::KDirStat => "kdirstat".into(),
+                    LayoutStyle::SequoiaView => "sequoia".into(),
+                },
+                grid: self.opts.grid,
+                brightness: self.opts.brightness,
+                height: self.opts.height,
+                scale_factor: self.opts.scale_factor,
+                ambient_light: self.opts.ambient_light,
+                light_x: self.opts.light_x,
+                light_y: self.opts.light_y,
+            },
+            tree_panel_width: self.tree_panel_width,
+            settings_panel_width: self.settings_panel_width,
+            show_free_space: self.show_free_space,
+            render_backend: self.render_backend,
+            render_mode: self.render_mode,
+            render_3d_opts: self.render_3d_opts.clone(),
+            dock_state: self.dock_state.clone(),
+            font_size: self.font_size,
+            settings_tab: self.settings_tab,
+            ext_filter: self.ext_filter.clone(),
+            ext_filter_invert: self.ext_filter_invert,
+            settings_tint_mix: self.settings_tint_mix,
+            preset_autosave: self.preset_autosave,
+            autosave_interval_secs: self.autosave_interval_secs,
+            filter_merge_outside: self.filter_merge_outside,
+        };
+        if let Ok(json) = serde_json::to_string(&state) {
+            storage.set_string("dirstat_state", json);
+        }
     }
 }
 

@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: idle
+status: milestone_complete
 last_updated: "2026-04-19T12:00:00.000Z"
 last_activity: 2026-04-19 — Phase 2 executed (baseline + perf fixes)
 progress:
   total_phases: 2
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 2
   completed_plans: 2
 ---
@@ -15,7 +15,7 @@ progress:
 # State
 
 **Project:** dirstat-rs  
-**Last activity:** 2026-04-19 — GSD plan-phase bootstrap  
+**Last activity:** 2026-04-20
 
 ## Current focus
 

@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 dirstat-core = { path = "../dirstat-core" }
 log = "0.4"
-rayon = "1.10"
+rayon = "1.12"
 
 [dependencies.bytemuck]
 version = "1"
@@ -14,7 +14,7 @@ features = ["derive"]
 optional = true
 
 [dependencies.wgpu]
-version = "27"
+version = "29"
 optional = true
 
 [dependencies.render-core]

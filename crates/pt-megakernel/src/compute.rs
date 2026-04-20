@@ -527,8 +527,8 @@ impl PathTraceCompute {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pt_pipeline_layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -592,8 +592,8 @@ impl PathTraceCompute {
         });
         let pick_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pt_pick_pl"),
-            bind_group_layouts: &[&pick_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&pick_bind_group_layout)],
+            immediate_size: 0,
         });
         let pick_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("pt_pick_pipeline"),
@@ -664,8 +664,8 @@ impl PathTraceCompute {
 
         let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pt_blit_pl"),
-            bind_group_layouts: &[&blit_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&blit_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -690,7 +690,7 @@ impl PathTraceCompute {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -1255,8 +1255,8 @@ impl PathTraceCompute {
             });
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("wf_gbuffer_pl"),
-                bind_group_layouts: &[&bgl],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bgl)],
+                immediate_size: 0,
             });
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("wf_gbuffer_pipeline"),
@@ -2663,6 +2663,7 @@ impl PathTraceCompute {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         pass.set_pipeline(&self.blit_pipeline);
         pass.set_bind_group(0, bg, &[]);

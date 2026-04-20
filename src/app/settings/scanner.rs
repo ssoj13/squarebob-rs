@@ -4,6 +4,7 @@ use eframe::egui;
 use crate::app::App;
 use crate::app::state::ScannerMode;
 use crate::app::helpers::{multibutton_exclusive, MultiButtonAxis};
+use crate::cache;
 use super::LABEL_WIDTH;
 
 impl App {
@@ -25,6 +26,17 @@ impl App {
                         ],
                         MultiButtonAxis::Horizontal,
                     );
+                    ui.end_row();
+                    ui.label("Disk cache:");
+                    if ui.button("Clear cache for current path").on_hover_text(
+                        "Removes the saved scan snapshot from disk for this root. Rescan to rebuild."
+                    ).clicked() {
+                        if let Err(e) = cache::delete_cache(&self.scan_path) {
+                            log::warn!("Failed to delete cache: {e}");
+                        } else {
+                            self.cache_age = None;
+                        }
+                    }
                     ui.end_row();
                 });
         });

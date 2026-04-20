@@ -2,6 +2,7 @@
 name = "dirstat-rs"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.95"
 
 [workspace]
 members = [
@@ -20,14 +21,14 @@ members = [
 [dependencies]
 # https://dev.to/yeauty/double-your-performance-with-one-line-of-code-the-memory-superpower-every-rust-developer-should-1g93
 auto-allocator = { version = "*", features = ["secure"] }
-eframe = { version = "0.33", default-features = false, features = ["default_fonts", "persistence", "wgpu", "x11", "wayland"] }
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "persistence", "wgpu", "x11", "wayland"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-egui = "0.33"
-egui-wgpu = "0.33"
-egui_dock = { version = "0.18", features = ["serde"] }
+egui = "0.34"
+egui-wgpu = "0.34"
+egui_dock = { version = "0.19", features = ["serde"] }
 jwalk = "0.8"
-rayon = "1.10"
+rayon = "1.12"
 crossbeam-channel = "0.5"
 anyhow = "1"
 log = "0.4"
@@ -37,11 +38,11 @@ rfd = "0.17"
 open = "5"
 trash = "5"
 bincode = "1"
-directories = "5"
-sha2 = "0.10"
-wgpu = "27"
+directories = "6"
+sha2 = "0.11"
+wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
-glam = "0.29"
+glam = "0.32"
 pollster = "0.4"
 image = "0.25"
 half = "2.7.1"
@@ -55,7 +56,7 @@ bvh-gpu = { path = "crates/bvh-gpu" }
 pt-megakernel = { path = "crates/pt-megakernel" }
 pt-wavefront = { path = "crates/pt-wavefront" }
 pt-mats = { path = "crates/pt-mats" }
-sysinfo = "0.33"
+sysinfo = "0.38"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

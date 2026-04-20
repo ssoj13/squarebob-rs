@@ -2,6 +2,7 @@ mod app;
 mod cache;
 mod events;
 mod exclusions;
+mod path_key;
 mod renderer;
 // 2D treemap GPU renderer now lives in treemap crate (feature-gated)
 mod scanner;
@@ -937,8 +938,13 @@ fn main() -> eframe::Result<()> {
     };
 
     let mut builder = env_logger::Builder::new();
-    // Set app log level
-    builder.filter_module("dirstat_rs", log_level.parse().unwrap());
+    let dirstat_level = match log_level {
+        "warn" => log::LevelFilter::Warn,
+        "info" => log::LevelFilter::Info,
+        "debug" => log::LevelFilter::Debug,
+        _ => log::LevelFilter::Trace,
+    };
+    builder.filter_module("dirstat_rs", dirstat_level);
     if let Some(list) = &cli.log_modules {
         for item in list.split(',').map(|s| s.trim().to_lowercase()) {
             match item.as_str() {
@@ -977,12 +983,16 @@ fn main() -> eframe::Result<()> {
     if let Some(ref log_path) = cli.log_file {
         use std::fs::File;
         use std::io::Write;
-        let file = File::create(log_path).expect("Failed to create log file");
-        let file = std::sync::Mutex::new(file);
-        builder.format(move |_buf, record| {
-            let mut f = file.lock().unwrap();
-            writeln!(f, "[{:5}] {}", record.level(), record.args())
-        });
+        match File::create(log_path) {
+            Ok(file) => {
+                let file = std::sync::Mutex::new(file);
+                builder.format(move |_buf, record| {
+                    let mut f = file.lock().unwrap();
+                    writeln!(f, "[{:5}] {}", record.level(), record.args())
+                });
+            }
+            Err(e) => eprintln!("Failed to create log file {log_path:?}: {e}"),
+        }
     }
 
     builder.init();
@@ -1001,17 +1011,15 @@ fn main() -> eframe::Result<()> {
     }
 
     // Configure wgpu to request POLYGON_MODE_LINE for wireframe rendering
-    let wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew {
-        device_descriptor: std::sync::Arc::new(|_adapter| wgpu::DeviceDescriptor {
-            label: Some("dirstat-rs device"),
-            required_features: wgpu::Features::POLYGON_MODE_LINE,
-            required_limits: wgpu::Limits::default(),
-            memory_hints: Default::default(),
-            trace: Default::default(),
-            experimental_features: Default::default(),
-        }),
-        ..Default::default()
-    };
+    let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    wgpu_setup.device_descriptor = std::sync::Arc::new(|_adapter| wgpu::DeviceDescriptor {
+        label: Some("dirstat-rs device"),
+        required_features: wgpu::Features::POLYGON_MODE_LINE,
+        required_limits: wgpu::Limits::default(),
+        memory_hints: Default::default(),
+        trace: Default::default(),
+        experimental_features: Default::default(),
+    });
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

@@ -1,11 +1,18 @@
 //! Object ID picking: async GPU readback with 1-frame latency
 //! Maps object_id -> file path for hover tooltips and selection
 
+/// Matches `cube_object_id.wgsl` — selected instances OR this into the R32Uint object_id texture.
+pub const OBJECT_ID_SELECTED_BIT: u32 = 0x8000_0000;
+
+/// Strip GPU-only bits so lookups match `id_map` keys (allocated without SELECTED_BIT).
+#[inline]
+pub fn canonical_object_id(id: u32) -> u32 {
+    id & !OBJECT_ID_SELECTED_BIT
+}
+
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 /// Combined pick info for a single object ID
 #[derive(Clone, Debug)]
@@ -22,10 +29,8 @@ pub struct PickingState {
     buffer_size: u32,
     /// Pending pick request (pixel coords)
     pub pending_pick: Option<(u32, u32)>,
-    /// Pending pixel X for deferred read (after async map)
+    /// Pending pixel X — read in poll_result after submit + GPU copy completes
     pending_px: Option<u32>,
-    /// Flag set by map_async callback when buffer is ready
-    map_ready: Arc<AtomicBool>,
     /// Last texture width (for reading correct pixel)
     texture_width: u32,
     /// Last successfully read ID
@@ -49,7 +54,6 @@ impl PickingState {
             buffer_size: 0,
             pending_pick: None,
             pending_px: None,
-            map_ready: Arc::new(AtomicBool::new(false)),
             texture_width: 0,
             hovered_id: 0,
             id_map: HashMap::new(),
@@ -94,8 +98,6 @@ impl PickingState {
                 mapped_at_creation: false,
             }));
             self.buffer_size = bytes_per_row;
-            // Reset map_ready when buffer is recreated
-            self.map_ready.store(false, Ordering::SeqCst);
         }
     }
 
@@ -128,10 +130,9 @@ impl PickingState {
 
         self.texture_width = tex_size.0;
         self.pending_px = Some(px);
-        self.map_ready.store(false, Ordering::SeqCst);
         let bytes_per_row = (tex_size.0 * 4 + 255) & !255;
 
-        // Copy entire row containing our pixel
+        // Copy entire row containing our pixel (must be submitted before map_async — see poll_result)
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: id_texture,
@@ -149,60 +150,57 @@ impl PickingState {
             },
             wgpu::Extent3d { width: tex_size.0, height: 1, depth_or_array_layers: 1 },
         );
-
-        // Start async mapping with callback
-        let ready = Arc::clone(&self.map_ready);
-        buf.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            if result.is_ok() {
-                ready.store(true, Ordering::SeqCst);
-            }
-        });
     }
 
-    /// Non-blocking poll to read pick result (call AFTER queue.submit).
-    /// Uses 1-frame latency: submit in frame N, read result in frame N+1.
+    /// Read pick result (call AFTER `queue.submit` for the encoder that included `submit_readback`).
+    /// Waits for the copy, then maps — same ordering contract as `render_core::map_readback`.
     pub fn poll_result(&mut self, device: &wgpu::Device) {
         let Some(px) = self.pending_px else {
             log::trace!("picking::poll_result - no pending_px");
             return;
         };
-        let Some(buf) = &self.buffer else {
+        let Some(buf) = self.buffer.as_ref() else {
             log::warn!("picking::poll_result - no buffer");
             self.pending_px = None;
             return;
         };
 
-        // Non-blocking poll to progress GPU work
-        let _ = device.poll(wgpu::PollType::Poll);
+        // Ensure the copy command has finished before mapping (map_async before submit caused BufferStillMapped)
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
 
-        // Check if map_async callback has been called
-        if !self.map_ready.load(Ordering::SeqCst) {
-            log::trace!("picking::poll_result - buffer not ready, retry next frame");
+        let buffer_slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        if let Err(e) = rx.recv().unwrap() {
+            log::warn!("picking::poll_result - map_async failed: {e:?}");
+            self.pending_px = None;
             return;
         }
 
-        // Buffer is ready - read the data
-        self.pending_px = None;
-        let slice = buf.slice(..);
-        let data = slice.get_mapped_range();
+        let data = buffer_slice.get_mapped_range();
         let offset = (px as usize) * 4;
         if offset + 4 <= data.len() {
-            let new_id = u32::from_le_bytes([
+            let raw = u32::from_le_bytes([
                 data[offset],
-                data[offset+1],
-                data[offset+2],
-                data[offset+3]
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]);
-            self.hovered_id = new_id;
-            log::trace!("picking::poll_result read id={}", new_id);
+            // Texture encodes selected instances as id | SELECTED_BIT; id_map uses canonical ids only.
+            self.hovered_id = canonical_object_id(raw);
+            log::trace!("picking::poll_result raw={raw:#x} canonical={}", self.hovered_id);
         }
         drop(data);
         buf.unmap();
-        self.map_ready.store(false, Ordering::SeqCst);
+        self.pending_px = None;
     }
 
     /// Look up path for an object ID
     pub fn path_for_id(&self, id: u32) -> Option<&PathBuf> {
+        let id = canonical_object_id(id);
         if id == 0 { return None; }
         let result = self.id_map.get(&id).map(|info| &info.path);
         if result.is_none() {
@@ -220,16 +218,17 @@ impl PickingState {
 
     /// Look up file size for an object ID
     pub fn size_for_id(&self, id: u32) -> Option<u64> {
-        self.id_map.get(&id).map(|info| info.size)
+        self.id_map.get(&canonical_object_id(id)).map(|info| info.size)
     }
 
     /// Look up directory flag for an object ID
     pub fn is_dir_for_id(&self, id: u32) -> Option<bool> {
-        self.id_map.get(&id).map(|info| info.is_dir)
+        self.id_map.get(&canonical_object_id(id)).map(|info| info.is_dir)
     }
 
     /// Get full pick info for an object ID
     pub fn info_for_id(&self, id: u32) -> Option<&PickInfo> {
+        let id = canonical_object_id(id);
         if id == 0 { return None; }
         self.id_map.get(&id)
     }

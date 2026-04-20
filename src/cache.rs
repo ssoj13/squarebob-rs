@@ -6,8 +6,8 @@ use std::time::SystemTime;
 
 use log::{info, warn, debug};
 use serde::{Serialize, Deserialize};
-use sha2::{Sha256, Digest};
 
+use crate::path_key;
 use dirstat_core::DirEntry;
 
 /// Cached scan result with metadata
@@ -23,7 +23,7 @@ pub struct CachedScan {
     pub tree: DirEntry,
 }
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 
 /// Get the cache directory path
 fn cache_dir() -> Option<PathBuf> {
@@ -31,12 +31,8 @@ fn cache_dir() -> Option<PathBuf> {
         .map(|dirs| dirs.cache_dir().to_path_buf())
 }
 
-/// Generate a cache filename from scan path (SHA256 hash)
 fn cache_filename(scan_path: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(scan_path.as_bytes());
-    let hash = hasher.finalize();
-    format!("{:x}.bin", hash)
+    format!("{}.bin", path_key::scan_path_id_hex(scan_path))
 }
 
 /// Get the full cache file path for a scan path
@@ -71,6 +67,15 @@ struct CachedScanRef<'a> {
     tree: &'a DirEntry,
 }
 
+/// Wall-clock age of a loaded cache entry (seconds since `CachedScan::timestamp`).
+pub fn age_secs_from_cached(cached: &CachedScan) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    now.saturating_sub(cached.timestamp)
+}
+
 /// Write pre-serialized cache bytes to disk
 pub fn write_cache_bytes(scan_path: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let Some(cache_file) = cache_path(scan_path) else {
@@ -85,13 +90,6 @@ pub fn write_cache_bytes(scan_path: &str, bytes: &[u8]) -> anyhow::Result<()> {
     fs::write(&cache_file, bytes)?;
     info!("Cache saved: {:?} ({} bytes)", cache_file, bytes.len());
     Ok(())
-}
-
-/// Save a scan result to cache (legacy API, serializes and writes synchronously)
-#[allow(dead_code)]
-pub fn save_cache(scan_path: &str, tree: &DirEntry) -> anyhow::Result<()> {
-    let bytes = serialize_cache(scan_path, tree)?;
-    write_cache_bytes(scan_path, &bytes)
 }
 
 /// Load a cached scan result
@@ -135,19 +133,7 @@ pub fn load_cache(scan_path: &str) -> Option<CachedScan> {
     }
 }
 
-/// Get cache age in seconds (None if no cache exists)
-#[allow(dead_code)]
-pub fn cache_age(scan_path: &str) -> Option<u64> {
-    let cached = load_cache(scan_path)?;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    Some(now.saturating_sub(cached.timestamp))
-}
-
-/// Delete cache for a scan path
-#[allow(dead_code)]
+/// Delete on-disk cache for a scan path (e.g. user clears cache in settings).
 pub fn delete_cache(scan_path: &str) -> anyhow::Result<()> {
     if let Some(cache_file) = cache_path(scan_path) {
         if cache_file.exists() {

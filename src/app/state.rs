@@ -1,5 +1,6 @@
 //! App state definitions: App struct, PersistState, defaults.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -82,6 +83,9 @@ pub(super) struct PersistState {
     pub preset_autosave: bool,
     #[serde(default = "default_autosave_interval")]
     pub autosave_interval_secs: f32,
+    /// Merge files outside size range into LoD buckets (see View → Size filter).
+    #[serde(default)]
+    pub filter_merge_outside: bool,
 }
 
 pub(super) fn default_autosave_interval() -> f32 { 5.0 }
@@ -133,6 +137,10 @@ pub struct App {
     pub(super) filter_min: u64,
     pub(super) filter_max: u64,
     pub(super) filter_invert: bool,
+    /// When true (and not inverted), files smaller than min or larger than max are merged into synthetic leaves.
+    pub(super) filter_merge_outside: bool,
+    /// LoD buckets the user has expanded (double-click); paths are `…/__dirstat_lod_small` / `…/__dirstat_lod_large`.
+    pub(super) lod_expanded_paths: HashSet<PathBuf>,
     pub(super) scan_min_size: u64,
     pub(super) scan_max_size: u64,
     pub(super) needs_filter_rebuild: bool,
@@ -262,6 +270,8 @@ impl Default for App {
             filter_min: 0,
             filter_max: u64::MAX,
             filter_invert: false,
+            filter_merge_outside: false,
+            lod_expanded_paths: HashSet::new(),
             scan_min_size: 0,
             scan_max_size: 0,
             needs_filter_rebuild: false,
