@@ -7,6 +7,7 @@ mod renderer;
 // 2D treemap GPU renderer now lives in treemap crate (feature-gated)
 mod scanner;
 mod scanner_ntfs;
+mod cli_test;
 // treemap layout/rendering now lives in treemap crate
 
 use log::info;
@@ -108,6 +109,9 @@ pub struct CliOptions {
     pub inertia_enabled: Option<bool>,
     pub inertia_friction: Option<f32>,
     pub inertia_cutoff: Option<f32>,
+
+    /// Subcommand: `test` with remaining args (`dirstat-rs test ping`, etc.).
+    pub test_args: Option<Vec<String>>,
 }
 
 fn print_help() {
@@ -244,6 +248,9 @@ RENDER SETTINGS (3D, overrides saved config):
     --inertia-friction <F>         Camera inertia friction
     --inertia-cutoff <F>           Camera inertia cutoff
 
+TEST HARNESS (no GUI):
+    dirstat-rs test [NAME] [ARGS...]         # See: dirstat-rs test help
+
 EXAMPLES:
     dirstat-rs /home                         # Scan /home with default settings
     dirstat-rs --mode 3d /home               # Scan /home in 3D mode
@@ -347,6 +354,10 @@ fn parse_args() -> CliOptions {
     while i < args.len() {
         let arg = &args[i];
         match arg.as_str() {
+            "test" => {
+                opts.test_args = Some(args[i + 1..].to_vec());
+                break;
+            }
             "-h" | "--help" => {
                 opts.help = true;
                 return opts;
@@ -919,15 +930,23 @@ fn parse_args() -> CliOptions {
 }
 
 fn main() -> eframe::Result<()> {
-	let info = auto_allocator::get_allocator_info();
-    println!("Using allocator: {:?} | Reason: {}", info.allocator_type, info.reason);
-
     let cli = parse_args();
 
     if cli.help {
         print_help();
         return Ok(());
     }
+
+    if let Some(ref test_args) = cli.test_args {
+        if let Err(e) = cli_test::run(test_args.as_slice()) {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    let info = auto_allocator::get_allocator_info();
+    println!("Using allocator: {:?} | Reason: {}", info.allocator_type, info.reason);
 
     // Setup logging based on verbosity
     let log_level = match cli.verbosity {

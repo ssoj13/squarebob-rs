@@ -17,7 +17,7 @@ impl App {
                 .min_col_width(LABEL_WIDTH)
                 .show(ui, |ui| {
                     ui.label("Engine:");
-                    multibutton_exclusive(
+                    if multibutton_exclusive(
                         ui,
                         &mut self.scanner_mode,
                         &[
@@ -25,7 +25,15 @@ impl App {
                             (ScannerMode::Ntfs, "NTFS MFT"),
                         ],
                         MultiButtonAxis::Horizontal,
-                    );
+                    ) && self.progress.scanning {
+                        self.stop_scan();
+                        self.start_scan();
+                    }
+                    if self.progress.scanning {
+                        if let Some(ref eng) = self.progress.scan_engine_label {
+                            ui.label(egui::RichText::new(format!("Active: {eng}")).small().weak());
+                        }
+                    }
                     ui.end_row();
                     ui.label("Disk cache:");
                     if ui.button("Clear cache for current path").on_hover_text(

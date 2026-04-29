@@ -275,6 +275,27 @@ impl App {
 
     // ── Scanning ──
 
+    /// Effective backend name for UI (matches spawn choice in [`start_scan`])
+    fn scan_engine_label_for_mode(mode: ScannerMode, path: &std::path::Path) -> String {
+        match mode {
+            ScannerMode::Standard => "jwalk".to_string(),
+            ScannerMode::Ntfs => {
+                #[cfg(windows)]
+                {
+                    if scanner_ntfs::is_ntfs_available(path) {
+                        "NTFS MFT".to_string()
+                    } else {
+                        "jwalk".to_string()
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    "jwalk".to_string()
+                }
+            }
+        }
+    }
+
     pub(super) fn start_scan(&mut self) {
         let path = PathBuf::from(&self.scan_path);
         if !path.exists() {
@@ -323,9 +344,11 @@ impl App {
         self.selected_path = None;
         if self.tree.is_none() { self.expanded.clear(); }
         self.ctx_menu_path = None;
+        let scan_engine_label = Self::scan_engine_label_for_mode(self.scanner_mode, &path);
         self.progress = ScanProgress {
             scanning: true,
             start_time: Some(std::time::Instant::now()),
+            scan_engine_label: Some(scan_engine_label),
             ..Default::default()
         };
 
@@ -373,6 +396,7 @@ impl App {
                 ScanMsg::Done(tree) => {
                     info!("Scan complete: {} files", tree.file_count);
                     self.progress.scanning = false;
+                    self.progress.scan_engine_label = None;
                     self.progress.error = None;
                     if let Some(t) = self.progress.start_time {
                         self.progress.elapsed_secs = t.elapsed().as_secs_f32();
@@ -416,10 +440,12 @@ impl App {
                 #[cfg(windows)]
                 ScanMsg::NtfsFallback(msg) => {
                     self.scanner_mode = ScannerMode::Standard;
+                    self.progress.scan_engine_label = Some("jwalk (NTFS fallback)".to_string());
                     self.progress.error = Some(format!("NTFS failed ({}), using standard scanner", msg));
                 }
                 ScanMsg::Error(e) => {
                     self.progress.scanning = false;
+                    self.progress.scan_engine_label = None;
                     if let Some(t) = self.progress.start_time {
                         self.progress.elapsed_secs = t.elapsed().as_secs_f32();
                     }
@@ -1102,7 +1128,12 @@ impl App {
         let title = if let Some(tree) = &self.tree {
             format!("dirstat-rs  -  {} [{}]", self.scan_path, fmt_size(tree.size))
         } else if self.progress.scanning {
-            format!("dirstat-rs  -  Scanning {}...", self.scan_path)
+            let engine = self
+                .progress
+                .scan_engine_label
+                .as_deref()
+                .unwrap_or("…");
+            format!("dirstat-rs  -  [{}] {}…", engine, self.scan_path)
         } else {
             "dirstat-rs".to_string()
         };

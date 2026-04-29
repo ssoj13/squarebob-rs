@@ -77,7 +77,12 @@ impl App {
             } // end legacy path
         } else if self.progress.scanning {
             ui.centered_and_justified(|ui| {
-                ui.spinner();
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    if let Some(ref eng) = self.progress.scan_engine_label {
+                        ui.label(eng.as_str());
+                    }
+                });
             });
         } else {
             ui.centered_and_justified(|ui| {

@@ -21,8 +21,10 @@ impl App {
                     } else {
                         String::new()
                     };
+                    let engine = self.progress.scan_engine_label.as_deref().unwrap_or("…");
                     ui.label(format!(
-                        "Scanning: {} files, {} dirs, {} ({:.1}s){}",
+                        "[{}] Scanning: {} files, {} dirs, {} ({:.1}s){}",
+                        engine,
                         self.progress.files, self.progress.dirs,
                         fmt_size(self.progress.bytes), elapsed, err_str,
                     ));

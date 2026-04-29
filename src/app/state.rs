@@ -229,6 +229,8 @@ pub(super) struct ScanProgress {
     pub bytes: u64,
     pub errors: u64,
     pub scanning: bool,
+    /// Which backend this run uses (shown in status bar / title).
+    pub scan_engine_label: Option<String>,
     pub error: Option<String>,
     pub start_time: Option<std::time::Instant>,
     pub elapsed_secs: f32,
