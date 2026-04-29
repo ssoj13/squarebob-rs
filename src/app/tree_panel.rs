@@ -12,11 +12,20 @@ use dirstat_core::DirEntry;
 use super::App;
 use super::helpers::{format_tree_label, collect_all_dir_paths};
 
-/// Calculate row height based on current font size + spacing
-fn row_height(ui: &egui::Ui) -> f32 {
+/// Row content height passed to [`egui::ScrollArea::show_rows`].
+///
+/// **`show_rows` adds `Spacing::item_spacing.y` internally** (`row_stride = h + spacing`).
+/// Passing a height that already includes `item_spacing` double-counts it and breaks
+/// virtual scrolling, programmatic scroll offsets, and `scroll_to_rect` alignment.
+fn row_height_sans_spacing(ui: &egui::Ui) -> f32 {
     let text_h = ui.text_style_height(&egui::TextStyle::Body);
     let widget_h = ui.spacing().interact_size.y;
-    widget_h.max(text_h) + ui.spacing().item_spacing.y
+    widget_h.max(text_h)
+}
+
+#[inline]
+fn row_stride_y(ui: &egui::Ui, row_height_sans: f32) -> f32 {
+    row_height_sans + ui.spacing().item_spacing.y
 }
 
 /// Flattened tree node for virtual rendering
@@ -104,7 +113,9 @@ impl App {
         }
 
         let total_rows = flat_nodes.len();
-        let row_h = row_height(ui);
+        let row_h_sans = row_height_sans_spacing(ui);
+        let row_stride = row_stride_y(ui, row_h_sans);
+
         let search_lc = self.search_text.to_lowercase();
 
         // Find selected index
@@ -116,77 +127,70 @@ impl App {
             self.scroll_to_selected = false;
         }
 
-        let scroll_area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        let scroll_area = egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .animated(false)
+            .id_salt("file_tree_panel");
 
         // Virtual scroll with row-based rendering
-        let mut saw_selected = false;
-        let mut output = scroll_area.show_rows(ui, row_h, total_rows, |ui, row_range| {
+        let mut output = scroll_area.show_rows(ui, row_h_sans, total_rows, |ui, row_range| {
             for i in row_range {
-                    if let Some(flat) = flat_nodes.get(i) {
-                        let is_selected = self.selected_path.as_ref() == Some(&flat.node.path);
-                        let matches_search = !search_lc.is_empty()
-                            && flat.node.name.to_lowercase().contains(&search_lc);
+                if let Some(flat) = flat_nodes.get(i) {
+                    let is_selected = self.selected_path.as_ref() == Some(&flat.node.path);
+                    let matches_search = !search_lc.is_empty()
+                        && flat.node.name.to_lowercase().contains(&search_lc);
 
-                        ui.horizontal(|ui| {
-                            // Indentation
-                            ui.add_space(flat.depth as f32 * 16.0);
+                    ui.horizontal(|ui| {
+                        // Indentation
+                        ui.add_space(flat.depth as f32 * 16.0);
 
-                            // Expand/collapse toggle for directories
-                            if flat.has_children {
-                                let icon = if flat.is_expanded { "▼" } else { "▶" };
-                                if ui.small_button(icon).clicked() {
-                                    toggle_expand = Some(flat.node.path.clone());
-                                }
-                            } else {
-                                ui.add_space(20.0); // Align with buttons
+                        // Expand/collapse toggle for directories
+                        if flat.has_children {
+                            let icon = if flat.is_expanded { "▼" } else { "▶" };
+                            if ui.small_button(icon).clicked() {
+                                toggle_expand = Some(flat.node.path.clone());
                             }
+                        } else {
+                            ui.add_space(20.0); // Align with buttons
+                        }
 
-                            // Label
-                            let label = format_tree_label(&flat.node.name, flat.node.size, flat.parent_size);
-                            let resp = if matches_search {
-                                ui.selectable_label(
-                                    is_selected,
-                                    egui::RichText::new(&label)
-                                        .strong()
-                                        .color(egui::Color32::YELLOW),
-                                )
-                            } else {
-                                ui.selectable_label(is_selected, &label)
-                            };
+                        // Label
+                        let label = format_tree_label(&flat.node.name, flat.node.size, flat.parent_size);
+                        let resp = if matches_search {
+                            ui.selectable_label(
+                                is_selected,
+                                egui::RichText::new(&label)
+                                    .strong()
+                                    .color(egui::Color32::YELLOW),
+                            )
+                        } else {
+                            ui.selectable_label(is_selected, &label)
+                        };
 
-                            if is_selected {
-                                saw_selected = true;
-                            }
-                            if need_scroll && is_selected {
-                                ui.scroll_to_rect(resp.rect, Some(egui::Align::Center));
-                            }
-
-                            if resp.clicked() {
-                                tree_clicked = Some(flat.node.path.clone());
-                            }
-                        });
-                    }
+                        if resp.clicked() {
+                            tree_clicked = Some(flat.node.path.clone());
+                        }
+                    });
                 }
-            });
+            }
+        });
 
-        // Scroll to selected item even if it's outside the visible row range.
-        if need_scroll && !saw_selected {
+        // Scroll selected row into view — indices use the same stride as egui `show_rows`:
+        // `row_stride = row_height_sans_spacing + item_spacing.y` (see egui scroll_area.rs).
+        //
+        // Use laid-out content height for clamp (matches egui:`max_offset = content_size - inner`).
+        if need_scroll {
             if let Some(idx) = selected_idx {
-                let y = idx as f32 * row_h;
-                let view_h = output.inner_rect.height().max(row_h);
-                let total_h = total_rows as f32 * row_h;
-                let max_offset = (total_h - view_h).max(0.0);
-                // Center the item in the visible area
-                let new_offset = (y - view_h / 2.0 + row_h / 2.0).clamp(0.0, max_offset);
+                let content_h = output.content_size.y;
+                let view_h = output.inner_rect.height().max(row_h_sans);
+                let max_offset = (content_h - view_h).max(0.0);
+                let center_y = idx as f32 * row_stride + row_h_sans * 0.5;
+                let new_offset = (center_y - view_h * 0.5).clamp(0.0, max_offset);
                 output.state.offset.y = new_offset;
                 output.state.store(ui.ctx(), output.id);
                 ui.ctx().request_repaint();
-                // Trigger a second pass so we can snap to the exact rect once visible.
-                self.scroll_to_selected = true;
             }
         }
-
-        // Handle expand/collapse toggle
         if let Some(path) = toggle_expand {
             if self.expanded.contains(&path) {
                 self.expanded.remove(&path);

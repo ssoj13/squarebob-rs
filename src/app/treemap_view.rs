@@ -868,6 +868,7 @@ impl App {
             let t0 = std::time::Instant::now();
 
             let render_state = self.wgpu_render_state.as_ref().unwrap();
+            #[cfg(debug_assertions)]
             let error_scope = render_state.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
             // When layout changes, invalidate instances and mark PT scene dirty
