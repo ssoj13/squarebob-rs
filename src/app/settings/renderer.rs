@@ -611,6 +611,22 @@ impl App {
                         }
                         ui.end_row();
 
+                        // Total cube count proxy (filtered tree leaf count). Used to convert count→prob.
+                        let total_cubes = self.filtered_tree.as_ref()
+                            .or(self.tree.as_ref())
+                            .map(|t| t.file_count as u32)
+                            .unwrap_or(0);
+
+                        // Backfill count from prob for legacy presets/CLI on first frame after scan.
+                        if self.render_3d_opts.mat_allow_lights
+                            && self.render_3d_opts.mat_light_count == 0
+                            && self.render_3d_opts.mat_light_prob > 0.0
+                            && total_cubes > 0
+                        {
+                            self.render_3d_opts.mat_light_count =
+                                (self.render_3d_opts.mat_light_prob * total_cubes as f32).round() as u32;
+                        }
+
                         ui.label("Lights:");
                         ui.horizontal(|ui| {
                             if ui.checkbox(&mut self.render_3d_opts.mat_allow_lights, "")
@@ -619,10 +635,28 @@ impl App {
                             {
                                 if let Some(r) = &mut self.renderer_3d { r.mark_pt_scene_dirty(); }
                             }
-                            if self.render_3d_opts.mat_allow_lights
-                                && ui.add(egui::Slider::new(&mut self.render_3d_opts.mat_light_prob, 0.0..=1.0).show_value(true)).changed() {
+                            if self.render_3d_opts.mat_allow_lights {
+                                let max_count = total_cubes.min(1000).max(1);
+                                if ui.add(egui::DragValue::new(&mut self.render_3d_opts.mat_light_count)
+                                    .range(0..=max_count)
+                                    .speed(1.0)
+                                    .suffix(" cubes"))
+                                    .on_hover_text("Number of cubes to receive a light material (out of total leaf cubes)")
+                                    .changed()
+                                {
+                                    let total = total_cubes.max(1) as f32;
+                                    self.render_3d_opts.mat_light_prob =
+                                        (self.render_3d_opts.mat_light_count as f32 / total).clamp(0.0, 1.0);
                                     if let Some(r) = &mut self.renderer_3d { r.mark_pt_scene_dirty(); }
                                 }
+                                if total_cubes > 0 {
+                                    ui.small(format!(
+                                        "/{}  ({:.1}%)",
+                                        total_cubes,
+                                        self.render_3d_opts.mat_light_prob * 100.0
+                                    ));
+                                }
+                            }
                         });
                         ui.end_row();
 
@@ -652,6 +686,16 @@ impl App {
                             ui.end_row();
                         }
 
+                        // Backfill glass count from prob for legacy presets/CLI.
+                        if self.render_3d_opts.mat_allow_glass
+                            && self.render_3d_opts.mat_glass_count == 0
+                            && self.render_3d_opts.mat_glass_prob > 0.0
+                            && total_cubes > 0
+                        {
+                            self.render_3d_opts.mat_glass_count =
+                                (self.render_3d_opts.mat_glass_prob * total_cubes as f32).round() as u32;
+                        }
+
                         ui.label("Glass:");
                         ui.horizontal(|ui| {
                             if ui.checkbox(&mut self.render_3d_opts.mat_allow_glass, "")
@@ -660,10 +704,28 @@ impl App {
                             {
                                 if let Some(r) = &mut self.renderer_3d { r.mark_pt_scene_dirty(); }
                             }
-                            if self.render_3d_opts.mat_allow_glass
-                                && ui.add(egui::Slider::new(&mut self.render_3d_opts.mat_glass_prob, 0.0..=1.0).show_value(true)).changed() {
+                            if self.render_3d_opts.mat_allow_glass {
+                                let max_count = total_cubes.min(1000).max(1);
+                                if ui.add(egui::DragValue::new(&mut self.render_3d_opts.mat_glass_count)
+                                    .range(0..=max_count)
+                                    .speed(1.0)
+                                    .suffix(" cubes"))
+                                    .on_hover_text("Number of cubes to receive a glass material (out of total leaf cubes)")
+                                    .changed()
+                                {
+                                    let total = total_cubes.max(1) as f32;
+                                    self.render_3d_opts.mat_glass_prob =
+                                        (self.render_3d_opts.mat_glass_count as f32 / total).clamp(0.0, 1.0);
                                     if let Some(r) = &mut self.renderer_3d { r.mark_pt_scene_dirty(); }
                                 }
+                                if total_cubes > 0 {
+                                    ui.small(format!(
+                                        "/{}  ({:.1}%)",
+                                        total_cubes,
+                                        self.render_3d_opts.mat_glass_prob * 100.0
+                                    ));
+                                }
+                            }
                         });
                         ui.end_row();
 

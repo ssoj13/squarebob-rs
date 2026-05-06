@@ -524,7 +524,11 @@ pub struct Render3DOptions {
     #[serde(default = "default_true")]
     pub mat_allow_lights: bool,  // Allow emissive/neon materials
     #[serde(default = "default_prob")]
-    pub mat_light_prob: f32,     // Probability of assigning light material (0.0-1.0)
+    pub mat_light_prob: f32,     // Probability of assigning light material (0.0-1.0). Derived from mat_light_count when > 0.
+    /// Target count of cubes to receive a light material. When > 0, drives mat_light_prob = count / total_cubes.
+    /// 0 means "use mat_light_prob directly" (legacy/CLI behavior).
+    #[serde(default)]
+    pub mat_light_count: u32,
     #[serde(default = "default_light_warm")]
     pub mat_light_warm: f32,     // Warm light bias (0-1)
     #[serde(default = "default_light_cool")]
@@ -536,7 +540,11 @@ pub struct Render3DOptions {
     #[serde(default = "default_false")]
     pub mat_allow_glass: bool,   // Allow glass/transparent materials
     #[serde(default = "default_prob")]
-    pub mat_glass_prob: f32,     // Probability of assigning glass material (0.0-1.0)
+    pub mat_glass_prob: f32,     // Probability of assigning glass material (0.0-1.0). Derived from mat_glass_count when > 0.
+    /// Target count of cubes to receive a glass material. When > 0, drives mat_glass_prob = count / total_cubes.
+    /// 0 means "use mat_glass_prob directly" (legacy/CLI behavior).
+    #[serde(default)]
+    pub mat_glass_count: u32,
     #[serde(default)]
     pub mat_include_dirs: bool,  // Allow materialization for directories
     #[serde(default = "default_mat_seed")]
@@ -710,12 +718,14 @@ impl Default for Render3DOptions {
             materialize_mix: 1.0,
             mat_allow_lights: true,
             mat_light_prob: 0.15,
+            mat_light_count: 0,
             mat_light_warm: 0.5,
             mat_light_cool: 0.5,
             mat_light_intensity: default_light_intensity(),
             mat_light_color_randomness: default_light_color_randomness(),
             mat_allow_glass: false,
             mat_glass_prob: 0.61,
+            mat_glass_count: 0,
             mat_include_dirs: false,
             mat_seed: default_mat_seed(),
             pt_global_transparency: 0.0,

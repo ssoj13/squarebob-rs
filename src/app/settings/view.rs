@@ -3,7 +3,7 @@
 use eframe::egui;
 use treemap::LayoutStyle;
 use crate::app::App;
-use crate::app::helpers::{fmt_size, multibutton_exclusive, MultiButtonAxis};
+use crate::app::helpers::{fmt_size, parse_size, multibutton_exclusive, MultiButtonAxis};
 use crate::app::filters::{count_files_in_range, count_files_outside_range};
 use super::LABEL_WIDTH;
 
@@ -71,7 +71,9 @@ impl App {
                 ui.label("Min:");
                 let min_changed = ui.add(egui::Slider::new(&mut self.filter_min, 0..=max_val)
                     .custom_formatter(|v, _| fmt_size(v as u64))
+                    .custom_parser(parse_size)
                     .logarithmic(true))
+                    .on_hover_text("Click value to type a size like 100M, 1.5G, 512K")
                     .changed();
                 if min_changed {
                     if self.filter_min > self.filter_max {
@@ -86,7 +88,9 @@ impl App {
                 ui.label("Max:");
                 let max_changed = ui.add(egui::Slider::new(&mut self.filter_max, 0..=max_val)
                     .custom_formatter(|v, _| fmt_size(v as u64))
+                    .custom_parser(parse_size)
                     .logarithmic(true))
+                    .on_hover_text("Click value to type a size like 100M, 1.5G, 512K")
                     .changed();
                 if max_changed {
                     if self.filter_max < self.filter_min {
@@ -173,7 +177,7 @@ impl App {
                 self.needs_filter_rebuild = true;
                 self.filter_changed_at = Some(std::time::Instant::now());
             }
-            ui.checkbox(&mut self.filter_auto_rebuild, "Auto")
+            ui.checkbox(&mut self.filter_auto_rebuild, "auto apply")
                 .on_hover_text("Auto-apply filter");
             if !self.filter_auto_rebuild && self.needs_filter_rebuild
                 && ui.small_button("Apply").clicked() {

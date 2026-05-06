@@ -190,16 +190,11 @@ impl App {
 
                 match self.settings_tab {
                     SettingsTab::General => {
-                        ui.columns(2, |cols| {
-                            cols[0].vertical(|ui| {
-                                self.ui_settings_scanner(ui);
-                                ui.separator();
-                                self.ui_settings_view(ui, &ctx, &mut changed);
-                            });
-                            cols[1].vertical(|ui| {
-                                self.ui_settings_appearance(ui, &mut changed);
-                            });
-                        });
+                        self.ui_settings_scanner(ui);
+                        ui.separator();
+                        self.ui_settings_view(ui, &ctx, &mut changed);
+                        ui.separator();
+                        self.ui_settings_appearance(ui, &mut changed);
                     }
                     SettingsTab::Rendering => {
                         self.ui_presets(ui);

@@ -25,6 +25,28 @@ pub fn fmt_size(bytes: u64) -> String {
     else { format!("{bytes} B") }
 }
 
+/// Parse human-readable size string back to bytes.
+/// Accepts: bare numbers ("1024"), suffixed ("1.5G", "100mb", "2 KiB", "512 b").
+/// Returns `None` on malformed input. Used as `custom_parser` for size sliders.
+pub fn parse_size(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+
+    let split = s.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(s.len());
+    let (num_part, unit_part) = s.split_at(split);
+    let num: f64 = num_part.trim().parse().ok()?;
+
+    let mult: f64 = match unit_part.trim().to_ascii_lowercase().trim_end_matches('b').trim_end_matches('i').trim() {
+        "" => 1.0,
+        "k" => 1024.0,
+        "m" => 1024.0 * 1024.0,
+        "g" => 1024.0 * 1024.0 * 1024.0,
+        "t" => 1024.0_f64.powi(4),
+        _ => return None,
+    };
+    Some(num * mult)
+}
+
 /// Layout direction for multi-button groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MultiButtonAxis {
