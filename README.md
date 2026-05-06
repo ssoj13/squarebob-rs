@@ -3,8 +3,8 @@
 Fast disk usage visualizer with squarified cushion treemap and real-time 3D rendering.
 Rust version from scratch inspired by WinDirStat/SequoiaView...with WGPU PathTracer on top.
 
-![Screenshot](data/screenshot1.png)
-![Screenshot](data/screenshot2.png)
+![Screenshot](data/screenshot1.jpg)
+![Screenshot](data/screenshot2.jpg)
 
 ## Features
 
