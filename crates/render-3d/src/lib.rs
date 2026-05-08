@@ -35,6 +35,8 @@ use pipelines::{BindGroupLayouts, Pipelines};
 use targets::{DynamicBindGroups, RenderTargets};
 
 const DEFAULT_SCENE_LAYOUT_SIZE: (u32, u32) = (1024, 1024);
+const MAX_3D_TILE_ASPECT: f32 = 4.0;
+const MAX_3D_TILES_PER_RECT: u32 = 64;
 
 pub(crate) struct PtState {
     pub path_tracer: Option<pt_megakernel::PathTraceCompute>,
@@ -480,7 +482,13 @@ impl Renderer3D {
     }
 
     /// Compute a hash of options that affect cube geometry
-    fn opts_hash(opts: &Render3DOptions, w: u32, h: u32) -> u64 {
+    fn opts_hash(
+        opts: &Render3DOptions,
+        w: u32,
+        h: u32,
+        camera: &OrbitCamera,
+        screen_height: u32,
+    ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         // Include all options that affect cube generation
@@ -502,6 +510,13 @@ impl Renderer3D {
         opts.lod_enabled.hash(&mut hasher);
         if opts.lod_enabled {
             opts.lod_min_screen_size.to_bits().hash(&mut hasher);
+            screen_height.hash(&mut hasher);
+            camera.fov.to_bits().hash(&mut hasher);
+            let p = camera.position();
+            // Camera LOD changes with view position. Quantize to avoid rebuilding on sub-pixel jitter.
+            ((p.x * 4.0).round() as i32).hash(&mut hasher);
+            ((p.y * 4.0).round() as i32).hash(&mut hasher);
+            ((p.z * 4.0).round() as i32).hash(&mut hasher);
         }
         w.hash(&mut hasher);
         h.hash(&mut hasher);
@@ -569,7 +584,7 @@ impl Renderer3D {
 
         // Check if we can reuse cached instances. The cache depends on the logical scene layout,
         // not the output texture size, so resizing the window only updates camera/render targets.
-        let opts_hash = Self::opts_hash(opts, layout_w, layout_h);
+        let opts_hash = Self::opts_hash(opts, layout_w, layout_h, camera, height);
         let cache_valid = !opts.animate
             && self.cached_instances.is_some()
             && self.cached_opts_hash == opts_hash
@@ -1047,6 +1062,63 @@ impl Renderer3D {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn push_cube_tiles(
+        out: &mut Vec<CubeInstance>,
+        node_name: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        base_height: f32,
+        world_center: Vec3,
+        opts: &Render3DOptions,
+        color: [f32; 4],
+        hash: u32,
+        object_id: u32,
+    ) {
+        let safe_w = w.max(0.5);
+        let safe_h = h.max(0.5);
+        let aspect = safe_w.max(safe_h) / safe_w.min(safe_h).max(0.5);
+        let segments = if aspect > MAX_3D_TILE_ASPECT {
+            (aspect / MAX_3D_TILE_ASPECT)
+                .ceil()
+                .clamp(1.0, MAX_3D_TILES_PER_RECT as f32) as u32
+        } else {
+            1
+        };
+
+        for i in 0..segments {
+            let (tile_x, tile_y, tile_w, tile_h) = if safe_w >= safe_h {
+                let left = x + w * i as f32 / segments as f32;
+                let right = x + w * (i + 1) as f32 / segments as f32;
+                (left, y, (right - left).max(0.5), safe_h)
+            } else {
+                let top = y + h * i as f32 / segments as f32;
+                let bottom = y + h * (i + 1) as f32 / segments as f32;
+                (x, top, safe_w, (bottom - top).max(0.5))
+            };
+
+            let pos = Vec3::new(
+                tile_x + tile_w / 2.0,
+                -(tile_y + tile_h / 2.0),
+                -base_height / 2.0,
+            );
+            let transform = hash_transform(
+                node_name,
+                pos,
+                world_center,
+                opts.hash_effect,
+                opts.hash_effect_strength,
+                opts.animation_time,
+            );
+            let model = Mat4::from_translation(pos + transform.offset)
+                * Mat4::from_quat(transform.rotation)
+                * Mat4::from_scale(Vec3::new(tile_w, tile_h, base_height.max(0.5)));
+            out.push(CubeInstance::new(model, color, hash, object_id));
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn collect_recursive(
         &mut self,
         node: &DirEntry,
@@ -1065,8 +1137,22 @@ impl Renderer3D {
         }
 
         let too_small = w < treemap::MIN_RECT_SIZE || h < treemap::MIN_RECT_SIZE;
+        let camera_lod_collapse = if let Some((cam_eye, screen_h, fov, min_size)) = lod_ctx {
+            if node.is_dir && !node.children.is_empty() && !too_small && depth > 0 {
+                let base_height = Self::compute_cube_height(node, depth, opts);
+                let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
+                let cube_size = w.max(h).max(base_height);
+                let dist = (pos - cam_eye).length().max(0.01);
+                let proj_size = (cube_size / dist) * screen_h / (2.0 * (fov / 2.0).tan());
+                proj_size < min_size
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
-        if !node.is_dir || node.children.is_empty() || too_small {
+        if !node.is_dir || node.children.is_empty() || too_small || camera_lod_collapse {
             // Leaf or consolidated node -> emit cube
             let base_height = Self::compute_cube_height(node, depth, opts);
 
@@ -1233,40 +1319,26 @@ impl Renderer3D {
             color_f[3] = mix;
 
             // Treemap XY -> 3D XY (wall facing camera), depth (height) along -Z
-            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
-
-            // LOD culling: skip if projected screen size is too small
-            if let Some((cam_eye, screen_h, fov, min_size)) = lod_ctx {
-                let cube_size = w.max(h).max(base_height);
-                let dist = (pos - cam_eye).length().max(0.01);
-                // Project cube size to screen: size_px = (size / dist) * screen_h / (2 * tan(fov/2))
-                let proj_size = (cube_size / dist) * screen_h / (2.0 * (fov / 2.0).tan());
-                if proj_size < min_size {
-                    return; // Skip this cube (too small on screen)
-                }
-            }
-
-            let transform = hash_transform(
-                &node.name,
-                pos,
-                world_center,
-                opts.hash_effect,
-                opts.hash_effect_strength,
-                opts.animation_time,
-            );
-
-            // Build model matrix: translate -> rotate -> scale
-            let model = Mat4::from_translation(pos + transform.offset)
-                * Mat4::from_quat(transform.rotation)
-                * Mat4::from_scale(Vec3::new(w.max(0.5), h.max(0.5), base_height.max(0.5)));
-
             let hash = name_hash(&node.name);
             let oid = if need_picking {
                 self.picking.alloc_id(&node.path, node.size, node.is_dir)
             } else {
                 0
             };
-            out.push(CubeInstance::new(model, color_f, hash, oid));
+            Self::push_cube_tiles(
+                out,
+                &node.name,
+                x,
+                y,
+                w,
+                h,
+                base_height,
+                world_center,
+                opts,
+                color_f,
+                hash,
+                oid,
+            );
         } else {
             let my_hash = treemap::path_hash(&node.name, dir_hash);
             for child in &node.children {
@@ -1887,15 +1959,25 @@ impl Renderer3D {
     /// Get center and size of an instance by object ID
     pub fn instance_center_and_size(&self, id: u32) -> Option<(glam::Vec3, glam::Vec3)> {
         let instances = self.cached_instances.as_ref()?;
-        let inst = instances.iter().find(|i| i.object_id == id)?;
-        // Extract position from model matrix (translation is in column 3)
-        let m = glam::Mat4::from_cols_array_2d(&inst.model);
-        let center = m.col(3).truncate();
-        // Extract scale from model matrix (length of each axis column)
-        let sx = m.col(0).truncate().length();
-        let sy = m.col(1).truncate().length();
-        let sz = m.col(2).truncate().length();
-        Some((center, glam::Vec3::new(sx, sy, sz)))
+        let mut min = glam::Vec3::splat(f32::INFINITY);
+        let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
+        let mut found = false;
+
+        for inst in instances.iter().filter(|i| i.object_id == id) {
+            let m = glam::Mat4::from_cols_array_2d(&inst.model);
+            let center = m.col(3).truncate();
+            let scale = glam::Vec3::new(
+                m.col(0).truncate().length(),
+                m.col(1).truncate().length(),
+                m.col(2).truncate().length(),
+            );
+            let half = scale * 0.5;
+            min = min.min(center - half);
+            max = max.max(center + half);
+            found = true;
+        }
+
+        found.then(|| ((min + max) * 0.5, max - min))
     }
 
     /// Get all cached instances (for marquee selection)
@@ -1946,7 +2028,7 @@ impl Renderer3D {
 
         // Check if we can reuse cached instances (only when not animating). Keep geometry stable
         // across output resizes by caching against the logical scene layout size.
-        let opts_hash = Self::opts_hash(opts, layout_w, layout_h);
+        let opts_hash = Self::opts_hash(opts, layout_w, layout_h, camera, height);
         let cache_valid = !opts.animate
             && self.cached_instances.is_some()
             && self.cached_opts_hash == opts_hash

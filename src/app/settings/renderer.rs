@@ -27,6 +27,98 @@ fn settings_grid(ui: &mut egui::Ui, id: &'static str, add_contents: impl FnOnce(
         .show(ui, add_contents);
 }
 
+fn control_label(ui: &mut egui::Ui, label: &'static str) {
+    ui.label(label)
+        .on_hover_text(renderer_control_tooltip(label.trim_end_matches(':')));
+}
+
+fn renderer_control_tooltip(label: &str) -> &'static str {
+    match label {
+        "Mode" => "Renderer mode used for the current 3D view.",
+        "Height" => "Controls which file or tree property drives cube height.",
+        "Scale" => "Multiplies the visual strength of this setting.",
+        "Color" => "Controls how cubes are colored.",
+        "Folder tint" => "Blends file colors with their parent folder color.",
+        "LOD" => "Collapses distant/small geometry to reduce GPU work.",
+        "Min px" => "Minimum projected size before LOD collapses a subtree.",
+        "Effect" => "Hash-based transform effect applied to cubes.",
+        "Strength" => "Intensity of the selected transform effect.",
+        "Animate" => "Animates the selected transform effect over time.",
+        "Slice Plane" => "Cuts the 3D scene with a configurable plane.",
+        "Normal" => "Custom slice plane normal vector.",
+        "Axis" => "Axis used by the slice plane in axis mode.",
+        "Distance" => "Slice plane offset through the scene.",
+        "Invert" => "Flips which side of the slice plane remains visible.",
+        "Source" => "Data source used to assign material classes.",
+        "Distribute" => "How material classes are distributed across cubes.",
+        "Levels" => "Number of quantization levels for material assignment.",
+        "Bands" => "Number of bands for banded material assignment.",
+        "Seed" => "Deterministic seed for randomized material assignment.",
+        "Mix" => "Blend between base color and materialized color.",
+        "Roughness" => "Surface roughness used by shaded rendering or glass materials.",
+        "Metalness" => "Metallic response for shaded rendering.",
+        "Specular IOR" => "Specular index-of-refraction approximation for shaded rendering.",
+        "Shading" => "Surface shading options for the raster renderer.",
+        "Light Cubes" => "How many cubes are assigned emissive light materials.",
+        "Warm Bias" => "Biases emissive materials toward warm colors.",
+        "Cool Bias" => "Biases emissive materials toward cool colors.",
+        "Light Power" => "Global intensity multiplier for emissive cube materials.",
+        "Light Rand" => "Randomizes emissive cube colors.",
+        "Glass Cubes" => "How many cubes are assigned glass materials.",
+        "Env MIS" => "Importance-samples the environment map for lower path tracing noise.",
+        "Emissive NEE" => "Directly samples emissive cubes for path tracing lighting.",
+        "Light SPP" => "Number of direct-light samples per path tracing step.",
+        "Light Min" => "Minimum emissive weight considered for direct light sampling.",
+        "Max Samples" => "Target path tracing sample count.",
+        "SPP/frame" => "Path tracing samples accumulated per rendered frame.",
+        "Auto SPP" => "Automatically adjusts samples per frame toward the target FPS.",
+        "Target FPS" => "Frame rate target used by Auto SPP and camera snap.",
+        "Sampler" => "Random sequence used by the path tracer.",
+        "Adaptive" => "Allocates more samples to noisy pixels.",
+        "Preset" => "Preset values for the controls in this section.",
+        "SPP Range" => "Minimum and maximum samples used by adaptive sampling.",
+        "Variance" => "Noise threshold used by adaptive sampling.",
+        "Interval" => "How often adaptive sampling updates its allocation.",
+        "Bounces" => "Maximum path tracing bounce count.",
+        "Transmission" => "Maximum transparent/refractive bounce depth.",
+        "Russian Roulette" => "Probabilistically terminates low-energy paths.",
+        "Transparency" => "Global glass/transparency blend for path tracing.",
+        "Thin" => "Treats glass as thin surfaces instead of solid volumes.",
+        "Specular" => "Specular contribution for glass materials.",
+        "Base" => "Base color contribution for glass materials.",
+        "IoR" => "Index of refraction for glass transmission.",
+        "Dispersion" => "Amount of spectral spread for glass.",
+        "Temperature" => "Color temperature tint for glass transmission.",
+        "DOF" => "Enables depth of field in path tracing.",
+        "Aperture" => "Depth-of-field aperture size.",
+        "Focus" => "Depth-of-field focus distance.",
+        "Backend" => "Path tracing backend selection.",
+        "WF Tile" => "Wavefront tile size; zero means full frame.",
+        "WF Scope" => "Which features currently use wavefront rendering.",
+        "GPU BVH" => "Builds path tracing acceleration data on the GPU.",
+        "BVH Refit" => "Updates BVH bounds quickly for animated geometry.",
+        "Spectral" => "Spectral sampling mode for path tracing.",
+        "Spectral SPP" => "Samples per pixel used by spectral mode.",
+        "ReSTIR" => "Reservoir resampling controls for direct/global illumination.",
+        "Reuse" => "Temporal and spatial ReSTIR reuse modes.",
+        "M max" => "Maximum candidate count for reservoir sampling.",
+        "Path Guide" => "Learns preferred light directions for path sampling.",
+        "SVO" => "Sparse voxel resolution used by path guiding.",
+        "Background" => "Solid background color used by the renderer.",
+        "Env Map" => "Environment map lighting controls.",
+        "Intensity" => "Environment map lighting intensity.",
+        "Rotation" => "Environment map rotation around the scene.",
+        "Env Anim" => "Animates environment map rotation.",
+        "Hover" => "3D hover highlight mode.",
+        "Width" => "Outline width for hover/selection highlight.",
+        "Alpha" => "Opacity of hover/selection highlight.",
+        "Inertia" => "Smooth camera momentum after dragging.",
+        "Friction" => "How quickly camera inertia slows down.",
+        "Cutoff" => "Velocity threshold where camera inertia stops.",
+        _ => "Renderer setting.",
+    }
+}
+
 fn compact_section(
     ui: &mut egui::Ui,
     title: &'static str,
@@ -106,7 +198,7 @@ impl App {
             .spacing([8.0, 4.0])
             .min_col_width(SETTINGS_LABEL_WIDTH)
             .show(ui, |ui| {
-                ui.label("Mode:");
+                control_label(ui, "Mode:");
                 ui.horizontal(|ui| {
                     if ui.selectable_label(is_shaded, "Shaded").clicked() {
                         self.render_3d_opts.show_wireframe = false;
@@ -146,7 +238,7 @@ impl App {
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
                     // Height Mode
-                    ui.label("Height:");
+                    control_label(ui, "Height:");
                     let old_mode = self.render_3d_opts.height_mode;
                     let old_pow = (
                         self.render_3d_opts.height_power_enabled,
@@ -205,7 +297,7 @@ impl App {
                     ui.end_row();
 
                     // Height Scale
-                    ui.label("Scale:");
+                    control_label(ui, "Scale:");
                     if ui
                         .add(egui::Slider::new(
                             &mut self.render_3d_opts.height_scale,
@@ -218,7 +310,7 @@ impl App {
                     ui.end_row();
 
                     // Color Mode
-                    ui.label("Color:");
+                    control_label(ui, "Color:");
                     let old = self.render_3d_opts.color_mode;
                     if multibutton_exclusive(
                         ui,
@@ -240,7 +332,7 @@ impl App {
                     ui.end_row();
 
                     // Folder tint
-                    ui.label("Folder tint:");
+                    control_label(ui, "Folder tint:");
                     ui.horizontal(|ui| {
                         if ui
                             .add(
@@ -271,7 +363,7 @@ impl App {
                 .spacing([8.0, 4.0])
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
-                    ui.label("LOD:");
+                    control_label(ui, "LOD:");
                     ui.horizontal(|ui| {
                         if ui
                             .checkbox(&mut self.render_3d_opts.lod_enabled, "")
@@ -283,7 +375,7 @@ impl App {
                             self.needs_layout = true;
                         }
                         if self.render_3d_opts.lod_enabled {
-                            ui.label("Min px:");
+                            control_label(ui, "Min px:");
                             if ui
                                 .add(egui::Slider::new(
                                     &mut self.render_3d_opts.lod_min_screen_size,
@@ -308,7 +400,7 @@ impl App {
                 .spacing([8.0, 4.0])
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
-                    ui.label("Effect:");
+                    control_label(ui, "Effect:");
                     let old = self.render_3d_opts.hash_effect;
                     egui::ComboBox::from_id_salt("effect")
                         .selected_text(self.render_3d_opts.hash_effect.name())
@@ -327,7 +419,7 @@ impl App {
                     ui.end_row();
 
                     if self.render_3d_opts.hash_effect != HashTransformEffect::None {
-                        ui.label("Strength:");
+                        control_label(ui, "Strength:");
                         if ui
                             .add(egui::Slider::new(
                                 &mut self.render_3d_opts.hash_effect_strength,
@@ -347,7 +439,7 @@ impl App {
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        ui.label("Animate:");
+                        control_label(ui, "Animate:");
                         ui.horizontal(|ui| {
                             if ui.checkbox(&mut self.render_3d_opts.animate, "").changed() {
                                 self.needs_layout = true;
@@ -370,7 +462,7 @@ impl App {
                 .spacing([8.0, 4.0])
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
-                    ui.label("Slice Plane:");
+                    control_label(ui, "Slice Plane:");
                     if ui
                         .checkbox(&mut self.render_3d_opts.slice_enabled, "")
                         .changed()
@@ -385,7 +477,7 @@ impl App {
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        ui.label("Mode:");
+                        control_label(ui, "Mode:");
                         ui.horizontal(|ui| {
                             if ui
                                 .selectable_label(!self.render_3d_opts.slice_use_vector, "Axis")
@@ -405,7 +497,7 @@ impl App {
                         ui.end_row();
 
                         if self.render_3d_opts.slice_use_vector {
-                            ui.label("Normal:");
+                            control_label(ui, "Normal:");
                             let mut changed = false;
                             ui.horizontal(|ui| {
                                 changed |= ui
@@ -451,7 +543,7 @@ impl App {
                             }
                             ui.end_row();
                         } else {
-                            ui.label("Axis:");
+                            control_label(ui, "Axis:");
                             let axes = [(0_u32, "X"), (1_u32, "Y"), (2_u32, "Z")];
                             if multibutton_exclusive(
                                 ui,
@@ -464,7 +556,7 @@ impl App {
                             ui.end_row();
                         }
 
-                        ui.label("Distance:");
+                        control_label(ui, "Distance:");
                         let range = if self.render_3d_opts.slice_use_vector {
                             -500.0..=500.0
                         } else {
@@ -486,7 +578,7 @@ impl App {
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        ui.label("Invert:");
+                        control_label(ui, "Invert:");
                         if ui
                             .checkbox(&mut self.render_3d_opts.slice_invert, "")
                             .changed()
@@ -508,7 +600,7 @@ impl App {
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
                     // Source: what data determines the material
-                    ui.label("Source:");
+                    control_label(ui, "Source:");
                     let old_source = self.render_3d_opts.mat_source;
                     if multibutton_exclusive(
                         ui,
@@ -546,7 +638,7 @@ impl App {
 
                     if self.render_3d_opts.mat_source != MaterialSource::None {
                         // Distribution: how values map to materials
-                        ui.label("Distribute:");
+                        control_label(ui, "Distribute:");
                         let old_dist = self.render_3d_opts.mat_distribution;
                         if multibutton_exclusive(
                             ui,
@@ -574,7 +666,7 @@ impl App {
                         // Distribution-specific parameters
                         match self.render_3d_opts.mat_distribution {
                             MaterialDistribution::Quantized => {
-                                ui.label("Levels:");
+                                control_label(ui, "Levels:");
                                 if ui
                                     .add(egui::Slider::new(
                                         &mut self.render_3d_opts.mat_quant_levels,
@@ -589,7 +681,7 @@ impl App {
                                 ui.end_row();
                             }
                             MaterialDistribution::Bands => {
-                                ui.label("Bands:");
+                                control_label(ui, "Bands:");
                                 if ui
                                     .add(egui::Slider::new(
                                         &mut self.render_3d_opts.mat_band_count,
@@ -604,7 +696,7 @@ impl App {
                                 ui.end_row();
                             }
                             MaterialDistribution::Spatial => {
-                                ui.label("Scale:");
+                                control_label(ui, "Scale:");
                                 if ui
                                     .add(
                                         egui::Slider::new(
@@ -625,7 +717,7 @@ impl App {
                         }
 
                         // Seed
-                        ui.label("Seed:");
+                        control_label(ui, "Seed:");
                         if ui
                             .add(
                                 egui::Slider::new(&mut self.render_3d_opts.mat_seed, 1..=u32::MAX)
@@ -640,7 +732,7 @@ impl App {
                         ui.end_row();
 
                         // Mix
-                        ui.label("Mix:");
+                        control_label(ui, "Mix:");
                         if ui
                             .add(egui::Slider::new(
                                 &mut self.render_3d_opts.materialize_mix,
@@ -653,7 +745,7 @@ impl App {
                         ui.end_row();
                     }
 
-                    ui.label("Roughness:");
+                    control_label(ui, "Roughness:");
                     if ui
                         .add(egui::Slider::new(
                             &mut self.render_3d_opts.roughness,
@@ -665,7 +757,7 @@ impl App {
                     }
                     ui.end_row();
 
-                    ui.label("Metalness:");
+                    control_label(ui, "Metalness:");
                     if ui
                         .add(egui::Slider::new(
                             &mut self.render_3d_opts.metalness,
@@ -677,7 +769,7 @@ impl App {
                     }
                     ui.end_row();
 
-                    ui.label("Specular IOR:");
+                    control_label(ui, "Specular IOR:");
                     if ui
                         .add(egui::Slider::new(
                             &mut self.render_3d_opts.specular_ior,
@@ -695,7 +787,7 @@ impl App {
                 .spacing([8.0, 4.0])
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
-                    ui.label("Shading:");
+                    control_label(ui, "Shading:");
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.render_3d_opts.flat_shading, "Flat");
                         ui.checkbox(&mut self.render_3d_opts.double_sided, "Double Sided");
@@ -757,7 +849,7 @@ impl App {
         self.backfill_pt_material_counts(total_cubes);
 
         settings_grid(ui, "pt_materials_grid", |ui| {
-            ui.label("Source:");
+            control_label(ui, "Source:");
             let old_source = self.render_3d_opts.mat_source;
             if multibutton_exclusive(
                 ui,
@@ -791,7 +883,7 @@ impl App {
                 return;
             }
 
-            ui.label("Distribute:");
+            control_label(ui, "Distribute:");
             let old_dist = self.render_3d_opts.mat_distribution;
             if multibutton_exclusive(
                 ui,
@@ -814,7 +906,7 @@ impl App {
 
             match self.render_3d_opts.mat_distribution {
                 MaterialDistribution::Quantized => {
-                    ui.label("Levels:");
+                    control_label(ui, "Levels:");
                     if ui
                         .add(egui::Slider::new(
                             &mut self.render_3d_opts.mat_quant_levels,
@@ -827,7 +919,7 @@ impl App {
                     ui.end_row();
                 }
                 MaterialDistribution::Bands => {
-                    ui.label("Bands:");
+                    control_label(ui, "Bands:");
                     if ui
                         .add(egui::Slider::new(
                             &mut self.render_3d_opts.mat_band_count,
@@ -840,7 +932,7 @@ impl App {
                     ui.end_row();
                 }
                 MaterialDistribution::Spatial => {
-                    ui.label("Scale:");
+                    control_label(ui, "Scale:");
                     if ui
                         .add(
                             egui::Slider::new(
@@ -858,7 +950,7 @@ impl App {
                 _ => {}
             }
 
-            ui.label("Seed:");
+            control_label(ui, "Seed:");
             if ui
                 .add(
                     egui::Slider::new(&mut self.render_3d_opts.mat_seed, 1..=u32::MAX)
@@ -870,7 +962,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Mix:");
+            control_label(ui, "Mix:");
             if ui
                 .add(
                     egui::Slider::new(&mut self.render_3d_opts.materialize_mix, 0.0..=1.0)
@@ -915,7 +1007,7 @@ impl App {
     }
 
     fn ui_pt_material_counts(&mut self, ui: &mut egui::Ui, total_cubes: u32) {
-        ui.label("Light Cubes:");
+        control_label(ui, "Light Cubes:");
         ui.horizontal(|ui| {
             if ui
                 .checkbox(&mut self.render_3d_opts.mat_allow_lights, "")
@@ -953,7 +1045,7 @@ impl App {
         ui.end_row();
 
         if self.render_3d_opts.mat_allow_lights {
-            ui.label("Warm Bias:");
+            control_label(ui, "Warm Bias:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.mat_light_warm,
@@ -965,7 +1057,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Cool Bias:");
+            control_label(ui, "Cool Bias:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.mat_light_cool,
@@ -977,7 +1069,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Light Power:");
+            control_label(ui, "Light Power:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.mat_light_intensity,
@@ -989,7 +1081,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Light Rand:");
+            control_label(ui, "Light Rand:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.mat_light_color_randomness,
@@ -1002,7 +1094,7 @@ impl App {
             ui.end_row();
         }
 
-        ui.label("Glass Cubes:");
+        control_label(ui, "Glass Cubes:");
         ui.horizontal(|ui| {
             if ui
                 .checkbox(&mut self.render_3d_opts.mat_allow_glass, "")
@@ -1042,7 +1134,7 @@ impl App {
 
     fn ui_pt_lighting(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_lighting_grid", |ui| {
-            ui.label("Env MIS:");
+            control_label(ui, "Env MIS:");
             if ui
                 .checkbox(&mut self.render_3d_opts.pt_env_importance_sampling, "")
                 .on_hover_text("Use HDR CDF importance sampling + MIS")
@@ -1053,7 +1145,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Emissive NEE:");
+            control_label(ui, "Emissive NEE:");
             if ui
                 .checkbox(&mut self.render_3d_opts.pt_emissive_sampling, "")
                 .on_hover_text("Directly sample emissive cubes")
@@ -1064,7 +1156,7 @@ impl App {
             ui.end_row();
 
             if self.render_3d_opts.pt_emissive_sampling {
-                ui.label("Light SPP:");
+                control_label(ui, "Light SPP:");
                 *pt_changed |= ui
                     .add(
                         egui::DragValue::new(&mut self.render_3d_opts.pt_emissive_samples)
@@ -1074,7 +1166,7 @@ impl App {
                     .changed();
                 ui.end_row();
 
-                ui.label("Light Min:");
+                control_label(ui, "Light Min:");
                 if ui
                     .add(
                         egui::Slider::new(
@@ -1095,7 +1187,7 @@ impl App {
 
     fn ui_pt_sampling(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_sampling_grid", |ui| {
-            ui.label("Max Samples:");
+            control_label(ui, "Max Samples:");
             ui.horizontal(|ui| {
                 if ui
                     .add(
@@ -1131,7 +1223,7 @@ impl App {
             });
             ui.end_row();
 
-            ui.label("SPP/frame:");
+            control_label(ui, "SPP/frame:");
             if self.render_3d_opts.pt_auto_spp {
                 if let Some(r) = &self.renderer_3d {
                     ui.label(format!("{}", r.pt_samples_per_update().max(1)));
@@ -1148,7 +1240,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Auto SPP:");
+            control_label(ui, "Auto SPP:");
             ui.horizontal(|ui| {
                 *pt_changed |= ui
                     .checkbox(&mut self.render_3d_opts.pt_auto_spp, "")
@@ -1163,7 +1255,7 @@ impl App {
             ui.end_row();
 
             if self.render_3d_opts.pt_auto_spp || self.render_3d_opts.pt_camera_snap {
-                ui.label("Target FPS:");
+                control_label(ui, "Target FPS:");
                 *pt_changed |= ui
                     .add(
                         egui::Slider::new(&mut self.render_3d_opts.pt_target_fps, 1.0..=120.0)
@@ -1173,7 +1265,7 @@ impl App {
                 ui.end_row();
             }
 
-            ui.label("Sampler:");
+            control_label(ui, "Sampler:");
             if multibutton_exclusive(
                 ui,
                 &mut self.render_3d_opts.pt_sampler_mode,
@@ -1216,7 +1308,7 @@ impl App {
 
     fn ui_pt_adaptive(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_adaptive_grid", |ui| {
-            ui.label("Adaptive:");
+            control_label(ui, "Adaptive:");
             *pt_changed |= ui
                 .checkbox(&mut self.render_3d_opts.pt_adaptive_sampling, "")
                 .on_hover_text("More samples on high-variance areas")
@@ -1227,7 +1319,7 @@ impl App {
                 return;
             }
 
-            ui.label("Preset:");
+            control_label(ui, "Preset:");
             if multibutton_exclusive(
                 ui,
                 &mut self.render_3d_opts.pt_adaptive_preset,
@@ -1264,7 +1356,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("SPP Range:");
+            control_label(ui, "SPP Range:");
             ui.horizontal(|ui| {
                 ui.small("Min");
                 let min_changed = ui
@@ -1295,7 +1387,7 @@ impl App {
                 self.render_3d_opts.pt_adaptive_max_spp = self.render_3d_opts.pt_adaptive_min_spp;
             }
 
-            ui.label("Variance:");
+            control_label(ui, "Variance:");
             let variance_changed = ui
                 .add(
                     egui::Slider::new(&mut self.render_3d_opts.pt_adaptive_variance, 1e-5..=1e-2)
@@ -1308,7 +1400,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Interval:");
+            control_label(ui, "Interval:");
             let interval_changed = ui
                 .add(
                     egui::DragValue::new(&mut self.render_3d_opts.pt_adaptive_interval)
@@ -1326,7 +1418,7 @@ impl App {
 
     fn ui_pt_paths(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_paths_grid", |ui| {
-            ui.label("Bounces:");
+            control_label(ui, "Bounces:");
             *pt_changed |= ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_max_bounces,
@@ -1335,7 +1427,7 @@ impl App {
                 .changed();
             ui.end_row();
 
-            ui.label("Transmission:");
+            control_label(ui, "Transmission:");
             *pt_changed |= ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_max_transmission_depth,
@@ -1344,7 +1436,7 @@ impl App {
                 .changed();
             ui.end_row();
 
-            ui.label("Russian Roulette:");
+            control_label(ui, "Russian Roulette:");
             *pt_changed |= ui
                 .checkbox(&mut self.render_3d_opts.pt_russian_roulette, "")
                 .on_hover_text("Probabilistic path termination")
@@ -1355,7 +1447,7 @@ impl App {
 
     fn ui_pt_glass(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_glass_grid", |ui| {
-            ui.label("Transparency:");
+            control_label(ui, "Transparency:");
             let mut transparency_ui = self.render_3d_opts.pt_global_transparency * 64.0;
             if ui
                 .add(egui::Slider::new(&mut transparency_ui, 0.0..=64.0))
@@ -1368,7 +1460,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Preset:");
+            control_label(ui, "Preset:");
             let old_glass = self.render_3d_opts.pt_global_glass;
             if multibutton_exclusive(
                 ui,
@@ -1391,7 +1483,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Thin:");
+            control_label(ui, "Thin:");
             if ui
                 .checkbox(&mut self.render_3d_opts.pt_glass_thin, "")
                 .changed()
@@ -1401,7 +1493,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Specular:");
+            control_label(ui, "Specular:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_glass_specular,
@@ -1414,7 +1506,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Base:");
+            control_label(ui, "Base:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_glass_base,
@@ -1427,7 +1519,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Roughness:");
+            control_label(ui, "Roughness:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_glass_roughness,
@@ -1440,7 +1532,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("IoR:");
+            control_label(ui, "IoR:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_glass_ior,
@@ -1453,7 +1545,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Dispersion:");
+            control_label(ui, "Dispersion:");
             if ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_glass_dispersion,
@@ -1466,7 +1558,7 @@ impl App {
             }
             ui.end_row();
 
-            ui.label("Temperature:");
+            control_label(ui, "Temperature:");
             if ui
                 .add(
                     egui::Slider::new(&mut self.render_3d_opts.pt_glass_temp, 1000.0..=12000.0)
@@ -1484,14 +1576,14 @@ impl App {
 
     fn ui_pt_camera(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_camera_grid", |ui| {
-            ui.label("DOF:");
+            control_label(ui, "DOF:");
             *pt_changed |= ui
                 .checkbox(&mut self.render_3d_opts.pt_dof_enabled, "")
                 .changed();
             ui.end_row();
 
             if self.render_3d_opts.pt_dof_enabled {
-                ui.label("Aperture:");
+                control_label(ui, "Aperture:");
                 *pt_changed |= ui
                     .add(egui::Slider::new(
                         &mut self.render_3d_opts.pt_aperture,
@@ -1500,7 +1592,7 @@ impl App {
                     .changed();
                 ui.end_row();
 
-                ui.label("Focus:");
+                control_label(ui, "Focus:");
                 *pt_changed |= ui
                     .add(
                         egui::Slider::new(&mut self.render_3d_opts.pt_focus_distance, 0.1..=500.0)
@@ -1514,7 +1606,7 @@ impl App {
 
     fn ui_pt_advanced(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_backend_grid", |ui| {
-            ui.label("Backend:");
+            control_label(ui, "Backend:");
             *pt_changed |= ui
                 .checkbox(&mut self.render_3d_opts.pt_wavefront, "Wavefront")
                 .on_hover_text("Split path tracing into separate passes")
@@ -1522,7 +1614,7 @@ impl App {
             ui.end_row();
 
             if self.render_3d_opts.pt_wavefront {
-                ui.label("WF Tile:");
+                control_label(ui, "WF Tile:");
                 ui.horizontal(|ui| {
                     *pt_changed |= ui
                         .add(
@@ -1535,12 +1627,12 @@ impl App {
                 });
                 ui.end_row();
 
-                ui.label("WF Scope:");
+                control_label(ui, "WF Scope:");
                 ui.small("R2/NEE direct use megakernel; ReSTIR uses wavefront.");
                 ui.end_row();
             }
 
-            ui.label("GPU BVH:");
+            control_label(ui, "GPU BVH:");
             *pt_changed |= ui
                 .checkbox(&mut self.render_3d_opts.pt_gpu_bvh, "")
                 .on_hover_text("Build BVH on GPU")
@@ -1548,7 +1640,7 @@ impl App {
             ui.end_row();
 
             if self.render_3d_opts.pt_gpu_bvh {
-                ui.label("BVH Refit:");
+                control_label(ui, "BVH Refit:");
                 *pt_changed |= ui
                     .checkbox(&mut self.render_3d_opts.pt_bvh_refit, "")
                     .on_hover_text("Fast AABB update for animation")
@@ -1558,7 +1650,7 @@ impl App {
         });
 
         settings_grid(ui, "pt_spectral_grid", |ui| {
-            ui.label("Spectral:");
+            control_label(ui, "Spectral:");
             let old_spectral = self.render_3d_opts.pt_spectral_mode;
             if multibutton_exclusive(
                 ui,
@@ -1580,7 +1672,7 @@ impl App {
             ui.end_row();
 
             if self.render_3d_opts.pt_spectral_mode != SpectralMode::Off {
-                ui.label("Spectral SPP:");
+                control_label(ui, "Spectral SPP:");
                 *pt_changed |= ui
                     .add(egui::Slider::new(
                         &mut self.render_3d_opts.pt_spectral_samples,
@@ -1589,7 +1681,7 @@ impl App {
                     .changed();
                 ui.end_row();
 
-                ui.label("Dispersion:");
+                control_label(ui, "Dispersion:");
                 *pt_changed |= ui
                     .checkbox(&mut self.render_3d_opts.pt_spectral_dispersion, "")
                     .changed();
@@ -1603,7 +1695,7 @@ impl App {
 
     fn ui_pt_restir(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_restir_grid", |ui| {
-            ui.label("ReSTIR:");
+            control_label(ui, "ReSTIR:");
             ui.horizontal(|ui| {
                 *pt_changed |= ui
                     .checkbox(&mut self.render_3d_opts.pt_restir_di, "DI")
@@ -1617,7 +1709,7 @@ impl App {
             ui.end_row();
 
             if self.render_3d_opts.pt_restir_di || self.render_3d_opts.pt_restir_gi {
-                ui.label("Reuse:");
+                control_label(ui, "Reuse:");
                 ui.horizontal(|ui| {
                     *pt_changed |= ui
                         .checkbox(&mut self.render_3d_opts.pt_restir_temporal, "Temporal")
@@ -1628,7 +1720,7 @@ impl App {
                 });
                 ui.end_row();
 
-                ui.label("M max:");
+                control_label(ui, "M max:");
                 *pt_changed |= ui
                     .add(
                         egui::DragValue::new(&mut self.render_3d_opts.pt_restir_m_max)
@@ -1643,7 +1735,7 @@ impl App {
 
     fn ui_pt_path_guiding(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_pg_grid", |ui| {
-            ui.label("Path Guide:");
+            control_label(ui, "Path Guide:");
             *pt_changed |= ui
                 .checkbox(&mut self.render_3d_opts.pt_path_guiding, "")
                 .on_hover_text("Learn where light comes from")
@@ -1651,7 +1743,7 @@ impl App {
             ui.end_row();
 
             if self.render_3d_opts.pt_path_guiding {
-                ui.label("SVO:");
+                control_label(ui, "SVO:");
                 if multibutton_exclusive(
                     ui,
                     &mut self.render_3d_opts.pt_svo_resolution,
@@ -1678,7 +1770,7 @@ impl App {
                 .spacing([8.0, 4.0])
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
-                    ui.label("Background:");
+                    control_label(ui, "Background:");
                     let mut color = egui::Color32::from_rgb(
                         (self.render_3d_opts.background_color[0] * 255.0) as u8,
                         (self.render_3d_opts.background_color[1] * 255.0) as u8,
@@ -1694,7 +1786,7 @@ impl App {
                     }
                     ui.end_row();
 
-                    ui.label("Env Map:");
+                    control_label(ui, "Env Map:");
                     ui.horizontal(|ui| {
                         let old_enabled = self.render_3d_opts.env_map_enabled;
                         if ui
@@ -1738,7 +1830,7 @@ impl App {
                     ui.end_row();
 
                     if self.render_3d_opts.env_map_enabled {
-                        ui.label("Intensity:");
+                        control_label(ui, "Intensity:");
                         if ui
                             .add(egui::Slider::new(
                                 &mut self.render_3d_opts.env_map_intensity,
@@ -1750,7 +1842,7 @@ impl App {
                         }
                         ui.end_row();
 
-                        ui.label("Rotation:");
+                        control_label(ui, "Rotation:");
                         let mut env_deg = self.render_3d_opts.env_map_rotation.to_degrees();
                         if ui
                             .add(egui::Slider::new(&mut env_deg, -360.0..=360.0).suffix(" deg"))
@@ -1769,7 +1861,7 @@ impl App {
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        ui.label("Env Anim:");
+                        control_label(ui, "Env Anim:");
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut self.render_3d_opts.env_map_visible, "Visible")
                                 .on_hover_text("Show the environment background while keeping lighting enabled");
@@ -1792,7 +1884,7 @@ impl App {
                 .spacing([8.0, 4.0])
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
-                    ui.label("Hover:");
+                    control_label(ui, "Hover:");
                     multibutton_exclusive(
                         ui,
                         &mut self.render_3d_opts.hover_mode,
@@ -1810,7 +1902,7 @@ impl App {
                         self.render_3d_opts.hover_mode,
                         HoverMode::Outline | HoverMode::Both
                     ) {
-                        ui.label("Width:");
+                        control_label(ui, "Width:");
                         if ui
                             .add(egui::Slider::new(
                                 &mut self.render_3d_opts.hover_outline_width,
@@ -1822,7 +1914,7 @@ impl App {
                         }
                         ui.end_row();
 
-                        ui.label("Alpha:");
+                        control_label(ui, "Alpha:");
                         if ui
                             .add(egui::Slider::new(
                                 &mut self.render_3d_opts.hover_outline_alpha,
@@ -1846,13 +1938,13 @@ impl App {
                 .spacing([8.0, 4.0])
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
-                    ui.label("Inertia:");
+                    control_label(ui, "Inertia:");
                     ui.checkbox(&mut self.render_3d_opts.inertia_enabled, "")
                         .on_hover_text("Enable smooth camera momentum after drag");
                     ui.end_row();
 
                     if self.render_3d_opts.inertia_enabled {
-                        ui.label("Friction:");
+                        control_label(ui, "Friction:");
                         ui.add(egui::Slider::new(
                             &mut self.render_3d_opts.inertia_friction,
                             1.0..=15.0,
@@ -1860,7 +1952,7 @@ impl App {
                         .on_hover_text("Higher = faster stop (1=floaty, 15=responsive)");
                         ui.end_row();
 
-                        ui.label("Cutoff:");
+                        control_label(ui, "Cutoff:");
                         ui.add(
                             egui::Slider::new(
                                 &mut self.render_3d_opts.inertia_cutoff,
