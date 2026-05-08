@@ -641,7 +641,6 @@ impl Renderer3D {
             self.instance_buffer.is_some()
         );
         if need_upload {
-            let _buf_size = instances.len() * std::mem::size_of::<CubeInstance>();
             let need_realloc =
                 self.instance_buffer.is_none() || instances.len() > self.instance_buffer_capacity;
             if need_realloc {

@@ -896,13 +896,15 @@ mod tests {
 
     #[test]
     fn render_3d_light_and_glass_counts_roundtrip() {
-        let mut opts = Render3DOptions::default();
-        opts.mat_allow_lights = true;
-        opts.mat_light_count = 520;
-        opts.mat_light_prob = 0.0173;
-        opts.mat_allow_glass = true;
-        opts.mat_glass_count = 2857;
-        opts.mat_glass_prob = 0.0952;
+        let opts = Render3DOptions {
+            mat_allow_lights: true,
+            mat_light_count: 520,
+            mat_light_prob: 0.0173,
+            mat_allow_glass: true,
+            mat_glass_count: 2857,
+            mat_glass_prob: 0.0952,
+            ..Default::default()
+        };
 
         let json = serde_json::to_string(&opts).expect("serialize");
         let restored: Render3DOptions = serde_json::from_str(&json).expect("deserialize");

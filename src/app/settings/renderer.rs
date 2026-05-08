@@ -816,7 +816,7 @@ impl App {
                             }
                             if self.render_3d_opts.mat_allow_lights {
                                 let max_for_drag = if total_cubes > 0 {
-                                    total_cubes.min(MAX_PT_MAT_CUBE_COUNT).max(1)
+                                    total_cubes.clamp(1, MAX_PT_MAT_CUBE_COUNT)
                                 } else {
                                     MAX_PT_MAT_CUBE_COUNT
                                 };
@@ -890,7 +890,7 @@ impl App {
                             }
                             if self.render_3d_opts.mat_allow_glass {
                                 let max_for_drag = if total_cubes > 0 {
-                                    total_cubes.min(MAX_PT_MAT_CUBE_COUNT).max(1)
+                                    total_cubes.clamp(1, MAX_PT_MAT_CUBE_COUNT)
                                 } else {
                                     MAX_PT_MAT_CUBE_COUNT
                                 };

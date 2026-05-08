@@ -465,7 +465,10 @@ impl GpuRenderer2D {
         );
 
         let needed_u64 = needed_bytes as u64;
-        let reuse = self.instance_buffer.as_ref().map_or(false, |b| b.size() >= needed_u64);
+        let reuse = self
+            .instance_buffer
+            .as_ref()
+            .is_some_and(|b| b.size() >= needed_u64);
         if reuse {
             let buf = self.instance_buffer.as_ref().unwrap();
             self.ctx

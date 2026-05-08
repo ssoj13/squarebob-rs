@@ -32,6 +32,29 @@ flowchart TB
   CHANNEL --> DIR
 ```
 
+## NTFS scan fallback (Windows)
+
+```mermaid
+sequenceDiagram
+    participant UI as app::App poll_scan
+    participant NT as scanner_ntfs thread
+    participant JW as scanner::scan_dir_public
+
+    NT->>UI: Progress (zeros)
+    alt MFT OK
+        NT->>UI: Done(DirEntry)
+    else MFT Err
+        NT->>UI: NtfsFallback(reason)
+        Note over UI: Forces scanner_mode Standard + shows error banner
+        NT->>JW: jwalk rebuild (same thread)
+        alt jwalk OK
+            JW->>UI: Done(DirEntry)
+        else jwalk Err
+            JW->>UI: Error
+        end
+    end
+```
+
 ## Display pipeline
 
 ```mermaid
