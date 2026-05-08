@@ -35,15 +35,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var_val = (v.x + v.y + v.z) / 3.0; // Average luminance variance
     }
 
+    let min_spp = min(params.min_spp, params.max_spp);
+
+    // Do not classify a pixel from only a handful of samples. Early variance
+    // estimates are noisy enough that they can freeze visible noise into place.
+    if data.count < min_spp {
+        sample_map[pixel_id] = params.max_spp;
+        return;
+    }
+
     // Map variance to a per-pixel SPP cap. At the threshold we allocate a small
     // extra budget; by 10x threshold the pixel receives the configured max.
-    let span = params.max_spp - min(params.min_spp, params.max_spp);
+    let span = params.max_spp - min_spp;
     let severity = clamp(var_val / max(params.variance_threshold * 10.0, 1e-6), 0.0, 1.0);
-    var spp = params.min_spp + u32(round(severity * f32(span)));
+    var spp = min_spp + u32(round(severity * f32(span)));
 
-    // Never move a pixel's cap below samples already observed. Otherwise a late
-    // allocation update can make the renderer look like it "finished" suddenly.
-    spp = max(spp, data.count);
+    // Keep giving "quiet" pixels a small rolling budget. This preserves the
+    // speed benefit of adaptive sampling without permanently locking in an
+    // unlucky low-variance estimate.
+    let refinement_budget = max(8u, min(min_spp / 2u, 64u));
+    spp = max(spp, data.count + refinement_budget);
 
     sample_map[pixel_id] = min(spp, params.max_spp);
 }

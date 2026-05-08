@@ -12,23 +12,23 @@
 //! - shell.rs: OS shell operations
 //! - helpers.rs: utility functions
 
-mod state;
-mod toolbar;
-mod status_bar;
-mod settings;
-mod tree_panel;
-mod ext_panel;
-mod treemap_view;
 mod dock;
+mod ext_panel;
 pub mod filters;
-mod shell;
 pub mod helpers;
 pub mod presets;
+mod settings;
+mod shell;
+mod state;
+mod status_bar;
+mod toolbar;
+mod tree_panel;
+mod treemap_view;
 // render_callback module removed - using egui native texture display
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use eframe::egui;
 use egui_dock::DockArea;
@@ -36,40 +36,41 @@ use log::info;
 
 use crate::cache;
 use crate::events::{
-    downcast, NavigateIntoEvent, NavigateUpEvent, ZoomResetEvent,
-    SelectPathEvent, SettingsChangedEvent, LayoutDirtyEvent, RenderTick3DEvent,
+    downcast, LayoutDirtyEvent, NavigateIntoEvent, NavigateUpEvent, RenderTick3DEvent,
+    SelectPathEvent, SettingsChangedEvent, ZoomResetEvent,
 };
 use crate::exclusions;
-use crate::renderer::{
-    self, HashTransformEffect,
-    RenderBackend, RenderMode,
-};
-use render_core::gpu::GpuContext;
-use treemap::GpuRenderer2D;
-use render_3d::Renderer3D;
+use crate::renderer::{self, HashTransformEffect, RenderBackend, RenderMode};
 use crate::scanner::{self, ScanMsg};
-use dirstat_core::DirEntry;
 #[cfg(windows)]
 use crate::scanner_ntfs;
+use dirstat_core::DirEntry;
+use render_3d::Renderer3D;
+use render_core::gpu::GpuContext;
+use treemap::GpuRenderer2D;
 use treemap::{self, LayoutStyle};
 
-pub use state::{App, ScannerMode};
 pub use dock::{DockTab, DockTabs};
+pub use state::{App, ScannerMode};
 // Render3DResources removed - using egui native texture display
-use state::{PersistState, SavedOpts, ScanProgress};
-use helpers::{fmt_size, compute_ext_stats, compute_size_range, find_node_by_path};
 use filters::{
     collect_matching_paths, filter_by_extension, filter_by_mask, filter_excluded, filter_tree,
     merge_tree_by_size_range,
 };
+use helpers::{compute_ext_stats, compute_size_range, find_node_by_path, fmt_size};
+use state::{PersistState, SavedOpts, ScanProgress};
 
 impl App {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        cli: crate::CliOptions,
-    ) -> Self {
-        let default_path = if cfg!(windows) { "C:\\".to_string() } else { "/".to_string() };
-        let mut app = Self { scan_path: default_path, ..Default::default() };
+    pub fn new(cc: &eframe::CreationContext<'_>, cli: crate::CliOptions) -> Self {
+        let default_path = if cfg!(windows) {
+            "C:\\".to_string()
+        } else {
+            "/".to_string()
+        };
+        let mut app = Self {
+            scan_path: default_path,
+            ..Default::default()
+        };
 
         // Restore persisted state
         if let Some(storage) = cc.storage {
@@ -112,88 +113,239 @@ impl App {
         }
 
         // CLI overrides for mode/backend
-        if let Some(mode) = cli.mode { app.render_mode = mode; }
-        if let Some(backend) = cli.backend { app.render_backend = backend; }
+        if let Some(mode) = cli.mode {
+            app.render_mode = mode;
+        }
+        if let Some(backend) = cli.backend {
+            app.render_backend = backend;
+        }
 
         // CLI render settings
-        if let Some(pt) = cli.path_tracing { app.render_3d_opts.path_tracing = pt; }
-        if let Some(wf) = cli.wavefront { app.render_3d_opts.pt_wavefront = wf; }
-        if let Some(t) = cli.pt_wavefront_tile_size { app.render_3d_opts.pt_wavefront_tile_size = t; }
-        if let Some(b) = cli.pt_max_bounces { app.render_3d_opts.pt_max_bounces = b; }
-        if let Some(s) = cli.pt_max_samples { app.render_3d_opts.pt_max_samples = s; }
-        if let Some(g) = cli.pt_gpu_bvh { app.render_3d_opts.pt_gpu_bvh = g; }
-        if let Some(pg) = cli.pt_path_guiding { app.render_3d_opts.pt_path_guiding = pg; }
-        if let Some(di) = cli.pt_restir_di { app.render_3d_opts.pt_restir_di = di; }
-        if let Some(gi) = cli.pt_restir_gi { app.render_3d_opts.pt_restir_gi = gi; }
-        if let Some(ad) = cli.pt_adaptive_sampling { app.render_3d_opts.pt_adaptive_sampling = ad; }
-        if let Some(e) = cli.env_map_enabled { app.render_3d_opts.env_map_enabled = e; }
-        if let Some(w) = cli.wireframe { app.render_3d_opts.show_wireframe = w; }
-        if let Some(a) = cli.animate { app.render_3d_opts.animate = a; }
-        if let Some(mode) = cli.height_mode { app.render_3d_opts.height_mode = mode; }
+        if let Some(pt) = cli.path_tracing {
+            app.render_3d_opts.path_tracing = pt;
+        }
+        if let Some(wf) = cli.wavefront {
+            app.render_3d_opts.pt_wavefront = wf;
+        }
+        if let Some(t) = cli.pt_wavefront_tile_size {
+            app.render_3d_opts.pt_wavefront_tile_size = t;
+        }
+        if let Some(b) = cli.pt_max_bounces {
+            app.render_3d_opts.pt_max_bounces = b;
+        }
+        if let Some(s) = cli.pt_max_samples {
+            app.render_3d_opts.pt_max_samples = s;
+        }
+        if let Some(g) = cli.pt_gpu_bvh {
+            app.render_3d_opts.pt_gpu_bvh = g;
+        }
+        if let Some(pg) = cli.pt_path_guiding {
+            app.render_3d_opts.pt_path_guiding = pg;
+        }
+        if let Some(di) = cli.pt_restir_di {
+            app.render_3d_opts.pt_restir_di = di;
+        }
+        if let Some(gi) = cli.pt_restir_gi {
+            app.render_3d_opts.pt_restir_gi = gi;
+        }
+        if let Some(ad) = cli.pt_adaptive_sampling {
+            app.render_3d_opts.pt_adaptive_sampling = ad;
+        }
+        if let Some(e) = cli.env_map_enabled {
+            app.render_3d_opts.env_map_enabled = e;
+        }
+        if let Some(w) = cli.wireframe {
+            app.render_3d_opts.show_wireframe = w;
+        }
+        if let Some(a) = cli.animate {
+            app.render_3d_opts.animate = a;
+        }
+        if let Some(mode) = cli.height_mode {
+            app.render_3d_opts.height_mode = mode;
+        }
         if let Some(sq) = cli.height_squared {
             app.render_3d_opts.height_power_enabled = sq;
-            if sq { app.render_3d_opts.height_power = 2.0; }
+            if sq {
+                app.render_3d_opts.height_power = 2.0;
+            }
         }
-        if let Some(scale) = cli.height_scale { app.render_3d_opts.height_scale = scale; }
-        if let Some(mode) = cli.color_mode { app.render_3d_opts.color_mode = mode; }
-        if let Some(effect) = cli.hash_effect { app.render_3d_opts.hash_effect = effect; }
-        if let Some(strength) = cli.hash_effect_strength { app.render_3d_opts.hash_effect_strength = strength; }
-        if let Some(time) = cli.animation_time { app.render_3d_opts.animation_time = time; }
-        if let Some(speed) = cli.animation_speed { app.render_3d_opts.animation_speed = speed; }
-        if let Some(mode) = cli.hover_mode { app.render_3d_opts.hover_mode = mode; }
-        if let Some(width) = cli.hover_outline_width { app.render_3d_opts.hover_outline_width = width; }
-        if let Some(alpha) = cli.hover_outline_alpha { app.render_3d_opts.hover_outline_alpha = alpha; }
-        if let Some(roughness) = cli.roughness { app.render_3d_opts.roughness = roughness; }
-        if let Some(metalness) = cli.metalness { app.render_3d_opts.metalness = metalness; }
-        if let Some(ior) = cli.specular_ior { app.render_3d_opts.specular_ior = ior; }
-        if let Some(alpha) = cli.xray_alpha { app.render_3d_opts.xray_alpha = alpha; }
-        if let Some(flat) = cli.flat_shading { app.render_3d_opts.flat_shading = flat; }
-        if let Some(double_sided) = cli.double_sided { app.render_3d_opts.double_sided = double_sided; }
-        if let Some(mode) = cli.materialize_mode { app.render_3d_opts.materialize_mode = mode; }
-        if let Some(allow) = cli.mat_allow_lights { app.render_3d_opts.mat_allow_lights = allow; }
-        if let Some(prob) = cli.mat_light_prob { app.render_3d_opts.mat_light_prob = prob; }
-        if let Some(allow) = cli.mat_allow_glass { app.render_3d_opts.mat_allow_glass = allow; }
-        if let Some(prob) = cli.mat_glass_prob { app.render_3d_opts.mat_glass_prob = prob; }
-        if let Some(intensity) = cli.env_map_intensity { app.render_3d_opts.env_map_intensity = intensity; }
-        if let Some(rotation) = cli.env_map_rotation { app.render_3d_opts.env_map_rotation = rotation.to_radians(); }
-        if let Some(visible) = cli.env_map_visible { app.render_3d_opts.env_map_visible = visible; }
-        if let Some(path) = cli.env_map_path { app.render_3d_opts.env_map_path = Some(PathBuf::from(path)); }
-        if let Some(anim) = cli.env_animate { app.render_3d_opts.env_animate = anim; }
-        if let Some(speed) = cli.env_speed { app.render_3d_opts.env_speed = speed; }
-        if let Some(color) = cli.background_color { app.render_3d_opts.background_color = color; }
-        if let Some(samples) = cli.pt_samples_per_update { app.render_3d_opts.pt_samples_per_update = samples; }
-        if let Some(depth) = cli.pt_max_transmission_depth { app.render_3d_opts.pt_max_transmission_depth = depth; }
-        if let Some(enabled) = cli.pt_dof_enabled { app.render_3d_opts.pt_dof_enabled = enabled; }
-        if let Some(aperture) = cli.pt_aperture { app.render_3d_opts.pt_aperture = aperture; }
-        if let Some(distance) = cli.pt_focus_distance { app.render_3d_opts.pt_focus_distance = distance; }
-        if let Some(enabled) = cli.pt_env_importance_sampling { app.render_3d_opts.pt_env_importance_sampling = enabled; }
-        if let Some(fps) = cli.pt_target_fps { app.render_3d_opts.pt_target_fps = fps; }
-        if let Some(enabled) = cli.pt_auto_spp { app.render_3d_opts.pt_auto_spp = enabled; }
-        if let Some(enabled) = cli.pt_camera_snap { app.render_3d_opts.pt_camera_snap = enabled; }
-        if let Some(mode) = cli.pt_spectral_mode { app.render_3d_opts.pt_spectral_mode = mode; }
-        if let Some(samples) = cli.pt_spectral_samples { app.render_3d_opts.pt_spectral_samples = samples; }
-        if let Some(enabled) = cli.pt_spectral_dispersion { app.render_3d_opts.pt_spectral_dispersion = enabled; }
-        if let Some(enabled) = cli.pt_bvh_refit { app.render_3d_opts.pt_bvh_refit = enabled; }
-        if let Some(enabled) = cli.pt_russian_roulette { app.render_3d_opts.pt_russian_roulette = enabled; }
-        if let Some(enabled) = cli.pt_restir_temporal { app.render_3d_opts.pt_restir_temporal = enabled; }
-        if let Some(enabled) = cli.pt_restir_spatial { app.render_3d_opts.pt_restir_spatial = enabled; }
-        if let Some(mmax) = cli.pt_restir_m_max { app.render_3d_opts.pt_restir_m_max = mmax; }
-        if let Some(res) = cli.pt_svo_resolution { app.render_3d_opts.pt_svo_resolution = res; }
-        if let Some(enabled) = cli.slice_enabled { app.render_3d_opts.slice_enabled = enabled; }
-        if let Some(axis) = cli.slice_axis { app.render_3d_opts.slice_axis = axis; }
-        if let Some(pos) = cli.slice_position { app.render_3d_opts.slice_position = pos; }
-        if let Some(pos) = cli.slice_position_vector { app.render_3d_opts.slice_position_vector = pos; }
-        if let Some(invert) = cli.slice_invert { app.render_3d_opts.slice_invert = invert; }
-        if let Some(use_vector) = cli.slice_use_vector { app.render_3d_opts.slice_use_vector = use_vector; }
-        if let Some(normal) = cli.slice_normal { app.render_3d_opts.slice_normal = normal; }
-        if let Some(enabled) = cli.lod_enabled { app.render_3d_opts.lod_enabled = enabled; }
-        if let Some(size) = cli.lod_min_screen_size { app.render_3d_opts.lod_min_screen_size = size; }
-        if let Some(enabled) = cli.inertia_enabled { app.render_3d_opts.inertia_enabled = enabled; }
-        if let Some(friction) = cli.inertia_friction { app.render_3d_opts.inertia_friction = friction; }
-        if let Some(cutoff) = cli.inertia_cutoff { app.render_3d_opts.inertia_cutoff = cutoff; }
+        if let Some(scale) = cli.height_scale {
+            app.render_3d_opts.height_scale = scale;
+        }
+        if let Some(mode) = cli.color_mode {
+            app.render_3d_opts.color_mode = mode;
+        }
+        if let Some(effect) = cli.hash_effect {
+            app.render_3d_opts.hash_effect = effect;
+        }
+        if let Some(strength) = cli.hash_effect_strength {
+            app.render_3d_opts.hash_effect_strength = strength;
+        }
+        if let Some(time) = cli.animation_time {
+            app.render_3d_opts.animation_time = time;
+        }
+        if let Some(speed) = cli.animation_speed {
+            app.render_3d_opts.animation_speed = speed;
+        }
+        if let Some(mode) = cli.hover_mode {
+            app.render_3d_opts.hover_mode = mode;
+        }
+        if let Some(width) = cli.hover_outline_width {
+            app.render_3d_opts.hover_outline_width = width;
+        }
+        if let Some(alpha) = cli.hover_outline_alpha {
+            app.render_3d_opts.hover_outline_alpha = alpha;
+        }
+        if let Some(roughness) = cli.roughness {
+            app.render_3d_opts.roughness = roughness;
+        }
+        if let Some(metalness) = cli.metalness {
+            app.render_3d_opts.metalness = metalness;
+        }
+        if let Some(ior) = cli.specular_ior {
+            app.render_3d_opts.specular_ior = ior;
+        }
+        if let Some(alpha) = cli.xray_alpha {
+            app.render_3d_opts.xray_alpha = alpha;
+        }
+        if let Some(flat) = cli.flat_shading {
+            app.render_3d_opts.flat_shading = flat;
+        }
+        if let Some(double_sided) = cli.double_sided {
+            app.render_3d_opts.double_sided = double_sided;
+        }
+        if let Some(mode) = cli.materialize_mode {
+            app.render_3d_opts.materialize_mode = mode;
+        }
+        if let Some(allow) = cli.mat_allow_lights {
+            app.render_3d_opts.mat_allow_lights = allow;
+        }
+        if let Some(prob) = cli.mat_light_prob {
+            app.render_3d_opts.mat_light_prob = prob;
+        }
+        if let Some(allow) = cli.mat_allow_glass {
+            app.render_3d_opts.mat_allow_glass = allow;
+        }
+        if let Some(prob) = cli.mat_glass_prob {
+            app.render_3d_opts.mat_glass_prob = prob;
+        }
+        if let Some(intensity) = cli.env_map_intensity {
+            app.render_3d_opts.env_map_intensity = intensity;
+        }
+        if let Some(rotation) = cli.env_map_rotation {
+            app.render_3d_opts.env_map_rotation = rotation.to_radians();
+        }
+        if let Some(visible) = cli.env_map_visible {
+            app.render_3d_opts.env_map_visible = visible;
+        }
+        if let Some(path) = cli.env_map_path {
+            app.render_3d_opts.env_map_path = Some(PathBuf::from(path));
+        }
+        if let Some(anim) = cli.env_animate {
+            app.render_3d_opts.env_animate = anim;
+        }
+        if let Some(speed) = cli.env_speed {
+            app.render_3d_opts.env_speed = speed;
+        }
+        if let Some(color) = cli.background_color {
+            app.render_3d_opts.background_color = color;
+        }
+        if let Some(samples) = cli.pt_samples_per_update {
+            app.render_3d_opts.pt_samples_per_update = samples;
+        }
+        if let Some(depth) = cli.pt_max_transmission_depth {
+            app.render_3d_opts.pt_max_transmission_depth = depth;
+        }
+        if let Some(enabled) = cli.pt_dof_enabled {
+            app.render_3d_opts.pt_dof_enabled = enabled;
+        }
+        if let Some(aperture) = cli.pt_aperture {
+            app.render_3d_opts.pt_aperture = aperture;
+        }
+        if let Some(distance) = cli.pt_focus_distance {
+            app.render_3d_opts.pt_focus_distance = distance;
+        }
+        if let Some(enabled) = cli.pt_env_importance_sampling {
+            app.render_3d_opts.pt_env_importance_sampling = enabled;
+        }
+        if let Some(fps) = cli.pt_target_fps {
+            app.render_3d_opts.pt_target_fps = fps;
+        }
+        if let Some(enabled) = cli.pt_auto_spp {
+            app.render_3d_opts.pt_auto_spp = enabled;
+        }
+        if let Some(enabled) = cli.pt_camera_snap {
+            app.render_3d_opts.pt_camera_snap = enabled;
+        }
+        if let Some(mode) = cli.pt_spectral_mode {
+            app.render_3d_opts.pt_spectral_mode = mode;
+        }
+        if let Some(samples) = cli.pt_spectral_samples {
+            app.render_3d_opts.pt_spectral_samples = samples;
+        }
+        if let Some(enabled) = cli.pt_spectral_dispersion {
+            app.render_3d_opts.pt_spectral_dispersion = enabled;
+        }
+        if let Some(enabled) = cli.pt_bvh_refit {
+            app.render_3d_opts.pt_bvh_refit = enabled;
+        }
+        if let Some(enabled) = cli.pt_russian_roulette {
+            app.render_3d_opts.pt_russian_roulette = enabled;
+        }
+        if let Some(enabled) = cli.pt_restir_temporal {
+            app.render_3d_opts.pt_restir_temporal = enabled;
+        }
+        if let Some(enabled) = cli.pt_restir_spatial {
+            app.render_3d_opts.pt_restir_spatial = enabled;
+        }
+        if let Some(mmax) = cli.pt_restir_m_max {
+            app.render_3d_opts.pt_restir_m_max = mmax;
+        }
+        if let Some(res) = cli.pt_svo_resolution {
+            app.render_3d_opts.pt_svo_resolution = res;
+        }
+        if let Some(enabled) = cli.slice_enabled {
+            app.render_3d_opts.slice_enabled = enabled;
+        }
+        if let Some(axis) = cli.slice_axis {
+            app.render_3d_opts.slice_axis = axis;
+        }
+        if let Some(pos) = cli.slice_position {
+            app.render_3d_opts.slice_position = pos;
+        }
+        if let Some(pos) = cli.slice_position_vector {
+            app.render_3d_opts.slice_position_vector = pos;
+        }
+        if let Some(invert) = cli.slice_invert {
+            app.render_3d_opts.slice_invert = invert;
+        }
+        if let Some(use_vector) = cli.slice_use_vector {
+            app.render_3d_opts.slice_use_vector = use_vector;
+        }
+        if let Some(normal) = cli.slice_normal {
+            app.render_3d_opts.slice_normal = normal;
+        }
+        if let Some(enabled) = cli.lod_enabled {
+            app.render_3d_opts.lod_enabled = enabled;
+        }
+        if let Some(size) = cli.lod_min_screen_size {
+            app.render_3d_opts.lod_min_screen_size = size;
+        }
+        if let Some(enabled) = cli.inertia_enabled {
+            app.render_3d_opts.inertia_enabled = enabled;
+        }
+        if let Some(friction) = cli.inertia_friction {
+            app.render_3d_opts.inertia_friction = friction;
+        }
+        if let Some(cutoff) = cli.inertia_cutoff {
+            app.render_3d_opts.inertia_cutoff = cutoff;
+        }
 
         // Post-CLI migrations for derived settings
-        if matches!(app.render_3d_opts.height_mode, renderer::CubeHeightMode::DepthSquared) {
+        if matches!(
+            app.render_3d_opts.height_mode,
+            renderer::CubeHeightMode::DepthSquared
+        ) {
             app.render_3d_opts.height_mode = renderer::CubeHeightMode::Depth;
             app.render_3d_opts.height_power_enabled = true;
             app.render_3d_opts.height_power = 2.0;
@@ -238,10 +390,12 @@ impl App {
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
             app.wgpu_render_state = Some(render_state.clone());
             let error_flag = app.wgpu_error_flag.clone();
-            render_state.device.on_uncaptured_error(Arc::new(move |err| {
-                log::error!("wgpu uncaptured error: {:?}", err);
-                error_flag.store(true, Ordering::SeqCst);
-            }));
+            render_state
+                .device
+                .on_uncaptured_error(Arc::new(move |err| {
+                    log::error!("wgpu uncaptured error: {:?}", err);
+                    error_flag.store(true, Ordering::SeqCst);
+                }));
             let limits = render_state.device.limits();
             log::info!(
                 "wgpu limits: max_storage_buffer_binding_size={}, max_storage_buffers_per_shader_stage={}, max_uniform_buffers_per_shader_stage={}, max_bind_groups={}, max_texture_dimension_2d={}, max_buffer_size={}, min_uniform_buffer_offset_alignment={}, min_storage_buffer_offset_alignment={}",
@@ -254,7 +408,10 @@ impl App {
                 limits.min_uniform_buffer_offset_alignment,
                 limits.min_storage_buffer_offset_alignment
             );
-            let has_polygon_mode = render_state.device.features().contains(wgpu::Features::POLYGON_MODE_LINE);
+            let has_polygon_mode = render_state
+                .device
+                .features()
+                .contains(wgpu::Features::POLYGON_MODE_LINE);
             if has_polygon_mode {
                 // Use eframe's device for zero-copy
                 let gpu_ctx = GpuContext::from_eframe(
@@ -266,7 +423,7 @@ impl App {
             } else {
                 log::warn!("eframe device lacks POLYGON_MODE_LINE, will create separate device");
             }
-            
+
             // Note: using egui native texture display, no callback resources needed
         }
 
@@ -342,7 +499,9 @@ impl App {
         self.treemap_tex = None;
         self.hovered = None;
         self.selected_path = None;
-        if self.tree.is_none() { self.expanded.clear(); }
+        if self.tree.is_none() {
+            self.expanded.clear();
+        }
         self.ctx_menu_path = None;
         let scan_engine_label = Self::scan_engine_label_for_mode(self.scanner_mode, &path);
         self.progress = ScanProgress {
@@ -363,7 +522,9 @@ impl App {
                     }
                 }
                 #[cfg(not(windows))]
-                { scanner::scan_bg(path, tx) }
+                {
+                    scanner::scan_bg(path, tx)
+                }
             }
             ScannerMode::Standard => scanner::scan_bg(path, tx),
         };
@@ -387,7 +548,12 @@ impl App {
 
         for msg in messages {
             match msg {
-                ScanMsg::Progress { files, dirs, bytes, errors } => {
+                ScanMsg::Progress {
+                    files,
+                    dirs,
+                    bytes,
+                    errors,
+                } => {
                     self.progress.files = files;
                     self.progress.dirs = dirs;
                     self.progress.bytes = bytes;
@@ -441,7 +607,8 @@ impl App {
                 ScanMsg::NtfsFallback(msg) => {
                     self.scanner_mode = ScannerMode::Standard;
                     self.progress.scan_engine_label = Some("jwalk (NTFS fallback)".to_string());
-                    self.progress.error = Some(format!("NTFS failed ({}), using standard scanner", msg));
+                    self.progress.error =
+                        Some(format!("NTFS failed ({}), using standard scanner", msg));
                 }
                 ScanMsg::Error(e) => {
                     self.progress.scanning = false;
@@ -467,24 +634,18 @@ impl App {
         for event in self.events.poll() {
             if let Some(e) = downcast::<NavigateIntoEvent>(&event) {
                 self.nav_to(e.0.clone());
-            }
-            else if downcast::<NavigateUpEvent>(&event).is_some() {
+            } else if downcast::<NavigateUpEvent>(&event).is_some() {
                 self.zoom_up();
-            }
-            else if downcast::<ZoomResetEvent>(&event).is_some() {
+            } else if downcast::<ZoomResetEvent>(&event).is_some() {
                 self.zoom_reset();
-            }
-            else if let Some(e) = downcast::<SelectPathEvent>(&event) {
+            } else if let Some(e) = downcast::<SelectPathEvent>(&event) {
                 self.select(e.0.clone());
-            }
-            else if downcast::<SettingsChangedEvent>(&event).is_some() {
+            } else if downcast::<SettingsChangedEvent>(&event).is_some() {
                 self.needs_layout = true;
                 ctx.request_repaint();
-            }
-            else if downcast::<LayoutDirtyEvent>(&event).is_some() {
+            } else if downcast::<LayoutDirtyEvent>(&event).is_some() {
                 self.needs_layout = true;
-            }
-            else if downcast::<RenderTick3DEvent>(&event).is_some() {
+            } else if downcast::<RenderTick3DEvent>(&event).is_some() {
                 self.render_tick_3d = true;
             }
         }
@@ -529,14 +690,19 @@ impl App {
         }
 
         let tree = self.active_tree_cloned_path();
-        let Some((_tree_path, zoom_root_path)) = tree else { return };
-        if *target == zoom_root_path { return; }
+        let Some((_tree_path, zoom_root_path)) = tree else {
+            return;
+        };
+        if *target == zoom_root_path {
+            return;
+        }
 
         let next = self.active_tree().and_then(|t| {
             let root = find_node_by_path(t, &zoom_root_path).unwrap_or(t);
-            root.children.iter().find(|c| {
-                c.is_dir && (c.path == *target || target.starts_with(&c.path))
-            }).map(|c| c.path.clone())
+            root.children
+                .iter()
+                .find(|c| c.is_dir && (c.path == *target || target.starts_with(&c.path)))
+                .map(|c| c.path.clone())
         });
 
         if let Some(next_path) = next {
@@ -644,16 +810,19 @@ impl App {
             Vec::new()
         };
 
-        let ext_filter: std::collections::HashSet<String> = self.ext_filter
-            .iter()
-            .map(|e| e.to_lowercase())
-            .collect();
+        let ext_filter: std::collections::HashSet<String> =
+            self.ext_filter.iter().map(|e| e.to_lowercase()).collect();
 
         let has_exclusions = !self.exclusions.is_empty();
         let has_masks = !masks.is_empty();
         let has_ext_filter = !ext_filter.is_empty();
 
-        if !self.show_free_space && !has_exclusions && !has_masks && !has_ext_filter && self.zoom_path.is_none() {
+        if !self.show_free_space
+            && !has_exclusions
+            && !has_masks
+            && !has_ext_filter
+            && self.zoom_path.is_none()
+        {
             self.display_tree_cache = None;
             return;
         }
@@ -778,7 +947,8 @@ impl App {
     /// Sync dock tabs visibility with settings visibility flag.
     /// Rebuilds dock_state if visibility changed.
     fn sync_dock_tabs_visibility(&mut self) {
-        let current_tabs: Vec<dock::DockTab> = self.dock_state
+        let current_tabs: Vec<dock::DockTab> = self
+            .dock_state
             .iter_all_tabs()
             .map(|(_, tab)| tab.clone())
             .collect();
@@ -792,7 +962,9 @@ impl App {
 
     fn render_treemap(&mut self, ctx: &egui::Context, size: (u32, u32)) {
         let (w, h) = size;
-        if w == 0 || h == 0 { return; }
+        if w == 0 || h == 0 {
+            return;
+        }
 
         let t0 = std::time::Instant::now();
 
@@ -802,7 +974,8 @@ impl App {
         // GPU context should already be initialized from eframe in App::new()
         // Fallback to creating our own if not available
         let needs_gpu = self.render_mode == RenderMode::Mode3D
-            || (self.render_mode == RenderMode::Mode2D && self.render_backend == RenderBackend::Gpu);
+            || (self.render_mode == RenderMode::Mode2D
+                && self.render_backend == RenderBackend::Gpu);
 
         if needs_gpu && self.gpu_context.is_none() {
             self.gpu_context = GpuContext::new().map(Arc::new);
@@ -825,7 +998,8 @@ impl App {
                 }
             }
             if self.orbit_camera.target == glam::Vec3::ZERO {
-                let (scene_w, scene_h) = self.renderer_3d
+                let (scene_w, scene_h) = self
+                    .renderer_3d
                     .as_ref()
                     .map(|r| r.current_scene_layout_size())
                     .unwrap_or((w, h));
@@ -837,12 +1011,14 @@ impl App {
             }
         }
 
-        if self.render_mode == RenderMode::Mode2D && self.render_backend == RenderBackend::Gpu
-            && self.renderer_2d_gpu.is_none() {
-                if let Some(gpu_ctx) = &self.gpu_context {
-                    self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
-                }
+        if self.render_mode == RenderMode::Mode2D
+            && self.render_backend == RenderBackend::Gpu
+            && self.renderer_2d_gpu.is_none()
+        {
+            if let Some(gpu_ctx) = &self.gpu_context {
+                self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
             }
+        }
 
         // TODO: Zero-copy rendering requires using eframe's device for all rendering
         // For now, this is disabled because textures can't be shared between devices
@@ -850,36 +1026,36 @@ impl App {
 
         // Legacy path with CPU readback
         let pixels = match self.render_mode {
-            RenderMode::Mode2D => {
-                match self.render_backend {
-                    RenderBackend::Cpu => {
-                        let Some(root) = self.display_root() else { return };
-                        renderer::cpu::render(root, &self.viewport, &self.opts)
-                    }
-                    RenderBackend::Gpu => {
-                        let mut renderer_2d = self.renderer_2d_gpu.take();
-                        let pixels = if let Some(r) = &mut renderer_2d {
-                            let Some(root) = self.display_root() else {
-                                self.renderer_2d_gpu = renderer_2d;
-                                return;
-                            };
-                            r.render(root, &self.viewport, &self.opts)
-                        } else {
-                            let Some(root) = self.display_root() else {
-                                self.renderer_2d_gpu = renderer_2d;
-                                return;
-                            };
-                            renderer::cpu::render(root, &self.viewport, &self.opts)
-                        };
-                        self.renderer_2d_gpu = renderer_2d;
-                        pixels
-                    }
+            RenderMode::Mode2D => match self.render_backend {
+                RenderBackend::Cpu => {
+                    let Some(root) = self.display_root() else {
+                        return;
+                    };
+                    renderer::cpu::render(root, &self.viewport, &self.opts)
                 }
-            }
+                RenderBackend::Gpu => {
+                    let mut renderer_2d = self.renderer_2d_gpu.take();
+                    let pixels = if let Some(r) = &mut renderer_2d {
+                        let Some(root) = self.display_root() else {
+                            self.renderer_2d_gpu = renderer_2d;
+                            return;
+                        };
+                        r.render(root, &self.viewport, &self.opts)
+                    } else {
+                        let Some(root) = self.display_root() else {
+                            self.renderer_2d_gpu = renderer_2d;
+                            return;
+                        };
+                        renderer::cpu::render(root, &self.viewport, &self.opts)
+                    };
+                    self.renderer_2d_gpu = renderer_2d;
+                    pixels
+                }
+            },
             RenderMode::Mode3D => {
                 // TODO: Zero-copy path disabled - needs double-buffering to avoid blocking
                 // Currently causes "Not Responding" due to GPU sync issues
-                
+
                 // Legacy CPU readback path (slower but stable)
                 let mut renderer_3d = self.renderer_3d.take();
                 let pixels = if let Some(r) = &mut renderer_3d {
@@ -887,7 +1063,14 @@ impl App {
                         self.renderer_3d = renderer_3d;
                         return;
                     };
-                    r.render(root, w, h, &self.orbit_camera, &self.render_3d_opts, &self.opts)
+                    r.render(
+                        root,
+                        w,
+                        h,
+                        &self.orbit_camera,
+                        &self.render_3d_opts,
+                        &self.opts,
+                    )
                 } else {
                     let Some(root) = self.display_root() else {
                         self.renderer_3d = renderer_3d;
@@ -907,12 +1090,19 @@ impl App {
 
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let samples_per_frame = if self.render_3d_opts.path_tracing {
-            self.renderer_3d.as_ref().map(|r| r.pt_samples_per_update()).unwrap_or(0)
+            self.renderer_3d
+                .as_ref()
+                .map(|r| r.pt_samples_per_update())
+                .unwrap_or(0)
         } else {
             0
         };
         self.last_frame_ms = total_ms as f32;
-        self.last_fps = if total_ms > 0.0 { (1000.0 / total_ms) as f32 } else { 0.0 };
+        self.last_fps = if total_ms > 0.0 {
+            (1000.0 / total_ms) as f32
+        } else {
+            0.0
+        };
         self.last_samples_per_frame = samples_per_frame;
         self.last_samples_per_sec = if samples_per_frame > 0 && total_ms > 0.0 {
             samples_per_frame as f32 / (total_ms as f32 / 1000.0)
@@ -923,9 +1113,15 @@ impl App {
 
     /// Handle automated screenshot capture
     fn handle_screenshot(&mut self, ctx: &egui::Context) {
-        if self.screenshot_taken { return; }
-        let Some(delay) = self.screenshot_delay else { return; };
-        let Some(start) = self.screenshot_start_time else { return; };
+        if self.screenshot_taken {
+            return;
+        }
+        let Some(delay) = self.screenshot_delay else {
+            return;
+        };
+        let Some(start) = self.screenshot_start_time else {
+            return;
+        };
 
         let elapsed = start.elapsed().as_secs_f32();
         if elapsed < delay {
@@ -936,11 +1132,12 @@ impl App {
         // Time to take screenshot
         self.screenshot_taken = true;
 
-        let path = self.screenshot_path.clone()
-            .unwrap_or_else(|| {
-                let temp = std::env::temp_dir();
-                temp.join("dirstat_screenshot.png").to_string_lossy().to_string()
-            });
+        let path = self.screenshot_path.clone().unwrap_or_else(|| {
+            let temp = std::env::temp_dir();
+            temp.join("dirstat_screenshot.png")
+                .to_string_lossy()
+                .to_string()
+        });
 
         // Re-render to capture latest state
         let (w, h) = self.last_render_size;
@@ -1012,7 +1209,9 @@ impl App {
                     // Safe: root lives in self for duration of this call.
                     let root = unsafe { &*root_ptr };
                     r.render_to_view(
-                        root, w, h,
+                        root,
+                        w,
+                        h,
                         &self.orbit_camera,
                         &self.render_3d_opts,
                         &self.opts,
@@ -1035,7 +1234,9 @@ impl App {
                 r3d.reset_render_targets();
                 r3d.reset_path_tracer();
             }
-            if let (Some(render_state), Some(id)) = (&self.wgpu_render_state, self.render_texture_id) {
+            if let (Some(render_state), Some(id)) =
+                (&self.wgpu_render_state, self.render_texture_id)
+            {
                 let mut renderer = render_state.renderer.write();
                 renderer.free_texture(&id);
             }
@@ -1115,10 +1316,13 @@ impl App {
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.show_search = !self.show_search;
         }
-        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::F5))
-            && !self.progress.scanning && !self.scan_path.is_empty() {
-                self.start_scan();
-            }
+        if kb_ok
+            && ctx.input(|i| i.key_pressed(egui::Key::F5))
+            && !self.progress.scanning
+            && !self.scan_path.is_empty()
+        {
+            self.start_scan();
+        }
         if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::N)) {
             self.selected_path = None;
             self.selected_3d_ids.clear();
@@ -1126,21 +1330,23 @@ impl App {
             ctx.request_repaint();
         }
         // Space: toggle animation in 3D mode
-        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Space))
-            && self.render_mode == RenderMode::Mode3D {
-                self.render_3d_opts.animate = !self.render_3d_opts.animate;
-                self.needs_layout = true;
-            }
+        if kb_ok
+            && ctx.input(|i| i.key_pressed(egui::Key::Space))
+            && self.render_mode == RenderMode::Mode3D
+        {
+            self.render_3d_opts.animate = !self.render_3d_opts.animate;
+            self.needs_layout = true;
+        }
 
         // Window title
         let title = if let Some(tree) = &self.tree {
-            format!("dirstat-rs  -  {} [{}]", self.scan_path, fmt_size(tree.size))
+            format!(
+                "dirstat-rs  -  {} [{}]",
+                self.scan_path,
+                fmt_size(tree.size)
+            )
         } else if self.progress.scanning {
-            let engine = self
-                .progress
-                .scan_engine_label
-                .as_deref()
-                .unwrap_or("…");
+            let engine = self.progress.scan_engine_label.as_deref().unwrap_or("…");
             format!("dirstat-rs  -  [{}] {}…", engine, self.scan_path)
         } else {
             "dirstat-rs".to_string()
@@ -1179,14 +1385,16 @@ impl App {
 
             // Update camera inertia
             if self.render_3d_opts.inertia_enabled
-                && allow_anim_tick && self.orbit_camera.update_inertia(
+                && allow_anim_tick
+                && self.orbit_camera.update_inertia(
                     dt,
                     self.render_3d_opts.inertia_friction,
                     self.render_3d_opts.inertia_cutoff,
-                ) {
-                    self.needs_render_3d = true;
-                    ctx.request_repaint();
-                }
+                )
+            {
+                self.needs_render_3d = true;
+                ctx.request_repaint();
+            }
 
             // Request repaint for 3D mode when animation or path tracing is active
             // Note: PT mode needs repaint but NOT needs_layout (that triggers geometry rebuild)
@@ -1198,9 +1406,9 @@ impl App {
                     ctx.request_repaint(); // PT accumulates samples continuously
                 }
             } else if (!menu_open
-                    && self.render_3d_opts.hash_effect != HashTransformEffect::None
-                    && self.render_3d_opts.animate
-                    && allow_anim_tick)
+                && self.render_3d_opts.hash_effect != HashTransformEffect::None
+                && self.render_3d_opts.animate
+                && allow_anim_tick)
                 || self.orbit_camera.is_animating()
             {
                 self.needs_layout = true;
@@ -1218,7 +1426,8 @@ impl App {
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             let dock_style = egui_dock::Style::from_egui(ui.global_style().as_ref());
-            let mut dock_state = std::mem::replace(&mut self.dock_state, dock::default_dock_state());
+            let mut dock_state =
+                std::mem::replace(&mut self.dock_state, dock::default_dock_state());
             {
                 let mut tabs = DockTabs { app: self };
                 DockArea::new(&mut dock_state)
@@ -1291,8 +1500,7 @@ fn save_png(path: &str, w: u32, h: u32, pixels: Vec<u8>) -> Result<(), Box<dyn s
             std::fs::create_dir_all(parent)?;
         }
     }
-    let img = image::RgbaImage::from_raw(w, h, pixels)
-        .ok_or("Invalid image dimensions")?;
+    let img = image::RgbaImage::from_raw(w, h, pixels).ok_or("Invalid image dimensions")?;
     img.save(path)?;
     Ok(())
 }

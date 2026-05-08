@@ -3,16 +3,17 @@
 //! Ray-box intersection against cube instances (no triangle expansion).
 //! Progressive accumulation, HDR env map, tone-mapped blit.
 
-use wgpu::util::DeviceExt;
 use bytemuck::{Pod, Zeroable};
+use wgpu::util::DeviceExt;
 
-use pt_core::gpu_data::GpuInstanceSceneData;
+use crate::adaptive::{AdaptiveConfig, AdaptivePipeline};
+use crate::pathguide::{PathGuideConfig, PathGuidePipeline};
+use crate::restir::{ReSTIRConfig, ReSTIRPipeline, Reservoir};
 use bvh_gpu::{GpuBvhBuilder, GpuBvhConfig};
+use glam::{Mat4, Vec3};
 use pt_core::bvh::Instance;
-use pt_wavefront::{WavefrontPipeline, WavefrontConfig, WfDims};
-use crate::restir::{ReSTIRPipeline, ReSTIRConfig, Reservoir};
-use crate::adaptive::{AdaptivePipeline, AdaptiveConfig};
-use crate::pathguide::{PathGuidePipeline, PathGuideConfig};
+use pt_core::gpu_data::GpuInstanceSceneData;
+use pt_wavefront::{WavefrontConfig, WavefrontPipeline, WfDims};
 
 fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -63,29 +64,29 @@ const GBUFFER_WGSL: &str = include_str!("wavefront/gbuffer.wgsl");
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct PtCameraUniform {
-    pub inv_view: [[f32; 4]; 4],    // 64B
-    pub inv_proj: [[f32; 4]; 4],    // 64B
-    pub position: [f32; 3],         // 12B
-    pub _pad0: u32,                 //  4B
-    pub frame_count: u32,           //  4B
-    pub max_bounces: u32,           //  4B
-    pub max_transmission_depth: u32,//  4B
-    pub dof_enabled: u32,           //  4B
-    pub aperture: f32,              //  4B
-    pub focus_distance: f32,        //  4B
-    pub _pad1: [u32; 2],            //  8B
+    pub inv_view: [[f32; 4]; 4],     // 64B
+    pub inv_proj: [[f32; 4]; 4],     // 64B
+    pub position: [f32; 3],          // 12B
+    pub _pad0: u32,                  //  4B
+    pub frame_count: u32,            //  4B
+    pub max_bounces: u32,            //  4B
+    pub max_transmission_depth: u32, //  4B
+    pub dof_enabled: u32,            //  4B
+    pub aperture: f32,               //  4B
+    pub focus_distance: f32,         //  4B
+    pub _pad1: [u32; 2],             //  8B
     // Slice plane params
-    pub slice_enabled: f32,         //  4B
-    pub slice_position: f32,        //  4B
-    pub slice_invert: f32,          //  4B
-    pub _pad2: f32,                 //  4B (align to 16B)
-    pub slice_normal: [f32; 3],     // 12B
-    pub _pad3: f32,                 //  4B (align to 16B)
+    pub slice_enabled: f32,     //  4B
+    pub slice_position: f32,    //  4B
+    pub slice_invert: f32,      //  4B
+    pub _pad2: f32,             //  4B (align to 16B)
+    pub slice_normal: [f32; 3], // 12B
+    pub _pad3: f32,             //  4B (align to 16B)
     // Spectral options (PT only)
-    pub spectral_mode: u32,         //  4B (0=off,1=hero,2=multi)
-    pub spectral_samples: u32,      //  4B
-    pub spectral_dispersion: u32,   //  4B
-    pub _pad4: u32,                 //  4B (align to 16B)
+    pub spectral_mode: u32,       //  4B (0=off,1=hero,2=multi)
+    pub spectral_samples: u32,    //  4B
+    pub spectral_dispersion: u32, //  4B
+    pub _pad4: u32,               //  4B (align to 16B)
 }
 
 const WG_SIZE: u32 = 8;
@@ -101,8 +102,35 @@ pub struct PtEnvUniform {
 impl Default for PtEnvUniform {
     fn default() -> Self {
         Self {
-            params0: [1.0, 0.0, 0.0, 0.0],  // intensity, rotation, enabled, use_importance_sampling
-            params1: [1.0, 1.0, 1.0, 0.0],  // env_width, env_height, global_opacity, time
+            params0: [1.0, 0.0, 0.0, 0.0], // intensity, rotation, enabled, use_importance_sampling
+            params1: [1.0, 1.0, 1.0, 0.0], // env_width, env_height, global_opacity, time
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct GpuEmissiveLight {
+    center_area: [f32; 4],     // xyz=center, w=surface area
+    axis_x: [f32; 4],          // xyz=full local X edge vector
+    axis_y: [f32; 4],          // xyz=full local Y edge vector
+    axis_z: [f32; 4],          // xyz=full local Z edge vector
+    emission_weight: [f32; 4], // rgb=emission radiance, w=sampling weight
+    meta: [u32; 4],            // x=instance index
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct EmissiveLightUniform {
+    params0: [u32; 4], // enabled, samples_per_hit, light_count, reserved
+    params1: [f32; 4], // min_weight, total_weight, reserved
+}
+
+impl Default for EmissiveLightUniform {
+    fn default() -> Self {
+        Self {
+            params0: [1, 1, 0, 0],
+            params1: [0.001, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -255,6 +283,15 @@ pub struct PathTraceCompute {
     env_marginal_cdf: wgpu::Buffer,
     env_conditional_cdf: wgpu::Buffer,
 
+    // Emissive cube light sampling
+    emissive_light_buffer: wgpu::Buffer,
+    emissive_light_uniform_buffer: wgpu::Buffer,
+    emissive_sampling_enabled: bool,
+    emissive_samples_per_hit: u32,
+    emissive_min_weight: f32,
+    emissive_light_count: u32,
+    emissive_total_weight: f32,
+
     // Dimensions
     width: u32,
     height: u32,
@@ -378,7 +415,7 @@ struct PathGuideBindGroups {
 
 impl PathTraceCompute {
     /// Create a new path trace compute pipeline.
-/// Bind group layout: 0=nodes, 1=instances, 2=camera, 3=output, 4=accum, 5=materials, 6=env_tex, 7=env_sampler, 8=env_params, 9=env_marginal_cdf, 10=env_conditional_cdf, 11=sample_map, 12=variance
+    /// Bind group layout: 0=nodes, 1=instances, 2=camera, 3=output, 4=accum, 5=materials, 6=env_tex, 7=env_sampler, 8=env_params, 9=env_marginal_cdf, 10=env_conditional_cdf, 11=sample_map, 12=variance, 13=emissive_lights, 14=emissive_light_params
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -533,6 +570,28 @@ impl PathTraceCompute {
                     },
                     count: None,
                 },
+                // @binding(13) Emissive cube light list
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // @binding(14) Emissive light sampling params
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -556,51 +615,52 @@ impl PathTraceCompute {
             label: Some("pt_pick_shader"),
             source: wgpu::ShaderSource::Wgsl(PICK_WGSL.into()),
         });
-        let pick_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("pt_pick_bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let pick_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("pt_pick_bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                ],
+            });
         let pick_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pt_pick_pl"),
             bind_group_layouts: &[Some(&pick_bind_group_layout)],
@@ -651,27 +711,28 @@ impl PathTraceCompute {
             source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
         });
 
-        let blit_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("pt_blit_bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+        let blit_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("pt_blit_bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                ],
+            });
 
         let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pt_blit_pl"),
@@ -762,6 +823,17 @@ impl PathTraceCompute {
             contents: bytemuck::cast_slice(&[1.0f32]),
             usage: wgpu::BufferUsages::STORAGE,
         });
+        let emissive_light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("pt_emissive_lights"),
+            contents: bytemuck::cast_slice(&[GpuEmissiveLight::zeroed()]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let emissive_light_uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("pt_emissive_light_uniform"),
+                contents: bytemuck::bytes_of(&EmissiveLightUniform::default()),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
         Self {
             pipeline,
@@ -797,6 +869,13 @@ impl PathTraceCompute {
             env_height: 1,
             env_marginal_cdf,
             env_conditional_cdf,
+            emissive_light_buffer,
+            emissive_light_uniform_buffer,
+            emissive_sampling_enabled: true,
+            emissive_samples_per_hit: 1,
+            emissive_min_weight: 0.001,
+            emissive_light_count: 0,
+            emissive_total_weight: 0.0,
             width,
             height,
             frame_count: 0,
@@ -878,7 +957,10 @@ impl PathTraceCompute {
                 "PathGuide: create pipeline (svo_resolution={})",
                 self.pathguide_config.svo_resolution
             );
-            self.pathguide = Some(PathGuidePipeline::new(device, self.pathguide_config.svo_resolution));
+            self.pathguide = Some(PathGuidePipeline::new(
+                device,
+                self.pathguide_config.svo_resolution,
+            ));
             needs_rebuild = true;
         }
         log::debug!("PathGuide: enabled={}", enabled);
@@ -891,7 +973,12 @@ impl PathTraceCompute {
 
     /// Enable/disable adaptive sampling.
     #[allow(dead_code)]
-    pub fn set_adaptive_enabled(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, enabled: bool) {
+    pub fn set_adaptive_enabled(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enabled: bool,
+    ) {
         if enabled && self.adaptive.is_none() {
             log::info!("Adaptive: create pipeline");
             self.adaptive = Some(AdaptivePipeline::new(device, self.width, self.height));
@@ -916,14 +1003,15 @@ impl PathTraceCompute {
         variance_threshold: f32,
         update_interval: u32,
     ) {
-        let min_spp = min_spp.max(1);
+        let min_spp = min_spp.max(32);
         let mut max_spp = max_spp.max(1);
         if max_spp < min_spp {
             max_spp = min_spp;
         }
         let changed = self.adaptive_config.min_spp != min_spp
             || self.adaptive_config.max_spp != max_spp
-            || (self.adaptive_config.variance_threshold - variance_threshold.max(1e-6)).abs() > f32::EPSILON
+            || (self.adaptive_config.variance_threshold - variance_threshold.max(1e-6)).abs()
+                > f32::EPSILON
             || self.adaptive_config.update_interval != update_interval.max(1);
         self.adaptive_config.min_spp = min_spp;
         self.adaptive_config.max_spp = max_spp;
@@ -966,7 +1054,10 @@ impl PathTraceCompute {
         if !self.adaptive_config.enabled || self.frame_count == 0 {
             return;
         }
-        if !self.frame_count.is_multiple_of(self.adaptive_config.update_interval.max(1)) {
+        if !self
+            .frame_count
+            .is_multiple_of(self.adaptive_config.update_interval.max(1))
+        {
             return;
         }
         let (Some(ad), Some(ad_bgs)) = (&self.adaptive, &self.adaptive_bind_groups) else {
@@ -1038,6 +1129,130 @@ impl PathTraceCompute {
         self.spectral_dispersion = dispersion;
     }
 
+    pub fn set_emissive_sampling(
+        &mut self,
+        queue: &wgpu::Queue,
+        enabled: bool,
+        samples_per_hit: u32,
+        min_weight: f32,
+    ) {
+        let samples_per_hit = samples_per_hit.clamp(1, 8);
+        let min_weight = min_weight.max(1e-6);
+        let changed = self.emissive_sampling_enabled != enabled
+            || self.emissive_samples_per_hit != samples_per_hit
+            || (self.emissive_min_weight - min_weight).abs() > f32::EPSILON;
+        self.emissive_sampling_enabled = enabled;
+        self.emissive_samples_per_hit = samples_per_hit;
+        self.emissive_min_weight = min_weight;
+        self.write_emissive_light_uniform(queue);
+        if changed {
+            self.reset_accumulation();
+        }
+    }
+
+    fn write_emissive_light_uniform(&self, queue: &wgpu::Queue) {
+        let uniform = EmissiveLightUniform {
+            params0: [
+                self.emissive_sampling_enabled as u32,
+                self.emissive_samples_per_hit.max(1),
+                self.emissive_light_count,
+                0,
+            ],
+            params1: [
+                self.emissive_min_weight,
+                self.emissive_total_weight,
+                0.0,
+                0.0,
+            ],
+        };
+        queue.write_buffer(
+            &self.emissive_light_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&uniform),
+        );
+    }
+
+    fn rebuild_emissive_lights(&mut self, device: &wgpu::Device, data: &GpuInstanceSceneData) {
+        let mut lights = Vec::new();
+        let mut total_weight = 0.0f32;
+        for (inst_idx, inst) in data.instances.iter().enumerate() {
+            let Some(mat) = data.materials.get(inst.material_id as usize) else {
+                continue;
+            };
+            let opacity = (mat.opacity[0] + mat.opacity[1] + mat.opacity[2]) / 3.0;
+            let emission = Vec3::new(
+                mat.emission_color_weight[0],
+                mat.emission_color_weight[1],
+                mat.emission_color_weight[2],
+            ) * mat.emission_color_weight[3]
+                * opacity;
+            let luminance = emission.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+            if luminance <= 0.0 {
+                continue;
+            }
+
+            let model_inv = Mat4::from_cols_array_2d(&inst.model_inv);
+            let model = model_inv.inverse();
+            let cols = model.to_cols_array_2d();
+            let axis_x = Vec3::new(cols[0][0], cols[0][1], cols[0][2]);
+            let axis_y = Vec3::new(cols[1][0], cols[1][1], cols[1][2]);
+            let axis_z = Vec3::new(cols[2][0], cols[2][1], cols[2][2]);
+            let center = Vec3::new(cols[3][0], cols[3][1], cols[3][2]);
+            let lx = axis_x.length();
+            let ly = axis_y.length();
+            let lz = axis_z.length();
+            let area = 2.0 * (lx * ly + lx * lz + ly * lz);
+            let weight = luminance * area;
+            if !weight.is_finite() || weight < self.emissive_min_weight {
+                continue;
+            }
+
+            lights.push(GpuEmissiveLight {
+                center_area: [center.x, center.y, center.z, area],
+                axis_x: [axis_x.x, axis_x.y, axis_x.z, 0.0],
+                axis_y: [axis_y.x, axis_y.y, axis_y.z, 0.0],
+                axis_z: [axis_z.x, axis_z.y, axis_z.z, 0.0],
+                emission_weight: [emission.x, emission.y, emission.z, weight],
+                meta: [inst_idx as u32, 0, 0, 0],
+            });
+            total_weight += weight;
+        }
+
+        if lights.is_empty() {
+            lights.push(GpuEmissiveLight::zeroed());
+            self.emissive_light_count = 0;
+            self.emissive_total_weight = 0.0;
+        } else {
+            self.emissive_light_count = lights.len() as u32;
+            self.emissive_total_weight = total_weight;
+        }
+
+        self.emissive_light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("pt_emissive_lights"),
+            contents: bytemuck::cast_slice(&lights),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        self.emissive_light_uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("pt_emissive_light_uniform"),
+                contents: bytemuck::bytes_of(&EmissiveLightUniform {
+                    params0: [
+                        self.emissive_sampling_enabled as u32,
+                        self.emissive_samples_per_hit.max(1),
+                        self.emissive_light_count,
+                        0,
+                    ],
+                    params1: [
+                        self.emissive_min_weight,
+                        self.emissive_total_weight,
+                        0.0,
+                        0.0,
+                    ],
+                }),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+    }
+
     /// Check if wavefront PT is enabled.
     #[allow(dead_code)]
     pub fn is_wavefront_enabled(&self) -> bool {
@@ -1047,9 +1262,14 @@ impl PathTraceCompute {
     /// Rebuild wavefront bind groups after scene upload.
     /// Creates two sets of bind groups for ping-pong ray buffer swapping.
     fn rebuild_wavefront_bind_groups(&mut self, device: &wgpu::Device) {
-        let Some(wf) = &self.wavefront else { return; };
-        let (Some(nodes), Some(instances), Some(materials)) =
-            (&self.nodes_buffer, &self.instances_buffer, &self.materials_buffer) else {
+        let Some(wf) = &self.wavefront else {
+            return;
+        };
+        let (Some(nodes), Some(instances), Some(materials)) = (
+            &self.nodes_buffer,
+            &self.instances_buffer,
+            &self.materials_buffer,
+        ) else {
             self.wavefront_bind_groups = None;
             return;
         };
@@ -1061,7 +1281,7 @@ impl PathTraceCompute {
         );
 
         let (raygen_bgl, intersect_bgl, shade_bgl) = wf.bgls();
-        let (ray_a, ray_b) = wf.ray_bufs_raw();  // Get both buffers directly
+        let (ray_a, ray_b) = wf.ray_bufs_raw(); // Get both buffers directly
         let count_buf = wf.count_buf();
         let hit_buf = wf.hit_buf();
         let dims_buf = wf.dims_buf();
@@ -1093,7 +1313,11 @@ impl PathTraceCompute {
             guide_weight: self.pathguide_config.guide_weight,
             guide_warmup: self.pathguide_config.warmup_frames,
             guide_enabled: if self.pathguide_config.enabled { 1 } else { 0 },
-            guide_product: if self.pathguide_config.product_sampling { 1 } else { 0 },
+            guide_product: if self.pathguide_config.product_sampling {
+                1
+            } else {
+                0
+            },
             rr_enabled: if self.wavefront_rr_enabled { 1 } else { 0 },
             spectral_mode: self.spectral_mode,
             spectral_samples: self.spectral_samples,
@@ -1108,7 +1332,10 @@ impl PathTraceCompute {
 
         // Helper to create one set of bind groups
         let guide = &self.guide_buffer;
-        let create_set = |label_suffix: &str, ray_in: &wgpu::Buffer, ray_out: &wgpu::Buffer| -> WavefrontBindGroupSet {
+        let create_set = |label_suffix: &str,
+                          ray_in: &wgpu::Buffer,
+                          ray_out: &wgpu::Buffer|
+         -> WavefrontBindGroupSet {
             // Raygen: writes to ray_in, count_in
             let sample_map = if let Some(ad) = &self.adaptive {
                 ad.sample_map()
@@ -1119,12 +1346,30 @@ impl PathTraceCompute {
                 label: Some(&format!("wf_raygen_bg_{}", label_suffix)),
                 layout: raygen_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.camera_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: dims_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: ray_in.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: count_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: sample_map.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 5, resource: self.accum_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.camera_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: dims_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: ray_in.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: count_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: sample_map.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: self.accum_buffer.as_entire_binding(),
+                    },
                 ],
             });
 
@@ -1133,11 +1378,26 @@ impl PathTraceCompute {
                 label: Some(&format!("wf_intersect_bg_{}", label_suffix)),
                 layout: intersect_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: nodes.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: instances.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: ray_in.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: hit_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: count_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: nodes.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: instances.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: ray_in.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: hit_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: count_buf.as_entire_binding(),
+                    },
                 ],
             });
 
@@ -1146,22 +1406,62 @@ impl PathTraceCompute {
                 label: Some(&format!("wf_shade_bg_{}", label_suffix)),
                 layout: shade_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: instances.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: materials.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: ray_in.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: hit_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: ray_out.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 5, resource: self.accum_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 6, resource: count_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 7, resource: shade_params_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.env_view) },
-                    wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&self.env_sampler) },
-                    wgpu::BindGroupEntry { binding: 10, resource: self.env_uniform_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 11, resource: guide.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: instances.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: materials.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: ray_in.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: hit_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: ray_out.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: self.accum_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: count_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: shade_params_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(&self.env_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::Sampler(&self.env_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: self.env_uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: guide.as_entire_binding(),
+                    },
                 ],
             });
 
-            WavefrontBindGroupSet { raygen_bg, intersect_bg, shade_bg }
+            WavefrontBindGroupSet {
+                raygen_bg,
+                intersect_bg,
+                shade_bg,
+            }
         };
 
         // Set A: ray_a -> hits -> ray_b
@@ -1173,9 +1473,10 @@ impl PathTraceCompute {
         let count_swap_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wf_count_swap_bg"),
             layout: wf.count_swap_bgl(),
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: count_buf.as_entire_binding() },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: count_buf.as_entire_binding(),
+            }],
         });
 
         // Finalize: accum -> output texture (same for both sets)
@@ -1190,9 +1491,18 @@ impl PathTraceCompute {
             label: Some("wf_finalize_bg"),
             layout: wf.finalize_bgl(),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.accum_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.output_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: finalize_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.accum_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: finalize_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -1214,7 +1524,11 @@ impl PathTraceCompute {
             self.adaptive_bind_groups = None;
             return;
         };
-        log::debug!("Adaptive: rebuild bind groups (size={}x{})", self.width, self.height);
+        log::debug!(
+            "Adaptive: rebuild bind groups (size={}x{})",
+            self.width,
+            self.height
+        );
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1235,7 +1549,11 @@ impl PathTraceCompute {
             _pad2: [f32; 4],
         }
 
-        let variance_params = VarianceParams { width: self.width, height: self.height, _pad: [0; 2] };
+        let variance_params = VarianceParams {
+            width: self.width,
+            height: self.height,
+            _pad: [0; 2],
+        };
         let variance_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("adaptive_variance_params"),
             contents: bytemuck::bytes_of(&variance_params),
@@ -1263,9 +1581,18 @@ impl PathTraceCompute {
             label: Some("adaptive_variance_bg"),
             layout: variance_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.accum_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: ad.variance_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: variance_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.accum_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: ad.variance_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: variance_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -1273,9 +1600,18 @@ impl PathTraceCompute {
             label: Some("adaptive_allocate_bg"),
             layout: allocate_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: ad.variance_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: ad.sample_map().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: allocate_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ad.variance_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: ad.sample_map().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: allocate_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -1296,7 +1632,9 @@ impl PathTraceCompute {
             self.restir_bind_groups = None;
             return;
         };
-        let (Some(instances_buf), Some(materials_buf)) = (&self.instances_buffer, &self.materials_buffer) else {
+        let (Some(instances_buf), Some(materials_buf)) =
+            (&self.instances_buffer, &self.materials_buffer)
+        else {
             self.restir_bind_groups = None;
             return;
         };
@@ -1305,7 +1643,11 @@ impl PathTraceCompute {
         } else {
             &self.sample_map_fallback
         };
-        log::debug!("ReSTIR: rebuild bind groups (size={}x{})", self.width, self.height);
+        log::debug!(
+            "ReSTIR: rebuild bind groups (size={}x{})",
+            self.width,
+            self.height
+        );
 
         let hit_buf = wf.hit_buf();
         let (ray_a, ray_b) = wf.ray_bufs_raw();
@@ -1319,12 +1661,12 @@ impl PathTraceCompute {
             let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("wf_gbuffer_bgl"),
                 entries: &[
-                    bgl_storage_ro(0),   // rays
-                    bgl_storage_ro(1),   // hits
-                    bgl_storage_rw(2),   // depth
-                    bgl_storage_rw(3),   // normal
-                    bgl_storage_rw(4),   // motion
-                    bgl_uniform(5),      // params
+                    bgl_storage_ro(0), // rays
+                    bgl_storage_ro(1), // hits
+                    bgl_storage_rw(2), // depth
+                    bgl_storage_rw(3), // normal
+                    bgl_storage_rw(4), // motion
+                    bgl_uniform(5),    // params
                 ],
             });
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1362,24 +1704,60 @@ impl PathTraceCompute {
             label: Some("wf_gbuffer_bg_a"),
             layout: gbuffer_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: ray_a.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: hit_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: rs.depth_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: rs.normal_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: rs.motion_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: gbuffer_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ray_a.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: hit_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rs.depth_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: rs.normal_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: rs.motion_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: gbuffer_params_buf.as_entire_binding(),
+                },
             ],
         });
         let gbuffer_bg_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wf_gbuffer_bg_b"),
             layout: gbuffer_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: ray_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: hit_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: rs.depth_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: rs.normal_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: rs.motion_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: gbuffer_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ray_b.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: hit_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rs.depth_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: rs.normal_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: rs.motion_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: gbuffer_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -1448,7 +1826,9 @@ impl PathTraceCompute {
         let prev_depth_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("restir_prev_depth"),
             size: (self.width * self.height).max(1) as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -1456,14 +1836,38 @@ impl PathTraceCompute {
             label: Some("restir_initial_bg"),
             layout: initial_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: hit_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: cur_res.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: initial_params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.env_view) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.env_sampler) },
-                wgpu::BindGroupEntry { binding: 5, resource: self.env_uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.env_marginal_cdf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.env_conditional_cdf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: hit_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: cur_res.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: initial_params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.env_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.env_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.env_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.env_marginal_cdf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.env_conditional_cdf.as_entire_binding(),
+                },
             ],
         });
 
@@ -1471,12 +1875,30 @@ impl PathTraceCompute {
             label: Some("restir_temporal_bg"),
             layout: temporal_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: prev_res.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: cur_res.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: rs.motion_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: prev_depth_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: rs.depth_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: temporal_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: prev_res.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: cur_res.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rs.motion_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: prev_depth_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: rs.depth_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: temporal_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -1484,11 +1906,26 @@ impl PathTraceCompute {
             label: Some("restir_spatial_bg"),
             layout: spatial_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: cur_res.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: prev_res.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: rs.depth_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: rs.normal_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: spatial_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: cur_res.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: prev_res.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rs.depth_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: rs.normal_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: spatial_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -1497,17 +1934,50 @@ impl PathTraceCompute {
                 label: Some(label),
                 layout: shade_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: res.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: hit_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.accum_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: shade_params_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: instances_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 5, resource: materials_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 6, resource: sample_map.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 7, resource: rays.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.env_view) },
-                    wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&self.env_sampler) },
-                    wgpu::BindGroupEntry { binding: 10, resource: self.env_uniform_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: res.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: hit_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.accum_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: shade_params_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: instances_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: materials_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: sample_map.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: rays.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(&self.env_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::Sampler(&self.env_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: self.env_uniform_buffer.as_entire_binding(),
+                    },
                 ],
             })
         };
@@ -1565,7 +2035,12 @@ impl PathTraceCompute {
                 let v = self.scene_bounds.map(|b| b.1).unwrap_or([1.0; 3]);
                 [v[0], v[1], v[2], 0.0]
             },
-            params0: [self.pathguide_config.svo_resolution, (self.width * self.height).max(1), 0, 0],
+            params0: [
+                self.pathguide_config.svo_resolution,
+                (self.width * self.height).max(1),
+                0,
+                0,
+            ],
             params1: [0.95, 0.0, 0.0, 0.0],
         };
         let update_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1597,18 +2072,36 @@ impl PathTraceCompute {
             label: Some("pathguide_update_bg"),
             layout: update_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: pg.svo_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: guide.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: update_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: pg.svo_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: guide.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: update_params_buf.as_entire_binding(),
+                },
             ],
         });
         let sample_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pathguide_sample_bg"),
             layout: sample_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: pg.svo_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: guide.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: sample_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: pg.svo_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: guide.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: sample_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -1622,11 +2115,24 @@ impl PathTraceCompute {
 
     /// Dispatch wavefront path tracer passes.
     /// Returns false if not ready.
-    pub fn dispatch_wavefront(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, max_bounces: u32, time: f32) -> bool {
+    pub fn dispatch_wavefront(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        max_bounces: u32,
+        time: f32,
+    ) -> bool {
         // Early checks
-        if self.wavefront.is_none() || self.wavefront_bind_groups.is_none() { return false; }
-        if !self.scene_ready { return false; }
-        if self.frame_count >= self.effective_max_samples() { return false; }
+        if self.wavefront.is_none() || self.wavefront_bind_groups.is_none() {
+            return false;
+        }
+        if !self.scene_ready {
+            return false;
+        }
+        if self.frame_count >= self.effective_max_samples() {
+            return false;
+        }
 
         let wf_start = std::time::Instant::now();
         // Clear accum buffer on first frame
@@ -1637,7 +2143,8 @@ impl PathTraceCompute {
             if self.history_dirty {
                 // Clear ReSTIR history on jump to avoid stale temporal reuse
                 if let (Some(rs), Some(restir_bgs)) = (&self.restir, &self.restir_bind_groups) {
-                    let res_size = (self.width * self.height).max(1) as u64 * Reservoir::SIZE as u64;
+                    let res_size =
+                        (self.width * self.height).max(1) as u64 * Reservoir::SIZE as u64;
                     let (cur_res, prev_res) = rs.reservoirs();
                     encoder.clear_buffer(cur_res, 0, Some(res_size));
                     encoder.clear_buffer(prev_res, 0, Some(res_size));
@@ -1659,8 +2166,16 @@ impl PathTraceCompute {
         let full_h = self.height.max(1);
         let tile_size = self.wavefront_config.tile_size;
         let mut use_tiling = tile_size > 0 && (full_w > tile_size || full_h > tile_size);
-        let tile_capacity_w = if use_tiling { tile_size.min(full_w).max(1) } else { full_w };
-        let tile_capacity_h = if use_tiling { tile_size.min(full_h).max(1) } else { full_h };
+        let tile_capacity_w = if use_tiling {
+            tile_size.min(full_w).max(1)
+        } else {
+            full_w
+        };
+        let tile_capacity_h = if use_tiling {
+            tile_size.min(full_h).max(1)
+        } else {
+            full_h
+        };
 
         if let Some(wf) = &mut self.wavefront {
             let (wf_w, wf_h) = wf.dimensions();
@@ -1673,17 +2188,19 @@ impl PathTraceCompute {
         let wf = self.wavefront.as_ref().unwrap();
         let (wf_w, wf_h) = wf.dimensions();
 
-        // CRITICAL: If wavefront dimensions were clamped below tile capacity, 
+        // CRITICAL: If wavefront dimensions were clamped below tile capacity,
         // we MUST enable tiling to avoid out-of-bounds ray buffer access.
         // This can happen when storage buffer limits are exceeded.
-        if (wf_w < tile_capacity_w || wf_h < tile_capacity_h)
-            && !use_tiling {
-                log::warn!(
-                    "WF dispatch: forcing tiling due to buffer clamping (requested {}x{}, got {}x{})",
-                    tile_capacity_w, tile_capacity_h, wf_w, wf_h
-                );
-                use_tiling = true;
-            }
+        if (wf_w < tile_capacity_w || wf_h < tile_capacity_h) && !use_tiling {
+            log::warn!(
+                "WF dispatch: forcing tiling due to buffer clamping (requested {}x{}, got {}x{})",
+                tile_capacity_w,
+                tile_capacity_h,
+                wf_w,
+                wf_h
+            );
+            use_tiling = true;
+        }
 
         // Get current bind group set (will swap between bounces)
         let bgs = self.wavefront_bind_groups.as_ref().unwrap();
@@ -1708,8 +2225,20 @@ impl PathTraceCompute {
             spectral_dispersion: u32,
             _pad: u32,
         }
-        let guide_enabled = if use_tiling { 0 } else if self.pathguide_config.enabled { 1 } else { 0 };
-        let guide_product = if use_tiling { 0 } else if self.pathguide_config.product_sampling { 1 } else { 0 };
+        let guide_enabled = if use_tiling {
+            0
+        } else if self.pathguide_config.enabled {
+            1
+        } else {
+            0
+        };
+        let guide_product = if use_tiling {
+            0
+        } else if self.pathguide_config.product_sampling {
+            1
+        } else {
+            0
+        };
         let params = ShadeParams {
             width: full_w,
             height: full_h,
@@ -1744,7 +2273,10 @@ impl PathTraceCompute {
                 log::warn!("WF tiling: Path Guide disabled (tile_size={})", tile_size);
             }
             if adaptive_enabled {
-                log::warn!("WF tiling: Adaptive Sampling disabled (tile_size={})", tile_size);
+                log::warn!(
+                    "WF tiling: Adaptive Sampling disabled (tile_size={})",
+                    tile_size
+                );
             }
             restir_enabled = false;
             pathguide_enabled = false;
@@ -1771,8 +2303,16 @@ impl PathTraceCompute {
         let count_buf = wf.count_buf();
         let mut tile_y = 0u32;
         // Use actual wavefront dimensions for step size to respect buffer limits
-        let step_y = if use_tiling { wf_h.min(tile_capacity_h) } else { full_h };
-        let step_x = if use_tiling { wf_w.min(tile_capacity_w) } else { full_w };
+        let step_y = if use_tiling {
+            wf_h.min(tile_capacity_h)
+        } else {
+            full_h
+        };
+        let step_x = if use_tiling {
+            wf_w.min(tile_capacity_w)
+        } else {
+            full_w
+        };
         while tile_y < full_h {
             let mut tile_x = 0u32;
             // Clamp tile dimensions to actual wavefront buffer size
@@ -1794,7 +2334,8 @@ impl PathTraceCompute {
 
                 // Path guiding: sample guided directions from previous SVO
                 if pathguide_enabled && !restir_enabled {
-                    if let (Some(pg), Some(pg_bgs)) = (&self.pathguide, &self.pathguide_bind_groups) {
+                    if let (Some(pg), Some(pg_bgs)) = (&self.pathguide, &self.pathguide_bind_groups)
+                    {
                         let sample_params = PathGuideSampleParams {
                             scene_min: {
                                 let v = self.scene_bounds.map(|b| b.0).unwrap_or([0.0; 3]);
@@ -1807,7 +2348,11 @@ impl PathTraceCompute {
                             params0: [self.pathguide_config.svo_resolution, self.frame_count, 0, 0],
                             params1: [self.pathguide_config.guide_weight, 0.0, 0.0, 0.0],
                         };
-                        queue.write_buffer(&pg_bgs.sample_params_buf, 0, bytemuck::bytes_of(&sample_params));
+                        queue.write_buffer(
+                            &pg_bgs.sample_params_buf,
+                            0,
+                            bytemuck::bytes_of(&sample_params),
+                        );
                         let (_, sample_pl) = pg.pipelines();
                         let wg = tile_pixels.max(1).div_ceil(64);
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1822,7 +2367,11 @@ impl PathTraceCompute {
                 }
 
                 // Initialize counts buffer (count_in + count_out) before raygen
-                queue.write_buffer(count_buf, 0, bytemuck::bytes_of(&[tile_pixels, 0u32, 0u32, 0u32]));
+                queue.write_buffer(
+                    count_buf,
+                    0,
+                    bytemuck::bytes_of(&[tile_pixels, 0u32, 0u32, 0u32]),
+                );
 
                 // Pass 1: Generate camera rays (always uses the current set's raygen)
                 {
@@ -1849,7 +2398,11 @@ impl PathTraceCompute {
                         frame_count: self.frame_count,
                         num_candidates: self.restir_config.initial_candidates,
                     };
-                    queue.write_buffer(&restir_bgs.initial_params_buf, 0, bytemuck::bytes_of(&initial_params));
+                    queue.write_buffer(
+                        &restir_bgs.initial_params_buf,
+                        0,
+                        bytemuck::bytes_of(&initial_params),
+                    );
 
                     let temporal_params = RestirTemporalParams {
                         width: tile_w,
@@ -1860,7 +2413,11 @@ impl PathTraceCompute {
                         _pad: [0.0; 3],
                         _pad2: [0.0; 4],
                     };
-                    queue.write_buffer(&restir_bgs.temporal_params_buf, 0, bytemuck::bytes_of(&temporal_params));
+                    queue.write_buffer(
+                        &restir_bgs.temporal_params_buf,
+                        0,
+                        bytemuck::bytes_of(&temporal_params),
+                    );
 
                     let spatial_params = RestirSpatialParams {
                         width: tile_w,
@@ -1872,7 +2429,11 @@ impl PathTraceCompute {
                         depth_threshold: 0.1,
                         _pad: 0.0,
                     };
-                    queue.write_buffer(&restir_bgs.spatial_params_buf, 0, bytemuck::bytes_of(&spatial_params));
+                    queue.write_buffer(
+                        &restir_bgs.spatial_params_buf,
+                        0,
+                        bytemuck::bytes_of(&spatial_params),
+                    );
 
                     let cam_pos = self.last_camera_pos.unwrap_or([0.0, 0.0, 0.0]);
                     let shade_params = RestirShadeParams {
@@ -1883,7 +2444,11 @@ impl PathTraceCompute {
                         camera_pos: cam_pos,
                         _pad2: 0.0,
                     };
-                    queue.write_buffer(&restir_bgs.shade_params_buf, 0, bytemuck::bytes_of(&shade_params));
+                    queue.write_buffer(
+                        &restir_bgs.shade_params_buf,
+                        0,
+                        bytemuck::bytes_of(&shade_params),
+                    );
 
                     // Pass 2: Intersect (primary rays)
                     {
@@ -1900,7 +2465,11 @@ impl PathTraceCompute {
 
                     // Pass 3: G-buffer (depth/normal/motion)
                     {
-                        let gbuffer_bg = if cur_set == 0 { &restir_bgs.gbuffer_bg_a } else { &restir_bgs.gbuffer_bg_b };
+                        let gbuffer_bg = if cur_set == 0 {
+                            &restir_bgs.gbuffer_bg_a
+                        } else {
+                            &restir_bgs.gbuffer_bg_b
+                        };
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                             label: Some("wf_gbuffer_pass"),
                             timestamp_writes: None,
@@ -1980,7 +2549,13 @@ impl PathTraceCompute {
 
                     // Update previous depth for temporal reprojection
                     let depth_size = (tile_w * tile_h).max(1) as u64 * 4;
-                    encoder.copy_buffer_to_buffer(rs.depth_buffer(), 0, &restir_bgs.prev_depth_buf, 0, depth_size);
+                    encoder.copy_buffer_to_buffer(
+                        rs.depth_buffer(),
+                        0,
+                        &restir_bgs.prev_depth_buf,
+                        0,
+                        depth_size,
+                    );
                 } else {
                     // Bounce loop with ping-pong
                     let mut use_set_a = cur_set == 0;
@@ -1989,10 +2564,11 @@ impl PathTraceCompute {
 
                         // Pass 2: Intersect (reads from current ray buffer)
                         {
-                            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                                label: Some("wf_intersect_pass"),
-                                timestamp_writes: None,
-                            });
+                            let mut pass =
+                                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                    label: Some("wf_intersect_pass"),
+                                    timestamp_writes: None,
+                                });
                             pass.set_pipeline(intersect_pl);
                             pass.set_bind_group(0, &current_set.intersect_bg, &[]);
                             let wg = tile_pixels.div_ceil(64);
@@ -2002,10 +2578,11 @@ impl PathTraceCompute {
 
                         // Pass 3: Shade (reads current rays+hits, writes to other ray buffer)
                         {
-                            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                                label: Some("wf_shade_pass"),
-                                timestamp_writes: None,
-                            });
+                            let mut pass =
+                                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                    label: Some("wf_shade_pass"),
+                                    timestamp_writes: None,
+                                });
                             pass.set_pipeline(shade_pl);
                             pass.set_bind_group(0, &current_set.shade_bg, &[]);
                             let wg = tile_pixels.div_ceil(64);
@@ -2015,10 +2592,11 @@ impl PathTraceCompute {
 
                         // Swap count_in/count_out for next bounce
                         {
-                            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                                label: Some("wf_count_swap_pass"),
-                                timestamp_writes: None,
-                            });
+                            let mut pass =
+                                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                    label: Some("wf_count_swap_pass"),
+                                    timestamp_writes: None,
+                                });
                             pass.set_pipeline(wf.count_swap_pipeline());
                             pass.set_bind_group(0, &bgs.count_swap_bg, &[]);
                             pass.dispatch_workgroups(1, 1, 1);
@@ -2031,7 +2609,9 @@ impl PathTraceCompute {
 
                     // Path guiding: update SVO with latest samples
                     if pathguide_enabled {
-                        if let (Some(pg), Some(pg_bgs)) = (&self.pathguide, &self.pathguide_bind_groups) {
+                        if let (Some(pg), Some(pg_bgs)) =
+                            (&self.pathguide, &self.pathguide_bind_groups)
+                        {
                             let update_params = PathGuideUpdateParams {
                                 scene_min: {
                                     let v = self.scene_bounds.map(|b| b.0).unwrap_or([0.0; 3]);
@@ -2041,16 +2621,26 @@ impl PathTraceCompute {
                                     let v = self.scene_bounds.map(|b| b.1).unwrap_or([1.0; 3]);
                                     [v[0], v[1], v[2], 0.0]
                                 },
-                                params0: [self.pathguide_config.svo_resolution, tile_pixels.max(1), 0, 0],
+                                params0: [
+                                    self.pathguide_config.svo_resolution,
+                                    tile_pixels.max(1),
+                                    0,
+                                    0,
+                                ],
                                 params1: [0.95, 0.0, 0.0, 0.0],
                             };
-                            queue.write_buffer(&pg_bgs.update_params_buf, 0, bytemuck::bytes_of(&update_params));
+                            queue.write_buffer(
+                                &pg_bgs.update_params_buf,
+                                0,
+                                bytemuck::bytes_of(&update_params),
+                            );
                             let (update_pl, _) = pg.pipelines();
                             let wg = tile_pixels.max(1).div_ceil(64);
-                            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                                label: Some("pathguide_update_pass"),
-                                timestamp_writes: None,
-                            });
+                            let mut pass =
+                                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                    label: Some("pathguide_update_pass"),
+                                    timestamp_writes: None,
+                                });
                             pass.set_pipeline(update_pl);
                             pass.set_bind_group(0, &pg_bgs.update_bg, &[]);
                             pass.dispatch_workgroups(wg, 1, 1);
@@ -2059,11 +2649,15 @@ impl PathTraceCompute {
                     }
                 }
 
-                if !use_tiling { break; }
+                if !use_tiling {
+                    break;
+                }
                 tile_x = tile_x.saturating_add(step_x);
             }
 
-            if !use_tiling { break; }
+            if !use_tiling {
+                break;
+            }
             tile_y = tile_y.saturating_add(step_y);
         }
 
@@ -2072,7 +2666,11 @@ impl PathTraceCompute {
             let bgs = self.wavefront_bind_groups.as_ref().unwrap();
 
             // Update finalize params with current frame count
-            queue.write_buffer(&bgs.finalize_params_buf, 0, bytemuck::bytes_of(&[full_w, full_h, self.frame_count, 0u32]));
+            queue.write_buffer(
+                &bgs.finalize_params_buf,
+                0,
+                bytemuck::bytes_of(&[full_w, full_h, self.frame_count, 0u32]),
+            );
 
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("wf_finalize_pass"),
@@ -2107,8 +2705,16 @@ impl PathTraceCompute {
                     _pad: [f32; 3],
                     _pad2: [f32; 4],
                 }
-                let variance_params = VarianceParams { width: full_w, height: full_h, _pad: [0; 2] };
-                queue.write_buffer(&ad_bgs.variance_params_buf, 0, bytemuck::bytes_of(&variance_params));
+                let variance_params = VarianceParams {
+                    width: full_w,
+                    height: full_h,
+                    _pad: [0; 2],
+                };
+                queue.write_buffer(
+                    &ad_bgs.variance_params_buf,
+                    0,
+                    bytemuck::bytes_of(&variance_params),
+                );
                 let allocate_params = AllocateParams {
                     width: full_w,
                     height: full_h,
@@ -2118,9 +2724,16 @@ impl PathTraceCompute {
                     _pad: [0.0; 3],
                     _pad2: [0.0; 4],
                 };
-                queue.write_buffer(&ad_bgs.allocate_params_buf, 0, bytemuck::bytes_of(&allocate_params));
+                queue.write_buffer(
+                    &ad_bgs.allocate_params_buf,
+                    0,
+                    bytemuck::bytes_of(&allocate_params),
+                );
 
-                if self.frame_count.is_multiple_of(self.adaptive_config.update_interval) {
+                if self
+                    .frame_count
+                    .is_multiple_of(self.adaptive_config.update_interval)
+                {
                     let (variance_pl, allocate_pl) = ad.pipelines();
                     {
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -2192,10 +2805,18 @@ impl PathTraceCompute {
         encoder.clear_buffer(guide, 0, None);
     }
 
-    fn create_output(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    fn create_output(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pt_output"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -2230,7 +2851,11 @@ impl PathTraceCompute {
         let bytes: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 0]; // 1x1 black Rgba16Float
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pt_default_env"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -2251,7 +2876,11 @@ impl PathTraceCompute {
                 bytes_per_row: Some(8),
                 rows_per_image: Some(1),
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         (tex, view)
@@ -2262,7 +2891,13 @@ impl PathTraceCompute {
         if self.width == width && self.height == height {
             return;
         }
-        log::debug!("PT resize: {}x{} -> {}x{}", self.width, self.height, width, height);
+        log::debug!(
+            "PT resize: {}x{} -> {}x{}",
+            self.width,
+            self.height,
+            width,
+            height
+        );
         self.width = width;
         self.height = height;
         let (tex, view) = Self::create_output(device, width, height);
@@ -2307,25 +2942,38 @@ impl PathTraceCompute {
 
         let nodes_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_nodes"),
-            contents: if nodes_bytes.is_empty() { &[0u8; 32] } else { nodes_bytes },
+            contents: if nodes_bytes.is_empty() {
+                &[0u8; 32]
+            } else {
+                nodes_bytes
+            },
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         let instances_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_instances"),
-            contents: if inst_bytes.is_empty() { &[0u8; 96] } else { inst_bytes },
+            contents: if inst_bytes.is_empty() {
+                &[0u8; 96]
+            } else {
+                inst_bytes
+            },
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         let materials_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_materials"),
-            contents: if mat_bytes.is_empty() { &[0u8; 144] } else { mat_bytes },
+            contents: if mat_bytes.is_empty() {
+                &[0u8; 144]
+            } else {
+                mat_bytes
+            },
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         self.nodes_buffer = Some(nodes_buffer);
         self.instances_buffer = Some(instances_buffer);
         self.materials_buffer = Some(materials_buffer);
+        self.rebuild_emissive_lights(device, data);
         self.scene_ready = true;
         self.frame_count = 0;
         if let Some(instances) = instances {
@@ -2366,11 +3014,15 @@ impl PathTraceCompute {
         } else if can_refit {
             // NOTE: output nodes are linearized for traversal, but refit expects LBVH layout.
             // Until we have a linearized-refit path, skip refit and rebuild to avoid corrupt AABBs.
-            log::warn!("PT refit skipped: linearized node layout incompatible with LBVH refit, rebuilding");
+            log::warn!(
+                "PT refit skipped: linearized node layout incompatible with LBVH refit, rebuilding"
+            );
         }
 
         // Full rebuild path
-        let (nodes, sorted_indices) = self.bvh_builder.build(device, queue, instances, &self.bvh_config);
+        let (nodes, sorted_indices) =
+            self.bvh_builder
+                .build(device, queue, instances, &self.bvh_config);
 
         let gpu_data = pt_core::gpu_data::build_gpu_data_from_nodes(
             nodes,
@@ -2386,7 +3038,11 @@ impl PathTraceCompute {
         let nodes_bytes = gpu_data.nodes_bytes();
         let nodes_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_nodes"),
-            contents: if nodes_bytes.is_empty() { &[0u8; 32] } else { nodes_bytes },
+            contents: if nodes_bytes.is_empty() {
+                &[0u8; 32]
+            } else {
+                nodes_bytes
+            },
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -2394,7 +3050,11 @@ impl PathTraceCompute {
         let inst_bytes = gpu_data.instances_bytes();
         let instances_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_instances"),
-            contents: if inst_bytes.is_empty() { &[0u8; 96] } else { inst_bytes },
+            contents: if inst_bytes.is_empty() {
+                &[0u8; 96]
+            } else {
+                inst_bytes
+            },
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -2402,13 +3062,18 @@ impl PathTraceCompute {
         let mat_bytes = gpu_data.materials_bytes();
         let materials_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_materials"),
-            contents: if mat_bytes.is_empty() { &[0u8; 144] } else { mat_bytes },
+            contents: if mat_bytes.is_empty() {
+                &[0u8; 144]
+            } else {
+                mat_bytes
+            },
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         self.nodes_buffer = Some(nodes_buffer);
         self.instances_buffer = Some(instances_buffer);
         self.materials_buffer = Some(materials_buffer);
+        self.rebuild_emissive_lights(device, &gpu_data);
         self.scene_ready = true;
         self.frame_count = 0;
         self.rebuild_bind_group(device);
@@ -2433,7 +3098,8 @@ impl PathTraceCompute {
         queue: &wgpu::Queue,
         instances: &[Instance],
     ) -> (Vec<pt_core::bvh::BvhNode>, Vec<u32>) {
-        self.bvh_builder.build(device, queue, instances, &self.bvh_config)
+        self.bvh_builder
+            .build(device, queue, instances, &self.bvh_config)
     }
 
     /// Check if BVH can be refitted instead of rebuilt (for animation).
@@ -2444,8 +3110,11 @@ impl PathTraceCompute {
 
     /// Rebuild bind groups after buffer/texture change.
     fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
-        let (Some(nodes), Some(instances), Some(materials)) =
-            (&self.nodes_buffer, &self.instances_buffer, &self.materials_buffer) else {
+        let (Some(nodes), Some(instances), Some(materials)) = (
+            &self.nodes_buffer,
+            &self.instances_buffer,
+            &self.materials_buffer,
+        ) else {
             self.bind_group = None;
             return;
         };
@@ -2459,19 +3128,66 @@ impl PathTraceCompute {
             label: Some("pt_bind_group"),
             layout: &self.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: nodes.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: instances.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.camera_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.output_view) },
-                wgpu::BindGroupEntry { binding: 4, resource: self.accum_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: materials.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.env_view) },
-                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.env_sampler) },
-                wgpu::BindGroupEntry { binding: 8, resource: self.env_uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 9, resource: self.env_marginal_cdf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 10, resource: self.env_conditional_cdf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 11, resource: sample_map.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 12, resource: self.variance_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: nodes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.accum_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: materials.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&self.env_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(&self.env_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: self.env_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: self.env_marginal_cdf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: self.env_conditional_cdf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: sample_map.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: self.variance_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: self.emissive_light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: self.emissive_light_uniform_buffer.as_entire_binding(),
+                },
             ],
         }));
 
@@ -2479,10 +3195,22 @@ impl PathTraceCompute {
             label: Some("pt_pick_bg"),
             layout: &self.pick_bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: nodes.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: instances.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.pick_params_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.pick_result_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: nodes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.pick_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.pick_result_buffer.as_entire_binding(),
+                },
             ],
         }));
 
@@ -2491,8 +3219,14 @@ impl PathTraceCompute {
             label: Some("pt_blit_bg"),
             layout: &self.blit_bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.output_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.blit_sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                },
             ],
         }));
 
@@ -2508,7 +3242,12 @@ impl PathTraceCompute {
     }
 
     /// Update ReSTIR gbuffer camera matrices (prev/curr view-proj).
-    pub fn update_view_proj(&mut self, queue: &wgpu::Queue, prev: [[f32; 4]; 4], curr: [[f32; 4]; 4]) {
+    pub fn update_view_proj(
+        &mut self,
+        queue: &wgpu::Queue,
+        prev: [[f32; 4]; 4],
+        curr: [[f32; 4]; 4],
+    ) {
         if let Some(restir_bgs) = &self.restir_bind_groups {
             let params = GBufferParams {
                 width: self.width,
@@ -2517,7 +3256,11 @@ impl PathTraceCompute {
                 prev_view_proj: prev,
                 curr_view_proj: curr,
             };
-            queue.write_buffer(&restir_bgs.gbuffer_params_buf, 0, bytemuck::bytes_of(&params));
+            queue.write_buffer(
+                &restir_bgs.gbuffer_params_buf,
+                0,
+                bytemuck::bytes_of(&params),
+            );
         }
     }
 
@@ -2572,8 +3315,16 @@ impl PathTraceCompute {
         width: u32,
         height: u32,
     ) {
-        let marginal = if marginal_cdf.is_empty() { vec![1.0f32] } else { marginal_cdf.to_vec() };
-        let conditional = if conditional_cdf.is_empty() { vec![1.0f32] } else { conditional_cdf.to_vec() };
+        let marginal = if marginal_cdf.is_empty() {
+            vec![1.0f32]
+        } else {
+            marginal_cdf.to_vec()
+        };
+        let conditional = if conditional_cdf.is_empty() {
+            vec![1.0f32]
+        } else {
+            conditional_cdf.to_vec()
+        };
 
         self.env_marginal_cdf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_env_marginal_cdf"),
@@ -2629,8 +3380,12 @@ impl PathTraceCompute {
         origin: [f32; 3],
         dir: [f32; 3],
     ) -> Option<(u32, f32)> {
-        if !self.scene_ready { return None; }
-        let Some(bg) = &self.pick_bind_group else { return None; };
+        if !self.scene_ready {
+            return None;
+        }
+        let Some(bg) = &self.pick_bind_group else {
+            return None;
+        };
 
         let pick_start = std::time::Instant::now();
         log::trace!("PT pick: start origin={:?} dir={:?}", origin, dir);
@@ -2665,7 +3420,9 @@ impl PathTraceCompute {
 
         let slice = self.pick_readback_buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         log::trace!("PT pick: waiting for map");
         // Must wait for map_async callback before rx.recv()
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
@@ -2673,7 +3430,11 @@ impl PathTraceCompute {
 
         let data = slice.get_mapped_range();
         let result = bytemuck::from_bytes::<PickResult>(&data);
-        let hit = if result.hit == 1 { Some((result.object_id, result.t)) } else { None };
+        let hit = if result.hit == 1 {
+            Some((result.object_id, result.t))
+        } else {
+            None
+        };
         drop(data);
         self.pick_readback_buffer.unmap();
         let elapsed_ms = pick_start.elapsed().as_secs_f64() * 1000.0;
@@ -2689,12 +3450,16 @@ impl PathTraceCompute {
         }
         let effective_max = self.effective_max_samples();
         if self.frame_count >= effective_max {
-            log::trace!("PT dispatch: max reached {}/{}", self.frame_count, effective_max);
+            log::trace!(
+                "PT dispatch: max reached {}/{}",
+                self.frame_count,
+                effective_max
+            );
             return false;
         }
 
         let dispatch_start = std::time::Instant::now();
-        
+
         // Clear accum buffer on first frame (after reset)
         if self.frame_count == 0 {
             self.fill_sample_map(queue);
@@ -2705,9 +3470,15 @@ impl PathTraceCompute {
             log::warn!("PT dispatch: bind_group is None!");
             return false;
         };
-        
+
         self.frame_count += 1;
-        log::debug!("PT dispatch: frame {}/{}, {}x{}", self.frame_count, effective_max, self.width, self.height);
+        log::debug!(
+            "PT dispatch: frame {}/{}, {}x{}",
+            self.frame_count,
+            effective_max,
+            self.width,
+            self.height
+        );
 
         let wg_x = self.width.div_ceil(WG_SIZE);
         let wg_y = self.height.div_ceil(WG_SIZE);
@@ -2727,7 +3498,9 @@ impl PathTraceCompute {
 
     /// Blit the path tracer output to a render target with tone mapping.
     pub fn blit(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
-        let Some(bg) = &self.blit_bind_group else { return; };
+        let Some(bg) = &self.blit_bind_group else {
+            return;
+        };
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pt_blit_pass"),

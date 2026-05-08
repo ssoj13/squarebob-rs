@@ -7,30 +7,27 @@
 //! - picking: object ID readback + path mapping
 //! - env_map: environment map loading
 
-pub mod geometry;
-pub mod pipelines;
-pub mod targets;
-pub mod picking;
 pub mod env_map;
+pub mod geometry;
+pub mod picking;
+pub mod pipelines;
 mod pt;
+pub mod targets;
 
-use std::sync::Arc;
 use glam::{Mat4, Vec3, Vec4};
 use log::{debug, info, trace, warn};
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+use dirstat_core::DirEntry;
+use pt_core::bvh::GpuMaterial;
+use pt_mats::{classify_path_filtered, MaterialLibrary, MaterializeMode, MaterializeSettings};
+use render_core::gpu::{self, GpuContext};
 use render_shared::{
-    hash_transform, hash_transform_offset, name_hash,
-    CameraUniform, CubeHeightMode, EnvParamsUniform, HoverMode,
-    HoverParamsUniform, LightRigUniform, MaterialParamsUniform,
+    hash_transform, hash_transform_offset, name_hash, CameraUniform, CubeHeightMode,
+    EnvParamsUniform, HoverMode, HoverParamsUniform, LightRigUniform, MaterialParamsUniform,
     OrbitCamera, Render3DOptions,
 };
-use render_core::gpu::{self, GpuContext};
-use pt_mats::{
-    classify_path_filtered, MaterialLibrary, MaterializeMode, MaterializeSettings,
-};
-use pt_core::bvh::GpuMaterial;
-use dirstat_core::DirEntry;
 use treemap::{self, TreeMapOptions};
 
 use geometry::{CubeInstance, CUBE_INDICES, NUM_INDICES};
@@ -98,9 +95,9 @@ pub struct Renderer3D {
     selected_ids_buf: wgpu::Buffer,
 
     // Static bind groups (don't depend on render targets)
-    pbr_bg0: wgpu::BindGroup,      // Camera + lights + material
-    env_bg: wgpu::BindGroup,       // Env map + sampler + params
-    obj_id_bg0: wgpu::BindGroup,   // Camera only
+    pbr_bg0: wgpu::BindGroup,    // Camera + lights + material
+    env_bg: wgpu::BindGroup,     // Env map + sampler + params
+    obj_id_bg0: wgpu::BindGroup, // Camera only
 
     // Dynamic bind groups (recreated on resize or env map change)
     dyn_bgs: Option<DynamicBindGroups>,
@@ -135,7 +132,7 @@ pub struct Renderer3D {
     cached_opts_hash: u64,
     cached_layout_size: (u32, u32),
     scene_layout_size: Option<(u32, u32)>,
-    
+
     // Selected object IDs for outline rendering
     selected_ids: std::collections::HashSet<u32>,
 }
@@ -181,7 +178,10 @@ fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 }
 
 fn hash_f32(hash: u32, salt: u32) -> f32 {
-    let h = hash.wrapping_mul(1664525).wrapping_add(salt).wrapping_mul(1013904223);
+    let h = hash
+        .wrapping_mul(1664525)
+        .wrapping_add(salt)
+        .wrapping_mul(1013904223);
     (h as f32) / (u32::MAX as f32)
 }
 
@@ -194,15 +194,24 @@ fn mix_material(base: GpuMaterial, glass: GpuMaterial, t: f32) -> GpuMaterial {
         let mut out = glass;
         // Preserve emission so lights remain visible even at full transparency.
         for i in 0..4 {
-            out.emission_color_weight[i] = out.emission_color_weight[i].max(base.emission_color_weight[i]);
+            out.emission_color_weight[i] =
+                out.emission_color_weight[i].max(base.emission_color_weight[i]);
         }
         return out;
     }
     let mut out = GpuMaterial {
         base_color_weight: lerp4(base.base_color_weight, glass.base_color_weight, t),
         specular_color_weight: lerp4(base.specular_color_weight, glass.specular_color_weight, t),
-        transmission_color_weight: lerp4(base.transmission_color_weight, glass.transmission_color_weight, t),
-        subsurface_color_weight: lerp4(base.subsurface_color_weight, glass.subsurface_color_weight, t),
+        transmission_color_weight: lerp4(
+            base.transmission_color_weight,
+            glass.transmission_color_weight,
+            t,
+        ),
+        subsurface_color_weight: lerp4(
+            base.subsurface_color_weight,
+            glass.subsurface_color_weight,
+            t,
+        ),
         coat_color_weight: lerp4(base.coat_color_weight, glass.coat_color_weight, t),
         emission_color_weight: lerp4(base.emission_color_weight, glass.emission_color_weight, t),
         opacity: lerp4(base.opacity, glass.opacity, t),
@@ -210,7 +219,8 @@ fn mix_material(base: GpuMaterial, glass: GpuMaterial, t: f32) -> GpuMaterial {
         params2: lerp4(base.params2, glass.params2, t),
     };
     for i in 0..4 {
-        out.emission_color_weight[i] = out.emission_color_weight[i].max(base.emission_color_weight[i]);
+        out.emission_color_weight[i] =
+            out.emission_color_weight[i].max(base.emission_color_weight[i]);
     }
     out
 }
@@ -367,7 +377,7 @@ impl Renderer3D {
         // Storage buffer for selected IDs (4MB = 1 million objects)
         let selected_ids_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SelectedIds Storage"),
-            size: 4 * 1024 * 1024,  // 4MB = 1M u32 = count + 1M IDs
+            size: 4 * 1024 * 1024, // 4MB = 1M u32 = count + 1M IDs
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -380,9 +390,18 @@ impl Renderer3D {
             label: Some("PBR BG0"),
             layout: &layouts.pbr_group0,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: camera_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: light_rig_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: material_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: light_rig_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: material_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -392,8 +411,14 @@ impl Renderer3D {
             label: Some("ObjID BG0"),
             layout: &layouts.object_id_group0,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: camera_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: selected_ids_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: selected_ids_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -444,7 +469,9 @@ impl Renderer3D {
     }
 
     fn scene_layout_size(&mut self) -> (u32, u32) {
-        *self.scene_layout_size.get_or_insert(DEFAULT_SCENE_LAYOUT_SIZE)
+        *self
+            .scene_layout_size
+            .get_or_insert(DEFAULT_SCENE_LAYOUT_SIZE)
     }
 
     /// Current logical 3D scene size. This is intentionally separate from the render target size.
@@ -502,8 +529,11 @@ impl Renderer3D {
     ) {
         use log::{debug, info, warn};
         let render_start = std::time::Instant::now();
-        info!("=== render_to_view START: {}x{}, PT={}, wire={} ===", width, height, opts.path_tracing, opts.show_wireframe);
-        
+        info!(
+            "=== render_to_view START: {}x{}, PT={}, wire={} ===",
+            width, height, opts.path_tracing, opts.show_wireframe
+        );
+
         // Force xray_alpha = 1.0 for PBR mode (transparency only in PT)
         let mut opts = opts.clone();
         if !opts.path_tracing {
@@ -518,7 +548,8 @@ impl Renderer3D {
                 let frame_count = pt::frame_count(self.pt.pt_backend_kind, self);
                 let snap_interval = 1.0 / opts.pt_target_fps.max(1.0);
                 let elapsed = self.pt.pt_camera_snap_time.elapsed().as_secs_f32();
-                let allow_update = elapsed >= snap_interval || !self.pt.pt_snap_valid || frame_count == 0;
+                let allow_update =
+                    elapsed >= snap_interval || !self.pt.pt_snap_valid || frame_count == 0;
                 if !allow_update {
                     opts.animation_time = self.pt.pt_snap_anim_time;
                     opts.animate = false;
@@ -550,17 +581,31 @@ impl Renderer3D {
         let instances_arc: Arc<Vec<CubeInstance>> = if cache_valid {
             Arc::clone(self.cached_instances.as_ref().unwrap())
         } else {
-            log::debug!("cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
+            log::debug!(
+                "cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
                 opts.animate,
                 self.cached_instances.is_some(),
                 self.cached_opts_hash == opts_hash,
-                self.cached_layout_size == (layout_w, layout_h));
+                self.cached_layout_size == (layout_w, layout_h)
+            );
             // Layout only on cache miss — rect values are already set when cache is valid
-            treemap::layout(root, 0.0, 0.0, layout_w as f32, layout_h as f32, treemap_opts);
+            treemap::layout(
+                root,
+                0.0,
+                0.0,
+                layout_w as f32,
+                layout_h as f32,
+                treemap_opts,
+            );
             let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
             let new_instances = self.collect_cubes(
-                root, opts, treemap_opts, world_center,
-                camera.position(), height as f32, camera.fov,
+                root,
+                opts,
+                treemap_opts,
+                world_center,
+                camera.position(),
+                height as f32,
+                camera.fov,
             );
             // PT scene must be rebuilt to match new object IDs in id_map
             self.pt.pt_scene_dirty = true;
@@ -579,7 +624,10 @@ impl Renderer3D {
         let instances: &[CubeInstance] = instances_arc.as_ref();
 
         self.instance_count = instances.len() as u32;
-        info!("render_to_view: instance_count={}, cache_valid={}", self.instance_count, cache_valid);
+        info!(
+            "render_to_view: instance_count={}, cache_valid={}",
+            self.instance_count, cache_valid
+        );
         if instances.is_empty() {
             warn!("render_to_view: no instances, skipping");
             return;
@@ -587,26 +635,32 @@ impl Renderer3D {
 
         // Upload instances (also when buffer was reset even if cache valid)
         let need_upload = !cache_valid || self.instance_buffer.is_none();
-        info!("render_to_view: need_upload={}, buffer_exists={}", need_upload, self.instance_buffer.is_some());
+        info!(
+            "render_to_view: need_upload={}, buffer_exists={}",
+            need_upload,
+            self.instance_buffer.is_some()
+        );
         if need_upload {
             let _buf_size = instances.len() * std::mem::size_of::<CubeInstance>();
-            let need_realloc = self.instance_buffer.is_none()
-                || instances.len() > self.instance_buffer_capacity;
+            let need_realloc =
+                self.instance_buffer.is_none() || instances.len() > self.instance_buffer_capacity;
             if need_realloc {
                 let new_capacity = (instances.len() * 5 / 4).max(1024);
                 let new_size = new_capacity * std::mem::size_of::<CubeInstance>();
-                self.instance_buffer = Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Instance VBO"),
-                    size: new_size as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
+                self.instance_buffer =
+                    Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Instance VBO"),
+                        size: new_size as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }));
                 self.instance_buffer_capacity = new_capacity;
             }
             if let Some(ref buf) = self.instance_buffer {
-                self.ctx.queue.write_buffer(buf, 0, bytemuck::cast_slice(instances));
+                self.ctx
+                    .queue
+                    .write_buffer(buf, 0, bytemuck::cast_slice(instances));
             }
-
         }
 
         // Match outline/hover uniforms to the *current* cursor: read last frame's object_id buffer
@@ -623,11 +677,17 @@ impl Renderer3D {
 
         self.update_uniforms(camera, opts, width, height, hovered_id);
         let cam_pos = camera.position();
-        info!("render_to_view: camera pos=({:.1},{:.1},{:.1}), dist={:.1}", cam_pos.x, cam_pos.y, cam_pos.z, camera.distance);
+        info!(
+            "render_to_view: camera pos=({:.1},{:.1},{:.1}), dist={:.1}",
+            cam_pos.x, cam_pos.y, cam_pos.z, camera.distance
+        );
 
-        let mut encoder = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("3D Encoder (zero-copy)"),
-        });
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("3D Encoder (zero-copy)"),
+            });
 
         // Path tracing mode
         if opts.path_tracing {
@@ -636,18 +696,29 @@ impl Renderer3D {
             // Arc clone to break borrow conflict (cheap - only refcount bump)
             let instances_pt = Arc::clone(&instances_arc);
             let num_cubes = instances_pt.len();
-            pt::render_path_traced_no_readback(self.pt.pt_backend_kind, self, &instances_pt, camera, opts, width, height);
-            
+            pt::render_path_traced_no_readback(
+                self.pt.pt_backend_kind,
+                self,
+                &instances_pt,
+                camera,
+                opts,
+                width,
+                height,
+            );
+
             // Add outline pass for PT mode (render over PT result)
             if opts.hover_mode != HoverMode::None && hovered_id != 0 {
                 let targets = self.targets.as_ref().unwrap();
                 let dyn_bgs = self.dyn_bgs.as_ref().unwrap();
                 let ib = self.instance_buffer.as_ref().unwrap();
-                
-                let mut enc = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("PT Outline Encoder"),
-                });
-                
+
+                let mut enc =
+                    self.ctx
+                        .device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("PT Outline Encoder"),
+                        });
+
                 // Object ID pass (needed for outline detection)
                 {
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -656,11 +727,17 @@ impl Renderer3D {
                             view: &targets.object_id_view,
                             resolve_target: None,
                             depth_slice: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
                         })],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view: &targets.depth_view,
-                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
                             stencil_ops: None,
                         }),
                         ..Default::default()
@@ -672,7 +749,7 @@ impl Renderer3D {
                     pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                     pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
                 }
-                
+
                 // Outline pass
                 {
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -681,7 +758,10 @@ impl Renderer3D {
                             view: &targets.render_view,
                             resolve_target: None,
                             depth_slice: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
                         })],
                         depth_stencil_attachment: None,
                         ..Default::default()
@@ -690,25 +770,32 @@ impl Renderer3D {
                     pass.set_bind_group(0, &dyn_bgs.outline, &[]);
                     pass.draw(0..3, 0..1);
                 }
-                
+
                 self.ctx.queue.submit(std::iter::once(enc.finish()));
             }
-            
+
             let total_ms = render_start.elapsed().as_secs_f64() * 1000.0;
-            debug!("PT render (zero-copy): {:.2}ms ({} cubes)", total_ms, num_cubes);
+            debug!(
+                "PT render (zero-copy): {:.2}ms ({} cubes)",
+                total_ms, num_cubes
+            );
             return;
         }
 
         // Encode PBR/wireframe passes
         let targets = self.targets.as_ref().unwrap();
         let dyn_bgs = self.dyn_bgs.as_ref().unwrap();
-        info!("render_to_view: calling encode_passes, targets {:?}", targets.size);
+        info!(
+            "render_to_view: calling encode_passes, targets {:?}",
+            targets.size
+        );
         self.encode_passes(&mut encoder, targets, dyn_bgs, opts, hovered_id);
         info!("render_to_view: encode_passes done, submitting");
 
         // Submit picking readback (uses pending_pick set by set_mouse_pos)
         let targets = self.targets.as_ref().unwrap();
-        self.picking.submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
+        self.picking
+            .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
 
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
 
@@ -716,8 +803,19 @@ impl Renderer3D {
         self.picking.poll_result(&self.ctx.device);
 
         let total_ms = render_start.elapsed().as_secs_f64() * 1000.0;
-        let mode = if opts.show_wireframe { "Wire" } else if opts.xray_alpha < 1.0 { "XRay" } else { "PBR" };
-        info!("{} render (zero-copy): {:.2}ms ({} cubes)", mode, total_ms, instances.len());
+        let mode = if opts.show_wireframe {
+            "Wire"
+        } else if opts.xray_alpha < 1.0 {
+            "XRay"
+        } else {
+            "PBR"
+        };
+        info!(
+            "{} render (zero-copy): {:.2}ms ({} cubes)",
+            mode,
+            total_ms,
+            instances.len()
+        );
     }
 
     // NOTE: render_to_command_buffer and render_path_traced_to_buffer removed (unused callback path)
@@ -731,8 +829,10 @@ impl Renderer3D {
         width: u32,
         height: u32,
     ) {
-        pt::megakernel::render_path_traced_no_readback(self, instances, camera, opts, width, height);
-}
+        pt::megakernel::render_path_traced_no_readback(
+            self, instances, camera, opts, width, height,
+        );
+    }
 
     // ========================================================================
     // Bind group helpers
@@ -748,9 +848,18 @@ impl Renderer3D {
             label: Some("Env BG"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&env.view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&env.sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: env_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&env.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&env.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: env_params_buf.as_entire_binding(),
+                },
             ],
         })
     }
@@ -758,7 +867,10 @@ impl Renderer3D {
     /// Call after loading a new env map to update bind groups
     pub fn on_env_map_changed(&mut self) {
         self.env_bg = Self::create_env_bind_group(
-            &self.ctx.device, &self.layouts.env, &self.env, &self.env_params_buf,
+            &self.ctx.device,
+            &self.layouts.env,
+            &self.env,
+            &self.env_params_buf,
         );
         // Force dynamic bind group recreation (skybox references env)
         self.dyn_bgs = None;
@@ -781,9 +893,14 @@ impl Renderer3D {
             self.picking.ensure_readback(device, w);
 
             self.dyn_bgs = Some(DynamicBindGroups::new(
-                device, &self.layouts, &targets,
-                &self.camera_buf, &self.hover_params_buf,
-                &self.env.view, &self.env.sampler, &self.env_params_buf,
+                device,
+                &self.layouts,
+                &targets,
+                &self.camera_buf,
+                &self.hover_params_buf,
+                &self.env.view,
+                &self.env.sampler,
+                &self.env_params_buf,
             ));
 
             self.targets = Some(targets);
@@ -791,9 +908,14 @@ impl Renderer3D {
             // Recreate dynamic bind groups (e.g. after env map change)
             let targets = self.targets.as_ref().unwrap();
             self.dyn_bgs = Some(DynamicBindGroups::new(
-                &self.ctx.device, &self.layouts, targets,
-                &self.camera_buf, &self.hover_params_buf,
-                &self.env.view, &self.env.sampler, &self.env_params_buf,
+                &self.ctx.device,
+                &self.layouts,
+                targets,
+                &self.camera_buf,
+                &self.hover_params_buf,
+                &self.env.view,
+                &self.env.sampler,
+                &self.env_params_buf,
             ));
         }
     }
@@ -815,24 +937,53 @@ impl Renderer3D {
     ) -> Vec<CubeInstance> {
         let start = std::time::Instant::now();
         let need_picking = opts.hover_mode != HoverMode::None || opts.path_tracing;
-        if need_picking { self.picking.reset_frame(); }
+        if need_picking {
+            self.picking.reset_frame();
+        }
         let mut instances = Vec::new();
         let lod_ctx = if opts.lod_enabled {
             Some((camera_eye, screen_height, fov, opts.lod_min_screen_size))
         } else {
             None
         };
-        self.collect_recursive(root, 0, 0, opts, treemap_opts, world_center, need_picking, lod_ctx, &mut instances);
+        self.collect_recursive(
+            root,
+            0,
+            0,
+            opts,
+            treemap_opts,
+            world_center,
+            need_picking,
+            lod_ctx,
+            &mut instances,
+        );
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-        log::debug!("collect_cubes: {:.2}ms ({} cubes)", elapsed_ms, instances.len());
+        log::debug!(
+            "collect_cubes: {:.2}ms ({} cubes)",
+            elapsed_ms,
+            instances.len()
+        );
         // Log first instance for debugging
         if let Some(first) = instances.first() {
             let m = &first.model;
-            log::trace!("  first cube: model[0]=({:.1},{:.1},{:.1},{:.1}), color=({:.2},{:.2},{:.2},{:.2})",
-                m[0][0], m[0][1], m[0][2], m[0][3],
-                first.color[0], first.color[1], first.color[2], first.color[3]);
-            log::trace!("  first cube: model[3]=({:.1},{:.1},{:.1},{:.1}) (translation column)",
-                m[3][0], m[3][1], m[3][2], m[3][3]);
+            log::trace!(
+                "  first cube: model[0]=({:.1},{:.1},{:.1},{:.1}), color=({:.2},{:.2},{:.2},{:.2})",
+                m[0][0],
+                m[0][1],
+                m[0][2],
+                m[0][3],
+                first.color[0],
+                first.color[1],
+                first.color[2],
+                first.color[3]
+            );
+            log::trace!(
+                "  first cube: model[3]=({:.1},{:.1},{:.1},{:.1}) (translation column)",
+                m[3][0],
+                m[3][1],
+                m[3][2],
+                m[3][3]
+            );
         }
         instances
     }
@@ -841,10 +992,18 @@ impl Renderer3D {
     fn compute_cube_height(node: &DirEntry, depth: u32, opts: &Render3DOptions) -> f32 {
         let mut height_value = match opts.height_mode {
             CubeHeightMode::FileSize => {
-                if node.size > 0 { (node.size as f32).log2().max(1.0) } else { 1.0 }
+                if node.size > 0 {
+                    (node.size as f32).log2().max(1.0)
+                } else {
+                    1.0
+                }
             }
             CubeHeightMode::OwnSize => {
-                if node.own_size > 0 { (node.own_size as f32).log2().max(1.0) } else { 1.0 }
+                if node.own_size > 0 {
+                    (node.own_size as f32).log2().max(1.0)
+                } else {
+                    1.0
+                }
             }
             CubeHeightMode::FileCount => (node.file_count.max(1) as f32).log2().max(1.0),
             CubeHeightMode::DirCount => (node.dir_count.max(1) as f32).log2().max(1.0),
@@ -874,7 +1033,7 @@ impl Renderer3D {
         if height_power != 1.0 {
             height_value = height_value.max(0.0).powf(height_power);
         }
-        
+
         match opts.height_mode {
             CubeHeightMode::FileSize
             | CubeHeightMode::OwnSize
@@ -902,7 +1061,9 @@ impl Renderer3D {
         out: &mut Vec<CubeInstance>,
     ) {
         let [x, y, w, h] = node.rect.get();
-        if w < 1.0 || h < 1.0 || node.size == 0 { return; }
+        if w < 1.0 || h < 1.0 || node.size == 0 {
+            return;
+        }
 
         let too_small = w < treemap::MIN_RECT_SIZE || h < treemap::MIN_RECT_SIZE;
 
@@ -912,8 +1073,8 @@ impl Renderer3D {
 
             // Determine base color based on color_mode
             use render_shared::{
-                ColorMode, FolderColorMode, color_for_extension, color_for_age,
-                color_for_size, color_for_depth, color_for_hash,
+                color_for_age, color_for_depth, color_for_extension, color_for_hash,
+                color_for_size, ColorMode, FolderColorMode,
             };
             let mut base_color = match opts.color_mode {
                 ColorMode::FileType => {
@@ -939,7 +1100,8 @@ impl Renderer3D {
                 ColorMode::FileSize => {
                     // Color by file size (log scale normalized)
                     let size_norm = if node.size > 0 {
-                        ((node.size as f64).log10() / 12.0).clamp(0.0, 1.0) as f32  // 0-1TB range
+                        ((node.size as f64).log10() / 12.0).clamp(0.0, 1.0) as f32
+                    // 0-1TB range
                     } else {
                         0.0
                     };
@@ -968,20 +1130,36 @@ impl Renderer3D {
             // Folder tint: directories get a folder color, files are tinted by parent folder color
             let folder_tint = opts.folder_tint.clamp(0.0, 1.0);
             if folder_tint > 0.0 || node.is_dir {
-                let folder_depth = if node.is_dir { depth } else { depth.saturating_sub(1) };
-                let parent_name_hash = node.path.parent()
+                let folder_depth = if node.is_dir {
+                    depth
+                } else {
+                    depth.saturating_sub(1)
+                };
+                let parent_name_hash = node
+                    .path
+                    .parent()
                     .and_then(|p| p.file_name())
                     .map(|n| name_hash(&n.to_string_lossy()))
                     .unwrap_or(dir_hash);
-                let parent_path_hash = node.path.parent()
+                let parent_path_hash = node
+                    .path
+                    .parent()
                     .map(|p| name_hash(&p.to_string_lossy()))
                     .unwrap_or(dir_hash);
                 let dir_name_hash = name_hash(&node.name);
                 let dir_path_hash = name_hash(&node.path.to_string_lossy());
                 let mut folder_color = match opts.folder_color_mode {
                     FolderColorMode::Depth => color_for_depth(folder_depth, 10),
-                    FolderColorMode::NameHash => color_for_hash(if node.is_dir { dir_name_hash } else { parent_name_hash }),
-                    FolderColorMode::PathHash => color_for_hash(if node.is_dir { dir_path_hash } else { parent_path_hash }),
+                    FolderColorMode::NameHash => color_for_hash(if node.is_dir {
+                        dir_name_hash
+                    } else {
+                        parent_name_hash
+                    }),
+                    FolderColorMode::PathHash => color_for_hash(if node.is_dir {
+                        dir_path_hash
+                    } else {
+                        parent_path_hash
+                    }),
                 };
                 let depth_factor = (1.0 - folder_depth as f32 * 0.04).clamp(0.35, 1.0);
                 folder_color[0] *= depth_factor;
@@ -1010,7 +1188,8 @@ impl Renderer3D {
             };
 
             let allow_dirs = opts.mat_include_dirs || !node.is_dir;
-            let materialized_color = if opts.materialize_mode != MaterializeMode::None && allow_dirs {
+            let materialized_color = if opts.materialize_mode != MaterializeMode::None && allow_dirs
+            {
                 let mat_class = classify_path_filtered(
                     &node.path,
                     node.size,
@@ -1069,8 +1248,12 @@ impl Renderer3D {
             }
 
             let transform = hash_transform(
-                &node.name, pos, world_center,
-                opts.hash_effect, opts.hash_effect_strength, opts.animation_time,
+                &node.name,
+                pos,
+                world_center,
+                opts.hash_effect,
+                opts.hash_effect_strength,
+                opts.animation_time,
             );
 
             // Build model matrix: translate -> rotate -> scale
@@ -1079,12 +1262,26 @@ impl Renderer3D {
                 * Mat4::from_scale(Vec3::new(w.max(0.5), h.max(0.5), base_height.max(0.5)));
 
             let hash = name_hash(&node.name);
-            let oid = if need_picking { self.picking.alloc_id(&node.path, node.size, node.is_dir) } else { 0 };
+            let oid = if need_picking {
+                self.picking.alloc_id(&node.path, node.size, node.is_dir)
+            } else {
+                0
+            };
             out.push(CubeInstance::new(model, color_f, hash, oid));
         } else {
             let my_hash = treemap::path_hash(&node.name, dir_hash);
             for child in &node.children {
-                self.collect_recursive(child, depth + 1, my_hash, opts, _treemap_opts, world_center, need_picking, lod_ctx, out);
+                self.collect_recursive(
+                    child,
+                    depth + 1,
+                    my_hash,
+                    opts,
+                    _treemap_opts,
+                    world_center,
+                    need_picking,
+                    lod_ctx,
+                    out,
+                );
             }
         }
     }
@@ -1106,11 +1303,20 @@ impl Renderer3D {
         screen_x: f32,
         screen_y: f32,
     ) -> Option<CpuPickHit> {
-        if width == 0 || height == 0 { return None; }
+        if width == 0 || height == 0 {
+            return None;
+        }
 
         // Ensure layout matches the logical 3D scene, not the current render target size.
         let (layout_w, layout_h) = self.current_scene_layout_size();
-        treemap::layout(root, 0.0, 0.0, layout_w as f32, layout_h as f32, treemap_opts);
+        treemap::layout(
+            root,
+            0.0,
+            0.0,
+            layout_w as f32,
+            layout_h as f32,
+            treemap_opts,
+        );
 
         let rel_x = (screen_x / width as f32).clamp(0.0, 1.0);
         let rel_y = (screen_y / height as f32).clamp(0.0, 1.0);
@@ -1134,11 +1340,23 @@ impl Renderer3D {
 
         let ray_origin = near_world;
         let ray_dir = (far_world - near_world).normalize_or_zero();
-        if ray_dir == Vec3::ZERO { return None; }
+        if ray_dir == Vec3::ZERO {
+            return None;
+        }
 
         let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
         let mut hit: Option<CpuPickHit> = None;
-        self.pick_recursive(root, 0, 0, opts, treemap_opts, world_center, ray_origin, ray_dir, &mut hit);
+        self.pick_recursive(
+            root,
+            0,
+            0,
+            opts,
+            treemap_opts,
+            world_center,
+            ray_origin,
+            ray_dir,
+            &mut hit,
+        );
         hit
     }
 
@@ -1156,7 +1374,9 @@ impl Renderer3D {
         hit: &mut Option<CpuPickHit>,
     ) {
         let [x, y, w, h] = node.rect.get();
-        if w < 1.0 || h < 1.0 || node.size == 0 { return; }
+        if w < 1.0 || h < 1.0 || node.size == 0 {
+            return;
+        }
 
         let too_small = w < treemap::MIN_RECT_SIZE || h < treemap::MIN_RECT_SIZE;
 
@@ -1165,8 +1385,12 @@ impl Renderer3D {
 
             let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
             let offset = hash_transform_offset(
-                &node.name, pos, world_center,
-                opts.hash_effect, opts.hash_effect_strength, opts.animation_time,
+                &node.name,
+                pos,
+                world_center,
+                opts.hash_effect,
+                opts.hash_effect_strength,
+                opts.animation_time,
             );
             let center = pos + offset;
             let scale = Vec3::new(w.max(0.5), h.max(0.5), base_height.max(0.5));
@@ -1186,7 +1410,17 @@ impl Renderer3D {
         } else {
             let my_hash = treemap::path_hash(&node.name, dir_hash);
             for child in &node.children {
-                self.pick_recursive(child, depth + 1, my_hash, opts, _treemap_opts, world_center, ray_origin, ray_dir, hit);
+                self.pick_recursive(
+                    child,
+                    depth + 1,
+                    my_hash,
+                    opts,
+                    _treemap_opts,
+                    world_center,
+                    ray_origin,
+                    ray_dir,
+                    hit,
+                );
             }
         }
     }
@@ -1209,61 +1443,82 @@ impl Renderer3D {
         let view = camera.view_matrix();
         let pos = camera.position();
 
-        q.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&CameraUniform {
-            view_proj: vp.to_cols_array_2d(),
-            view: view.to_cols_array_2d(),
-            inv_view_proj: vp.inverse().to_cols_array_2d(),
-            position: [pos.x, pos.y, pos.z],
-            xray_alpha: opts.xray_alpha,
-            flat_shading: if opts.flat_shading { 1.0 } else { 0.0 },
-            slice_enabled: if opts.slice_enabled { 1.0 } else { 0.0 },
-            slice_position: compute_slice_position(opts),
-            slice_invert: if opts.slice_invert { 1.0 } else { 0.0 },
-            slice_normal: compute_slice_normal(opts),
-            _pad: [0.0; 5],
-        }));
+        q.write_buffer(
+            &self.camera_buf,
+            0,
+            bytemuck::bytes_of(&CameraUniform {
+                view_proj: vp.to_cols_array_2d(),
+                view: view.to_cols_array_2d(),
+                inv_view_proj: vp.inverse().to_cols_array_2d(),
+                position: [pos.x, pos.y, pos.z],
+                xray_alpha: opts.xray_alpha,
+                flat_shading: if opts.flat_shading { 1.0 } else { 0.0 },
+                slice_enabled: if opts.slice_enabled { 1.0 } else { 0.0 },
+                slice_position: compute_slice_position(opts),
+                slice_invert: if opts.slice_invert { 1.0 } else { 0.0 },
+                slice_normal: compute_slice_normal(opts),
+                _pad: [0.0; 5],
+            }),
+        );
 
         q.write_buffer(&self.light_rig_buf, 0, bytemuck::bytes_of(&self.light_rig));
 
-        q.write_buffer(&self.material_buf, 0, bytemuck::bytes_of(&MaterialParamsUniform {
-            roughness: opts.roughness,
-            metalness: opts.metalness,
-            specular_ior: opts.specular_ior,
-            specular_weight: 1.0,
-        }));
+        q.write_buffer(
+            &self.material_buf,
+            0,
+            bytemuck::bytes_of(&MaterialParamsUniform {
+                roughness: opts.roughness,
+                metalness: opts.metalness,
+                specular_ior: opts.specular_ior,
+                specular_weight: 1.0,
+            }),
+        );
 
-        q.write_buffer(&self.env_params_buf, 0, bytemuck::bytes_of(&EnvParamsUniform {
-            intensity: opts.env_map_intensity,
-            rotation: opts.env_map_rotation,
-            enabled: if opts.env_map_enabled { 1.0 } else { 0.0 },
-            _pad: 0.0,
-        }));
+        q.write_buffer(
+            &self.env_params_buf,
+            0,
+            bytemuck::bytes_of(&EnvParamsUniform {
+                intensity: opts.env_map_intensity,
+                rotation: opts.env_map_rotation,
+                enabled: if opts.env_map_enabled { 1.0 } else { 0.0 },
+                _pad: 0.0,
+            }),
+        );
 
         // Update selected IDs storage buffer: [count, id0, id1, ...]
         let selected_data: Vec<u32> = std::iter::once(self.selected_ids.len() as u32)
             .chain(self.selected_ids.iter().copied())
             .collect();
-        q.write_buffer(&self.selected_ids_buf, 0, bytemuck::cast_slice(&selected_data));
+        q.write_buffer(
+            &self.selected_ids_buf,
+            0,
+            bytemuck::cast_slice(&selected_data),
+        );
 
         // Determine active ID for outline: prefer selected (if any), else hovered
-        let (active_id, outline_color) = if let Some(&first_selected) = self.selected_ids.iter().next() {
-            // Selected: use blue color
-            (first_selected, [0.2, 0.6, 1.0, opts.hover_outline_alpha])
-        } else {
-            // Hovered: use orange color
-            (hovered_id, [1.0, 0.5, 0.0, opts.hover_outline_alpha])
-        };
-        
-        q.write_buffer(&self.hover_params_buf, 0, bytemuck::bytes_of(&HoverParamsUniform {
-            hovered_id: active_id,
-            mode: opts.hover_mode.to_u32(),
-            outline_width: opts.hover_outline_width,
-            _pad0: 0.0,
-            outline_color,
-            tint_color: [1.0, 0.7, 0.2, 0.15],
-            viewport_size: [width as f32, height as f32],
-            _pad1: [0.0; 2],
-        }));
+        let (active_id, outline_color) =
+            if let Some(&first_selected) = self.selected_ids.iter().next() {
+                // Selected: use blue color
+                (first_selected, [0.2, 0.6, 1.0, opts.hover_outline_alpha])
+            } else {
+                // Hovered: use orange color
+                (hovered_id, [1.0, 0.5, 0.0, opts.hover_outline_alpha])
+            };
+
+        q.write_buffer(
+            &self.hover_params_buf,
+            0,
+            bytemuck::bytes_of(&HoverParamsUniform {
+                hovered_id: active_id,
+                mode: opts.hover_mode.to_u32(),
+                outline_width: opts.hover_outline_width,
+                _pad0: 0.0,
+                outline_color,
+                tint_color: [1.0, 0.7, 0.2, 0.15],
+                viewport_size: [width as f32, height as f32],
+                _pad1: [0.0; 2],
+            }),
+        );
     }
 
     // ========================================================================
@@ -1279,7 +1534,11 @@ impl Renderer3D {
         opts: &Render3DOptions,
         hovered_id: u32,
     ) {
-        log::trace!("encode_passes: START, instance_count={}, buffer_cap={}", self.instance_count, self.instance_buffer_capacity);
+        log::trace!(
+            "encode_passes: START, instance_count={}, buffer_cap={}",
+            self.instance_count,
+            self.instance_buffer_capacity
+        );
         let ib = match self.instance_buffer.as_ref() {
             Some(b) => {
                 log::trace!("encode_passes: instance_buffer size={}", b.size());
@@ -1329,9 +1588,14 @@ impl Renderer3D {
             } else {
                 "pbr"
             };
-            log::trace!("encode_passes: using {} pipeline, {} instances, xray={}, double={}", 
-                pipe_name, self.instance_count, opts.xray_alpha, opts.double_sided);
-            
+            log::trace!(
+                "encode_passes: using {} pipeline, {} instances, xray={}, double={}",
+                pipe_name,
+                self.instance_count,
+                opts.xray_alpha,
+                opts.double_sided
+            );
+
             let pipe = if opts.show_wireframe {
                 &self.pipes.wireframe
             } else if opts.xray_alpha < 1.0 {
@@ -1348,7 +1612,11 @@ impl Renderer3D {
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_vertex_buffer(1, ib.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            log::trace!("encode_passes: draw_indexed indices=0..{}, instances=0..{}", NUM_INDICES, self.instance_count);
+            log::trace!(
+                "encode_passes: draw_indexed indices=0..{}, instances=0..{}",
+                NUM_INDICES,
+                self.instance_count
+            );
             pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
             log::trace!("encode_passes: Pass 1 (Main) DONE");
         }
@@ -1361,11 +1629,17 @@ impl Renderer3D {
                     view: &targets.render_view,
                     resolve_target: None,
                     depth_slice: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Discard }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Discard,
+                    }),
                     stencil_ops: None,
                 }),
                 ..Default::default()
@@ -1391,7 +1665,7 @@ impl Renderer3D {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),  // Fresh depth for correct picking
+                        load: wgpu::LoadOp::Clear(1.0), // Fresh depth for correct picking
                         store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
@@ -1412,7 +1686,12 @@ impl Renderer3D {
 
         // Pass 4: Outline/tint overlay (fullscreen post-process)
         let has_active = !self.selected_ids.is_empty() || hovered_id != 0;
-        info!("encode_passes: outline condition hover_mode={:?}, hovered_id={}, selected={}", opts.hover_mode, hovered_id, self.selected_ids.len());
+        info!(
+            "encode_passes: outline condition hover_mode={:?}, hovered_id={}, selected={}",
+            opts.hover_mode,
+            hovered_id,
+            self.selected_ids.len()
+        );
         if opts.hover_mode != HoverMode::None && has_active {
             info!("encode_passes: RENDERING OUTLINE PASS");
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1421,7 +1700,10 @@ impl Renderer3D {
                     view: &targets.render_view,
                     resolve_target: None,
                     depth_slice: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 ..Default::default()
@@ -1454,7 +1736,7 @@ impl Renderer3D {
     pub fn set_hovered_id(&mut self, id: u32) {
         self.picking.hovered_id = id;
     }
-    
+
     /// Set selected object IDs for outline rendering
     pub fn set_selected_ids(&mut self, ids: &std::collections::HashSet<u32>) {
         self.selected_ids = ids.clone();
@@ -1474,12 +1756,18 @@ impl Renderer3D {
     /// Use when only the mouse moved but the scene (camera, geometry, options) is unchanged.
     pub fn pick_from_existing(&mut self) {
         let Some(targets) = &self.targets else { return };
-        if self.instance_count == 0 { return }
+        if self.instance_count == 0 {
+            return;
+        }
 
-        let mut encoder = self.ctx.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("Pick-only readback") },
-        );
-        self.picking.submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Pick-only readback"),
+            });
+        self.picking
+            .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
         self.picking.poll_result(&self.ctx.device);
     }
@@ -1495,19 +1783,36 @@ impl Renderer3D {
     }
 
     fn pt_frame_count_impl(&self) -> u32 {
-        self.pt.path_tracer.as_ref().map(|pt| pt.frame_count).unwrap_or(0)
+        self.pt
+            .path_tracer
+            .as_ref()
+            .map(|pt| pt.frame_count)
+            .unwrap_or(0)
     }
 
     /// Read back current render texture pixels (for screenshots)
     pub fn readback_render_texture(&self) -> Vec<u8> {
-        let Some(targets) = &self.targets else { return Vec::new(); };
+        let Some(targets) = &self.targets else {
+            return Vec::new();
+        };
         let (width, height) = targets.size;
-        if width == 0 || height == 0 { return Vec::new(); }
+        if width == 0 || height == 0 {
+            return Vec::new();
+        }
 
-        let mut encoder = self.ctx.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("Readback Encoder") }
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Readback Encoder"),
+            });
+        let output_buffer = gpu::readback_texture(
+            &self.ctx,
+            &mut encoder,
+            &targets.render_texture,
+            width,
+            height,
         );
-        let output_buffer = gpu::readback_texture(&self.ctx, &mut encoder, &targets.render_texture, width, height);
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
         gpu::map_readback(&self.ctx, &output_buffer, width, height)
     }
@@ -1520,7 +1825,9 @@ impl Renderer3D {
         screen_x: f32,
         screen_y: f32,
     ) -> Option<(Vec3, Vec3)> {
-        if width == 0 || height == 0 { return None; }
+        if width == 0 || height == 0 {
+            return None;
+        }
         let rel_x = (screen_x / width as f32).clamp(0.0, 1.0);
         let rel_y = (screen_y / height as f32).clamp(0.0, 1.0);
 
@@ -1542,7 +1849,9 @@ impl Renderer3D {
 
         let ray_origin = near_world;
         let ray_dir = (far_world - near_world).normalize_or_zero();
-        if ray_dir == Vec3::ZERO { return None; }
+        if ray_dir == Vec3::ZERO {
+            return None;
+        }
         Some((ray_origin, ray_dir))
     }
 
@@ -1553,7 +1862,12 @@ impl Renderer3D {
 
     fn pt_pick_impl(&mut self, origin: Vec3, dir: Vec3) -> Option<(u32, f32)> {
         let pt = self.pt.path_tracer.as_mut()?;
-        pt.gpu_pick(&self.ctx.device, &self.ctx.queue, origin.to_array(), dir.to_array())
+        pt.gpu_pick(
+            &self.ctx.device,
+            &self.ctx.queue,
+            origin.to_array(),
+            dir.to_array(),
+        )
     }
 
     /// Look up path for an object ID
@@ -1584,7 +1898,7 @@ impl Renderer3D {
         let sz = m.col(2).truncate().length();
         Some((center, glam::Vec3::new(sx, sy, sz)))
     }
-    
+
     /// Get all cached instances (for marquee selection)
     pub fn cached_instances(&self) -> Option<&Vec<geometry::CubeInstance>> {
         self.cached_instances.as_deref()
@@ -1601,7 +1915,9 @@ impl Renderer3D {
         treemap_opts: &TreeMapOptions,
     ) -> Vec<u8> {
         let render_start = std::time::Instant::now();
-        if width == 0 || height == 0 { return vec![]; }
+        if width == 0 || height == 0 {
+            return vec![];
+        }
 
         let hovered_id = self.picking.hovered_id;
 
@@ -1613,7 +1929,8 @@ impl Renderer3D {
                 let frame_count = pt::frame_count(self.pt.pt_backend_kind, self);
                 let snap_interval = 1.0 / opts.pt_target_fps.max(1.0);
                 let elapsed = self.pt.pt_camera_snap_time.elapsed().as_secs_f32();
-                let allow_update = elapsed >= snap_interval || !self.pt.pt_snap_valid || frame_count == 0;
+                let allow_update =
+                    elapsed >= snap_interval || !self.pt.pt_snap_valid || frame_count == 0;
                 if !allow_update {
                     opts.animation_time = self.pt.pt_snap_anim_time;
                     opts.animate = false;
@@ -1642,18 +1959,32 @@ impl Renderer3D {
             // Reuse cached instances
             self.cached_instances.as_ref().unwrap()
         } else {
-            log::debug!("PT cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
+            log::debug!(
+                "PT cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
                 opts.animate,
                 self.cached_instances.is_some(),
                 self.cached_opts_hash == opts_hash,
-                self.cached_layout_size == (layout_w, layout_h));
+                self.cached_layout_size == (layout_w, layout_h)
+            );
             // Layout only on cache miss — rect values are already set when cache is valid
-            treemap::layout(root, 0.0, 0.0, layout_w as f32, layout_h as f32, treemap_opts);
+            treemap::layout(
+                root,
+                0.0,
+                0.0,
+                layout_w as f32,
+                layout_h as f32,
+                treemap_opts,
+            );
             // Collect new instances (this rebuilds id_map with new IDs)
             let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
             let new_instances = self.collect_cubes(
-                root, opts, treemap_opts, world_center,
-                camera.position(), height as f32, camera.fov,
+                root,
+                opts,
+                treemap_opts,
+                world_center,
+                camera.position(),
+                height as f32,
+                camera.fov,
             );
             // PT scene must be rebuilt to match new object IDs in id_map
             self.pt.pt_scene_dirty = true;
@@ -1680,49 +2011,70 @@ impl Renderer3D {
 
         let buf_size = instances.len() * std::mem::size_of::<CubeInstance>();
         if buf_size > 128 * 1024 * 1024 {
-            warn!("Instance buffer {} MB exceeds 128 MB GPU limit!", buf_size / 1048576);
+            warn!(
+                "Instance buffer {} MB exceeds 128 MB GPU limit!",
+                buf_size / 1048576
+            );
         }
 
         // Only update GPU buffer if instances changed
         if !cache_valid {
             let upload_start = std::time::Instant::now();
             // Reuse buffer if capacity is sufficient, otherwise reallocate
-            let need_realloc = self.instance_buffer.is_none()
-                || instances.len() > self.instance_buffer_capacity;
+            let need_realloc =
+                self.instance_buffer.is_none() || instances.len() > self.instance_buffer_capacity;
 
             if need_realloc {
                 // Allocate with 25% growth factor to avoid frequent reallocs
                 let new_capacity = (instances.len() * 5 / 4).max(1024);
                 let new_size = new_capacity * std::mem::size_of::<CubeInstance>();
-                self.instance_buffer = Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Instance VBO"),
-                    size: new_size as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
+                self.instance_buffer =
+                    Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Instance VBO"),
+                        size: new_size as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }));
                 self.instance_buffer_capacity = new_capacity;
             }
 
             // Update buffer contents
             if let Some(ref buf) = self.instance_buffer {
-                self.ctx.queue.write_buffer(buf, 0, bytemuck::cast_slice(instances));
+                self.ctx
+                    .queue
+                    .write_buffer(buf, 0, bytemuck::cast_slice(instances));
             }
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
-            debug!("buffer_upload: {:.2}ms ({:.2} MB)", upload_ms, buf_size as f64 / 1048576.0);
+            debug!(
+                "buffer_upload: {:.2}ms ({:.2} MB)",
+                upload_ms,
+                buf_size as f64 / 1048576.0
+            );
         }
 
         self.update_uniforms(camera, opts, width, height, hovered_id);
 
-        let mut encoder = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("3D Encoder"),
-        });
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("3D Encoder"),
+            });
 
         // Path tracing mode
         if opts.path_tracing {
             drop(encoder);
             // Arc clone to break borrow conflict (cheap - only refcount bump)
             let instances_arc = Arc::clone(instances);
-            return pt::render_path_traced(self.pt.pt_backend_kind, self, &instances_arc, camera, opts, width, height);
+            return pt::render_path_traced(
+                self.pt.pt_backend_kind,
+                self,
+                &instances_arc,
+                camera,
+                opts,
+                width,
+                height,
+            );
         }
 
         // We need targets and dyn_bgs — borrow them safely
@@ -1735,11 +2087,16 @@ impl Renderer3D {
 
         // Submit picking readback
         let targets = self.targets.as_ref().unwrap();
-        self.picking.submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
+        self.picking
+            .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
 
         let targets = self.targets.as_ref().unwrap();
         let output_buffer = gpu::readback_texture(
-            &self.ctx, &mut encoder, &targets.render_texture, width, height,
+            &self.ctx,
+            &mut encoder,
+            &targets.render_texture,
+            width,
+            height,
         );
 
         let submit_start = std::time::Instant::now();
@@ -1756,8 +2113,19 @@ impl Renderer3D {
         debug!("  readback: {:.2}ms ({}x{})", readback_ms, width, height);
 
         let total_ms = render_start.elapsed().as_secs_f64() * 1000.0;
-        let render_mode = if opts.show_wireframe { "Wireframe" } else if opts.xray_alpha < 1.0 { "Transparent" } else { "PBR" };
-        info!("PBR render: {:.2}ms ({} cubes, {})", total_ms, instances.len(), render_mode);
+        let render_mode = if opts.show_wireframe {
+            "Wireframe"
+        } else if opts.xray_alpha < 1.0 {
+            "Transparent"
+        } else {
+            "PBR"
+        };
+        info!(
+            "PBR render: {:.2}ms ({} cubes, {})",
+            total_ms,
+            instances.len(),
+            render_mode
+        );
 
         result
     }
@@ -1772,7 +2140,7 @@ impl Renderer3D {
         height: u32,
     ) -> Vec<u8> {
         pt::megakernel::render_path_traced(self, instances, camera, opts, width, height)
-}
+    }
 }
 
 fn ray_aabb_intersect(ray_origin: Vec3, ray_dir: Vec3, min: Vec3, max: Vec3) -> Option<f32> {

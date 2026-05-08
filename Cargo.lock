@@ -2882,6 +2882,7 @@ version = "0.1.0"
 dependencies = [
  "bvh-gpu",
  "bytemuck",
+ "glam",
  "log",
  "pt-core",
  "pt-wavefront",

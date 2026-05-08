@@ -86,6 +86,28 @@ struct EnvParams {
     time: f32,  // for procedural sky day/night cycle
 };
 
+struct EmissiveLight {
+    center_area: vec4<f32>,
+    axis_x: vec4<f32>,
+    axis_y: vec4<f32>,
+    axis_z: vec4<f32>,
+    emission_weight: vec4<f32>,
+    meta: vec4<u32>,
+};
+
+struct EmissiveLightParams {
+    params0: vec4<u32>, // enabled, samples_per_hit, light_count, reserved
+    params1: vec4<f32>, // min_weight, total_weight, reserved
+};
+
+struct EmissiveLightSample {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    emission: vec3<f32>,
+    pdf_area: f32,
+    instance_idx: u32,
+};
+
 struct VarianceData {
     mean: vec3<f32>,
     _pad0: u32,
@@ -106,6 +128,8 @@ struct VarianceData {
 @group(0) @binding(10) var<storage, read> env_conditional_cdf: array<f32>;
 @group(0) @binding(11) var<storage, read> sample_map: array<u32>;
 @group(0) @binding(12) var<storage, read_write> variance: array<VarianceData>;
+@group(0) @binding(13) var<storage, read> emissive_lights: array<EmissiveLight>;
+@group(0) @binding(14) var<uniform> emissive_light_params: EmissiveLightParams;
 
 const MAX_STACK_DEPTH: u32 = 32u;
 const T_MAX: f32 = 1e30;
@@ -580,6 +604,75 @@ fn pdf_ggx(ndoth: f32, hdotv: f32, alpha: f32) -> f32 {
     return d * ndoth / (4.0 * hdotv + EPSILON);
 }
 
+fn sample_emissive_light(rng: ptr<function, u32>) -> EmissiveLightSample {
+    let light_count = emissive_light_params.params0.z;
+    let total_weight = max(emissive_light_params.params1.y, EPSILON);
+    var target = rand(rng) * total_weight;
+    var selected = emissive_lights[0];
+    for (var i = 0u; i < light_count; i++) {
+        let candidate = emissive_lights[i];
+        let weight = max(candidate.emission_weight.w, 0.0);
+        if target <= weight || i == light_count - 1u {
+            selected = candidate;
+            break;
+        }
+        target -= weight;
+    }
+
+    let center = selected.center_area.xyz;
+    let axis_x = selected.axis_x.xyz;
+    let axis_y = selected.axis_y.xyz;
+    let axis_z = selected.axis_z.xyz;
+    let len_x = length(axis_x);
+    let len_y = length(axis_y);
+    let len_z = length(axis_z);
+    let area_yz = len_y * len_z;
+    let area_xz = len_x * len_z;
+    let area_xy = len_x * len_y;
+    let total_area = max(selected.center_area.w, EPSILON);
+
+    let face_xi = rand(rng) * total_area;
+    let u = rand(rng) - 0.5;
+    let v = rand(rng) - 0.5;
+    var position = center;
+    var normal = vec3<f32>(0.0, 1.0, 0.0);
+
+    let nx = normalize(cross(axis_y, axis_z));
+    let ny = normalize(cross(axis_z, axis_x));
+    let nz = normalize(cross(axis_x, axis_y));
+
+    if face_xi < area_yz {
+        position = center + axis_x * 0.5 + axis_y * u + axis_z * v;
+        normal = nx;
+    } else if face_xi < area_yz * 2.0 {
+        position = center - axis_x * 0.5 + axis_y * u + axis_z * v;
+        normal = -nx;
+    } else if face_xi < area_yz * 2.0 + area_xz {
+        position = center + axis_y * 0.5 + axis_x * u + axis_z * v;
+        normal = ny;
+    } else if face_xi < area_yz * 2.0 + area_xz * 2.0 {
+        position = center - axis_y * 0.5 + axis_x * u + axis_z * v;
+        normal = -ny;
+    } else if face_xi < area_yz * 2.0 + area_xz * 2.0 + area_xy {
+        position = center + axis_z * 0.5 + axis_x * u + axis_y * v;
+        normal = nz;
+    } else {
+        position = center - axis_z * 0.5 + axis_x * u + axis_y * v;
+        normal = -nz;
+    }
+
+    let light_pick_pdf = selected.emission_weight.w / total_weight;
+    let pdf_area = light_pick_pdf / total_area;
+
+    var result: EmissiveLightSample;
+    result.position = position;
+    result.normal = normal;
+    result.emission = selected.emission_weight.xyz;
+    result.pdf_area = max(pdf_area, EPSILON);
+    result.instance_idx = selected.meta.x;
+    return result;
+}
+
 // ---- Environment importance sampling ----
 
 fn binary_search_cdf(cdf_offset: u32, size: u32, xi: f32) -> u32 {
@@ -672,6 +765,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var throughput = vec3<f32>(1.0);
     var radiance = vec3<f32>(0.0);
     var transmission_depth = 0u;
+    var allow_hit_emission = true;
 
     for (var bounce = 0u; bounce <= camera.max_bounces; bounce++) {
         let hit = trace_ray(ray);
@@ -715,7 +809,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         let diffuse_color = (base_color * base_weight + subsurface_color * subsurface_weight) * (1.0 - metallic);
 
-        radiance += throughput * emission;
+        if emissive_light_params.params0.x == 0u
+            || bounce == 0u
+            || allow_hit_emission
+        {
+            radiance += throughput * emission;
+        }
 
         // Russian roulette after first bounce
         if bounce > 0u {
@@ -800,6 +899,65 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
 
+        // NEE: explicit emissive cube sampling. This is the main variance
+        // reduction path for scenes with many small neon/emissive cubes.
+        if transmission_weight < 0.5
+            && emissive_light_params.params0.x != 0u
+            && emissive_light_params.params0.z > 0u
+        {
+            let light_spp = max(1u, emissive_light_params.params0.y);
+            for (var light_sample_idx = 0u; light_sample_idx < light_spp; light_sample_idx++) {
+                let light_sample = sample_emissive_light(&rng);
+                if light_sample.instance_idx == hit.inst_idx {
+                    continue;
+                }
+
+                let to_light = light_sample.position - p;
+                let dist2 = dot(to_light, to_light);
+                if dist2 <= EPSILON {
+                    continue;
+                }
+
+                let dist = sqrt(dist2);
+                let light_dir = to_light / dist;
+                let ndotl = dot(normal, light_dir);
+                let light_cos = dot(light_sample.normal, -light_dir);
+                if ndotl <= 0.0 || light_cos <= 0.0 {
+                    continue;
+                }
+
+                var shadow_ray: Ray;
+                shadow_ray.origin = p + normal * 0.001;
+                shadow_ray.dir = light_dir;
+
+                if !trace_shadow_ray(shadow_ray, max(dist - 0.002, EPSILON)) {
+                    let f0_dielectric_light = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
+                    let f0_light = mix(f0_dielectric_light * spec_color, base_color, metallic);
+                    let f_light = fresnel_schlick(ndotl, f0_light);
+                    let diffuse_contrib_light = diffuse_color * (1.0 - f_light) * ndotl / PI;
+
+                    let alpha_light = roughness * roughness;
+                    let h_light = normalize(v_dir + light_dir);
+                    let ndoth_light = max(dot(normal, h_light), EPSILON);
+                    let hdotv_light = max(dot(h_light, v_dir), EPSILON);
+                    let d_light = ggx_d(ndoth_light, alpha_light);
+                    let g_light = smith_g1(ndotv, alpha_light) * smith_g1(ndotl, alpha_light);
+                    let f_spec_light = fresnel_schlick(hdotv_light, f0_light);
+                    let spec_contrib_light =
+                        spec_weight * f_spec_light * d_light * g_light * ndotl
+                        / (4.0 * ndotv * ndotl + EPSILON);
+
+                    let pdf_light_solid =
+                        max(light_sample.pdf_area * dist2 / max(light_cos, EPSILON), EPSILON);
+
+                    radiance += throughput
+                        * (diffuse_contrib_light + spec_contrib_light)
+                        * light_sample.emission
+                        / (pdf_light_solid * f32(light_spp));
+                }
+            }
+        }
+
         // Coat layer (clearcoat)
         if coat_weight > 0.001 {
             let coat_f0 = vec3<f32>(pow((coat_ior - 1.0) / (coat_ior + 1.0), 2.0));
@@ -822,6 +980,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     throughput *= coat_color * weight / max(coat_reflect_prob, EPSILON);
                     ray.origin = p + normal * 0.001;
                     ray.dir = normalize(reflect_dir);
+                    allow_hit_emission = false;
                     continue;
                 }
             }
@@ -868,6 +1027,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             throughput *= weight / max(p_spec, EPSILON);
             ray.origin = p + normal * 0.001;
             ray.dir = normalize(reflect_dir);
+            allow_hit_emission = false;
         } else if lobe_rand < p_spec + p_trans {
             // Transmission / refraction
             if transmission_depth >= camera.max_transmission_depth {
@@ -884,12 +1044,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 throughput *= transmission_color_disp / max(p_trans, EPSILON);
                 ray.origin = p + normal * 0.001;
                 ray.dir = normalize(reflect_dir);
+                allow_hit_emission = true;
             } else {
                 let cos_t = sqrt(1.0 - sin2_t);
                 let refr_dir = normalize(eta * -v_dir + (eta * cos_i - cos_t) * h_world);
                 throughput *= transmission_color_disp / max(p_trans, EPSILON);
                 ray.origin = p - normal * 0.001;
                 ray.dir = refr_dir;
+                allow_hit_emission = true;
             }
         } else {
             // Lambert diffuse
@@ -904,6 +1066,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             throughput *= diff_weight / max(1.0 - p_spec - p_trans, EPSILON);
             ray.origin = p + normal * 0.001;
             ray.dir = normalize(world_dir);
+            allow_hit_emission = false;
         }
     }
 
@@ -917,28 +1080,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         radiance *= tint;
     }
 
-    // Progressive accumulation (running sum approach)
+    // Progressive accumulation (running sum approach).
+    // Clamp the incoming sample, not the running sum. Clamping accum.rgb would
+    // bias the average downward as sample_count grows.
+    let sample_radiance = clamp(radiance, vec3<f32>(0.0), vec3<f32>(1000.0));
+
     // Add current sample to accumulator: rgb = sum of radiance, w = sample count
     let prev = accum[pixel_idx];
-    let new_accum = prev + vec4<f32>(radiance, 1.0);
+    let new_accum = prev + vec4<f32>(sample_radiance, 1.0);
 
     // Track variance from the actual per-dispatch radiance sample. This feeds adaptive SPP
     // allocation; using the accumulated sum here would make the variance estimate diverge.
     var var_data = variance[pixel_idx];
     var_data.count += 1u;
     let var_n = f32(var_data.count);
-    let var_delta = radiance - var_data.mean;
+    let var_delta = sample_radiance - var_data.mean;
     var_data.mean += var_delta / var_n;
-    let var_delta2 = radiance - var_data.mean;
+    let var_delta2 = sample_radiance - var_data.mean;
     var_data.m2 += var_delta * var_delta2;
     variance[pixel_idx] = var_data;
-    
-    // Clamp accumulated radiance to prevent fireflies
-    let clamped_accum = clamp(new_accum, vec4<f32>(0.0), vec4<f32>(1000.0, 1000.0, 1000.0, 100000.0));
-    accum[pixel_idx] = clamped_accum;
-    
+
+    accum[pixel_idx] = new_accum;
+
     // Write normalized color to output (divide by sample count)
-    let sample_count = max(clamped_accum.w, 1.0);
-    let avg_color = clamped_accum.rgb / sample_count;
+    let sample_count = max(new_accum.w, 1.0);
+    let avg_color = new_accum.rgb / sample_count;
     textureStore(output, vec2<i32>(px), vec4<f32>(avg_color, 1.0));
 }

@@ -1,8 +1,8 @@
 /// Renderer abstraction: CPU (rayon) or GPU (wgpu) backends.
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
+use pt_mats::{MaterialClass, MaterialDistribution, MaterialSource, MaterializeMode};
 use serde::{Deserialize, Serialize};
-use pt_mats::{MaterialClass, MaterializeMode, MaterialSource, MaterialDistribution};
 
 /// Available rendering backends
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -19,7 +19,7 @@ impl RenderBackend {
             RenderBackend::Gpu => "GPU (wgpu)",
         }
     }
-    
+
     pub fn all() -> &'static [RenderBackend] {
         &[RenderBackend::Cpu, RenderBackend::Gpu]
     }
@@ -41,7 +41,7 @@ impl RenderMode {
             RenderMode::Mode3D => "3D",
         }
     }
-    
+
     pub fn all() -> &'static [RenderMode] {
         &[RenderMode::Mode2D, RenderMode::Mode3D]
     }
@@ -80,11 +80,11 @@ impl CubeHeightMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ColorMode {
     #[default]
-    Treemap,      // Use treemap-assigned colors (depth-based)
-    FileType,     // Color by file extension category
-    FileAge,      // Color by modification time (old->new gradient)
-    FileSize,     // Color by file size (small->large gradient)
-    Depth,        // Color by directory depth (rainbow gradient)
+    Treemap, // Use treemap-assigned colors (depth-based)
+    FileType, // Color by file extension category
+    FileAge,  // Color by modification time (old->new gradient)
+    FileSize, // Color by file size (small->large gradient)
+    Depth,    // Color by directory depth (rainbow gradient)
 }
 
 impl ColorMode {
@@ -112,9 +112,9 @@ impl ColorMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FolderColorMode {
     #[default]
-    Depth,      // Depth-based rainbow gradient
-    NameHash,   // Hash of folder name
-    PathHash,   // Hash of full folder path
+    Depth, // Depth-based rainbow gradient
+    NameHash, // Hash of folder name
+    PathHash, // Hash of full folder path
 }
 
 impl FolderColorMode {
@@ -182,11 +182,7 @@ impl SpectralMode {
     }
 
     pub fn all() -> &'static [SpectralMode] {
-        &[
-            SpectralMode::Off,
-            SpectralMode::Hero,
-            SpectralMode::Multi,
-        ]
+        &[SpectralMode::Off, SpectralMode::Hero, SpectralMode::Multi]
     }
 }
 
@@ -235,7 +231,11 @@ impl GlassPreset {
 
 /// Color gradient for depth (rainbow: red->orange->yellow->green->cyan->blue->magenta)
 pub fn color_for_depth(depth: u32, max_depth: u32) -> [f32; 4] {
-    let t = if max_depth > 0 { (depth as f32 / max_depth as f32).clamp(0.0, 1.0) } else { 0.0 };
+    let t = if max_depth > 0 {
+        (depth as f32 / max_depth as f32).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     // HSV-like rainbow: hue from 0 (red) to 270 (violet)
     let hue = t * 270.0;
     let (r, g, b) = hsv_to_rgb(hue, 0.8, 0.9);
@@ -270,52 +270,36 @@ pub fn color_for_extension(ext: &str) -> [f32; 4] {
     let ext_lower = ext.to_lowercase();
     match ext_lower.as_str() {
         // Code files - blue family
-        "rs" | "py" | "js" | "ts" | "c" | "cpp" | "h" | "hpp" | "java" | "go" | "rb" | "php" | "swift" | "kt" =>
-            [0.3, 0.5, 0.9, 1.0],
+        "rs" | "py" | "js" | "ts" | "c" | "cpp" | "h" | "hpp" | "java" | "go" | "rb" | "php"
+        | "swift" | "kt" => [0.3, 0.5, 0.9, 1.0],
         // Web files - orange
-        "html" | "htm" | "css" | "scss" | "sass" | "vue" | "jsx" | "tsx" =>
-            [0.95, 0.6, 0.2, 1.0],
+        "html" | "htm" | "css" | "scss" | "sass" | "vue" | "jsx" | "tsx" => [0.95, 0.6, 0.2, 1.0],
         // Data files - green
-        "json" | "xml" | "yaml" | "yml" | "toml" | "csv" | "sql" =>
-            [0.4, 0.8, 0.4, 1.0],
+        "json" | "xml" | "yaml" | "yml" | "toml" | "csv" | "sql" => [0.4, 0.8, 0.4, 1.0],
         // Documents - warm yellow
-        "md" | "txt" | "doc" | "docx" | "pdf" | "rtf" | "odt" =>
-            [0.95, 0.85, 0.4, 1.0],
+        "md" | "txt" | "doc" | "docx" | "pdf" | "rtf" | "odt" => [0.95, 0.85, 0.4, 1.0],
         // DCC scene files - distinct per DCC
-        "mb" =>
-            [0.85, 0.65, 0.25, 1.0],
-        "hou" =>
-            [0.9, 0.5, 0.15, 1.0],
+        "mb" => [0.85, 0.65, 0.25, 1.0],
+        "hou" => [0.9, 0.5, 0.15, 1.0],
         // HDR images - cyan/teal
-        "exr" =>
-            [0.2, 0.8, 0.9, 1.0],
+        "exr" => [0.2, 0.8, 0.9, 1.0],
         // Film/RAW images - distinct per format
-        "dpx" =>
-            [0.6, 0.45, 0.95, 1.0],
-        "raf" =>
-            [0.45, 0.75, 0.35, 1.0],
-        "nef" =>
-            [0.35, 0.55, 0.9, 1.0],
+        "dpx" => [0.6, 0.45, 0.95, 1.0],
+        "raf" => [0.45, 0.75, 0.35, 1.0],
+        "nef" => [0.35, 0.55, 0.9, 1.0],
         // Images - purple/magenta (keep TIFF/TIF distinct)
-        "tif" | "tiff" =>
-            [0.75, 0.35, 0.7, 1.0],
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "webp" | "ico" =>
-            [0.8, 0.4, 0.8, 1.0],
+        "tif" | "tiff" => [0.75, 0.35, 0.7, 1.0],
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "webp" | "ico" => [0.8, 0.4, 0.8, 1.0],
         // Audio - cyan
-        "mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a" =>
-            [0.3, 0.8, 0.85, 1.0],
+        "mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a" => [0.3, 0.8, 0.85, 1.0],
         // Video - red
-        "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" =>
-            [0.9, 0.3, 0.3, 1.0],
+        "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" => [0.9, 0.3, 0.3, 1.0],
         // Archives - brown
-        "zip" | "tar" | "gz" | "7z" | "rar" | "bz2" | "xz" =>
-            [0.7, 0.5, 0.3, 1.0],
+        "zip" | "tar" | "gz" | "7z" | "rar" | "bz2" | "xz" => [0.7, 0.5, 0.3, 1.0],
         // Executables - dark red
-        "exe" | "dll" | "so" | "dylib" | "bin" | "app" =>
-            [0.7, 0.2, 0.2, 1.0],
+        "exe" | "dll" | "so" | "dylib" | "bin" | "app" => [0.7, 0.2, 0.2, 1.0],
         // Config files - teal
-        "ini" | "conf" | "cfg" | "env" | "lock" =>
-            [0.3, 0.7, 0.65, 1.0],
+        "ini" | "conf" | "cfg" | "env" | "lock" => [0.3, 0.7, 0.65, 1.0],
         // Default - gray
         _ => [0.6, 0.6, 0.6, 1.0],
     }
@@ -372,23 +356,23 @@ pub fn color_for_size(normalized_size: f32) -> [f32; 4] {
 pub enum HashTransformEffect {
     #[default]
     None,
-    Wave,           // Sine wave based on hash
-    RandomHeight,   // Pulsing random height
-    RandomOffset,   // Drifting 3D offset
-    Explode,        // Pulsing explosion outward
-    Noise,          // Smooth noise drift
-    Pulse,          // Radial breathing
-    Spiral,         // Spiral swirl around center
-    Ocean,          // Large slow waves like ocean surface
-    Rotate3D,       // 3D rotation around center
-    Twist,          // Twisting tower effect
-    Breathe,        // Synchronized breathing
-    Swarm,          // Insect swarm movement
-    Earthquake,     // Shaking/trembling
-    Ripple,         // Concentric ripples from center
-    Vortex,         // Rotating vortex pulling inward
-    Glitch,         // Digital glitch displacement
-    Echo,          // Pulsing outward bloom
+    Wave,         // Sine wave based on hash
+    RandomHeight, // Pulsing random height
+    RandomOffset, // Drifting 3D offset
+    Explode,      // Pulsing explosion outward
+    Noise,        // Smooth noise drift
+    Pulse,        // Radial breathing
+    Spiral,       // Spiral swirl around center
+    Ocean,        // Large slow waves like ocean surface
+    Rotate3D,     // 3D rotation around center
+    Twist,        // Twisting tower effect
+    Breathe,      // Synchronized breathing
+    Swarm,        // Insect swarm movement
+    Earthquake,   // Shaking/trembling
+    Ripple,       // Concentric ripples from center
+    Vortex,       // Rotating vortex pulling inward
+    Glitch,       // Digital glitch displacement
+    Echo,         // Pulsing outward bloom
 }
 
 impl HashTransformEffect {
@@ -439,7 +423,6 @@ impl HashTransformEffect {
     }
 }
 
-
 /// Hover highlight mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HoverMode {
@@ -461,7 +444,12 @@ impl HoverMode {
     }
 
     pub fn all() -> &'static [HoverMode] {
-        &[HoverMode::None, HoverMode::Outline, HoverMode::Tint, HoverMode::Both]
+        &[
+            HoverMode::None,
+            HoverMode::Outline,
+            HoverMode::Tint,
+            HoverMode::Both,
+        ]
     }
 
     /// WGSL mode value: 0=none, 1=outline, 2=tint, 3=both
@@ -475,7 +463,9 @@ impl HoverMode {
     }
 }
 
-fn default_animation_speed() -> f32 { 1.0 }
+fn default_animation_speed() -> f32 {
+    1.0
+}
 
 /// Options for 3D rendering
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -508,7 +498,7 @@ pub struct Render3DOptions {
     pub xray_alpha: f32,
     pub flat_shading: bool,
     pub double_sided: bool,
-    pub materialize_mode: MaterializeMode,  // Legacy, kept for compatibility
+    pub materialize_mode: MaterializeMode, // Legacy, kept for compatibility
     #[serde(default)]
     pub mat_source: MaterialSource,
     #[serde(default)]
@@ -520,35 +510,35 @@ pub struct Render3DOptions {
     #[serde(default = "default_spatial_scale")]
     pub mat_spatial_scale: f32,
     #[serde(default = "default_materialize_mix")]
-    pub materialize_mix: f32,     // 0=use color_mode, 1=use materialize color
+    pub materialize_mix: f32, // 0=use color_mode, 1=use materialize color
     #[serde(default = "default_true")]
-    pub mat_allow_lights: bool,  // Allow emissive/neon materials
+    pub mat_allow_lights: bool, // Allow emissive/neon materials
     #[serde(default = "default_prob")]
-    pub mat_light_prob: f32,     // Probability of assigning light material (0.0-1.0). Derived from mat_light_count when > 0.
+    pub mat_light_prob: f32, // Probability of assigning light material (0.0-1.0). Derived from mat_light_count when > 0.
     /// Target count of cubes to receive a light material. When > 0, drives mat_light_prob = count / total_cubes.
     /// 0 means "use mat_light_prob directly" (legacy/CLI behavior).
     #[serde(default)]
     pub mat_light_count: u32,
     #[serde(default = "default_light_warm")]
-    pub mat_light_warm: f32,     // Warm light bias (0-1)
+    pub mat_light_warm: f32, // Warm light bias (0-1)
     #[serde(default = "default_light_cool")]
-    pub mat_light_cool: f32,     // Cool light bias (0-1)
+    pub mat_light_cool: f32, // Cool light bias (0-1)
     #[serde(default = "default_light_intensity")]
     pub mat_light_intensity: f32, // Global light intensity multiplier
     #[serde(default = "default_light_color_randomness")]
     pub mat_light_color_randomness: f32, // Per-light color randomness (0-1)
     #[serde(default = "default_false")]
-    pub mat_allow_glass: bool,   // Allow glass/transparent materials
+    pub mat_allow_glass: bool, // Allow glass/transparent materials
     #[serde(default = "default_prob")]
-    pub mat_glass_prob: f32,     // Probability of assigning glass material (0.0-1.0). Derived from mat_glass_count when > 0.
+    pub mat_glass_prob: f32, // Probability of assigning glass material (0.0-1.0). Derived from mat_glass_count when > 0.
     /// Target count of cubes to receive a glass material. When > 0, drives mat_glass_prob = count / total_cubes.
     /// 0 means "use mat_glass_prob directly" (legacy/CLI behavior).
     #[serde(default)]
     pub mat_glass_count: u32,
     #[serde(default)]
-    pub mat_include_dirs: bool,  // Allow materialization for directories
+    pub mat_include_dirs: bool, // Allow materialization for directories
     #[serde(default = "default_mat_seed")]
-    pub mat_seed: u32,           // Seed for random material assignment
+    pub mat_seed: u32, // Seed for random material assignment
     #[serde(default = "default_transparency")]
     pub pt_global_transparency: f32, // 0=opaque, 1=all glass
     #[serde(default)]
@@ -586,6 +576,12 @@ pub struct Render3DOptions {
     pub pt_aperture: f32,
     pub pt_focus_distance: f32,
     pub pt_env_importance_sampling: bool,
+    #[serde(default = "default_true")]
+    pub pt_emissive_sampling: bool,
+    #[serde(default = "default_emissive_samples")]
+    pub pt_emissive_samples: u32,
+    #[serde(default = "default_emissive_min_weight")]
+    pub pt_emissive_min_weight: f32,
     pub pt_target_fps: f32,
     pub pt_auto_spp: bool,
     pub pt_camera_snap: bool,
@@ -625,64 +621,142 @@ pub struct Render3DOptions {
     pub pt_svo_resolution: u32,
     // Slice plane (cut through scene)
     pub slice_enabled: bool,
-    pub slice_axis: u32,  // 0=X, 1=Y, 2=Z (used when slice_use_vector=false)
+    pub slice_axis: u32, // 0=X, 1=Y, 2=Z (used when slice_use_vector=false)
     #[serde(default = "default_slice_position")]
     pub slice_position: f32,
     #[serde(default = "default_slice_position_vector")]
     pub slice_position_vector: f32,
     pub slice_invert: bool,
-    pub slice_use_vector: bool,  // true = use arbitrary normal, false = use axis
+    pub slice_use_vector: bool, // true = use arbitrary normal, false = use axis
     #[serde(default = "default_slice_normal")]
-    pub slice_normal: [f32; 3],  // Arbitrary slice plane normal (normalized)
+    pub slice_normal: [f32; 3], // Arbitrary slice plane normal (normalized)
     // LOD (Level of Detail)
     pub lod_enabled: bool,
     #[serde(default = "default_lod_min_size")]
-    pub lod_min_screen_size: f32,  // Min screen size in pixels to render
+    pub lod_min_screen_size: f32, // Min screen size in pixels to render
     // Camera inertia
     #[serde(default = "default_inertia_enabled")]
     pub inertia_enabled: bool,
     #[serde(default = "default_inertia_friction")]
-    pub inertia_friction: f32,  // Higher = faster stop (1-10 typical)
+    pub inertia_friction: f32, // Higher = faster stop (1-10 typical)
     #[serde(default = "default_inertia_cutoff")]
-    pub inertia_cutoff: f32,  // Stop inertia when speed is below cutoff
+    pub inertia_cutoff: f32, // Stop inertia when speed is below cutoff
 }
 
-fn default_lod_min_size() -> f32 { 2.0 }
-fn default_true() -> bool { true }
-fn default_false() -> bool { false }
-fn default_prob() -> f32 { 0.5 }
-fn default_materialize_mix() -> f32 { 1.0 }
-fn default_light_warm() -> f32 { 0.5 }
-fn default_light_cool() -> f32 { 0.5 }
-fn default_light_intensity() -> f32 { 1.0 }
-fn default_light_color_randomness() -> f32 { 0.0 }
-fn default_mat_seed() -> u32 { 2654435761 }
-fn default_quant_levels() -> u32 { 5 }
-fn default_band_count() -> u32 { 8 }
-fn default_spatial_scale() -> f32 { 0.01 }
-fn default_transparency() -> f32 { 0.0 }
-fn default_folder_tint() -> f32 { 0.0 }
-fn default_glass_specular() -> f32 { 1.0 }
-fn default_glass_base() -> f32 { 0.0 }
-fn default_glass_roughness() -> f32 { 0.02 }
-fn default_glass_ior() -> f32 { 1.52 }
-fn default_glass_dispersion() -> f32 { 0.0 }
-fn default_glass_temp() -> f32 { 6500.0 }
-fn default_inertia_enabled() -> bool { true }
-fn default_inertia_friction() -> f32 { 5.0 }
-fn default_inertia_cutoff() -> f32 { 0.001 }
-fn default_height_power() -> f32 { 2.0 }
-fn default_restir_m_max() -> u32 { 30 }
-fn default_env_speed() -> f32 { 1.0 }
-fn default_svo_resolution() -> u32 { 64 }
-fn default_slice_position() -> f32 { 0.0 }
-fn default_slice_position_vector() -> f32 { 0.0 }
-fn default_slice_normal() -> [f32; 3] { [0.0, 1.0, 0.0] }  // Default: Y-up
-fn default_adaptive_min_spp() -> u32 { 1 }
-fn default_adaptive_max_spp() -> u32 { 1024 }
-fn default_adaptive_variance() -> f32 { 0.001 }
-fn default_adaptive_interval() -> u32 { 4 }
-fn default_spectral_samples() -> u32 { 2 }
+fn default_lod_min_size() -> f32 {
+    2.0
+}
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
+fn default_prob() -> f32 {
+    0.5
+}
+fn default_materialize_mix() -> f32 {
+    1.0
+}
+fn default_light_warm() -> f32 {
+    0.5
+}
+fn default_light_cool() -> f32 {
+    0.5
+}
+fn default_light_intensity() -> f32 {
+    1.0
+}
+fn default_light_color_randomness() -> f32 {
+    0.0
+}
+fn default_mat_seed() -> u32 {
+    2654435761
+}
+fn default_quant_levels() -> u32 {
+    5
+}
+fn default_band_count() -> u32 {
+    8
+}
+fn default_spatial_scale() -> f32 {
+    0.01
+}
+fn default_transparency() -> f32 {
+    0.0
+}
+fn default_folder_tint() -> f32 {
+    0.0
+}
+fn default_glass_specular() -> f32 {
+    1.0
+}
+fn default_glass_base() -> f32 {
+    0.0
+}
+fn default_glass_roughness() -> f32 {
+    0.02
+}
+fn default_glass_ior() -> f32 {
+    1.52
+}
+fn default_glass_dispersion() -> f32 {
+    0.0
+}
+fn default_glass_temp() -> f32 {
+    6500.0
+}
+fn default_inertia_enabled() -> bool {
+    true
+}
+fn default_inertia_friction() -> f32 {
+    5.0
+}
+fn default_inertia_cutoff() -> f32 {
+    0.001
+}
+fn default_height_power() -> f32 {
+    2.0
+}
+fn default_restir_m_max() -> u32 {
+    30
+}
+fn default_env_speed() -> f32 {
+    1.0
+}
+fn default_svo_resolution() -> u32 {
+    64
+}
+fn default_slice_position() -> f32 {
+    0.0
+}
+fn default_slice_position_vector() -> f32 {
+    0.0
+}
+fn default_slice_normal() -> [f32; 3] {
+    [0.0, 1.0, 0.0]
+} // Default: Y-up
+fn default_adaptive_min_spp() -> u32 {
+    64
+}
+fn default_adaptive_max_spp() -> u32 {
+    1024
+}
+fn default_adaptive_variance() -> f32 {
+    0.001
+}
+fn default_adaptive_interval() -> u32 {
+    4
+}
+fn default_spectral_samples() -> u32 {
+    2
+}
+fn default_emissive_samples() -> u32 {
+    1
+}
+fn default_emissive_min_weight() -> f32 {
+    0.001
+}
 
 impl Default for Render3DOptions {
     fn default() -> Self {
@@ -754,6 +828,9 @@ impl Default for Render3DOptions {
             pt_aperture: 2.0,
             pt_focus_distance: 500.0,
             pt_env_importance_sampling: true,
+            pt_emissive_sampling: true,
+            pt_emissive_samples: default_emissive_samples(),
+            pt_emissive_min_weight: default_emissive_min_weight(),
             pt_target_fps: 30.0,
             pt_auto_spp: false,
             pt_camera_snap: false,
@@ -872,8 +949,8 @@ pub struct OrbitCamera {
 impl Default for OrbitCamera {
     fn default() -> Self {
         Self {
-            yaw: 0.0,                                // Front view (matches 2D)
-            pitch: 0.0,                              // Looking straight ahead
+            yaw: 0.0,   // Front view (matches 2D)
+            pitch: 0.0, // Looking straight ahead
             distance: 500.0,
             target: Vec3::ZERO,
             fov: std::f32::consts::FRAC_PI_4,
@@ -908,30 +985,32 @@ impl OrbitCamera {
     pub fn orbit(&mut self, delta_x: f32, delta_y: f32) {
         let sensitivity = 0.005;
         self.yaw += delta_x * sensitivity;
-        self.pitch = (self.pitch + delta_y * sensitivity)
-            .clamp(-std::f32::consts::FRAC_PI_2 + 0.1, std::f32::consts::FRAC_PI_2 - 0.1);
+        self.pitch = (self.pitch + delta_y * sensitivity).clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.1,
+            std::f32::consts::FRAC_PI_2 - 0.1,
+        );
     }
-    
+
     /// Pan the camera (middle mouse drag) - non-inertia version
     #[allow(dead_code)]
     pub fn pan(&mut self, delta_x: f32, delta_y: f32) {
         let sensitivity = self.distance * 0.001;
-        
+
         // Calculate right and up vectors in world space
         let right = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
         let up = Vec3::Y;
-        
+
         self.target -= right * delta_x * sensitivity;
         self.target += up * delta_y * sensitivity;
     }
-    
+
     /// Zoom the camera (right mouse drag or scroll) - non-inertia version
     #[allow(dead_code)]
     pub fn zoom(&mut self, delta: f32) {
         let factor = 1.0 + delta * 0.001;
         self.distance = (self.distance * factor).clamp(10.0, 5000.0);
     }
-    
+
     /// Get camera position in world space
     pub fn position(&self) -> Vec3 {
         let x = self.distance * self.pitch.cos() * self.yaw.sin();
@@ -939,17 +1018,17 @@ impl OrbitCamera {
         let z = self.distance * self.pitch.cos() * self.yaw.cos();
         self.target + Vec3::new(x, y, z)
     }
-    
+
     /// Get view matrix
     pub fn view_matrix(&self) -> Mat4 {
         Mat4::look_at_rh(self.position(), self.target, Vec3::Y)
     }
-    
+
     /// Get projection matrix
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
         Mat4::perspective_rh(self.fov, aspect, self.near, self.far)
     }
-    
+
     /// Get combined view-projection matrix
     pub fn view_projection_matrix(&self, aspect: f32) -> Mat4 {
         self.projection_matrix(aspect) * self.view_matrix()
@@ -984,8 +1063,10 @@ impl OrbitCamera {
 
         // Apply velocities
         self.yaw += self.yaw_velocity * dt;
-        self.pitch = (self.pitch + self.pitch_velocity * dt)
-            .clamp(-std::f32::consts::FRAC_PI_2 + 0.1, std::f32::consts::FRAC_PI_2 - 0.1);
+        self.pitch = (self.pitch + self.pitch_velocity * dt).clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.1,
+            std::f32::consts::FRAC_PI_2 - 0.1,
+        );
         self.distance = (self.distance + self.distance_velocity * dt).clamp(10.0, 5000.0);
         self.target += self.target_velocity * dt;
 
@@ -996,10 +1077,18 @@ impl OrbitCamera {
         self.target_velocity *= decay;
 
         // Snap to rest below threshold to avoid jitter
-        if self.yaw_velocity.abs() < threshold { self.yaw_velocity = 0.0; }
-        if self.pitch_velocity.abs() < threshold { self.pitch_velocity = 0.0; }
-        if self.distance_velocity.abs() < threshold { self.distance_velocity = 0.0; }
-        if self.target_velocity.length() < threshold { self.target_velocity = Vec3::ZERO; }
+        if self.yaw_velocity.abs() < threshold {
+            self.yaw_velocity = 0.0;
+        }
+        if self.pitch_velocity.abs() < threshold {
+            self.pitch_velocity = 0.0;
+        }
+        if self.distance_velocity.abs() < threshold {
+            self.distance_velocity = 0.0;
+        }
+        if self.target_velocity.length() < threshold {
+            self.target_velocity = Vec3::ZERO;
+        }
 
         // Check if still moving
         self.yaw_velocity != 0.0
@@ -1069,7 +1158,9 @@ impl OrbitCamera {
 
     /// Update animation (call each frame, returns true if still animating)
     pub fn update_animation(&mut self, dt: f32) -> bool {
-        if !self.animating { return false; }
+        if !self.animating {
+            return false;
+        }
 
         let speed = 8.0 * dt; // Animation speed
         let t = speed.min(1.0);
@@ -1117,7 +1208,12 @@ impl OrbitCamera {
     }
 
     /// Set front-view with animation for a scene whose dimensions are independent from the viewport.
-    pub fn animate_to_front_view_for_viewport(&mut self, width: f32, height: f32, viewport_aspect: f32) {
+    pub fn animate_to_front_view_for_viewport(
+        &mut self,
+        width: f32,
+        height: f32,
+        viewport_aspect: f32,
+    ) {
         let target = Vec3::new(width / 2.0, -(height / 2.0), 0.0);
         let distance = Self::fit_distance_for_aspect(width, height, self.fov, viewport_aspect);
         self.animate_to(0.0, 0.0, distance, target);
@@ -1130,7 +1226,12 @@ impl OrbitCamera {
     }
 
     /// Zoom to fit scene without changing rotation, using the current viewport aspect.
-    pub fn zoom_to_fit_scene_for_viewport(&mut self, width: f32, height: f32, viewport_aspect: f32) {
+    pub fn zoom_to_fit_scene_for_viewport(
+        &mut self,
+        width: f32,
+        height: f32,
+        viewport_aspect: f32,
+    ) {
         let target = Vec3::new(width / 2.0, -(height / 2.0), 0.0);
         let distance = Self::fit_distance_for_aspect(width, height, self.fov, viewport_aspect);
         self.animate_zoom_to(distance, target);
@@ -1139,13 +1240,16 @@ impl OrbitCamera {
 
 /// Compute a deterministic hash from a string (for per-cube transforms)
 pub fn name_hash(name: &str) -> u32 {
-    name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
+    name.bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
 }
 
 /// Derive secondary hash without string allocation
 #[inline]
 fn hash_derive(hash: u32, salt: u32) -> u32 {
-    hash.wrapping_mul(1664525).wrapping_add(salt).wrapping_mul(1013904223)
+    hash.wrapping_mul(1664525)
+        .wrapping_add(salt)
+        .wrapping_mul(1013904223)
 }
 
 /// Transform result with offset and rotation
@@ -1208,8 +1312,15 @@ pub fn hash_transform(
             let ay = (py.sin() + (pz * 1.5).cos()) * strength * 0.3 + phase * 0.25;
             let az = (pz.sin() + (px * 1.2).cos()) * strength * 0.3 + phase * 0.15;
             // Small displacement from rotation effect
-            let disp = Vec3::new(ax.sin() * strength * 3.0, ay.sin() * strength * 3.0, az.cos() * strength * 2.0);
-            (disp, glam::Quat::from_euler(glam::EulerRot::XYZ, ax, ay, az))
+            let disp = Vec3::new(
+                ax.sin() * strength * 3.0,
+                ay.sin() * strength * 3.0,
+                az.cos() * strength * 2.0,
+            );
+            (
+                disp,
+                glam::Quat::from_euler(glam::EulerRot::XYZ, ax, ay, az),
+            )
         }
 
         HashTransformEffect::Spiral => {
@@ -1242,7 +1353,10 @@ pub fn hash_transform(
             let offset = Vec3::new(jx, jy, jz) * strength * 5.0;
             let ax = (time * 0.4 + phase).sin() * strength * 0.15;
             let ay = (time * 0.5 + p2).cos() * strength * 0.15;
-            (offset, glam::Quat::from_euler(glam::EulerRot::XYZ, ax, ay, 0.0))
+            (
+                offset,
+                glam::Quat::from_euler(glam::EulerRot::XYZ, ax, ay, 0.0),
+            )
         }
 
         HashTransformEffect::Earthquake => {
@@ -1253,7 +1367,10 @@ pub fn hash_transform(
             let offset = Vec3::new(shake_x, shake_y, shake_z) * strength * 8.0;
             let ax = (time * 12.0 + phase).sin() * intensity * strength * 0.1;
             let ay = (time * 14.0 + phase * 1.2).cos() * intensity * strength * 0.1;
-            (offset, glam::Quat::from_euler(glam::EulerRot::XYZ, ax, ay, 0.0))
+            (
+                offset,
+                glam::Quat::from_euler(glam::EulerRot::XYZ, ax, ay, 0.0),
+            )
         }
 
         HashTransformEffect::Ocean => {
@@ -1264,7 +1381,10 @@ pub fn hash_transform(
             let wave3 = (time * 0.4 + rel.x * 0.01 + rel.y * 0.008).sin() * 0.3;
             let offset = Vec3::new(0.0, 0.0, -(wave1 + wave2 + wave3) * strength * 15.0);
             let tilt = wave1 * strength * 0.05;
-            (offset, glam::Quat::from_euler(glam::EulerRot::XYZ, tilt, tilt * 0.5, 0.0))
+            (
+                offset,
+                glam::Quat::from_euler(glam::EulerRot::XYZ, tilt, tilt * 0.5, 0.0),
+            )
         }
 
         HashTransformEffect::Echo => {
@@ -1282,7 +1402,12 @@ pub fn hash_transform(
             let offset = Vec3::new(ox, oy, oz);
             // Rotation: follow master rotation with phase delay
             let rot_angle = delayed * 0.5;
-            let rot = glam::Quat::from_euler(glam::EulerRot::XYZ, rot_angle.sin() * 0.3, rot_angle.cos() * 0.3, rot_angle * 0.2);
+            let rot = glam::Quat::from_euler(
+                glam::EulerRot::XYZ,
+                rot_angle.sin() * 0.3,
+                rot_angle.cos() * 0.3,
+                rot_angle * 0.2,
+            );
             (offset, rot)
         }
 
@@ -1302,9 +1427,9 @@ pub fn hash_transform_offset(
     time: f32,
 ) -> Vec3 {
     let hash = name_hash(name);
-    let hash_f = (hash as f32) / (u32::MAX as f32);  // 0.0 to 1.0
+    let hash_f = (hash as f32) / (u32::MAX as f32); // 0.0 to 1.0
     let tau = std::f32::consts::TAU;
-    let phase = hash_f * tau;  // unique phase per cube
+    let phase = hash_f * tau; // unique phase per cube
 
     match effect {
         HashTransformEffect::None => Vec3::ZERO,
@@ -1480,7 +1605,7 @@ pub fn hash_transform_offset(
         }
 
         // Echo - handled in hash_transform (with rotation)
-        HashTransformEffect::Echo => Vec3::ZERO
+        HashTransformEffect::Echo => Vec3::ZERO,
     }
 }
 
@@ -1501,8 +1626,8 @@ pub struct CameraUniform {
     pub slice_enabled: f32,
     pub slice_position: f32,
     pub slice_invert: f32,
-    pub slice_normal: [f32; 3],  // Slice plane normal (normalized)
-    pub _pad: [f32; 5], // Pad to 256 bytes total
+    pub slice_normal: [f32; 3], // Slice plane normal (normalized)
+    pub _pad: [f32; 5],         // Pad to 256 bytes total
 }
 
 /// Single directional light (32 bytes)
@@ -1530,19 +1655,19 @@ impl Default for LightRigUniform {
     fn default() -> Self {
         Self {
             key: LightUniform {
-                direction: [-0.5, -0.7, -0.5],  // Top-left front
+                direction: [-0.5, -0.7, -0.5], // Top-left front
                 _pad: 0.0,
-                color: [1.0, 0.98, 0.95],        // Warm white
+                color: [1.0, 0.98, 0.95], // Warm white
                 intensity: 1.2,
             },
             fill: LightUniform {
-                direction: [0.7, -0.3, 0.5],     // Right side, softer
+                direction: [0.7, -0.3, 0.5], // Right side, softer
                 _pad: 0.0,
-                color: [0.7, 0.8, 1.0],          // Cool blue fill
+                color: [0.7, 0.8, 1.0], // Cool blue fill
                 intensity: 0.5,
             },
             rim: LightUniform {
-                direction: [0.0, -0.2, 1.0],     // Behind, edge light
+                direction: [0.0, -0.2, 1.0], // Behind, edge light
                 _pad: 0.0,
                 color: [1.0, 1.0, 1.0],
                 intensity: 0.3,
@@ -1616,8 +1741,8 @@ impl Default for HoverParamsUniform {
             mode: 0,
             outline_width: 2.0,
             _pad0: 0.0,
-            outline_color: [1.0, 0.5, 0.0, 1.0],  // Orange
-            tint_color: [1.0, 0.7, 0.2, 0.15],     // Warm tint
+            outline_color: [1.0, 0.5, 0.0, 1.0], // Orange
+            tint_color: [1.0, 0.7, 0.2, 0.15],   // Warm tint
             viewport_size: [0.0, 0.0],
             _pad1: [0.0; 2],
         }

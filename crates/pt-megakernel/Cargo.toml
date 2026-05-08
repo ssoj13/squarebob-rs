@@ -7,6 +7,7 @@ edition = "2021"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
 wgpu = "29"
+glam = "0.32"
 pt-core = { path = "../pt-core" }
 bvh-gpu = { path = "../bvh-gpu" }
 pt-wavefront = { path = "../pt-wavefront" }

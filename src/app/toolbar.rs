@@ -2,10 +2,10 @@
 
 use eframe::egui;
 
+use super::helpers::rfd_pick_folder;
+use super::App;
 use crate::events::{NavigateUpEvent, ZoomResetEvent};
 use crate::renderer::{RenderBackend, RenderMode};
-use super::App;
-use super::helpers::rfd_pick_folder;
 
 impl App {
     /// Render top toolbar panel
@@ -32,15 +32,18 @@ impl App {
                     });
 
                 // Path text field
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.scan_path).desired_width(280.0),
-                );
+                let resp =
+                    ui.add(egui::TextEdit::singleline(&mut self.scan_path).desired_width(280.0));
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     start_scan = true;
                 }
 
                 // Browse button
-                if ui.button("...").on_hover_text("Browse for folder").clicked() {
+                if ui
+                    .button("...")
+                    .on_hover_text("Browse for folder")
+                    .clicked()
+                {
                     if let Some(path) = rfd_pick_folder() {
                         self.scan_path = path;
                         start_scan = true;
@@ -64,10 +67,18 @@ impl App {
 
                 // Zoom controls (only when zoomed)
                 if self.zoom_path.is_some() {
-                    if ui.button("\u{2b06} Up").on_hover_text("Zoom out (Backspace)").clicked() {
+                    if ui
+                        .button("\u{2b06} Up")
+                        .on_hover_text("Zoom out (Backspace)")
+                        .clicked()
+                    {
                         self.events.emit(NavigateUpEvent);
                     }
-                    if ui.button("\u{23cf} Reset").on_hover_text("Reset zoom (Escape)").clicked() {
+                    if ui
+                        .button("\u{23cf} Reset")
+                        .on_hover_text("Reset zoom (Escape)")
+                        .clicked()
+                    {
                         self.events.emit(ZoomResetEvent);
                     }
                 }
@@ -80,8 +91,16 @@ impl App {
                 // === RIGHT-ALIGNED: 2D/3D + CPU/GPU + Dark/Light toggle buttons ===
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Dark/Light toggle
-                    let theme_label = if self.dark_mode { "\u{263d}" } else { "\u{2600}" };
-                    let theme_hover = if self.dark_mode { "Switch to Light" } else { "Switch to Dark" };
+                    let theme_label = if self.dark_mode {
+                        "\u{263d}"
+                    } else {
+                        "\u{2600}"
+                    };
+                    let theme_hover = if self.dark_mode {
+                        "Switch to Light"
+                    } else {
+                        "Switch to Dark"
+                    };
                     if ui.button(theme_label).on_hover_text(theme_hover).clicked() {
                         self.dark_mode = !self.dark_mode;
                         ctx.set_visuals(if self.dark_mode {
@@ -119,7 +138,11 @@ impl App {
                             RenderBackend::Cpu => "Switch to GPU rendering",
                             RenderBackend::Gpu => "Switch to CPU rendering",
                         };
-                        if ui.button(backend_label).on_hover_text(backend_hover).clicked() {
+                        if ui
+                            .button(backend_label)
+                            .on_hover_text(backend_hover)
+                            .clicked()
+                        {
                             self.render_backend = match self.render_backend {
                                 RenderBackend::Cpu => RenderBackend::Gpu,
                                 RenderBackend::Gpu => RenderBackend::Cpu,
@@ -184,7 +207,8 @@ impl App {
         if self.render_mode == RenderMode::Mode3D {
             let (w, h) = self.last_render_size;
             if w > 0 && h > 0 {
-                let (scene_w, scene_h) = self.renderer_3d
+                let (scene_w, scene_h) = self
+                    .renderer_3d
                     .as_ref()
                     .map(|r| r.current_scene_layout_size())
                     .unwrap_or((w, h));
