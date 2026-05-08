@@ -184,7 +184,15 @@ impl App {
         if self.render_mode == RenderMode::Mode3D {
             let (w, h) = self.last_render_size;
             if w > 0 && h > 0 {
-                self.orbit_camera.set_front_view(w as f32, h as f32);
+                let (scene_w, scene_h) = self.renderer_3d
+                    .as_ref()
+                    .map(|r| r.current_scene_layout_size())
+                    .unwrap_or((w, h));
+                self.orbit_camera.set_front_view_for_viewport(
+                    scene_w as f32,
+                    scene_h as f32,
+                    w as f32 / h.max(1) as f32,
+                );
             } else {
                 self.orbit_camera = crate::renderer::OrbitCamera::default();
             }

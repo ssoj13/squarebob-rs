@@ -679,7 +679,7 @@ fn default_slice_position() -> f32 { 0.0 }
 fn default_slice_position_vector() -> f32 { 0.0 }
 fn default_slice_normal() -> [f32; 3] { [0.0, 1.0, 0.0] }  // Default: Y-up
 fn default_adaptive_min_spp() -> u32 { 1 }
-fn default_adaptive_max_spp() -> u32 { 64 }
+fn default_adaptive_max_spp() -> u32 { 1024 }
 fn default_adaptive_variance() -> f32 { 0.001 }
 fn default_adaptive_interval() -> u32 { 4 }
 fn default_spectral_samples() -> u32 { 2 }
@@ -816,6 +816,27 @@ mod tests {
         assert_eq!(opts.pt_spectral_samples, defaults.pt_spectral_samples);
         assert_eq!(opts.pt_spectral_dispersion, defaults.pt_spectral_dispersion);
     }
+
+    #[test]
+    fn render_3d_light_and_glass_counts_roundtrip() {
+        let mut opts = Render3DOptions::default();
+        opts.mat_allow_lights = true;
+        opts.mat_light_count = 520;
+        opts.mat_light_prob = 0.0173;
+        opts.mat_allow_glass = true;
+        opts.mat_glass_count = 2857;
+        opts.mat_glass_prob = 0.0952;
+
+        let json = serde_json::to_string(&opts).expect("serialize");
+        let restored: Render3DOptions = serde_json::from_str(&json).expect("deserialize");
+
+        assert!(restored.mat_allow_lights);
+        assert_eq!(restored.mat_light_count, 520);
+        assert_eq!(restored.mat_light_prob, 0.0173);
+        assert!(restored.mat_allow_glass);
+        assert_eq!(restored.mat_glass_count, 2857);
+        assert_eq!(restored.mat_glass_prob, 0.0952);
+    }
 }
 
 /// Orbit camera for 3D view (Houdini-style controls)
@@ -872,6 +893,16 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
+    fn fit_distance_for_aspect(width: f32, height: f32, vertical_fov: f32, aspect: f32) -> f32 {
+        let half_h = height.max(1.0) * 0.5;
+        let half_w = width.max(1.0) * 0.5;
+        let tan_half = (vertical_fov * 0.5).tan().max(0.0001);
+        let aspect = aspect.max(0.0001);
+        let fit_h = half_h / tan_half;
+        let fit_w = half_w / (tan_half * aspect);
+        fit_h.max(fit_w)
+    }
+
     /// Orbit the camera (left mouse drag) - non-inertia version
     #[allow(dead_code)]
     pub fn orbit(&mut self, delta_x: f32, delta_y: f32) {
@@ -1067,30 +1098,41 @@ impl OrbitCamera {
 
     /// Set front-view matching 2D layout (looking along +Z at XY wall)
     pub fn set_front_view(&mut self, width: f32, height: f32) {
+        let aspect = width.max(1.0) / height.max(1.0);
+        self.set_front_view_for_viewport(width, height, aspect);
+    }
+
+    /// Set front-view for a scene whose dimensions are independent from the viewport.
+    pub fn set_front_view_for_viewport(&mut self, width: f32, height: f32, viewport_aspect: f32) {
         self.yaw = 0.0;
         self.pitch = 0.0;
         self.target = Vec3::new(width / 2.0, -(height / 2.0), 0.0);
-        // Distance so treemap fills view (approx)
-        let half_h = height / 2.0;
-        let fov_half = self.fov / 2.0;
-        self.distance = half_h / fov_half.tan();
+        self.distance = Self::fit_distance_for_aspect(width, height, self.fov, viewport_aspect);
     }
 
     /// Set front-view with animation (full reset including rotation)
     pub fn animate_to_front_view(&mut self, width: f32, height: f32) {
+        let aspect = width.max(1.0) / height.max(1.0);
+        self.animate_to_front_view_for_viewport(width, height, aspect);
+    }
+
+    /// Set front-view with animation for a scene whose dimensions are independent from the viewport.
+    pub fn animate_to_front_view_for_viewport(&mut self, width: f32, height: f32, viewport_aspect: f32) {
         let target = Vec3::new(width / 2.0, -(height / 2.0), 0.0);
-        let half_h = height / 2.0;
-        let fov_half = self.fov / 2.0;
-        let distance = half_h / fov_half.tan();
+        let distance = Self::fit_distance_for_aspect(width, height, self.fov, viewport_aspect);
         self.animate_to(0.0, 0.0, distance, target);
     }
 
     /// Zoom to fit scene without changing rotation
     pub fn zoom_to_fit_scene(&mut self, width: f32, height: f32) {
+        let aspect = width.max(1.0) / height.max(1.0);
+        self.zoom_to_fit_scene_for_viewport(width, height, aspect);
+    }
+
+    /// Zoom to fit scene without changing rotation, using the current viewport aspect.
+    pub fn zoom_to_fit_scene_for_viewport(&mut self, width: f32, height: f32, viewport_aspect: f32) {
         let target = Vec3::new(width / 2.0, -(height / 2.0), 0.0);
-        let half_h = height / 2.0;
-        let fov_half = self.fov / 2.0;
-        let distance = half_h / fov_half.tan();
+        let distance = Self::fit_distance_for_aspect(width, height, self.fov, viewport_aspect);
         self.animate_zoom_to(distance, target);
     }
 }

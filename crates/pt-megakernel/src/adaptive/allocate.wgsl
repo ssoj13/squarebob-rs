@@ -35,15 +35,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var_val = (v.x + v.y + v.z) / 3.0; // Average luminance variance
     }
 
-    // Map variance to SPP
-    // Higher variance = more samples needed
-    var spp = params.min_spp;
+    // Map variance to a per-pixel SPP cap. At the threshold we allocate a small
+    // extra budget; by 10x threshold the pixel receives the configured max.
+    let span = params.max_spp - min(params.min_spp, params.max_spp);
+    let severity = clamp(var_val / max(params.variance_threshold * 10.0, 1e-6), 0.0, 1.0);
+    var spp = params.min_spp + u32(round(severity * f32(span)));
 
-    if var_val > params.variance_threshold {
-        // Scale linearly with variance
-        let scale = min(var_val / params.variance_threshold, 10.0);
-        spp = min(u32(f32(params.min_spp) * scale), params.max_spp);
-    }
+    // Never move a pixel's cap below samples already observed. Otherwise a late
+    // allocation update can make the renderer look like it "finished" suddenly.
+    spp = max(spp, data.count);
 
-    sample_map[pixel_id] = spp;
+    sample_map[pixel_id] = min(spp, params.max_spp);
 }

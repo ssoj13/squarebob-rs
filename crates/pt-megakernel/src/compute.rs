@@ -378,7 +378,7 @@ struct PathGuideBindGroups {
 
 impl PathTraceCompute {
     /// Create a new path trace compute pipeline.
-    /// Bind group layout: 0=nodes, 1=instances, 2=camera, 3=output, 4=accum, 5=materials, 6=env_tex, 7=env_sampler, 8=env_params, 9=env_marginal_cdf, 10=env_conditional_cdf, 11=sample_map
+/// Bind group layout: 0=nodes, 1=instances, 2=camera, 3=output, 4=accum, 5=materials, 6=env_tex, 7=env_sampler, 8=env_params, 9=env_marginal_cdf, 10=env_conditional_cdf, 11=sample_map, 12=variance
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -517,6 +517,17 @@ impl PathTraceCompute {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // @binding(12) Adaptive variance data
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -892,6 +903,7 @@ impl PathTraceCompute {
             self.rebuild_wavefront_bind_groups(device);
         }
         self.fill_sample_map(queue);
+        self.rebuild_bind_group(device);
         log::debug!("Adaptive: enabled={}", enabled);
     }
 
@@ -909,11 +921,17 @@ impl PathTraceCompute {
         if max_spp < min_spp {
             max_spp = min_spp;
         }
+        let changed = self.adaptive_config.min_spp != min_spp
+            || self.adaptive_config.max_spp != max_spp
+            || (self.adaptive_config.variance_threshold - variance_threshold.max(1e-6)).abs() > f32::EPSILON
+            || self.adaptive_config.update_interval != update_interval.max(1);
         self.adaptive_config.min_spp = min_spp;
         self.adaptive_config.max_spp = max_spp;
         self.adaptive_config.variance_threshold = variance_threshold.max(1e-6);
         self.adaptive_config.update_interval = update_interval.max(1);
-        self.fill_sample_map(queue);
+        if changed {
+            self.fill_sample_map(queue);
+        }
     }
 
     fn fill_sample_map(&mut self, queue: &wgpu::Queue) {
@@ -930,6 +948,62 @@ impl PathTraceCompute {
         };
         let data = vec![fill_value; n];
         queue.write_buffer(sample_map, 0, bytemuck::cast_slice(&data));
+    }
+
+    fn effective_max_samples(&self) -> u32 {
+        if self.adaptive_config.enabled && self.adaptive.is_some() {
+            self.max_samples.min(self.adaptive_config.max_spp.max(1))
+        } else {
+            self.max_samples
+        }
+    }
+
+    pub fn update_adaptive_sample_map(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+    ) {
+        if !self.adaptive_config.enabled || self.frame_count == 0 {
+            return;
+        }
+        if !self.frame_count.is_multiple_of(self.adaptive_config.update_interval.max(1)) {
+            return;
+        }
+        let (Some(ad), Some(ad_bgs)) = (&self.adaptive, &self.adaptive_bind_groups) else {
+            return;
+        };
+
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct AllocateParams {
+            width: u32,
+            height: u32,
+            min_spp: u32,
+            max_spp: u32,
+            variance_threshold: f32,
+            _pad: [f32; 3],
+            _pad2: [f32; 4],
+        }
+
+        let params = AllocateParams {
+            width: self.width,
+            height: self.height,
+            min_spp: self.adaptive_config.min_spp,
+            max_spp: self.adaptive_config.max_spp.min(self.max_samples).max(1),
+            variance_threshold: self.adaptive_config.variance_threshold,
+            _pad: [0.0; 3],
+            _pad2: [0.0; 4],
+        };
+        queue.write_buffer(&ad_bgs.allocate_params_buf, 0, bytemuck::bytes_of(&params));
+
+        let (_, allocate_pl) = ad.pipelines();
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("adaptive_allocate_pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(allocate_pl);
+        pass.set_bind_group(0, &ad_bgs.allocate_bg, &[]);
+        pass.dispatch_workgroups(self.width.div_ceil(8), self.height.div_ceil(8), 1);
     }
 
     /// Enable/disable wavefront path tracing.
@@ -1552,12 +1626,14 @@ impl PathTraceCompute {
         // Early checks
         if self.wavefront.is_none() || self.wavefront_bind_groups.is_none() { return false; }
         if !self.scene_ready { return false; }
-        if self.frame_count >= self.max_samples { return true; }
+        if self.frame_count >= self.effective_max_samples() { return false; }
 
         let wf_start = std::time::Instant::now();
         // Clear accum buffer on first frame
         if self.frame_count == 0 {
+            self.fill_sample_map(queue);
             encoder.clear_buffer(&self.accum_buffer, 0, None);
+            encoder.clear_buffer(&self.variance_buffer, 0, None);
             if self.history_dirty {
                 // Clear ReSTIR history on jump to avoid stale temporal reuse
                 if let (Some(rs), Some(restir_bgs)) = (&self.restir, &self.restir_bind_groups) {
@@ -2395,6 +2471,7 @@ impl PathTraceCompute {
                 wgpu::BindGroupEntry { binding: 9, resource: self.env_marginal_cdf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 10, resource: self.env_conditional_cdf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 11, resource: sample_map.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 12, resource: self.variance_buffer.as_entire_binding() },
             ],
         }));
 
@@ -2605,29 +2682,32 @@ impl PathTraceCompute {
     }
 
     /// Dispatch compute shader. Returns false if not ready.
-    pub fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder, _queue: &wgpu::Queue) -> bool {
-        let Some(bg) = &self.bind_group else {
-            log::warn!("PT dispatch: bind_group is None!");
-            return false;
-        };
+    pub fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue) -> bool {
         if !self.scene_ready {
             log::warn!("PT dispatch: scene_ready=false!");
             return false;
         }
-        if self.frame_count >= self.max_samples {
-            log::trace!("PT dispatch: max reached {}/{}", self.frame_count, self.max_samples);
-            return true;
+        let effective_max = self.effective_max_samples();
+        if self.frame_count >= effective_max {
+            log::trace!("PT dispatch: max reached {}/{}", self.frame_count, effective_max);
+            return false;
         }
 
         let dispatch_start = std::time::Instant::now();
         
         // Clear accum buffer on first frame (after reset)
         if self.frame_count == 0 {
+            self.fill_sample_map(queue);
             encoder.clear_buffer(&self.accum_buffer, 0, None);
+            encoder.clear_buffer(&self.variance_buffer, 0, None);
         }
+        let Some(bg) = &self.bind_group else {
+            log::warn!("PT dispatch: bind_group is None!");
+            return false;
+        };
         
         self.frame_count += 1;
-        log::debug!("PT dispatch: frame {}/{}, {}x{}", self.frame_count, self.max_samples, self.width, self.height);
+        log::debug!("PT dispatch: frame {}/{}, {}x{}", self.frame_count, effective_max, self.width, self.height);
 
         let wg_x = self.width.div_ceil(WG_SIZE);
         let wg_y = self.height.div_ceil(WG_SIZE);

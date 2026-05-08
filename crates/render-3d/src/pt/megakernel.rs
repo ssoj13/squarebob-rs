@@ -377,12 +377,17 @@ pub(crate) fn render_path_traced_no_readback(
         if opts.pt_wavefront {
             pt.set_wavefront_enabled(&renderer.ctx.device, true);
             for _ in 0..samples {
-                pt.dispatch_wavefront(&renderer.ctx.device, &mut encoder, &renderer.ctx.queue, opts.pt_max_bounces, env_time);
+                if !pt.dispatch_wavefront(&renderer.ctx.device, &mut encoder, &renderer.ctx.queue, opts.pt_max_bounces, env_time) {
+                    break;
+                }
             }
         } else {
             for _ in 0..samples {
-                pt.dispatch(&mut encoder, &renderer.ctx.queue);
+                if !pt.dispatch(&mut encoder, &renderer.ctx.queue) {
+                    break;
+                }
             }
+            pt.update_adaptive_sample_map(&mut encoder, &renderer.ctx.queue);
         }
 
         let targets = renderer.targets.as_ref().unwrap();
@@ -801,18 +806,26 @@ pub(crate) fn render_path_traced(
         }
         let dispatch_start = std::time::Instant::now();
         // Use wavefront or megakernel dispatch
+        let mut actual_samples_this_frame = 0u32;
         if opts.pt_wavefront {
             pt.set_wavefront_enabled(&renderer.ctx.device, true);
             for _ in 0..samples_this_frame {
-                pt.dispatch_wavefront(&renderer.ctx.device, &mut encoder, &renderer.ctx.queue, opts.pt_max_bounces, env_time);
+                if !pt.dispatch_wavefront(&renderer.ctx.device, &mut encoder, &renderer.ctx.queue, opts.pt_max_bounces, env_time) {
+                    break;
+                }
+                actual_samples_this_frame += 1;
             }
         } else {
             for _ in 0..samples_this_frame {
-                pt.dispatch(&mut encoder, &renderer.ctx.queue);
+                if !pt.dispatch(&mut encoder, &renderer.ctx.queue) {
+                    break;
+                }
+                actual_samples_this_frame += 1;
             }
+            pt.update_adaptive_sample_map(&mut encoder, &renderer.ctx.queue);
         }
         let dispatch_ms = dispatch_start.elapsed().as_secs_f64() * 1000.0;
-        debug!("  dispatch: {:.2}ms ({} samples)", dispatch_ms, samples_this_frame);
+        debug!("  dispatch: {:.2}ms ({} samples)", dispatch_ms, actual_samples_this_frame);
 
         let blit_start = std::time::Instant::now();
         let targets = renderer.targets.as_ref().unwrap();
@@ -838,7 +851,7 @@ pub(crate) fn render_path_traced(
 
         let total_ms = pt_start.elapsed().as_secs_f64() * 1000.0;
         info!("PT render: {:.2}ms ({} cubes, {} samples, frame {})",
-            total_ms, instances.len(), samples_this_frame, pt.frame_count);
+            total_ms, instances.len(), actual_samples_this_frame, pt.frame_count);
         trace!("  scene_dirty: {}, env_dirty: {}", renderer.pt.pt_scene_dirty, renderer.pt.pt_env_dirty);
 
         result

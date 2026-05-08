@@ -23,7 +23,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= params.width || gid.y >= params.height { return; }
 
     let pixel_id = gid.y * params.width + gid.x;
-    let sample = samples[pixel_id].rgb;
+    let accum = samples[pixel_id];
+    if accum.w <= 0.0 {
+        return;
+    }
+    let sample = accum.rgb / accum.w;
     var data = variance[pixel_id];
 
     // Welford's online algorithm

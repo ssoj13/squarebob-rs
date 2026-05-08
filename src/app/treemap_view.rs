@@ -407,15 +407,33 @@ impl App {
 
         // 'A' key - fit all (zoom only, keep rotation)
         if ctx.input(|i| i.key_pressed(egui::Key::A)) && resp.hovered() {
-            self.orbit_camera.zoom_to_fit_scene(w as f32, h as f32);
+            let (scene_w, scene_h) = self.scene_layout_size_or_viewport(w, h);
+            self.orbit_camera.zoom_to_fit_scene_for_viewport(
+                scene_w,
+                scene_h,
+                w as f32 / h.max(1) as f32,
+            );
             self.needs_layout = true;
         }
 
         // 'H' key - home (full reset with rotation)
         if ctx.input(|i| i.key_pressed(egui::Key::H)) && resp.hovered() {
-            self.orbit_camera.animate_to_front_view(w as f32, h as f32);
+            let (scene_w, scene_h) = self.scene_layout_size_or_viewport(w, h);
+            self.orbit_camera.animate_to_front_view_for_viewport(
+                scene_w,
+                scene_h,
+                w as f32 / h.max(1) as f32,
+            );
             self.needs_layout = true;
         }
+    }
+
+    fn scene_layout_size_or_viewport(&self, w: u32, h: u32) -> (f32, f32) {
+        self.renderer_3d
+            .as_ref()
+            .map(|r| r.current_scene_layout_size())
+            .map(|(sw, sh)| (sw as f32, sh as f32))
+            .unwrap_or((w as f32, h as f32))
     }
 
     /// Frame view on selection or hovered object (zoom only, keep rotation)
@@ -435,7 +453,8 @@ impl App {
             self.orbit_camera.animate_zoom_to(distance.max(50.0), center);
         } else {
             // Fall back to fit scene (keep rotation)
-            self.orbit_camera.zoom_to_fit_scene(w, h);
+            let (scene_w, scene_h) = self.scene_layout_size_or_viewport(w as u32, h as u32);
+            self.orbit_camera.zoom_to_fit_scene_for_viewport(scene_w, scene_h, w / h.max(1.0));
         }
     }
     
@@ -828,7 +847,12 @@ impl App {
         
         // Initialize camera to view center if not set
         if self.orbit_camera.target == glam::Vec3::ZERO && w > 0 && h > 0 {
-            self.orbit_camera.set_front_view(w as f32, h as f32);
+            let (scene_w, scene_h) = self.scene_layout_size_or_viewport(w, h);
+            self.orbit_camera.set_front_view_for_viewport(
+                scene_w,
+                scene_h,
+                w as f32 / h.max(1) as f32,
+            );
         }
         
         // Check if we need to render

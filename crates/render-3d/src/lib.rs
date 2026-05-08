@@ -37,6 +37,8 @@ use geometry::{CubeInstance, CUBE_INDICES, NUM_INDICES};
 use pipelines::{BindGroupLayouts, Pipelines};
 use targets::{DynamicBindGroups, RenderTargets};
 
+const DEFAULT_SCENE_LAYOUT_SIZE: (u32, u32) = (1024, 1024);
+
 pub(crate) struct PtState {
     pub path_tracer: Option<pt_megakernel::PathTraceCompute>,
     pub pt_backend_kind: pt::PtBackendKind,
@@ -132,6 +134,7 @@ pub struct Renderer3D {
     cached_instances: Option<Arc<Vec<geometry::CubeInstance>>>,
     cached_opts_hash: u64,
     cached_layout_size: (u32, u32),
+    scene_layout_size: Option<(u32, u32)>,
     
     // Selected object IDs for outline rendering
     selected_ids: std::collections::HashSet<u32>,
@@ -292,6 +295,7 @@ impl Renderer3D {
         self.cached_instances = None;
         self.cached_opts_hash = 0;
         self.cached_layout_size = (0, 0);
+        self.scene_layout_size = None;
     }
 
     /// Drop PT resources and force re-init on next render.
@@ -434,8 +438,18 @@ impl Renderer3D {
             cached_instances: None,
             cached_opts_hash: 0,
             cached_layout_size: (0, 0),
+            scene_layout_size: None,
             selected_ids: std::collections::HashSet::new(),
         }
+    }
+
+    fn scene_layout_size(&mut self) -> (u32, u32) {
+        *self.scene_layout_size.get_or_insert(DEFAULT_SCENE_LAYOUT_SIZE)
+    }
+
+    /// Current logical 3D scene size. This is intentionally separate from the render target size.
+    pub fn current_scene_layout_size(&self) -> (u32, u32) {
+        self.scene_layout_size.unwrap_or(DEFAULT_SCENE_LAYOUT_SIZE)
     }
 
     /// Compute a hash of options that affect cube geometry
@@ -520,12 +534,15 @@ impl Renderer3D {
 
         self.ensure_targets(width, height);
 
-        // Check if we can reuse cached instances
-        let opts_hash = Self::opts_hash(opts, width, height);
+        let (layout_w, layout_h) = self.scene_layout_size();
+
+        // Check if we can reuse cached instances. The cache depends on the logical scene layout,
+        // not the output texture size, so resizing the window only updates camera/render targets.
+        let opts_hash = Self::opts_hash(opts, layout_w, layout_h);
         let cache_valid = !opts.animate
             && self.cached_instances.is_some()
             && self.cached_opts_hash == opts_hash
-            && self.cached_layout_size == (width, height);
+            && self.cached_layout_size == (layout_w, layout_h);
 
         trace!("cache_valid: {}, opts_hash: 0x{:x}", cache_valid, opts_hash);
 
@@ -537,10 +554,10 @@ impl Renderer3D {
                 opts.animate,
                 self.cached_instances.is_some(),
                 self.cached_opts_hash == opts_hash,
-                self.cached_layout_size == (width, height));
+                self.cached_layout_size == (layout_w, layout_h));
             // Layout only on cache miss — rect values are already set when cache is valid
-            treemap::layout(root, 0.0, 0.0, width as f32, height as f32, treemap_opts);
-            let world_center = Vec3::new(width as f32 / 2.0, -(height as f32 / 2.0), 0.0);
+            treemap::layout(root, 0.0, 0.0, layout_w as f32, layout_h as f32, treemap_opts);
+            let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
             let new_instances = self.collect_cubes(
                 root, opts, treemap_opts, world_center,
                 camera.position(), height as f32, camera.fov,
@@ -552,7 +569,7 @@ impl Renderer3D {
             if !opts.animate {
                 self.cached_instances = Some(Arc::clone(&arc));
                 self.cached_opts_hash = opts_hash;
-                self.cached_layout_size = (width, height);
+                self.cached_layout_size = (layout_w, layout_h);
             } else {
                 self.cached_instances = Some(Arc::clone(&arc));
             }
@@ -1091,8 +1108,9 @@ impl Renderer3D {
     ) -> Option<CpuPickHit> {
         if width == 0 || height == 0 { return None; }
 
-        // Ensure layout is up to date for current viewport size
-        treemap::layout(root, 0.0, 0.0, width as f32, height as f32, treemap_opts);
+        // Ensure layout matches the logical 3D scene, not the current render target size.
+        let (layout_w, layout_h) = self.current_scene_layout_size();
+        treemap::layout(root, 0.0, 0.0, layout_w as f32, layout_h as f32, treemap_opts);
 
         let rel_x = (screen_x / width as f32).clamp(0.0, 1.0);
         let rel_y = (screen_y / height as f32).clamp(0.0, 1.0);
@@ -1118,7 +1136,7 @@ impl Renderer3D {
         let ray_dir = (far_world - near_world).normalize_or_zero();
         if ray_dir == Vec3::ZERO { return None; }
 
-        let world_center = Vec3::new(width as f32 / 2.0, -(height as f32 / 2.0), 0.0);
+        let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
         let mut hit: Option<CpuPickHit> = None;
         self.pick_recursive(root, 0, 0, opts, treemap_opts, world_center, ray_origin, ray_dir, &mut hit);
         hit
@@ -1608,12 +1626,15 @@ impl Renderer3D {
         let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
         self.ensure_targets(width, height);
 
-        // Check if we can reuse cached instances (only when not animating)
-        let opts_hash = Self::opts_hash(opts, width, height);
+        let (layout_w, layout_h) = self.scene_layout_size();
+
+        // Check if we can reuse cached instances (only when not animating). Keep geometry stable
+        // across output resizes by caching against the logical scene layout size.
+        let opts_hash = Self::opts_hash(opts, layout_w, layout_h);
         let cache_valid = !opts.animate
             && self.cached_instances.is_some()
             && self.cached_opts_hash == opts_hash
-            && self.cached_layout_size == (width, height);
+            && self.cached_layout_size == (layout_w, layout_h);
 
         trace!("cache_valid: {}, opts_hash: 0x{:x}", cache_valid, opts_hash);
 
@@ -1625,11 +1646,11 @@ impl Renderer3D {
                 opts.animate,
                 self.cached_instances.is_some(),
                 self.cached_opts_hash == opts_hash,
-                self.cached_layout_size == (width, height));
+                self.cached_layout_size == (layout_w, layout_h));
             // Layout only on cache miss — rect values are already set when cache is valid
-            treemap::layout(root, 0.0, 0.0, width as f32, height as f32, treemap_opts);
+            treemap::layout(root, 0.0, 0.0, layout_w as f32, layout_h as f32, treemap_opts);
             // Collect new instances (this rebuilds id_map with new IDs)
-            let world_center = Vec3::new(width as f32 / 2.0, -(height as f32 / 2.0), 0.0);
+            let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
             let new_instances = self.collect_cubes(
                 root, opts, treemap_opts, world_center,
                 camera.position(), height as f32, camera.fov,
@@ -1642,7 +1663,7 @@ impl Renderer3D {
             if !opts.animate {
                 self.cached_instances = Some(arc);
                 self.cached_opts_hash = opts_hash;
-                self.cached_layout_size = (width, height);
+                self.cached_layout_size = (layout_w, layout_h);
                 self.cached_instances.as_ref().unwrap()
             } else {
                 // For animated mode, store temporarily and return reference

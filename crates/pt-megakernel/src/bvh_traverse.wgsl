@@ -86,6 +86,13 @@ struct EnvParams {
     time: f32,  // for procedural sky day/night cycle
 };
 
+struct VarianceData {
+    mean: vec3<f32>,
+    _pad0: u32,
+    m2: vec3<f32>,
+    count: u32,
+};
+
 @group(0) @binding(0) var<storage, read> nodes: array<BVHNode>;
 @group(0) @binding(1) var<storage, read> instances: array<Instance>;
 @group(0) @binding(2) var<uniform> camera: Camera;
@@ -98,6 +105,7 @@ struct EnvParams {
 @group(0) @binding(9) var<storage, read> env_marginal_cdf: array<f32>;
 @group(0) @binding(10) var<storage, read> env_conditional_cdf: array<f32>;
 @group(0) @binding(11) var<storage, read> sample_map: array<u32>;
+@group(0) @binding(12) var<storage, read_write> variance: array<VarianceData>;
 
 const MAX_STACK_DEPTH: u32 = 32u;
 const T_MAX: f32 = 1e30;
@@ -913,6 +921,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Add current sample to accumulator: rgb = sum of radiance, w = sample count
     let prev = accum[pixel_idx];
     let new_accum = prev + vec4<f32>(radiance, 1.0);
+
+    // Track variance from the actual per-dispatch radiance sample. This feeds adaptive SPP
+    // allocation; using the accumulated sum here would make the variance estimate diverge.
+    var var_data = variance[pixel_idx];
+    var_data.count += 1u;
+    let var_n = f32(var_data.count);
+    let var_delta = radiance - var_data.mean;
+    var_data.mean += var_delta / var_n;
+    let var_delta2 = radiance - var_data.mean;
+    var_data.m2 += var_delta * var_delta2;
+    variance[pixel_idx] = var_data;
     
     // Clamp accumulated radiance to prevent fireflies
     let clamped_accum = clamp(new_accum, vec4<f32>(0.0), vec4<f32>(1000.0, 1000.0, 1000.0, 100000.0));

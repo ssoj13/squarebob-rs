@@ -825,7 +825,15 @@ impl App {
                 }
             }
             if self.orbit_camera.target == glam::Vec3::ZERO {
-                self.orbit_camera.set_front_view(w as f32, h as f32);
+                let (scene_w, scene_h) = self.renderer_3d
+                    .as_ref()
+                    .map(|r| r.current_scene_layout_size())
+                    .unwrap_or((w, h));
+                self.orbit_camera.set_front_view_for_viewport(
+                    scene_w as f32,
+                    scene_h as f32,
+                    w as f32 / h.max(1) as f32,
+                );
             }
         }
 

@@ -650,6 +650,7 @@ impl App {
                                 };
                                 if ui.add(egui::DragValue::new(&mut self.render_3d_opts.mat_light_count)
                                     .range(0..=max_for_drag)
+                                    .clamp_existing_to_range(false)
                                     .speed(1.0)
                                     .suffix(" cubes"))
                                     .on_hover_text("Number of cubes to receive a light material (out of total leaf cubes)")
@@ -723,6 +724,7 @@ impl App {
                                 };
                                 if ui.add(egui::DragValue::new(&mut self.render_3d_opts.mat_glass_count)
                                     .range(0..=max_for_drag)
+                                    .clamp_existing_to_range(false)
                                     .speed(1.0)
                                     .suffix(" cubes"))
                                     .on_hover_text("Number of cubes to receive a glass material (out of total leaf cubes)")
@@ -780,7 +782,12 @@ impl App {
             // Progress bar
             if let Some(r) = &self.renderer_3d {
                 let current = r.pt_frame_count();
-                let max = self.render_3d_opts.pt_max_samples;
+                let max = if self.render_3d_opts.pt_adaptive_sampling {
+                    self.render_3d_opts.pt_max_samples
+                        .min(self.render_3d_opts.pt_adaptive_max_spp.max(1))
+                } else {
+                    self.render_3d_opts.pt_max_samples
+                };
                 let progress = current as f32 / max as f32;
                 let done = current >= max;
                 ui.add(egui::ProgressBar::new(progress.min(1.0))
@@ -1028,19 +1035,19 @@ impl App {
                             match self.render_3d_opts.pt_adaptive_preset {
                                 AdaptivePreset::Conservative => {
                                     self.render_3d_opts.pt_adaptive_min_spp = 1;
-                                    self.render_3d_opts.pt_adaptive_max_spp = 64;
+                                    self.render_3d_opts.pt_adaptive_max_spp = 512;
                                     self.render_3d_opts.pt_adaptive_variance = 0.002;
                                     self.render_3d_opts.pt_adaptive_interval = 6;
                                 }
                                 AdaptivePreset::Balanced => {
                                     self.render_3d_opts.pt_adaptive_min_spp = 1;
-                                    self.render_3d_opts.pt_adaptive_max_spp = 128;
+                                    self.render_3d_opts.pt_adaptive_max_spp = 1024;
                                     self.render_3d_opts.pt_adaptive_variance = 0.001;
                                     self.render_3d_opts.pt_adaptive_interval = 4;
                                 }
                                 AdaptivePreset::Aggressive => {
                                     self.render_3d_opts.pt_adaptive_min_spp = 1;
-                                    self.render_3d_opts.pt_adaptive_max_spp = 256;
+                                    self.render_3d_opts.pt_adaptive_max_spp = 2048;
                                     self.render_3d_opts.pt_adaptive_variance = 0.0005;
                                     self.render_3d_opts.pt_adaptive_interval = 2;
                                 }
