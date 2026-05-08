@@ -10,6 +10,13 @@ use pt_mats::{MaterializeMode, MaterialSource, MaterialDistribution};
 use crate::app::helpers::{multibutton_exclusive, MultiButtonAxis};
 use super::{LABEL_WIDTH, tinted_section};
 
+/// Maximum absolute PT light/glass cube count in the UI and when persisting settings.
+///
+/// When `total_cubes == 0` (scan not finished), the drag range must **not** fall back to `0..=1`:
+/// [`egui::DragValue`] clamps existing values every frame (`clamp_existing_to_range(true)` default),
+/// which was resetting saved counts to **1** on every launch before the tree existed.
+const MAX_PT_MAT_CUBE_COUNT: u32 = 5000;
+
 impl App {
     /// Renderer section (2D/3D mode-specific settings)
     pub(super) fn ui_settings_renderer(&mut self, ui: &mut egui::Ui) {
@@ -636,9 +643,13 @@ impl App {
                                 if let Some(r) = &mut self.renderer_3d { r.mark_pt_scene_dirty(); }
                             }
                             if self.render_3d_opts.mat_allow_lights {
-                                let max_count = total_cubes.min(1000).max(1);
+                                let max_for_drag = if total_cubes > 0 {
+                                    total_cubes.min(MAX_PT_MAT_CUBE_COUNT).max(1)
+                                } else {
+                                    MAX_PT_MAT_CUBE_COUNT
+                                };
                                 if ui.add(egui::DragValue::new(&mut self.render_3d_opts.mat_light_count)
-                                    .range(0..=max_count)
+                                    .range(0..=max_for_drag)
                                     .speed(1.0)
                                     .suffix(" cubes"))
                                     .on_hover_text("Number of cubes to receive a light material (out of total leaf cubes)")
@@ -705,9 +716,13 @@ impl App {
                                 if let Some(r) = &mut self.renderer_3d { r.mark_pt_scene_dirty(); }
                             }
                             if self.render_3d_opts.mat_allow_glass {
-                                let max_count = total_cubes.min(1000).max(1);
+                                let max_for_drag = if total_cubes > 0 {
+                                    total_cubes.min(MAX_PT_MAT_CUBE_COUNT).max(1)
+                                } else {
+                                    MAX_PT_MAT_CUBE_COUNT
+                                };
                                 if ui.add(egui::DragValue::new(&mut self.render_3d_opts.mat_glass_count)
-                                    .range(0..=max_count)
+                                    .range(0..=max_for_drag)
                                     .speed(1.0)
                                     .suffix(" cubes"))
                                     .on_hover_text("Number of cubes to receive a glass material (out of total leaf cubes)")
