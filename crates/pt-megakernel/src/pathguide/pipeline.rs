@@ -28,21 +28,33 @@ pub struct PathGuidePipeline {
 impl PathGuidePipeline {
     pub fn new(device: &wgpu::Device, resolution: u32) -> Self {
         debug!("PathGuidePipeline::new res={}", resolution);
-        let (update_pipeline, update_bgl) = create_pipeline(device, UPDATE_WGSL, "update", &[
-            bgl_storage_rw(0),   // SVO nodes
-            bgl_storage_ro(1),   // guide buffer
-            bgl_uniform(2),      // params
-        ]);
+        let (update_pipeline, update_bgl) = create_pipeline(
+            device,
+            UPDATE_WGSL,
+            "update",
+            &[
+                bgl_storage_rw(0), // SVO nodes
+                bgl_storage_ro(1), // guide buffer
+                bgl_uniform(2),    // params
+            ],
+        );
 
-        let (sample_pipeline, sample_bgl) = create_pipeline(device, SAMPLE_WGSL, "sample", &[
-            bgl_storage_ro(0),   // SVO nodes
-            bgl_storage_rw(1),  // guide buffer
-            bgl_uniform(2),     // params
-        ]);
+        let (sample_pipeline, sample_bgl) = create_pipeline(
+            device,
+            SAMPLE_WGSL,
+            "sample",
+            &[
+                bgl_storage_ro(0), // SVO nodes
+                bgl_storage_rw(1), // guide buffer
+                bgl_uniform(2),    // params
+            ],
+        );
 
         let mut p = Self {
-            update_pipeline, sample_pipeline,
-            update_bgl, sample_bgl,
+            update_pipeline,
+            sample_pipeline,
+            update_bgl,
+            sample_bgl,
             svo_buf: None,
             resolution,
             frame_count: 0,

@@ -1,15 +1,15 @@
 //! GPU-accelerated 2D Treemap Renderer using wgpu
 //! Renders cushion-shaded treemap tiles as instanced quads
 
-use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use log::debug;
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+use crate::{self as treemap, TreeMapOptions};
+use dirstat_core::DirEntry;
 use render_core::gpu::{self, GpuContext};
 use render_core::Viewport;
-use dirstat_core::DirEntry;
-use crate::{self as treemap, TreeMapOptions};
 
 /// A single rectangle instance for GPU rendering
 #[repr(C)]
@@ -80,12 +80,24 @@ impl Vertex {
 
 /// Unit quad vertices (0,0) to (1,1) - two triangles
 const UNIT_QUAD: &[Vertex] = &[
-    Vertex { position: [0.0, 0.0] },
-    Vertex { position: [1.0, 0.0] },
-    Vertex { position: [1.0, 1.0] },
-    Vertex { position: [0.0, 0.0] },
-    Vertex { position: [1.0, 1.0] },
-    Vertex { position: [0.0, 1.0] },
+    Vertex {
+        position: [0.0, 0.0],
+    },
+    Vertex {
+        position: [1.0, 0.0],
+    },
+    Vertex {
+        position: [1.0, 1.0],
+    },
+    Vertex {
+        position: [0.0, 0.0],
+    },
+    Vertex {
+        position: [1.0, 1.0],
+    },
+    Vertex {
+        position: [0.0, 1.0],
+    },
 ];
 
 /// WGSL shader for 2D cushion-shaded treemap with instanced quads
@@ -209,7 +221,7 @@ impl GpuRenderer2D {
     pub fn reset_render_targets(&mut self) {
         // Wait for any pending GPU work to complete
         let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        
+
         // Clear render targets so they'll be recreated
         self.render_texture = None;
         self.render_view = None;
@@ -217,7 +229,7 @@ impl GpuRenderer2D {
         self.instance_count = 0;
         self.current_size = (0, 0);
     }
-    
+
     pub fn new(ctx: Arc<GpuContext>) -> Self {
         let device = &ctx.device;
 
@@ -238,30 +250,26 @@ impl GpuRenderer2D {
         // Create bind group layout
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("2D Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-            ],
+                count: None,
+            }],
         });
 
         // Create bind group
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("2D Bind Group"),
             layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
         });
 
         // Create pipeline layout
@@ -349,13 +357,21 @@ impl GpuRenderer2D {
         self.current_size = (width, height);
     }
 
-    
     /// Collect rectangle instances from the treemap with consolidation
     fn collect_rects(&self, root: &DirEntry, opts: &TreeMapOptions) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let grid_w = if opts.grid { 1.0 } else { 0.0 };
-        self.collect_rects_recursive(root, opts, grid_w, [0.0; 4], opts.height, true, 0, &mut rects);
-        
+        self.collect_rects_recursive(
+            root,
+            opts,
+            grid_w,
+            [0.0; 4],
+            opts.height,
+            true,
+            0,
+            &mut rects,
+        );
+
         debug!("Collected {} rectangles after consolidation", rects.len());
         rects
     }
@@ -388,7 +404,7 @@ impl GpuRenderer2D {
 
         // Check if this node is too small to recurse into
         let too_small = w < treemap::MIN_RECT_SIZE || h_px < treemap::MIN_RECT_SIZE;
-        
+
         if !node.is_dir || node.children.is_empty() || too_small {
             // Leaf node OR consolidated small directory
             let color = if node.is_dir && !node.children.is_empty() {
@@ -396,7 +412,7 @@ impl GpuRenderer2D {
             } else {
                 treemap::dir_tinted_color(&node.ext, dir_hash)
             };
-            
+
             let color_f = [
                 color[0] as f32 / 255.0,
                 color[1] as f32 / 255.0,
@@ -414,11 +430,13 @@ impl GpuRenderer2D {
             let my_hash = treemap::path_hash(&node.name, dir_hash);
             let next_h = h * opts.scale_factor;
             for child in &node.children {
-                self.collect_rects_recursive(child, opts, grid_w, surface, next_h, false, my_hash, rects);
+                self.collect_rects_recursive(
+                    child, opts, grid_w, surface, next_h, false, my_hash, rects,
+                );
             }
         }
     }
-    
+
     /// Render the 2D treemap to a pixel buffer
     pub fn render(
         &mut self,
@@ -439,7 +457,14 @@ impl GpuRenderer2D {
         // Layout treemap
         let world_w = width as f32 / viewport.zoom;
         let world_h = height as f32 / viewport.zoom;
-        treemap::layout(root, -viewport.pan[0], -viewport.pan[1], world_w, world_h, opts);
+        treemap::layout(
+            root,
+            -viewport.pan[0],
+            -viewport.pan[1],
+            world_w,
+            world_h,
+            opts,
+        );
 
         // Ensure render target
         self.ensure_render_target(width, height);
@@ -492,7 +517,12 @@ impl GpuRenderer2D {
         // Update uniforms
         let light_len = (opts.light_x * opts.light_x + opts.light_y * opts.light_y + 100.0).sqrt();
         let uniforms = Uniforms {
-            viewport: [width as f32, height as f32, 1.0 / width as f32, 1.0 / height as f32],
+            viewport: [
+                width as f32,
+                height as f32,
+                1.0 / width as f32,
+                1.0 / height as f32,
+            ],
             pan_zoom_bright: [
                 viewport.pan[0],
                 viewport.pan[1],
@@ -514,12 +544,17 @@ impl GpuRenderer2D {
             ],
         };
 
-        self.ctx.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        self.ctx
+            .queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         // Create command encoder
-        let mut encoder = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("2D Render Encoder"),
-        });
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("2D Render Encoder"),
+            });
 
         // Render pass
         {
@@ -557,7 +592,11 @@ impl GpuRenderer2D {
 
         // Copy render texture to readback buffer
         let output_buffer = gpu::readback_texture(
-            &self.ctx, &mut encoder, self.render_texture.as_ref().unwrap(), width, height,
+            &self.ctx,
+            &mut encoder,
+            self.render_texture.as_ref().unwrap(),
+            width,
+            height,
         );
 
         // Submit and wait

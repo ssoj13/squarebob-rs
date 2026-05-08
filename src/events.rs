@@ -3,8 +3,6 @@
 //! Minimal design: emit events → poll in main loop → handle.
 //! No pub/sub callbacks - keeps it simple for this app's needs.
 
-
-
 use std::any::Any;
 use std::collections::VecDeque;
 
@@ -14,7 +12,9 @@ pub trait Event: Any + Send + 'static {
 }
 
 impl<T: Any + Send + 'static> Event for T {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// Boxed event for queue storage
@@ -27,7 +27,9 @@ pub struct EventBus {
 }
 
 impl EventBus {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Emit an event (queued for later processing)
     pub fn emit<E: Event>(&mut self, event: E) {

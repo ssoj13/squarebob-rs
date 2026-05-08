@@ -2,28 +2,26 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use egui_dock::DockState;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use super::DockTab;
 
+use super::presets::RenderPreset;
 use crate::events::EventBus;
 use crate::exclusions::Exclusions;
-use crate::renderer::{
-    OrbitCamera, RenderBackend, Render3DOptions, RenderMode,
-};
-use super::presets::RenderPreset;
-use render_core::Viewport;
-use render_core::gpu::GpuContext;
-use treemap::GpuRenderer2D;
-use render_3d::Renderer3D;
+use crate::renderer::{OrbitCamera, Render3DOptions, RenderBackend, RenderMode};
 use crate::scanner::ScanMsg;
 use dirstat_core::DirEntry;
+use render_3d::Renderer3D;
+use render_core::gpu::GpuContext;
+use render_core::Viewport;
+use treemap::GpuRenderer2D;
 use treemap::TreeMapOptions;
 
 /// Scanner backend selection.
@@ -34,8 +32,7 @@ pub enum ScannerMode {
 }
 
 /// Settings panel tabs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SettingsTab {
     #[default]
     General,
@@ -43,7 +40,6 @@ pub enum SettingsTab {
     Exclusions,
     Extensions,
 }
-
 
 /// Persistent settings saved between sessions
 #[derive(Serialize, Deserialize)]
@@ -88,13 +84,23 @@ pub(super) struct PersistState {
     pub filter_merge_outside: bool,
 }
 
-pub(super) fn default_autosave_interval() -> f32 { 5.0 }
+pub(super) fn default_autosave_interval() -> f32 {
+    5.0
+}
 
-pub(super) fn default_font_size() -> f32 { 12.0 }
-pub(super) fn default_settings_tint_mix() -> f32 { 0.05 }
+pub(super) fn default_font_size() -> f32 {
+    12.0
+}
+pub(super) fn default_settings_tint_mix() -> f32 {
+    0.05
+}
 
-pub(super) fn default_tree_width() -> f32 { 200.0 }
-pub(super) fn default_settings_width() -> f32 { 280.0 }
+pub(super) fn default_tree_width() -> f32 {
+    200.0
+}
+pub(super) fn default_settings_width() -> f32 {
+    280.0
+}
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct SavedOpts {

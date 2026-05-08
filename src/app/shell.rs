@@ -11,32 +11,50 @@ use std::path::Path;
 /// Get platform-specific label for "reveal in file manager" action
 pub(super) fn reveal_label() -> &'static str {
     #[cfg(target_os = "macos")]
-    { "Reveal in Finder" }
+    {
+        "Reveal in Finder"
+    }
     #[cfg(target_os = "windows")]
-    { "Show in Explorer" }
+    {
+        "Show in Explorer"
+    }
     #[cfg(target_os = "linux")]
-    { "Show in File Manager" }
+    {
+        "Show in File Manager"
+    }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    { "Reveal in File Manager" }
+    {
+        "Reveal in File Manager"
+    }
 }
 
 /// Get platform-specific label for "properties/info" action
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub(super) fn properties_label() -> &'static str {
     #[cfg(target_os = "macos")]
-    { "Get Info" }
+    {
+        "Get Info"
+    }
     #[cfg(target_os = "windows")]
-    { "Properties" }
+    {
+        "Properties"
+    }
 }
 
 /// Get platform-specific label for "move to trash" action
 pub(super) fn trash_label() -> &'static str {
     #[cfg(target_os = "macos")]
-    { "Move to Trash" }
+    {
+        "Move to Trash"
+    }
     #[cfg(target_os = "windows")]
-    { "Move to Recycle Bin" }
+    {
+        "Move to Recycle Bin"
+    }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    { "Move to Trash" }
+    {
+        "Move to Trash"
+    }
 }
 
 // ── Cross-platform shell operations ──
@@ -100,10 +118,7 @@ pub(super) fn shell_open_terminal(path: &Path) {
     #[cfg(target_os = "windows")]
     {
         // Try Windows Terminal first, fall back to cmd
-        let wt_result = std::process::Command::new("wt")
-            .arg("-d")
-            .arg(dir)
-            .spawn();
+        let wt_result = std::process::Command::new("wt").arg("-d").arg(dir).spawn();
         if wt_result.is_err() {
             let _ = std::process::Command::new("cmd")
                 .arg("/k")
@@ -125,9 +140,7 @@ pub(super) fn shell_open_terminal(path: &Path) {
                     .arg("--workdir")
                     .arg(dir)
                     .spawn(),
-                _ => std::process::Command::new(term)
-                    .current_dir(dir)
-                    .spawn(),
+                _ => std::process::Command::new(term).current_dir(dir).spawn(),
             };
             if result.is_ok() {
                 break;

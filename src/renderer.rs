@@ -18,7 +18,14 @@ pub mod cpu {
         let world_w = w as f32 / viewport.zoom;
         let world_h = h as f32 / viewport.zoom;
 
-        treemap::layout(root, -viewport.pan[0], -viewport.pan[1], world_w, world_h, opts);
+        treemap::layout(
+            root,
+            -viewport.pan[0],
+            -viewport.pan[1],
+            world_w,
+            world_h,
+            opts,
+        );
         treemap::render(root, w, h, opts)
     }
 }

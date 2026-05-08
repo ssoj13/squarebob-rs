@@ -7,12 +7,12 @@ use glam::Mat4;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct CubeInstance {
-    pub model: [[f32; 4]; 4],  // 64B: model matrix (4 columns)
-    pub color: [f32; 4],       // 16B: RGBA
-    pub hash: u32,             //  4B: name hash for effects
-    pub object_id: u32,        //  4B: unique ID for picking
-    pub _padding: [u32; 2],    //  8B: align to 16
-}                              // Total: 96B
+    pub model: [[f32; 4]; 4], // 64B: model matrix (4 columns)
+    pub color: [f32; 4],      // 16B: RGBA
+    pub hash: u32,            //  4B: name hash for effects
+    pub object_id: u32,       //  4B: unique ID for picking
+    pub _padding: [u32; 2],   //  8B: align to 16
+} // Total: 96B
 
 impl CubeInstance {
     pub fn new(model: Mat4, color: [f32; 4], hash: u32, object_id: u32) -> Self {
@@ -75,44 +75,116 @@ pub fn cube_vertex_layouts() -> [wgpu::VertexBufferLayout<'static>; 2] {
 /// Unit cube vertices (centered at origin, 1x1x1)
 pub const CUBE_VERTICES: &[Vertex] = &[
     // Front (+Z)
-    Vertex { position: [-0.5, -0.5,  0.5], normal: [0.0, 0.0, 1.0] },
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: [0.0, 0.0, 1.0] },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: [0.0, 0.0, 1.0] },
-    Vertex { position: [-0.5,  0.5,  0.5], normal: [0.0, 0.0, 1.0] },
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        normal: [0.0, 0.0, 1.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        normal: [0.0, 0.0, 1.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        normal: [0.0, 0.0, 1.0],
+    },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        normal: [0.0, 0.0, 1.0],
+    },
     // Back (-Z)
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: [0.0, 0.0, -1.0] },
-    Vertex { position: [-0.5, -0.5, -0.5], normal: [0.0, 0.0, -1.0] },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: [0.0, 0.0, -1.0] },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: [0.0, 0.0, -1.0] },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        normal: [0.0, 0.0, -1.0],
+    },
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        normal: [0.0, 0.0, -1.0],
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        normal: [0.0, 0.0, -1.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        normal: [0.0, 0.0, -1.0],
+    },
     // Top (+Y)
-    Vertex { position: [-0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0] },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: [0.0, 1.0, 0.0] },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0] },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: [0.0, 1.0, 0.0] },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        normal: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        normal: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        normal: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        normal: [0.0, 1.0, 0.0],
+    },
     // Bottom (-Y)
-    Vertex { position: [-0.5, -0.5, -0.5], normal: [0.0, -1.0, 0.0] },
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: [0.0, -1.0, 0.0] },
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: [0.0, -1.0, 0.0] },
-    Vertex { position: [-0.5, -0.5,  0.5], normal: [0.0, -1.0, 0.0] },
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        normal: [0.0, -1.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        normal: [0.0, -1.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        normal: [0.0, -1.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        normal: [0.0, -1.0, 0.0],
+    },
     // Right (+X)
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: [1.0, 0.0, 0.0] },
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: [1.0, 0.0, 0.0] },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: [1.0, 0.0, 0.0] },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: [1.0, 0.0, 0.0] },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        normal: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        normal: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        normal: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        normal: [1.0, 0.0, 0.0],
+    },
     // Left (-X)
-    Vertex { position: [-0.5, -0.5, -0.5], normal: [-1.0, 0.0, 0.0] },
-    Vertex { position: [-0.5, -0.5,  0.5], normal: [-1.0, 0.0, 0.0] },
-    Vertex { position: [-0.5,  0.5,  0.5], normal: [-1.0, 0.0, 0.0] },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: [-1.0, 0.0, 0.0] },
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        normal: [-1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        normal: [-1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        normal: [-1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        normal: [-1.0, 0.0, 0.0],
+    },
 ];
 
 pub const CUBE_INDICES: &[u16] = &[
-    0,  1,  2,  0,  2,  3,   // Front
-    4,  5,  6,  4,  6,  7,   // Back
-    8,  9,  10, 8,  10, 11,  // Top
-    12, 13, 14, 12, 14, 15,  // Bottom
-    16, 17, 18, 16, 18, 19,  // Right
-    20, 21, 22, 20, 22, 23,  // Left
+    0, 1, 2, 0, 2, 3, // Front
+    4, 5, 6, 4, 6, 7, // Back
+    8, 9, 10, 8, 10, 11, // Top
+    12, 13, 14, 12, 14, 15, // Bottom
+    16, 17, 18, 16, 18, 19, // Right
+    20, 21, 22, 20, 22, 23, // Left
 ];
 
 pub const NUM_INDICES: u32 = 36;

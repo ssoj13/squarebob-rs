@@ -8,14 +8,14 @@
 //! Based on: "Spatiotemporal reservoir resampling for real-time ray tracing
 //! with dynamic direct lighting" (Bitterli et al., 2020)
 
-mod reservoir;
 mod config;
 mod pipeline;
+mod reservoir;
 
 // Infrastructure for ReSTIR - in development
-#[allow(unused_imports)]
-pub use reservoir::{Reservoir, Sample};
 #[allow(unused_imports)]
 pub use config::ReSTIRConfig;
 #[allow(unused_imports)]
 pub use pipeline::ReSTIRPipeline;
+#[allow(unused_imports)]
+pub use reservoir::{Reservoir, Sample};

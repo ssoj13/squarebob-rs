@@ -90,24 +90,24 @@ pub mod gpu {
             inst_desc.backends = wgpu::Backends::all();
             let instance = wgpu::Instance::new(inst_desc);
 
-            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            }))
-            .ok()?;
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                }))
+                .ok()?;
 
-            let (device, queue) = pollster::block_on(adapter.request_device(
-                &wgpu::DeviceDescriptor {
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                     label: Some("DirStat GPU Device"),
                     required_features: wgpu::Features::POLYGON_MODE_LINE,
                     required_limits: wgpu::Limits::default(),
                     memory_hints: Default::default(),
                     trace: Default::default(),
                     experimental_features: Default::default(),
-                },
-            ))
-            .ok()?;
+                }))
+                .ok()?;
 
             Some(Self {
                 device: Arc::new(device),
@@ -150,7 +150,11 @@ pub mod gpu {
                     rows_per_image: Some(height),
                 },
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
 
         output_buffer

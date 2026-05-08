@@ -72,7 +72,11 @@ pub fn build_instance_bvh(instances: &[Instance]) -> Bvh {
         end: usize,
     }
 
-    let mut stack = vec![Task { node_idx: 0, start: 0, end: n }];
+    let mut stack = vec![Task {
+        node_idx: 0,
+        start: 0,
+        end: n,
+    }];
 
     while let Some(task) = stack.pop() {
         let start = task.start;
@@ -127,8 +131,18 @@ pub fn build_instance_bvh(instances: &[Instance]) -> Bvh {
 
         let left_idx = nodes.len();
         let right_idx = left_idx + 1;
-        nodes.push(BvhNode { aabb_min: [0.0; 3], left_or_first: 0, aabb_max: [0.0; 3], count: 0 });
-        nodes.push(BvhNode { aabb_min: [0.0; 3], left_or_first: 0, aabb_max: [0.0; 3], count: 0 });
+        nodes.push(BvhNode {
+            aabb_min: [0.0; 3],
+            left_or_first: 0,
+            aabb_max: [0.0; 3],
+            count: 0,
+        });
+        nodes.push(BvhNode {
+            aabb_min: [0.0; 3],
+            left_or_first: 0,
+            aabb_max: [0.0; 3],
+            count: 0,
+        });
 
         nodes[task.node_idx] = BvhNode {
             aabb_min: node_aabb.min,
@@ -137,11 +151,22 @@ pub fn build_instance_bvh(instances: &[Instance]) -> Bvh {
             count: 0,
         };
 
-        stack.push(Task { node_idx: right_idx, start: mid, end });
-        stack.push(Task { node_idx: left_idx, start, end: mid });
+        stack.push(Task {
+            node_idx: right_idx,
+            start: mid,
+            end,
+        });
+        stack.push(Task {
+            node_idx: left_idx,
+            start,
+            end: mid,
+        });
     }
 
-    Bvh { nodes, tri_indices: indices }
+    Bvh {
+        nodes,
+        tri_indices: indices,
+    }
 }
 
 /// SAH binned split search across all 3 axes.
@@ -230,4 +255,3 @@ where
     }
     left
 }
-

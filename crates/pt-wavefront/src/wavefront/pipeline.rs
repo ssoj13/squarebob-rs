@@ -1,10 +1,10 @@
 //! Wavefront pipeline orchestration.
 #![allow(dead_code)]
 
-use wgpu::util::DeviceExt;
-use log::debug;
+use super::buffers::{WfHit, WfRay};
 use bytemuck::{Pod, Zeroable};
-use super::buffers::{WfRay, WfHit};
+use log::debug;
+use wgpu::util::DeviceExt;
 
 /// Dims uniform for raygen pass.
 #[repr(C)]
@@ -61,47 +61,69 @@ pub struct WavefrontPipeline {
 impl WavefrontPipeline {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         debug!("WavefrontPipeline::new {}x{}", width, height);
-        let (raygen_pipeline, raygen_bgl) = create_pipeline(device, RAYGEN_WGSL, "raygen", &[
-            bgl_uniform(0),      // camera
-            bgl_uniform(1),      // dims
-            bgl_storage_rw(2),   // ray output
-            bgl_storage_rw(3),   // count
-            bgl_storage_ro(4),   // sample map
-            bgl_storage_ro(5),   // accum buffer (for sample count check)
-        ]);
+        let (raygen_pipeline, raygen_bgl) = create_pipeline(
+            device,
+            RAYGEN_WGSL,
+            "raygen",
+            &[
+                bgl_uniform(0),    // camera
+                bgl_uniform(1),    // dims
+                bgl_storage_rw(2), // ray output
+                bgl_storage_rw(3), // count
+                bgl_storage_ro(4), // sample map
+                bgl_storage_ro(5), // accum buffer (for sample count check)
+            ],
+        );
 
-        let (intersect_pipeline, intersect_bgl) = create_pipeline(device, INTERSECT_WGSL, "intersect", &[
-            bgl_storage_ro(0),   // nodes
-            bgl_storage_ro(1),   // instances
-            bgl_storage_ro(2),   // rays
-            bgl_storage_rw(3),   // hits
-            bgl_storage_rw(4),   // count
-        ]);
+        let (intersect_pipeline, intersect_bgl) = create_pipeline(
+            device,
+            INTERSECT_WGSL,
+            "intersect",
+            &[
+                bgl_storage_ro(0), // nodes
+                bgl_storage_ro(1), // instances
+                bgl_storage_ro(2), // rays
+                bgl_storage_rw(3), // hits
+                bgl_storage_rw(4), // count
+            ],
+        );
 
-        let (shade_pipeline, shade_bgl) = create_pipeline(device, SHADE_WGSL, "shade", &[
-            bgl_storage_ro(0),   // instances
-            bgl_storage_ro(1),   // materials
-            bgl_storage_ro(2),   // rays in
-            bgl_storage_ro(3),   // hits
-            bgl_storage_rw(4),   // rays out
-            bgl_storage_rw(5),   // accum
-            bgl_storage_rw(6),   // counts (in/out)
-            bgl_uniform(7),      // params
-            bgl_texture_2d(8),   // env_map
-            bgl_sampler(9),      // env_sampler
-            bgl_uniform(10),     // env_params
-            bgl_storage_rw(11), // guide buffer
-        ]);
+        let (shade_pipeline, shade_bgl) = create_pipeline(
+            device,
+            SHADE_WGSL,
+            "shade",
+            &[
+                bgl_storage_ro(0),  // instances
+                bgl_storage_ro(1),  // materials
+                bgl_storage_ro(2),  // rays in
+                bgl_storage_ro(3),  // hits
+                bgl_storage_rw(4),  // rays out
+                bgl_storage_rw(5),  // accum
+                bgl_storage_rw(6),  // counts (in/out)
+                bgl_uniform(7),     // params
+                bgl_texture_2d(8),  // env_map
+                bgl_sampler(9),     // env_sampler
+                bgl_uniform(10),    // env_params
+                bgl_storage_rw(11), // guide buffer
+            ],
+        );
 
         let (finalize_pipeline, finalize_bgl) = create_finalize_pipeline(device);
-        let (count_swap_pipeline, count_swap_bgl) = create_pipeline(device, COUNT_SWAP_WGSL, "count_swap", &[
-            bgl_storage_rw(0),   // counts (in/out)
-        ]);
+        let (count_swap_pipeline, count_swap_bgl) = create_pipeline(
+            device,
+            COUNT_SWAP_WGSL,
+            "count_swap",
+            &[
+                bgl_storage_rw(0), // counts (in/out)
+            ],
+        );
 
         let count_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wf_counts"),
             size: 16, // count_in, count_out, padding
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -121,12 +143,24 @@ impl WavefrontPipeline {
         });
 
         let mut p = Self {
-            raygen_pipeline, intersect_pipeline, shade_pipeline, finalize_pipeline, count_swap_pipeline,
-            raygen_bgl, intersect_bgl, shade_bgl, finalize_bgl, count_swap_bgl,
-            ray_buf_a: None, ray_buf_b: None, hit_buf: None,
+            raygen_pipeline,
+            intersect_pipeline,
+            shade_pipeline,
+            finalize_pipeline,
+            count_swap_pipeline,
+            raygen_bgl,
+            intersect_bgl,
+            shade_bgl,
+            finalize_bgl,
+            count_swap_bgl,
+            ray_buf_a: None,
+            ray_buf_b: None,
+            hit_buf: None,
             count_buf,
             dims_buf,
-            width: 0, height: 0, cur_buf: 0,
+            width: 0,
+            height: 0,
+            cur_buf: 0,
         };
         p.resize(device, width, height);
         p
@@ -134,15 +168,14 @@ impl WavefrontPipeline {
 
     /// Resize buffers for new dimensions.
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        if self.width == width && self.height == height { return; }
+        if self.width == width && self.height == height {
+            return;
+        }
         let (clamped_w, clamped_h) = Self::clamp_dimensions(device, width, height);
         if clamped_w != width || clamped_h != height {
             debug!(
                 "WavefrontPipeline::resize clamp {}x{} -> {}x{} (binding limit)",
-                width,
-                height,
-                clamped_w,
-                clamped_h
+                width, height, clamped_w, clamped_h
             );
         } else {
             debug!("WavefrontPipeline::resize {}x{}", width, height);
@@ -200,35 +233,76 @@ impl WavefrontPipeline {
     pub fn ray_bufs(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {
         let a = self.ray_buf_a.as_ref().unwrap();
         let b = self.ray_buf_b.as_ref().unwrap();
-        if self.cur_buf == 0 { (a, b) } else { (b, a) }
+        if self.cur_buf == 0 {
+            (a, b)
+        } else {
+            (b, a)
+        }
     }
 
     /// Get raw ray buffers (a, b) without ping-pong logic.
     pub fn ray_bufs_raw(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {
-        (self.ray_buf_a.as_ref().unwrap(), self.ray_buf_b.as_ref().unwrap())
+        (
+            self.ray_buf_a.as_ref().unwrap(),
+            self.ray_buf_b.as_ref().unwrap(),
+        )
     }
 
     /// Swap buffers after shade pass.
-    pub fn swap_bufs(&mut self) { self.cur_buf = 1 - self.cur_buf; }
+    pub fn swap_bufs(&mut self) {
+        self.cur_buf = 1 - self.cur_buf;
+    }
 
     /// Get buffers and pipelines.
-    pub fn hit_buf(&self) -> &wgpu::Buffer { self.hit_buf.as_ref().unwrap() }
-
-    pub fn pipelines(&self) -> (&wgpu::ComputePipeline, &wgpu::ComputePipeline, &wgpu::ComputePipeline) {
-        (&self.raygen_pipeline, &self.intersect_pipeline, &self.shade_pipeline)
+    pub fn hit_buf(&self) -> &wgpu::Buffer {
+        self.hit_buf.as_ref().unwrap()
     }
-    pub fn bgls(&self) -> (&wgpu::BindGroupLayout, &wgpu::BindGroupLayout, &wgpu::BindGroupLayout) {
+
+    pub fn pipelines(
+        &self,
+    ) -> (
+        &wgpu::ComputePipeline,
+        &wgpu::ComputePipeline,
+        &wgpu::ComputePipeline,
+    ) {
+        (
+            &self.raygen_pipeline,
+            &self.intersect_pipeline,
+            &self.shade_pipeline,
+        )
+    }
+    pub fn bgls(
+        &self,
+    ) -> (
+        &wgpu::BindGroupLayout,
+        &wgpu::BindGroupLayout,
+        &wgpu::BindGroupLayout,
+    ) {
         (&self.raygen_bgl, &self.intersect_bgl, &self.shade_bgl)
     }
 
-    pub fn finalize_pipeline(&self) -> &wgpu::ComputePipeline { &self.finalize_pipeline }
-    pub fn finalize_bgl(&self) -> &wgpu::BindGroupLayout { &self.finalize_bgl }
-    pub fn count_swap_pipeline(&self) -> &wgpu::ComputePipeline { &self.count_swap_pipeline }
-    pub fn count_swap_bgl(&self) -> &wgpu::BindGroupLayout { &self.count_swap_bgl }
+    pub fn finalize_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.finalize_pipeline
+    }
+    pub fn finalize_bgl(&self) -> &wgpu::BindGroupLayout {
+        &self.finalize_bgl
+    }
+    pub fn count_swap_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.count_swap_pipeline
+    }
+    pub fn count_swap_bgl(&self) -> &wgpu::BindGroupLayout {
+        &self.count_swap_bgl
+    }
 
-    pub fn dims_buf(&self) -> &wgpu::Buffer { &self.dims_buf }
-    pub fn dimensions(&self) -> (u32, u32) { (self.width, self.height) }
-    pub fn count_buf(&self) -> &wgpu::Buffer { &self.count_buf }
+    pub fn dims_buf(&self) -> &wgpu::Buffer {
+        &self.dims_buf
+    }
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+    pub fn count_buf(&self) -> &wgpu::Buffer {
+        &self.count_buf
+    }
     pub fn write_dims(&self, queue: &wgpu::Queue, dims: &WfDims) {
         queue.write_buffer(&self.dims_buf, 0, bytemuck::bytes_of(dims));
     }
@@ -336,7 +410,9 @@ fn bgl_sampler(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 // Finalize pipeline: copy accum buffer to output texture
-fn create_finalize_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+fn create_finalize_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("wf_finalize_shader"),
         source: wgpu::ShaderSource::Wgsl(FINALIZE_WGSL.into()),

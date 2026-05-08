@@ -1,7 +1,7 @@
 //! Serialize BVH + primitives into GPU storage buffers.
 
-use super::bvh::{BvhNode, GpuInstance, GpuMaterial, Instance};
 use super::build::Bvh;
+use super::bvh::{BvhNode, GpuInstance, GpuMaterial, Instance};
 
 // ---- Instance-based scene data ----
 

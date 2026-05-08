@@ -6,13 +6,13 @@
 //!
 //! Based on Karras 2012 "Maximizing Parallelism in the Construction of BVHs"
 
-use std::sync::mpsc;
 use log::{debug, info, trace, warn};
+use std::sync::mpsc;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use pt_core::bvh::{BvhNode, Instance, GpuAabb};
+use pt_core::bvh::{BvhNode, GpuAabb, Instance};
 
 /// Morton code with primitive index (for sorting).
 #[repr(C)]
@@ -144,8 +144,8 @@ impl GpuBvhBuilder {
             entries: &[
                 bgl_entry(0, wgpu::BufferBindingType::Storage { read_only: true }), // aabbs
                 bgl_entry(1, wgpu::BufferBindingType::Storage { read_only: false }), // morton out
-                bgl_entry(2, wgpu::BufferBindingType::Uniform), // bounds
-                bgl_entry(3, wgpu::BufferBindingType::Uniform), // params
+                bgl_entry(2, wgpu::BufferBindingType::Uniform),                     // bounds
+                bgl_entry(3, wgpu::BufferBindingType::Uniform),                     // params
             ],
         });
         let morton_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -173,7 +173,7 @@ impl GpuBvhBuilder {
                 bgl_entry(1, wgpu::BufferBindingType::Storage { read_only: false }), // output
                 bgl_entry(2, wgpu::BufferBindingType::Storage { read_only: false }), // histogram
                 bgl_entry(3, wgpu::BufferBindingType::Storage { read_only: false }), // offsets
-                bgl_entry(4, wgpu::BufferBindingType::Uniform), // params
+                bgl_entry(4, wgpu::BufferBindingType::Uniform),                     // params
             ],
         });
         let radix_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -181,22 +181,24 @@ impl GpuBvhBuilder {
             bind_group_layouts: &[Some(&radix_bgl)],
             immediate_size: 0,
         });
-        let radix_count_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("bvh_radix_count"),
-            layout: Some(&radix_pl),
-            module: &radix_shader,
-            entry_point: Some("count_histogram"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        let radix_scatter_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("bvh_radix_scatter"),
-            layout: Some(&radix_pl),
-            module: &radix_shader,
-            entry_point: Some("scatter"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let radix_count_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("bvh_radix_count"),
+                layout: Some(&radix_pl),
+                module: &radix_shader,
+                entry_point: Some("count_histogram"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let radix_scatter_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("bvh_radix_scatter"),
+                layout: Some(&radix_pl),
+                module: &radix_shader,
+                entry_point: Some("scatter"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
         let lbvh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bvh_lbvh_shader"),
@@ -207,7 +209,7 @@ impl GpuBvhBuilder {
             entries: &[
                 bgl_entry(0, wgpu::BufferBindingType::Storage { read_only: true }), // sorted morton
                 bgl_entry(1, wgpu::BufferBindingType::Storage { read_only: false }), // lbvh nodes
-                bgl_entry(2, wgpu::BufferBindingType::Uniform), // params
+                bgl_entry(2, wgpu::BufferBindingType::Uniform),                     // params
                 bgl_entry(3, wgpu::BufferBindingType::Storage { read_only: false }), // leaf parents
             ],
         });
@@ -244,7 +246,7 @@ impl GpuBvhBuilder {
                 bgl_entry(1, wgpu::BufferBindingType::Storage { read_only: true }), // sorted indices
                 bgl_entry(2, wgpu::BufferBindingType::Storage { read_only: false }), // lbvh nodes
                 bgl_entry(3, wgpu::BufferBindingType::Storage { read_only: false }), // output nodes
-                bgl_entry(4, wgpu::BufferBindingType::Uniform), // params
+                bgl_entry(4, wgpu::BufferBindingType::Uniform),                     // params
                 bgl_entry(5, wgpu::BufferBindingType::Storage { read_only: true }), // leaf parents
             ],
         });
@@ -263,14 +265,15 @@ impl GpuBvhBuilder {
         });
         // merged into leaf pipeline
         let aabb_internal_pipeline = aabb_leaf_pipeline.clone();
-        let aabb_refit_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("bvh_aabb_refit"),
-            layout: Some(&aabb_pl),
-            module: &aabb_shader,
-            entry_point: Some("refit_leaves"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let aabb_refit_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("bvh_aabb_refit"),
+                layout: Some(&aabb_pl),
+                module: &aabb_shader,
+                entry_point: Some("refit_leaves"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
         let bounds_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bvh_bounds"),
@@ -359,7 +362,10 @@ impl GpuBvhBuilder {
                 (nodes, indices)
             }
             Err(err) => {
-                warn!("GpuBvhBuilder::build: GPU LBVH invalid ({}), falling back to CPU", err);
+                warn!(
+                    "GpuBvhBuilder::build: GPU LBVH invalid ({}), falling back to CPU",
+                    err
+                );
                 self.has_valid_structure = false;
                 self.build_cpu(instances)
             }
@@ -386,7 +392,11 @@ impl GpuBvhBuilder {
         queue.write_buffer(
             &self.build_params_buffer,
             0,
-            bytemuck::bytes_of(&BuildParams { count: n, is_refit: 1, _pad: [0; 2] }),
+            bytemuck::bytes_of(&BuildParams {
+                count: n,
+                is_refit: 1,
+                _pad: [0; 2],
+            }),
         );
 
         let aabb_buf = self.aabb_buffer.as_ref().unwrap();
@@ -402,12 +412,30 @@ impl GpuBvhBuilder {
             label: Some("bvh_aabb_refit_bg"),
             layout: &self.aabb_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: aabb_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: sorted_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: lbvh_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: nodes_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.build_params_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: leaf_parents.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: aabb_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sorted_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: lbvh_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: nodes_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.build_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: leaf_parents.as_entire_binding(),
+                },
             ],
         });
 
@@ -453,17 +481,33 @@ impl GpuBvhBuilder {
         queue.write_buffer(
             &self.build_params_buffer,
             0,
-            bytemuck::bytes_of(&BuildParams { count: n as u32, is_refit: 0, _pad: [0; 2] }),
+            bytemuck::bytes_of(&BuildParams {
+                count: n as u32,
+                is_refit: 0,
+                _pad: [0; 2],
+            }),
         );
 
         let morton_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bvh_morton_bg"),
             layout: &self.morton_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: aabb_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: morton_a.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.bounds_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.build_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: aabb_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: morton_a.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.bounds_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.build_params_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -492,7 +536,11 @@ impl GpuBvhBuilder {
             queue.write_buffer(
                 &self.radix_params_buffer,
                 0,
-                bytemuck::bytes_of(&RadixParams { count: n as u32, pass: pass_idx, _pad: [0; 2] }),
+                bytemuck::bytes_of(&RadixParams {
+                    count: n as u32,
+                    pass: pass_idx,
+                    _pad: [0; 2],
+                }),
             );
 
             let num_blocks = (n as u32).div_ceil(256);
@@ -504,11 +552,26 @@ impl GpuBvhBuilder {
                 label: Some("bvh_radix_bg"),
                 layout: &self.radix_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: block_hist.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: block_offsets.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: self.radix_params_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: input.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: output.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: block_hist.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: block_offsets.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: self.radix_params_buffer.as_entire_binding(),
+                    },
                 ],
             });
 
@@ -527,7 +590,8 @@ impl GpuBvhBuilder {
                 }
                 queue.submit(Some(encoder.finish()));
             }
-            let block_hist_cpu: Vec<u32> = read_buffer_vec(device, queue, block_hist, block_hist_len);
+            let block_hist_cpu: Vec<u32> =
+                read_buffer_vec(device, queue, block_hist, block_hist_len);
             let block_offsets_cpu = compute_block_offsets(&block_hist_cpu, num_blocks as usize);
             queue.write_buffer(block_offsets, 0, bytemuck::cast_slice(&block_offsets_cpu));
 
@@ -556,7 +620,9 @@ impl GpuBvhBuilder {
         let output_nodes_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bvh_output_nodes"),
             size: ((2 * n).max(1) * std::mem::size_of::<BvhNode>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -565,10 +631,22 @@ impl GpuBvhBuilder {
                 label: Some("bvh_lbvh_bg"),
                 layout: &self.lbvh_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: sorted_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: lbvh_nodes.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.build_params_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: leaf_parents.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: sorted_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: lbvh_nodes.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.build_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: leaf_parents.as_entire_binding(),
+                    },
                 ],
             });
 
@@ -576,12 +654,30 @@ impl GpuBvhBuilder {
                 label: Some("bvh_aabb_bg"),
                 layout: &self.aabb_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: aabb_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: sorted_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: lbvh_nodes.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: output_nodes_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: self.build_params_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 5, resource: leaf_parents.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: aabb_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: sorted_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: lbvh_nodes.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: output_nodes_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: self.build_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: leaf_parents.as_entire_binding(),
+                    },
                 ],
             });
 
@@ -626,7 +722,8 @@ impl GpuBvhBuilder {
         let mut used_cpu_sort = false;
         if let Err(err) = validate_sorted_morton(&sorted_morton) {
             warn!("GpuBvhBuilder::build_gpu: GPU radix produced unsorted Morton codes ({}), retrying with CPU sort", err);
-            sorted_morton.sort_unstable_by(|a, b| a.code.cmp(&b.code).then_with(|| a.index.cmp(&b.index)));
+            sorted_morton
+                .sort_unstable_by(|a, b| a.code.cmp(&b.code).then_with(|| a.index.cmp(&b.index)));
             let cpu_sorted_buf = self.morton_a.as_ref().unwrap();
             queue.write_buffer(cpu_sorted_buf, 0, bytemuck::cast_slice(&sorted_morton));
             self.sorted_in_a = true;
@@ -637,8 +734,10 @@ impl GpuBvhBuilder {
         }
 
         let node_count = (2 * n).saturating_sub(1);
-        let mut output_nodes: Vec<BvhNode> = read_buffer_vec(device, queue, &output_nodes_buf, node_count);
-        let mut lbvh_cpu: Vec<GpuLbvhNode> = read_buffer_vec(device, queue, lbvh_nodes, n.saturating_sub(1));
+        let mut output_nodes: Vec<BvhNode> =
+            read_buffer_vec(device, queue, &output_nodes_buf, node_count);
+        let mut lbvh_cpu: Vec<GpuLbvhNode> =
+            read_buffer_vec(device, queue, lbvh_nodes, n.saturating_sub(1));
         let mut leaf_parents_cpu: Vec<u32> = read_buffer_vec(device, queue, leaf_parents, n);
 
         let mut validation_err = validate_lbvh(&lbvh_cpu, n)
@@ -647,12 +746,16 @@ impl GpuBvhBuilder {
             .err();
 
         if let Some(err) = validation_err.take() {
-            log_lbvh_roots("GpuBvhBuilder::build_gpu: LBVH invalid (initial)", &lbvh_cpu);
+            log_lbvh_roots(
+                "GpuBvhBuilder::build_gpu: LBVH invalid (initial)",
+                &lbvh_cpu,
+            );
             if used_cpu_sort {
                 return Err(err);
             }
             warn!("GpuBvhBuilder::build_gpu: LBVH invalid after GPU radix ({}), retrying with CPU-sorted Morton codes", err);
-            sorted_morton.sort_unstable_by(|a, b| a.code.cmp(&b.code).then_with(|| a.index.cmp(&b.index)));
+            sorted_morton
+                .sort_unstable_by(|a, b| a.code.cmp(&b.code).then_with(|| a.index.cmp(&b.index)));
             let cpu_sorted_buf = self.morton_a.as_ref().unwrap();
             queue.write_buffer(cpu_sorted_buf, 0, bytemuck::cast_slice(&sorted_morton));
             self.sorted_in_a = true;
@@ -666,25 +769,34 @@ impl GpuBvhBuilder {
                 .and_then(|_| validate_root_aabb(&output_nodes, instances, &lbvh_cpu))
                 .and_then(|_| validate_leaf_parents(&lbvh_cpu, &leaf_parents_cpu, n))
             {
-                log_lbvh_roots("GpuBvhBuilder::build_gpu: LBVH invalid (after CPU sort)", &lbvh_cpu);
+                log_lbvh_roots(
+                    "GpuBvhBuilder::build_gpu: LBVH invalid (after CPU sort)",
+                    &lbvh_cpu,
+                );
                 return Err(err);
             }
         }
 
         let indices: Vec<u32> = sorted_morton.iter().map(|m| m.index).collect();
-        warn!("GpuBvhBuilder::build_gpu: LBVH validated successfully (n={})", n);
+        warn!(
+            "GpuBvhBuilder::build_gpu: LBVH validated successfully (n={})",
+            n
+        );
         let nodes = linearize_lbvh(&lbvh_cpu, &output_nodes, n, &indices);
 
         Ok((nodes, indices))
     }
 
     fn ensure_capacity(&mut self, device: &wgpu::Device, count: usize) {
-        if count <= self.capacity { return; }
+        if count <= self.capacity {
+            return;
+        }
         self.capacity = count.max(1);
 
         let morton_size = (self.capacity * std::mem::size_of::<MortonPrimitive>()) as u64;
         let aabb_size = (self.capacity * std::mem::size_of::<GpuAabb>()) as u64;
-        let lbvh_size = (self.capacity.saturating_sub(1).max(1) * std::mem::size_of::<GpuLbvhNode>()) as u64;
+        let lbvh_size =
+            (self.capacity.saturating_sub(1).max(1) * std::mem::size_of::<GpuLbvhNode>()) as u64;
         let leaf_parents_size = (self.capacity * std::mem::size_of::<u32>()) as u64;
         let max_blocks = self.capacity.div_ceil(256);
         let block_hist_size = (max_blocks * 256 * std::mem::size_of::<u32>()) as u64;
@@ -705,19 +817,25 @@ impl GpuBvhBuilder {
         self.morton_a = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bvh_morton_a"),
             size: morton_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
         self.morton_b = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bvh_morton_b"),
             size: morton_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
         self.block_hist = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bvh_block_hist"),
             size: block_hist_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
         self.block_offsets = Some(device.create_buffer(&wgpu::BufferDescriptor {
@@ -729,7 +847,9 @@ impl GpuBvhBuilder {
         self.lbvh_nodes = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bvh_lbvh_nodes"),
             size: lbvh_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
         self.leaf_parents = Some(device.create_buffer(&wgpu::BufferDescriptor {
@@ -745,11 +865,13 @@ impl GpuBvhBuilder {
     fn update_aabbs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, instances: &[Instance]) {
         let aabbs: Vec<GpuAabb> = instances.iter().map(|i| i.aabb_to_gpu()).collect();
         if self.aabb_buffer.is_none() {
-            self.aabb_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("bvh_aabb_buffer"),
-                contents: bytemuck::cast_slice(&aabbs),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            }));
+            self.aabb_buffer = Some(
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("bvh_aabb_buffer"),
+                    contents: bytemuck::cast_slice(&aabbs),
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                }),
+            );
         } else if let Some(buf) = &self.aabb_buffer {
             queue.write_buffer(buf, 0, bytemuck::cast_slice(&aabbs));
         }
@@ -827,7 +949,10 @@ fn linearize_lbvh(
         }
     }
 
-    let mut stack = vec![Task { gpu_idx: root_idx, out_idx: 0 }];
+    let mut stack = vec![Task {
+        gpu_idx: root_idx,
+        out_idx: 0,
+    }];
     let mut visited = std::collections::HashSet::new();
     let mut safety_counter = 0;
     let max_iters = leaf_count * 4;
@@ -841,8 +966,10 @@ fn linearize_lbvh(
 
         if task.gpu_idx < 0 {
             let leaf_idx = (-task.gpu_idx - 1) as usize;
-            if leaf_idx >= leaf_count { continue; }
-            
+            if leaf_idx >= leaf_count {
+                continue;
+            }
+
             let leaf_out = &output_nodes[leaf_count - 1 + leaf_idx];
             nodes[task.out_idx] = BvhNode {
                 aabb_min: leaf_out.aabb_min,
@@ -854,8 +981,10 @@ fn linearize_lbvh(
         }
 
         let gpu_idx_u = task.gpu_idx as usize;
-        if gpu_idx_u >= lbvh.len() { continue; }
-        
+        if gpu_idx_u >= lbvh.len() {
+            continue;
+        }
+
         if !visited.insert(task.gpu_idx) {
             log::error!("linearize_lbvh: detected cycle at node {}!", task.gpu_idx);
             continue;
@@ -865,9 +994,19 @@ fn linearize_lbvh(
         let aabb = &output_nodes[gpu_idx_u];
 
         let left_idx = nodes.len();
-        nodes.push(BvhNode { aabb_min: [0.0; 3], left_or_first: 0, aabb_max: [0.0; 3], count: 0 });
+        nodes.push(BvhNode {
+            aabb_min: [0.0; 3],
+            left_or_first: 0,
+            aabb_max: [0.0; 3],
+            count: 0,
+        });
         let right_idx = nodes.len();
-        nodes.push(BvhNode { aabb_min: [0.0; 3], left_or_first: 0, aabb_max: [0.0; 3], count: 0 });
+        nodes.push(BvhNode {
+            aabb_min: [0.0; 3],
+            left_or_first: 0,
+            aabb_max: [0.0; 3],
+            count: 0,
+        });
 
         nodes[task.out_idx] = BvhNode {
             aabb_min: aabb.aabb_min,
@@ -876,8 +1015,14 @@ fn linearize_lbvh(
             count: 0,
         };
 
-        stack.push(Task { gpu_idx: gpu.right, out_idx: right_idx });
-        stack.push(Task { gpu_idx: gpu.left, out_idx: left_idx });
+        stack.push(Task {
+            gpu_idx: gpu.right,
+            out_idx: right_idx,
+        });
+        stack.push(Task {
+            gpu_idx: gpu.left,
+            out_idx: left_idx,
+        });
     }
 
     // Ensure leaf ordering matches sorted_indices length
@@ -931,7 +1076,10 @@ fn validate_lbvh(lbvh: &[GpuLbvhNode], leaf_count: usize) -> Result<(), String> 
         } else {
             let parent_u = node.parent as usize;
             if parent_u >= internal_count {
-                return Err(format!("lbvh invalid: parent idx out of range {}", parent_u));
+                return Err(format!(
+                    "lbvh invalid: parent idx out of range {}",
+                    parent_u
+                ));
             }
         }
     }
@@ -972,7 +1120,9 @@ fn validate_lbvh(lbvh: &[GpuLbvhNode], leaf_count: usize) -> Result<(), String> 
                     ));
                 }
                 let child_node = &lbvh[child_u];
-                if child_node.range_start < node.range_start || child_node.range_end > node.range_end {
+                if child_node.range_start < node.range_start
+                    || child_node.range_end > node.range_end
+                {
                     return Err(format!(
                         "lbvh invalid: child range out of parent bounds child={} ({}..{}) parent={} ({}..{})",
                         child_u,
@@ -992,8 +1142,7 @@ fn validate_lbvh(lbvh: &[GpuLbvhNode], leaf_count: usize) -> Result<(), String> 
     if visited_count != internal_count {
         return Err(format!(
             "lbvh invalid: not all nodes reachable (visited {}, total {})",
-            visited_count,
-            internal_count
+            visited_count, internal_count
         ));
     }
 
@@ -1107,11 +1256,7 @@ fn validate_sorted_morton(sorted: &[MortonPrimitive]) -> Result<(), String> {
         if cur.code < prev.code || (cur.code == prev.code && cur.index < prev.index) {
             return Err(format!(
                 "unsorted at {}: prev(code={}, idx={}) cur(code={}, idx={})",
-                i,
-                prev.code,
-                prev.index,
-                cur.code,
-                cur.index
+                i, prev.code, prev.index, cur.code, cur.index
             ));
         }
         prev = cur;
@@ -1181,7 +1326,12 @@ fn compute_block_offsets(block_hist: &[u32], num_blocks: usize) -> Vec<u32> {
     offsets
 }
 
-fn read_buffer_vec<T: Pod>(device: &wgpu::Device, queue: &wgpu::Queue, src: &wgpu::Buffer, count: usize) -> Vec<T> {
+fn read_buffer_vec<T: Pod>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    src: &wgpu::Buffer,
+    count: usize,
+) -> Vec<T> {
     if count == 0 {
         return Vec::new();
     }

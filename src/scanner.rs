@@ -1,18 +1,22 @@
+use crossbeam_channel::Sender;
+use dirstat_core::DirEntry;
+use log::{debug, info, trace};
 /// Multithreaded filesystem scanner using jwalk.
 /// Builds a tree of DirEntry nodes with recursive size aggregation.
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crossbeam_channel::Sender;
-use log::{debug, info, trace};
-use dirstat_core::DirEntry;
-
+use std::sync::Arc;
 
 /// Progress message from scanner to UI
 #[derive(Debug)]
 pub enum ScanMsg {
     /// Periodic progress: files scanned so far
-    Progress { files: u64, dirs: u64, bytes: u64, errors: u64 },
+    Progress {
+        files: u64,
+        dirs: u64,
+        bytes: u64,
+        errors: u64,
+    },
     /// Scan complete, here's the tree (owned, no Arc - Cell<rect> is !Sync)
     Done(DirEntry),
     /// Error during scan
@@ -21,7 +25,6 @@ pub enum ScanMsg {
     #[cfg(windows)]
     NtfsFallback(String),
 }
-
 
 /// Launch a background scan of `root` path.
 /// Sends progress updates and final tree via `tx`.
@@ -36,8 +39,10 @@ pub fn scan_bg(root: PathBuf, tx: Sender<ScanMsg>) -> Arc<AtomicBool> {
             match scan_dir(&root, &tx, &cancel_clone) {
                 Ok(mut tree) => {
                     tree.sort_by_size();
-                    info!("Scan done: {} files, {} dirs, {} bytes",
-                        tree.file_count, tree.dir_count, tree.size);
+                    info!(
+                        "Scan done: {} files, {} dirs, {} bytes",
+                        tree.file_count, tree.dir_count, tree.size
+                    );
                     let _ = tx.send(ScanMsg::Done(tree));
                 }
                 Err(e) => {
@@ -51,14 +56,19 @@ pub fn scan_bg(root: PathBuf, tx: Sender<ScanMsg>) -> Arc<AtomicBool> {
 
 /// Visible to the NTFS MFT module when it falls back to a standard walk (`scanner_ntfs`).
 #[cfg(windows)]
-pub fn scan_dir_public(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyhow::Result<DirEntry> {
+pub fn scan_dir_public(
+    root: &Path,
+    tx: &Sender<ScanMsg>,
+    cancel: &AtomicBool,
+) -> anyhow::Result<DirEntry> {
     scan_dir(root, tx, cancel)
 }
 
 fn scan_dir(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyhow::Result<DirEntry> {
     use std::collections::HashMap;
 
-    let root_name = root.file_name()
+    let root_name = root
+        .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| root.to_string_lossy().to_string());
 
@@ -107,20 +117,31 @@ fn scan_dir(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyhow::R
         if entry.file_type().is_dir() {
             dir_count += 1;
             all_dirs.push(path.clone());
-            dirs.entry(parent).or_default().push(DirEntry::new_dir(name, path));
+            dirs.entry(parent)
+                .or_default()
+                .push(DirEntry::new_dir(name, path));
         } else {
             let meta = entry.metadata();
             let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let modified_time = meta.as_ref().ok()
+            let modified_time = meta
+                .as_ref()
+                .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs());
-            let ext = path.extension()
+            let ext = path
+                .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
             file_count += 1;
             total_bytes += size;
-            dirs.entry(parent).or_default().push(DirEntry::new_file(name, path, size, ext, modified_time));
+            dirs.entry(parent).or_default().push(DirEntry::new_file(
+                name,
+                path,
+                size,
+                ext,
+                modified_time,
+            ));
         }
 
         // Check cancellation
@@ -134,14 +155,20 @@ fn scan_dir(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyhow::R
         if progress_counter.is_multiple_of(5000) {
             trace!("Progress: {file_count} files, {dir_count} dirs, {error_count} errors");
             let _ = tx.send(ScanMsg::Progress {
-                files: file_count, dirs: dir_count, bytes: total_bytes, errors: error_count,
+                files: file_count,
+                dirs: dir_count,
+                bytes: total_bytes,
+                errors: error_count,
             });
         }
     }
 
     // Send final progress
     let _ = tx.send(ScanMsg::Progress {
-        files: file_count, dirs: dir_count, bytes: total_bytes, errors: error_count,
+        files: file_count,
+        dirs: dir_count,
+        bytes: total_bytes,
+        errors: error_count,
     });
 
     // Assemble tree bottom-up: process dirs from deepest to shallowest
@@ -155,7 +182,8 @@ fn scan_dir(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyhow::R
 
     for dir_path in &all_dirs {
         let children = dirs.remove(dir_path).unwrap_or_default();
-        let dir_name = dir_path.file_name()
+        let dir_name = dir_path
+            .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| dir_path.to_string_lossy().to_string());
 

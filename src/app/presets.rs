@@ -2,11 +2,11 @@
 //!
 //! Presets are stored as JSON files in the app data directory under `presets/`.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use serde::{Serialize, Deserialize};
 use directories::ProjectDirs;
 use render_shared::Render3DOptions;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// A render preset containing all render settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,14 +17,16 @@ pub struct RenderPreset {
 
 /// Get presets directory path
 pub fn presets_dir() -> Option<PathBuf> {
-    ProjectDirs::from("", "", "dirstat-rs")
-        .map(|dirs| dirs.data_local_dir().join("presets"))
+    ProjectDirs::from("", "", "dirstat-rs").map(|dirs| dirs.data_local_dir().join("presets"))
 }
 
 /// Ensure presets directory exists
 pub fn ensure_presets_dir() -> std::io::Result<PathBuf> {
     let dir = presets_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "Cannot find app data directory")
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Cannot find app data directory",
+        )
     })?;
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -91,7 +93,10 @@ pub fn save_preset(preset: &RenderPreset) -> std::io::Result<PathBuf> {
 /// Delete a preset from disk
 pub fn delete_preset(name: &str) -> std::io::Result<()> {
     let dir = presets_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "Cannot find presets directory")
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Cannot find presets directory",
+        )
     })?;
     let filename = sanitize_filename(name);
     let path = dir.join(format!("{}.json", filename));
@@ -106,7 +111,13 @@ pub fn delete_preset(name: &str) -> std::io::Result<()> {
 /// Sanitize preset name for use as filename
 fn sanitize_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

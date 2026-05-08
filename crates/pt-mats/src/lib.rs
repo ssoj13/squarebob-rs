@@ -1,4 +1,4 @@
-﻿//! Material presets and materializer for PBR/PT rendering.
+//! Material presets and materializer for PBR/PT rendering.
 
 use std::path::Path;
 
@@ -13,13 +13,13 @@ use pt_core::bvh::GpuMaterial;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MaterialSource {
     #[default]
-    None,       // All same material
-    Extension,  // File extension hash
-    Path,       // Full path hash
-    Size,       // File size (normalized)
-    Age,        // File age (normalized)
-    Depth,      // Directory depth (normalized)
-    Random,     // Random per-file
+    None, // All same material
+    Extension, // File extension hash
+    Path,      // Full path hash
+    Size,      // File size (normalized)
+    Age,       // File age (normalized)
+    Depth,     // Directory depth (normalized)
+    Random,    // Random per-file
 }
 
 impl MaterialSource {
@@ -55,11 +55,11 @@ impl MaterialSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MaterialDistribution {
     #[default]
-    Direct,      // Direct mapping: value -> material index
-    Quantized,   // Quantize to N discrete levels (uses quant_levels)
-    Gradient,    // Smooth gradient across palette
-    Spatial,     // Spatial coherence (Perlin-like noise)
-    Bands,       // Alternating bands/stripes
+    Direct, // Direct mapping: value -> material index
+    Quantized, // Quantize to N discrete levels (uses quant_levels)
+    Gradient,  // Smooth gradient across palette
+    Spatial,   // Spatial coherence (Perlin-like noise)
+    Bands,     // Alternating bands/stripes
 }
 
 impl MaterialDistribution {
@@ -117,7 +117,7 @@ impl MaterializeMode {
             MaterializeMode::Random,
         ]
     }
-    
+
     /// Convert legacy mode to new source
     pub fn to_source(self) -> MaterialSource {
         match self {
@@ -311,19 +311,11 @@ const GLASS_CLASSES: &[MaterialClass] = &[
     MaterialClass::GlassPink,
 ];
 
-const LIGHT_WARM: &[MaterialClass] = &[
-    MaterialClass::LightWarm2700,
-    MaterialClass::LightWarm3500,
-];
+const LIGHT_WARM: &[MaterialClass] = &[MaterialClass::LightWarm2700, MaterialClass::LightWarm3500];
 
-const LIGHT_NEUTRAL: &[MaterialClass] = &[
-    MaterialClass::LightNeutral4500,
-];
+const LIGHT_NEUTRAL: &[MaterialClass] = &[MaterialClass::LightNeutral4500];
 
-const LIGHT_COOL: &[MaterialClass] = &[
-    MaterialClass::LightCool6500,
-    MaterialClass::LightCool10000,
-];
+const LIGHT_COOL: &[MaterialClass] = &[MaterialClass::LightCool6500, MaterialClass::LightCool10000];
 
 pub struct MaterialLibrary {
     materials: Vec<GpuMaterial>,
@@ -349,7 +341,9 @@ impl MaterialLibrary {
     }
 
     pub fn material_id(&self, class: MaterialClass) -> u32 {
-        class.id().min(self.materials.len().saturating_sub(1) as u32)
+        class
+            .id()
+            .min(self.materials.len().saturating_sub(1) as u32)
     }
 }
 
@@ -405,9 +399,9 @@ pub struct MaterializeSettings {
     // New unified system
     pub source: MaterialSource,
     pub distribution: MaterialDistribution,
-    pub quant_levels: u32,     // For Quantized distribution
-    pub band_count: u32,       // For Bands distribution
-    pub spatial_scale: f32,    // For Spatial distribution
+    pub quant_levels: u32,  // For Quantized distribution
+    pub band_count: u32,    // For Bands distribution
+    pub spatial_scale: f32, // For Spatial distribution
 }
 
 impl Default for MaterializeSettings {
@@ -439,8 +433,8 @@ pub struct MaterialInput {
     pub max_size: u64,
     pub depth: u32,
     pub max_depth: u32,
-    pub age_normalized: f32,  // 0.0 = newest, 1.0 = oldest
-    pub position: [f32; 3],   // Cube center position
+    pub age_normalized: f32, // 0.0 = newest, 1.0 = oldest
+    pub position: [f32; 3],  // Cube center position
 }
 
 impl Default for MaterialInput {
@@ -466,16 +460,16 @@ impl Default for MaterialInput {
 pub fn classify_material(input: &MaterialInput, settings: &MaterializeSettings) -> MaterialClass {
     // Step 1: Get raw value from source (0.0 - 1.0)
     let raw_value = get_source_value(input, settings);
-    
+
     // Step 2: Apply seed for variation
     let seeded = apply_seed(raw_value, input.name_hash, settings.seed);
-    
+
     // Step 3: Apply distribution algorithm
     let distributed = apply_distribution(seeded, input, settings);
-    
+
     // Step 4: Map to material class
     let class = value_to_material(distributed);
-    
+
     // Step 5: Apply light/glass filters
     let final_hash = float_to_hash(seeded);
     apply_filters(class, final_hash, *settings)
@@ -484,12 +478,13 @@ pub fn classify_material(input: &MaterialInput, settings: &MaterializeSettings) 
 /// Get normalized value (0.0-1.0) from the selected source
 fn get_source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     match settings.source {
-        MaterialSource::None => 0.5,  // Constant middle value
+        MaterialSource::None => 0.5, // Constant middle value
         MaterialSource::Extension => hash_to_float(input.name_hash),
         MaterialSource::Path => hash_to_float(input.path_hash),
         MaterialSource::Size => {
-            if input.max_size == 0 { 0.5 }
-            else {
+            if input.max_size == 0 {
+                0.5
+            } else {
                 // Log scale for size
                 let log_size = (input.size as f64 + 1.0).log10();
                 let log_max = (input.max_size as f64 + 1.0).log10();
@@ -498,8 +493,11 @@ fn get_source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f3
         }
         MaterialSource::Age => input.age_normalized,
         MaterialSource::Depth => {
-            if input.max_depth == 0 { 0.0 }
-            else { input.depth as f32 / input.max_depth as f32 }
+            if input.max_depth == 0 {
+                0.0
+            } else {
+                input.depth as f32 / input.max_depth as f32
+            }
         }
         MaterialSource::Random => hash_to_float(input.name_hash.wrapping_mul(0x9E3779B9)),
     }
@@ -508,38 +506,38 @@ fn get_source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f3
 /// Apply seed to create variation
 fn apply_seed(value: f32, hash: u32, seed: u32) -> f32 {
     let seeded_hash = hash.wrapping_mul(seed);
-    let noise = hash_to_float(seeded_hash) * 0.1;  // Small noise from seed
-    (value + noise).fract()  // Keep in 0-1 range
+    let noise = hash_to_float(seeded_hash) * 0.1; // Small noise from seed
+    (value + noise).fract() // Keep in 0-1 range
 }
 
 /// Apply distribution algorithm
 fn apply_distribution(value: f32, input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     match settings.distribution {
         MaterialDistribution::Direct => value,
-        
+
         MaterialDistribution::Quantized => {
             let levels = settings.quant_levels.max(1) as f32;
             (value * levels).floor() / (levels - 1.0).max(1.0)
         }
-        
+
         MaterialDistribution::Gradient => {
             // Smooth S-curve for gradient
             let t = value.clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t)  // Smoothstep
+            t * t * (3.0 - 2.0 * t) // Smoothstep
         }
-        
+
         MaterialDistribution::Spatial => {
             // Perlin-like noise based on position
             let scale = settings.spatial_scale;
             let px = input.position[0] * scale;
             let py = input.position[1] * scale;
             let pz = input.position[2] * scale;
-            
+
             // Simple coherent noise (3D hash grid interpolation)
             let noise = spatial_noise(px, py, pz, settings.seed);
             (value * 0.3 + noise * 0.7).clamp(0.0, 1.0)
         }
-        
+
         MaterialDistribution::Bands => {
             // Create alternating bands
             let bands = settings.band_count.max(1) as f32;
@@ -555,17 +553,17 @@ fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     let ix = x.floor() as i32;
     let iy = y.floor() as i32;
     let iz = z.floor() as i32;
-    
+
     // Fractional part for interpolation
     let fx = x - x.floor();
     let fy = y - y.floor();
     let fz = z - z.floor();
-    
+
     // Smooth interpolation weights
     let ux = fx * fx * (3.0 - 2.0 * fx);
     let uy = fy * fy * (3.0 - 2.0 * fy);
     let uz = fz * fz * (3.0 - 2.0 * fz);
-    
+
     // Hash corners of the cell
     let h000 = grid_hash(ix, iy, iz, seed);
     let h001 = grid_hash(ix, iy, iz + 1, seed);
@@ -575,18 +573,18 @@ fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     let h101 = grid_hash(ix + 1, iy, iz + 1, seed);
     let h110 = grid_hash(ix + 1, iy + 1, iz, seed);
     let h111 = grid_hash(ix + 1, iy + 1, iz + 1, seed);
-    
+
     // Trilinear interpolation
     let lerp = |a: f32, b: f32, t: f32| a + t * (b - a);
-    
+
     let x00 = lerp(h000, h100, ux);
     let x01 = lerp(h001, h101, ux);
     let x10 = lerp(h010, h110, ux);
     let x11 = lerp(h011, h111, ux);
-    
+
     let y0 = lerp(x00, x10, uy);
     let y1 = lerp(x01, x11, uy);
-    
+
     lerp(y0, y1, uz)
 }
 
@@ -631,22 +629,26 @@ pub fn classify_path_filtered(
     let mut new_settings = settings;
     new_settings.source = mode.to_source();
     // Keep distribution from settings (don't override)
-    
+
     let input = MaterialInput {
         name_hash,
         path_hash: path_hash(path),
         size,
-        max_size: size.max(1),  // Legacy: no max available
+        max_size: size.max(1), // Legacy: no max available
         depth: 0,
         max_depth: 1,
-        age_normalized: hash_to_float(name_hash),  // Legacy: use hash as age proxy
+        age_normalized: hash_to_float(name_hash), // Legacy: use hash as age proxy
         position: [0.0, 0.0, 0.0],
     };
-    
+
     classify_material(&input, &new_settings)
 }
 
-fn apply_filters(class: MaterialClass, seeded_hash: u32, settings: MaterializeSettings) -> MaterialClass {
+fn apply_filters(
+    class: MaterialClass,
+    seeded_hash: u32,
+    settings: MaterializeSettings,
+) -> MaterialClass {
     // Normalize to base classes first (lights/glass are optional categories)
     let mut base = class;
     if base.is_light() || base.is_glass() {
@@ -654,16 +656,17 @@ fn apply_filters(class: MaterialClass, seeded_hash: u32, settings: MaterializeSe
     }
 
     // Optional light override (PT only)
-    if settings.is_pt && settings.allow_lights
-        && passes_prob(seeded_hash, 0x1234_5678, settings.light_prob) {
-            return select_light_variant(seeded_hash, settings);
-        }
+    if settings.is_pt
+        && settings.allow_lights
+        && passes_prob(seeded_hash, 0x1234_5678, settings.light_prob)
+    {
+        return select_light_variant(seeded_hash, settings);
+    }
 
     // Optional glass override (PT + PBR)
-    if settings.allow_glass
-        && passes_prob(seeded_hash, 0x8765_4321, settings.glass_prob) {
-            return select_glass_variant(seeded_hash);
-        }
+    if settings.allow_glass && passes_prob(seeded_hash, 0x8765_4321, settings.glass_prob) {
+        return select_glass_variant(seeded_hash);
+    }
 
     base
 }
@@ -715,8 +718,16 @@ fn classify_by_hash_with_palette(hash: u32, _settings: MaterializeSettings) -> M
 /// Classify by file extension
 #[allow(dead_code)]
 fn classify_by_extension(path: &Path) -> MaterialClass {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
 
     if name.contains("light") || name.contains("lamp") || name.contains("emit") {
         return MaterialClass::Metal;
@@ -780,12 +791,15 @@ fn path_hash(path: &Path) -> u32 {
 
 /// Compute deterministic hash from a string
 fn name_hash(name: &str) -> u32 {
-    name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
+    name.bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
 }
 
 #[inline]
 fn hash_derive(hash: u32, salt: u32) -> u32 {
-    hash.wrapping_mul(1664525).wrapping_add(salt).wrapping_mul(1013904223)
+    hash.wrapping_mul(1664525)
+        .wrapping_add(salt)
+        .wrapping_mul(1013904223)
 }
 
 fn material_for_class(class: MaterialClass) -> GpuMaterial {

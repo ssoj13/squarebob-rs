@@ -36,13 +36,19 @@ pub fn render_path_traced_no_readback(
 ) {
     match kind {
         PtBackendKind::Megakernel => {
-            megakernel::render_path_traced_no_readback(renderer, instances, camera, opts, width, height);
+            megakernel::render_path_traced_no_readback(
+                renderer, instances, camera, opts, width, height,
+            );
         }
         PtBackendKind::Wavefront => {
-            wavefront::render_path_traced_no_readback(renderer, instances, camera, opts, width, height);
+            wavefront::render_path_traced_no_readback(
+                renderer, instances, camera, opts, width, height,
+            );
         }
         PtBackendKind::Spectral => {
-            spectral::render_path_traced_no_readback(renderer, instances, camera, opts, width, height);
+            spectral::render_path_traced_no_readback(
+                renderer, instances, camera, opts, width, height,
+            );
         }
     }
 }
@@ -77,7 +83,12 @@ pub fn frame_count(kind: PtBackendKind, renderer: &Renderer3D) -> u32 {
     }
 }
 
-pub fn pick(kind: PtBackendKind, renderer: &mut Renderer3D, origin: glam::Vec3, dir: glam::Vec3) -> Option<(u32, f32)> {
+pub fn pick(
+    kind: PtBackendKind,
+    renderer: &mut Renderer3D,
+    origin: glam::Vec3,
+    dir: glam::Vec3,
+) -> Option<(u32, f32)> {
     match kind {
         PtBackendKind::Megakernel => megakernel::pick(renderer, origin, dir),
         PtBackendKind::Wavefront => wavefront::pick(renderer, origin, dir),

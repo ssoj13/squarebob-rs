@@ -24,7 +24,11 @@ pub struct DynamicBindGroups {
 impl RenderTargets {
     /// Create all render targets for given dimensions
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
 
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth"),
@@ -45,8 +49,8 @@ impl RenderTargets {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                 | wgpu::TextureUsages::COPY_SRC
-                 | wgpu::TextureUsages::TEXTURE_BINDING,  // For egui zero-copy
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING, // For egui zero-copy
             view_formats: &[],
         });
 
@@ -58,8 +62,8 @@ impl RenderTargets {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R32Uint,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                 | wgpu::TextureUsages::TEXTURE_BINDING
-                 | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
 
@@ -107,10 +111,22 @@ impl DynamicBindGroups {
                 label: Some("Skybox BG"),
                 layout: &layouts.skybox,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(env_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(env_sampler) },
-                    wgpu::BindGroupEntry { binding: 3, resource: env_params_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: camera_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(env_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(env_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: env_params_buffer.as_entire_binding(),
+                    },
                 ],
             }),
         }

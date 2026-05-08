@@ -25,12 +25,16 @@ pub fn build_dock_state(show_settings: bool) -> DockState<DockTab> {
     let mut dock_state = DockState::new(vec![DockTab::FileView]);
 
     // FileView | QuadTreeView (always present)
-    let [_file_view, quadtree] = dock_state
-        .main_surface_mut()
-        .split_right(NodeIndex::root(), 0.20, vec![DockTab::QuadTreeView]);
+    let [_file_view, quadtree] = dock_state.main_surface_mut().split_right(
+        NodeIndex::root(),
+        0.20,
+        vec![DockTab::QuadTreeView],
+    );
 
     if show_settings {
-        let _ = dock_state.main_surface_mut().split_right(quadtree, 0.70, vec![DockTab::Settings]);
+        let _ = dock_state
+            .main_surface_mut()
+            .split_right(quadtree, 0.70, vec![DockTab::Settings]);
     }
 
     dock_state

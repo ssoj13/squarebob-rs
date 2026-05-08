@@ -12,7 +12,7 @@ mod pipeline;
 
 // Infrastructure for wavefront PT - currently in development
 #[allow(unused_imports)]
-pub use buffers::{WfRay, WfHit};
+pub use buffers::{WfHit, WfRay};
 #[allow(unused_imports)]
 pub use config::WavefrontConfig;
 #[allow(unused_imports)]

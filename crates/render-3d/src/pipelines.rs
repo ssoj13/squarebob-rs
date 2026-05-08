@@ -103,7 +103,7 @@ impl BindGroupLayouts {
             object_id_group0: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("ObjID BG0"),
                 entries: &[
-                    uniform_entry(0, v),  // Camera
+                    uniform_entry(0, v), // Camera
                     // Selected IDs - storage buffer (unlimited size)
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
@@ -130,7 +130,7 @@ impl BindGroupLayouts {
                     uniform_entry(0, vf), // Camera
                     texture_entry(1, wgpu::TextureSampleType::Float { filterable: true }),
                     sampler_entry(2),
-                    uniform_entry(3, f),  // EnvParams
+                    uniform_entry(3, f), // EnvParams
                 ],
             }),
         }
@@ -245,16 +245,20 @@ impl Pipelines {
     pub fn new(device: &wgpu::Device, layouts: &BindGroupLayouts) -> Self {
         // Shader modules
         let pbr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("PBR Shader"), source: wgpu::ShaderSource::Wgsl(PBR_SHADER.into()),
+            label: Some("PBR Shader"),
+            source: wgpu::ShaderSource::Wgsl(PBR_SHADER.into()),
         });
         let obj_id_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("ObjID Shader"), source: wgpu::ShaderSource::Wgsl(OBJECT_ID_SHADER.into()),
+            label: Some("ObjID Shader"),
+            source: wgpu::ShaderSource::Wgsl(OBJECT_ID_SHADER.into()),
         });
         let outline_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Outline Shader"), source: wgpu::ShaderSource::Wgsl(OUTLINE_SHADER.into()),
+            label: Some("Outline Shader"),
+            source: wgpu::ShaderSource::Wgsl(OUTLINE_SHADER.into()),
         });
         let skybox_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Skybox Shader"), source: wgpu::ShaderSource::Wgsl(SKYBOX_SHADER.into()),
+            label: Some("Skybox Shader"),
+            source: wgpu::ShaderSource::Wgsl(SKYBOX_SHADER.into()),
         });
 
         // Pipeline layouts
@@ -282,84 +286,109 @@ impl Pipelines {
         let rgba8 = wgpu::TextureFormat::Rgba8Unorm;
 
         Self {
-            pbr: create_cube_pipeline(device, CubePipelineConfig {
-                label: "PBR",
-                layout: &pbr_layout,
-                shader: &pbr_shader,
-                fs_entry: "fs_main",
-                format: rgba8,
-                blend: Some(wgpu::BlendState::REPLACE),
-                cull: None,  // TEMP: disabled culling for debugging
-                polygon_mode: wgpu::PolygonMode::Fill,
-                depth_write: true,
-                depth_compare: wgpu::CompareFunction::Less,
-            }),
-            pbr_double: create_cube_pipeline(device, CubePipelineConfig {
-                label: "PBR DoubleSided",
-                layout: &pbr_layout,
-                shader: &pbr_shader,
-                fs_entry: "fs_main",
-                format: rgba8,
-                blend: Some(wgpu::BlendState::REPLACE),
-                cull: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                depth_write: true,
-                depth_compare: wgpu::CompareFunction::Less,
-            }),
-            wireframe: create_cube_pipeline(device, CubePipelineConfig {
-                label: "Wireframe",
-                layout: &pbr_layout,
-                shader: &pbr_shader,
-                fs_entry: "fs_wireframe",
-                format: rgba8,
-                blend: Some(wgpu::BlendState::REPLACE),
-                cull: None,
-                polygon_mode: wgpu::PolygonMode::Line,
-                depth_write: true,
-                depth_compare: wgpu::CompareFunction::Less,
-            }),
-            transparent: create_cube_pipeline(device, CubePipelineConfig {
-                label: "Transparent",
-                layout: &pbr_layout,
-                shader: &pbr_shader,
-                fs_entry: "fs_main",
-                format: rgba8,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                cull: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                depth_write: false,
-                depth_compare: wgpu::CompareFunction::Less,
-            }),
-            object_id: create_cube_pipeline(device, CubePipelineConfig {
-                label: "Object ID",
-                layout: &obj_id_layout,
-                shader: &obj_id_shader,
-                fs_entry: "fs_main",
-                format: wgpu::TextureFormat::R32Uint,
-                blend: None,
-                cull: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                depth_write: true,   // Must write depth for proper occlusion (like alembic-rs)
-                depth_compare: wgpu::CompareFunction::LessEqual,
-            }),
-            object_id_double: create_cube_pipeline(device, CubePipelineConfig {
-                label: "Object ID DoubleSided",
-                layout: &obj_id_layout,
-                shader: &obj_id_shader,
-                fs_entry: "fs_main",
-                format: wgpu::TextureFormat::R32Uint,
-                blend: None,
-                cull: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                depth_write: true,   // Must write depth for proper occlusion
-                depth_compare: wgpu::CompareFunction::LessEqual,
-            }),
+            pbr: create_cube_pipeline(
+                device,
+                CubePipelineConfig {
+                    label: "PBR",
+                    layout: &pbr_layout,
+                    shader: &pbr_shader,
+                    fs_entry: "fs_main",
+                    format: rgba8,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    cull: None, // TEMP: disabled culling for debugging
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    depth_write: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                },
+            ),
+            pbr_double: create_cube_pipeline(
+                device,
+                CubePipelineConfig {
+                    label: "PBR DoubleSided",
+                    layout: &pbr_layout,
+                    shader: &pbr_shader,
+                    fs_entry: "fs_main",
+                    format: rgba8,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    cull: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    depth_write: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                },
+            ),
+            wireframe: create_cube_pipeline(
+                device,
+                CubePipelineConfig {
+                    label: "Wireframe",
+                    layout: &pbr_layout,
+                    shader: &pbr_shader,
+                    fs_entry: "fs_wireframe",
+                    format: rgba8,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    cull: None,
+                    polygon_mode: wgpu::PolygonMode::Line,
+                    depth_write: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                },
+            ),
+            transparent: create_cube_pipeline(
+                device,
+                CubePipelineConfig {
+                    label: "Transparent",
+                    layout: &pbr_layout,
+                    shader: &pbr_shader,
+                    fs_entry: "fs_main",
+                    format: rgba8,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    cull: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    depth_write: false,
+                    depth_compare: wgpu::CompareFunction::Less,
+                },
+            ),
+            object_id: create_cube_pipeline(
+                device,
+                CubePipelineConfig {
+                    label: "Object ID",
+                    layout: &obj_id_layout,
+                    shader: &obj_id_shader,
+                    fs_entry: "fs_main",
+                    format: wgpu::TextureFormat::R32Uint,
+                    blend: None,
+                    cull: Some(wgpu::Face::Back),
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    depth_write: true, // Must write depth for proper occlusion (like alembic-rs)
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                },
+            ),
+            object_id_double: create_cube_pipeline(
+                device,
+                CubePipelineConfig {
+                    label: "Object ID DoubleSided",
+                    layout: &obj_id_layout,
+                    shader: &obj_id_shader,
+                    fs_entry: "fs_main",
+                    format: wgpu::TextureFormat::R32Uint,
+                    blend: None,
+                    cull: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    depth_write: true, // Must write depth for proper occlusion
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                },
+            ),
             outline: create_fullscreen_pipeline(
-                device, "Outline", &outline_layout, &outline_shader,
-                Some(wgpu::BlendState::ALPHA_BLENDING), None,
+                device,
+                "Outline",
+                &outline_layout,
+                &outline_shader,
+                Some(wgpu::BlendState::ALPHA_BLENDING),
+                None,
             ),
             skybox: create_fullscreen_pipeline(
-                device, "Skybox", &skybox_layout, &skybox_shader,
+                device,
+                "Skybox",
+                &skybox_layout,
+                &skybox_shader,
                 Some(wgpu::BlendState::REPLACE),
                 Some(depth_stencil(false, wgpu::CompareFunction::LessEqual)),
             ),

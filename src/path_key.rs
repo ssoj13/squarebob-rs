@@ -6,8 +6,5 @@ use sha2::{Digest, Sha256};
 pub fn scan_path_id_hex(path: &str) -> String {
     let mut h = Sha256::new();
     h.update(path.as_bytes());
-    h.finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }

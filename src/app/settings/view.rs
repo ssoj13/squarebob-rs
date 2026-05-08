@@ -1,54 +1,65 @@
 //! View settings: display, layout, and LoD (size band / merge).
 
+use super::LABEL_WIDTH;
+use crate::app::filters::{count_files_in_range, count_files_outside_range};
+use crate::app::helpers::{fmt_size, multibutton_exclusive, parse_size, MultiButtonAxis};
+use crate::app::App;
 use eframe::egui;
 use treemap::LayoutStyle;
-use crate::app::App;
-use crate::app::helpers::{fmt_size, parse_size, multibutton_exclusive, MultiButtonAxis};
-use crate::app::filters::{count_files_in_range, count_files_outside_range};
-use super::LABEL_WIDTH;
 
 impl App {
     /// View (layout) + LoD (size band / merge) sections
-    pub(super) fn ui_settings_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, changed: &mut bool) {
-        egui::CollapsingHeader::new("View").default_open(true).show(ui, |ui| {
-            egui::Grid::new("view_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(LABEL_WIDTH)
-                .show(ui, |ui| {
-                    ui.label("Options:");
-                    ui.horizontal(|ui| {
-                        let old = self.show_free_space;
-                        ui.checkbox(&mut self.show_free_space, "Free space")
-                            .on_hover_text("Show unallocated disk space as gray blocks");
-                        if self.show_free_space != old {
-                            self.rebuild_display_tree();
-                            *changed = true;
-                        }
-                        *changed |= ui.checkbox(&mut self.opts.grid, "Grid")
-                            .on_hover_text("Draw thin border lines between blocks for better visibility")
-                            .changed();
-                    });
-                    ui.end_row();
+    pub(super) fn ui_settings_view(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        changed: &mut bool,
+    ) {
+        egui::CollapsingHeader::new("View")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new("view_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .min_col_width(LABEL_WIDTH)
+                    .show(ui, |ui| {
+                        ui.label("Options:");
+                        ui.horizontal(|ui| {
+                            let old = self.show_free_space;
+                            ui.checkbox(&mut self.show_free_space, "Free space")
+                                .on_hover_text("Show unallocated disk space as gray blocks");
+                            if self.show_free_space != old {
+                                self.rebuild_display_tree();
+                                *changed = true;
+                            }
+                            *changed |= ui
+                                .checkbox(&mut self.opts.grid, "Grid")
+                                .on_hover_text(
+                                    "Draw thin border lines between blocks for better visibility",
+                                )
+                                .changed();
+                        });
+                        ui.end_row();
 
-                    ui.label("Layout:");
-                    ui.horizontal(|ui| {
-                        let old = self.opts.style;
-                        if multibutton_exclusive(
-                            ui,
-                            &mut self.opts.style,
-                            &[
-                                (LayoutStyle::KDirStat, "KDirStat"),
-                                (LayoutStyle::SequoiaView, "SequoiaView"),
-                            ],
-                            MultiButtonAxis::Horizontal,
-                        ) && self.opts.style != old {
-                            *changed = true;
-                        }
+                        ui.label("Layout:");
+                        ui.horizontal(|ui| {
+                            let old = self.opts.style;
+                            if multibutton_exclusive(
+                                ui,
+                                &mut self.opts.style,
+                                &[
+                                    (LayoutStyle::KDirStat, "KDirStat"),
+                                    (LayoutStyle::SequoiaView, "SequoiaView"),
+                                ],
+                                MultiButtonAxis::Horizontal,
+                            ) && self.opts.style != old
+                            {
+                                *changed = true;
+                            }
+                        });
+                        ui.end_row();
                     });
-                    ui.end_row();
-                });
-        });
+            });
 
         ui.separator();
 
@@ -69,10 +80,13 @@ impl App {
             .min_col_width(LABEL_WIDTH)
             .show(ui, |ui| {
                 ui.label("Min:");
-                let min_changed = ui.add(egui::Slider::new(&mut self.filter_min, 0..=max_val)
-                    .custom_formatter(|v, _| fmt_size(v as u64))
-                    .custom_parser(parse_size)
-                    .logarithmic(true))
+                let min_changed = ui
+                    .add(
+                        egui::Slider::new(&mut self.filter_min, 0..=max_val)
+                            .custom_formatter(|v, _| fmt_size(v as u64))
+                            .custom_parser(parse_size)
+                            .logarithmic(true),
+                    )
                     .on_hover_text("Click value to type a size like 100M, 1.5G, 512K")
                     .changed();
                 if min_changed {
@@ -86,10 +100,13 @@ impl App {
                 ui.end_row();
 
                 ui.label("Max:");
-                let max_changed = ui.add(egui::Slider::new(&mut self.filter_max, 0..=max_val)
-                    .custom_formatter(|v, _| fmt_size(v as u64))
-                    .custom_parser(parse_size)
-                    .logarithmic(true))
+                let max_changed = ui
+                    .add(
+                        egui::Slider::new(&mut self.filter_max, 0..=max_val)
+                            .custom_formatter(|v, _| fmt_size(v as u64))
+                            .custom_parser(parse_size)
+                            .logarithmic(true),
+                    )
                     .on_hover_text("Click value to type a size like 100M, 1.5G, 512K")
                     .changed();
                 if max_changed {
@@ -107,7 +124,12 @@ impl App {
         let (sel_files, total_files, is_preview) = match (&self.tree, &self.filtered_tree) {
             (Some(root), Some(filtered)) => {
                 if self.needs_filter_rebuild && !self.filter_auto_rebuild {
-                    let preview = count_files_in_range(root, self.filter_min, self.filter_max, self.filter_invert);
+                    let preview = count_files_in_range(
+                        root,
+                        self.filter_min,
+                        self.filter_max,
+                        self.filter_invert,
+                    );
                     (preview, root.file_count, true)
                 } else {
                     (filtered.file_count, root.file_count, false)
@@ -115,7 +137,12 @@ impl App {
             }
             (Some(root), None) => {
                 if self.needs_filter_rebuild && !self.filter_auto_rebuild {
-                    let preview = count_files_in_range(root, self.filter_min, self.filter_max, self.filter_invert);
+                    let preview = count_files_in_range(
+                        root,
+                        self.filter_min,
+                        self.filter_max,
+                        self.filter_invert,
+                    );
                     (preview, root.file_count, true)
                 } else {
                     (root.file_count, root.file_count, false)
@@ -123,42 +150,41 @@ impl App {
             }
             _ => (0, 0, false),
         };
-        let range_label =
-            if self.filter_merge_outside && !self.filter_invert {
-                match &self.tree {
-                    Some(root) => {
-                        let (below, above) =
-                            count_files_outside_range(root, self.filter_min, self.filter_max);
-                        let mid = count_files_in_range(root, self.filter_min, self.filter_max, false);
-                        format!(
-                            "LoD {}–{}: {} in-range files, {} below min, {} above max ({} total)",
-                            fmt_size(self.filter_min),
-                            fmt_size(self.filter_max),
-                            mid,
-                            below,
-                            above,
-                            root.file_count
-                        )
-                    }
-                    None => String::new(),
+        let range_label = if self.filter_merge_outside && !self.filter_invert {
+            match &self.tree {
+                Some(root) => {
+                    let (below, above) =
+                        count_files_outside_range(root, self.filter_min, self.filter_max);
+                    let mid = count_files_in_range(root, self.filter_min, self.filter_max, false);
+                    format!(
+                        "LoD {}–{}: {} in-range files, {} below min, {} above max ({} total)",
+                        fmt_size(self.filter_min),
+                        fmt_size(self.filter_max),
+                        mid,
+                        below,
+                        above,
+                        root.file_count
+                    )
                 }
-            } else if self.filter_invert {
-                format!(
-                    "Showing outside: {} - {} ({} / {} files)",
-                    fmt_size(self.filter_min),
-                    fmt_size(self.filter_max),
-                    sel_files,
-                    total_files
-                )
-            } else {
-                format!(
-                    "Showing {} - {} ({} / {} files)",
-                    fmt_size(self.filter_min),
-                    fmt_size(self.filter_max),
-                    sel_files,
-                    total_files
-                )
-            };
+                None => String::new(),
+            }
+        } else if self.filter_invert {
+            format!(
+                "Showing outside: {} - {} ({} / {} files)",
+                fmt_size(self.filter_min),
+                fmt_size(self.filter_max),
+                sel_files,
+                total_files
+            )
+        } else {
+            format!(
+                "Showing {} - {} ({} / {} files)",
+                fmt_size(self.filter_min),
+                fmt_size(self.filter_max),
+                sel_files,
+                total_files
+            )
+        };
         if is_preview {
             ui.colored_label(egui::Color32::from_rgb(255, 165, 0), range_label);
         } else {

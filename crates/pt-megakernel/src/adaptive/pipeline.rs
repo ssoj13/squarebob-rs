@@ -40,30 +40,46 @@ pub struct AdaptivePipeline {
 
 impl AdaptivePipeline {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let (variance_pipeline, variance_bgl) = create_pipeline(device, VARIANCE_WGSL, "variance", &[
-            bgl_storage_ro(0),   // current sample
-            bgl_storage_rw(1),   // variance data
-            bgl_uniform(2),      // params
-        ]);
+        let (variance_pipeline, variance_bgl) = create_pipeline(
+            device,
+            VARIANCE_WGSL,
+            "variance",
+            &[
+                bgl_storage_ro(0), // current sample
+                bgl_storage_rw(1), // variance data
+                bgl_uniform(2),    // params
+            ],
+        );
 
-        let (allocate_pipeline, allocate_bgl) = create_pipeline(device, ALLOCATE_WGSL, "allocate", &[
-            bgl_storage_ro(0),   // variance data
-            bgl_storage_rw(1),   // sample map output
-            bgl_uniform(2),      // params
-        ]);
+        let (allocate_pipeline, allocate_bgl) = create_pipeline(
+            device,
+            ALLOCATE_WGSL,
+            "allocate",
+            &[
+                bgl_storage_ro(0), // variance data
+                bgl_storage_rw(1), // sample map output
+                bgl_uniform(2),    // params
+            ],
+        );
 
         let mut p = Self {
-            variance_pipeline, allocate_pipeline,
-            variance_bgl, allocate_bgl,
-            variance_buf: None, sample_map: None,
-            width: 0, height: 0,
+            variance_pipeline,
+            allocate_pipeline,
+            variance_bgl,
+            allocate_bgl,
+            variance_buf: None,
+            sample_map: None,
+            width: 0,
+            height: 0,
         };
         p.resize(device, width, height);
         p
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        if self.width == width && self.height == height { return; }
+        if self.width == width && self.height == height {
+            return;
+        }
         self.width = width;
         self.height = height;
 

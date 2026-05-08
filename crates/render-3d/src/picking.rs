@@ -77,10 +77,18 @@ impl PickingState {
         match self.id_map.entry(id) {
             Entry::Occupied(ref e) if e.get().path.as_path() == path => {}
             Entry::Occupied(mut e) => {
-                e.insert(PickInfo { path: path.to_path_buf(), size, is_dir });
+                e.insert(PickInfo {
+                    path: path.to_path_buf(),
+                    size,
+                    is_dir,
+                });
             }
             Entry::Vacant(e) => {
-                e.insert(PickInfo { path: path.to_path_buf(), size, is_dir });
+                e.insert(PickInfo {
+                    path: path.to_path_buf(),
+                    size,
+                    is_dir,
+                });
             }
         }
         id
@@ -114,10 +122,17 @@ impl PickingState {
         id_texture: &wgpu::Texture,
         tex_size: (u32, u32),
     ) {
-        log::trace!("picking::submit_readback pending={:?} tex_size={:?}", self.pending_pick, tex_size);
+        log::trace!(
+            "picking::submit_readback pending={:?} tex_size={:?}",
+            self.pending_pick,
+            tex_size
+        );
         let (px, py) = match self.pending_pick.take() {
             Some(coords) => coords,
-            None => { log::trace!("picking::submit_readback - no pending pick"); return; },
+            None => {
+                log::trace!("picking::submit_readback - no pending pick");
+                return;
+            }
         };
         if px >= tex_size.0 || py >= tex_size.1 {
             log::warn!("picking::submit_readback - coords out of bounds");
@@ -148,7 +163,11 @@ impl PickingState {
                     rows_per_image: Some(1),
                 },
             },
-            wgpu::Extent3d { width: tex_size.0, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: tex_size.0,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
     }
 
@@ -191,7 +210,10 @@ impl PickingState {
             ]);
             // Texture encodes selected instances as id | SELECTED_BIT; id_map uses canonical ids only.
             self.hovered_id = canonical_object_id(raw);
-            log::trace!("picking::poll_result raw={raw:#x} canonical={}", self.hovered_id);
+            log::trace!(
+                "picking::poll_result raw={raw:#x} canonical={}",
+                self.hovered_id
+            );
         }
         drop(data);
         buf.unmap();
@@ -201,35 +223,48 @@ impl PickingState {
     /// Look up path for an object ID
     pub fn path_for_id(&self, id: u32) -> Option<&PathBuf> {
         let id = canonical_object_id(id);
-        if id == 0 { return None; }
+        if id == 0 {
+            return None;
+        }
         let result = self.id_map.get(&id).map(|info| &info.path);
         if result.is_none() {
-            log::debug!("path_for_id({}): not found in id_map (map has {} entries)", id, self.id_map.len());
+            log::debug!(
+                "path_for_id({}): not found in id_map (map has {} entries)",
+                id,
+                self.id_map.len()
+            );
         }
         result
     }
 
     /// Look up object ID for a path (reverse lookup)
     pub fn id_for_path(&self, path: &std::path::Path) -> Option<u32> {
-        self.id_map.iter()
+        self.id_map
+            .iter()
             .find(|(_, info)| info.path.as_path() == path)
             .map(|(id, _)| *id)
     }
 
     /// Look up file size for an object ID
     pub fn size_for_id(&self, id: u32) -> Option<u64> {
-        self.id_map.get(&canonical_object_id(id)).map(|info| info.size)
+        self.id_map
+            .get(&canonical_object_id(id))
+            .map(|info| info.size)
     }
 
     /// Look up directory flag for an object ID
     pub fn is_dir_for_id(&self, id: u32) -> Option<bool> {
-        self.id_map.get(&canonical_object_id(id)).map(|info| info.is_dir)
+        self.id_map
+            .get(&canonical_object_id(id))
+            .map(|info| info.is_dir)
     }
 
     /// Get full pick info for an object ID
     pub fn info_for_id(&self, id: u32) -> Option<&PickInfo> {
         let id = canonical_object_id(id);
-        if id == 0 { return None; }
+        if id == 0 {
+            return None;
+        }
         self.id_map.get(&id)
     }
 }

@@ -5,15 +5,14 @@ mod exclusions;
 mod path_key;
 mod renderer;
 // 2D treemap GPU renderer now lives in treemap crate (feature-gated)
+mod cli_test;
 mod scanner;
 mod scanner_ntfs;
-mod cli_test;
 // treemap layout/rendering now lives in treemap crate
 
 use log::info;
-use renderer::{RenderBackend, RenderMode};
 use pt_mats::MaterializeMode;
-
+use renderer::{RenderBackend, RenderMode};
 
 /// CLI options parsed from arguments
 #[derive(Default, Clone)]
@@ -22,7 +21,7 @@ pub struct CliOptions {
     pub mode: Option<RenderMode>,
     pub backend: Option<RenderBackend>,
     pub help: bool,
-    pub verbosity: u8,  // 0=warn, 1=info, 2=debug, 3=trace
+    pub verbosity: u8, // 0=warn, 1=info, 2=debug, 3=trace
     pub log_file: Option<String>,
     pub log_pt: bool,
     pub log_wf: bool,
@@ -30,7 +29,7 @@ pub struct CliOptions {
     pub log_modules: Option<String>,
 
     // Screenshot/testing options
-    pub screenshot_delay: Option<f32>,  // Take screenshot after N seconds
+    pub screenshot_delay: Option<f32>, // Take screenshot after N seconds
     pub screenshot_path: Option<String>, // Default: temp/screenshot.png
     pub exit_after_screenshot: bool,
 
@@ -371,7 +370,9 @@ fn parse_args() -> CliOptions {
                     opts.log_file = Some(args[i].clone());
                 } else {
                     opts.log_file = Some("dirstat-rs.log".to_string());
-                    if i < args.len() { i -= 1; }
+                    if i < args.len() {
+                        i -= 1;
+                    }
                 }
             }
             "--log-modules" => {
@@ -658,7 +659,10 @@ fn parse_args() -> CliOptions {
                 i += 1;
                 if i < args.len() {
                     let mode_lc = args[i].to_lowercase();
-                    if matches!(mode_lc.as_str(), "depth2" | "depth_squared" | "depthsquared") {
+                    if matches!(
+                        mode_lc.as_str(),
+                        "depth2" | "depth_squared" | "depthsquared"
+                    ) {
                         opts.height_mode = Some(renderer::CubeHeightMode::Depth);
                         opts.height_squared = Some(true);
                     } else {
@@ -946,7 +950,10 @@ fn main() -> eframe::Result<()> {
     }
 
     let info = auto_allocator::get_allocator_info();
-    println!("Using allocator: {:?} | Reason: {}", info.allocator_type, info.reason);
+    println!(
+        "Using allocator: {:?} | Reason: {}",
+        info.allocator_type, info.reason
+    );
 
     // Setup logging based on verbosity
     let log_level = match cli.verbosity {
@@ -973,10 +980,16 @@ fn main() -> eframe::Result<()> {
                     builder.filter_module("bvh_gpu", log::LevelFilter::Trace);
                     builder.filter_module("render_3d", log::LevelFilter::Trace);
                 }
-                "wf" => { builder.filter_module("pt_wavefront::wavefront", log::LevelFilter::Trace); }
-                "pg" => { builder.filter_module("pt_megakernel::pathguide", log::LevelFilter::Trace); }
+                "wf" => {
+                    builder.filter_module("pt_wavefront::wavefront", log::LevelFilter::Trace);
+                }
+                "pg" => {
+                    builder.filter_module("pt_megakernel::pathguide", log::LevelFilter::Trace);
+                }
                 "" => {}
-                other => { eprintln!("Unknown log module '{}'", other); }
+                other => {
+                    eprintln!("Unknown log module '{}'", other);
+                }
             }
         }
     }
@@ -1024,9 +1037,13 @@ fn main() -> eframe::Result<()> {
         info!("CLI backend: {:?}", backend);
     }
     if cli.screenshot_delay.is_some() {
-        info!("Screenshot mode: delay={:?}s, path={:?}",
-              cli.screenshot_delay,
-              cli.screenshot_path.as_deref().unwrap_or("temp/screenshot.png"));
+        info!(
+            "Screenshot mode: delay={:?}s, path={:?}",
+            cli.screenshot_delay,
+            cli.screenshot_path
+                .as_deref()
+                .unwrap_or("temp/screenshot.png")
+        );
     }
 
     // Configure wgpu to request POLYGON_MODE_LINE for wireframe rendering

@@ -1,7 +1,7 @@
 //! ReSTIR pipeline orchestration.
 #![allow(dead_code)]
 
-use super::reservoir::{Reservoir, MotionVector};
+use super::reservoir::{MotionVector, Reservoir};
 
 const INITIAL_WGSL: &str = include_str!("initial.wgsl");
 const TEMPORAL_WGSL: &str = include_str!("temporal.wgsl");
@@ -41,59 +41,90 @@ pub struct ReSTIRPipeline {
 
 impl ReSTIRPipeline {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let (initial_pipeline, initial_bgl) = create_pipeline(device, INITIAL_WGSL, "initial", &[
-            bgl_storage_ro(0),   // hits
-            bgl_storage_rw(1),   // reservoirs
-            bgl_uniform(2),      // params
-            bgl_texture_2d(3),   // env map
-            bgl_sampler(4),      // env sampler
-            bgl_uniform(5),      // env params
-            bgl_storage_ro(6),   // env marginal cdf
-            bgl_storage_ro(7),   // env conditional cdf
-            bgl_storage_ro(8),   // rays
-            bgl_storage_ro(9),   // bvh nodes
-            bgl_storage_ro(10),  // instances
-            bgl_texture_2d_unfilterable(11), // emissive light texture
-            bgl_uniform(12),     // emissive light params
-        ]);
+        let (initial_pipeline, initial_bgl) = create_pipeline(
+            device,
+            INITIAL_WGSL,
+            "initial",
+            &[
+                bgl_storage_ro(0),               // hits
+                bgl_storage_rw(1),               // reservoirs
+                bgl_uniform(2),                  // params
+                bgl_texture_2d(3),               // env map
+                bgl_sampler(4),                  // env sampler
+                bgl_uniform(5),                  // env params
+                bgl_storage_ro(6),               // env marginal cdf
+                bgl_storage_ro(7),               // env conditional cdf
+                bgl_storage_ro(8),               // rays
+                bgl_storage_ro(9),               // bvh nodes
+                bgl_storage_ro(10),              // instances
+                bgl_texture_2d_unfilterable(11), // emissive light texture
+                bgl_uniform(12),                 // emissive light params
+            ],
+        );
 
-        let (temporal_pipeline, temporal_bgl) = create_pipeline(device, TEMPORAL_WGSL, "temporal", &[
-            bgl_storage_ro(0),   // prev reservoirs
-            bgl_storage_rw(1),   // curr reservoirs
-            bgl_storage_ro(2),   // motion vectors
-            bgl_storage_ro(3),   // prev depth
-            bgl_storage_ro(4),   // curr depth
-            bgl_uniform(5),      // params
-        ]);
+        let (temporal_pipeline, temporal_bgl) = create_pipeline(
+            device,
+            TEMPORAL_WGSL,
+            "temporal",
+            &[
+                bgl_storage_ro(0), // prev reservoirs
+                bgl_storage_rw(1), // curr reservoirs
+                bgl_storage_ro(2), // motion vectors
+                bgl_storage_ro(3), // prev depth
+                bgl_storage_ro(4), // curr depth
+                bgl_uniform(5),    // params
+            ],
+        );
 
-        let (spatial_pipeline, spatial_bgl) = create_pipeline(device, SPATIAL_WGSL, "spatial", &[
-            bgl_storage_ro(0),   // reservoirs input
-            bgl_storage_rw(1),   // reservoirs output
-            bgl_storage_ro(2),   // depth
-            bgl_storage_ro(3),   // normal
-            bgl_uniform(4),      // params
-        ]);
+        let (spatial_pipeline, spatial_bgl) = create_pipeline(
+            device,
+            SPATIAL_WGSL,
+            "spatial",
+            &[
+                bgl_storage_ro(0), // reservoirs input
+                bgl_storage_rw(1), // reservoirs output
+                bgl_storage_ro(2), // depth
+                bgl_storage_ro(3), // normal
+                bgl_uniform(4),    // params
+            ],
+        );
 
-        let (shade_pipeline, shade_bgl) = create_pipeline(device, SHADE_WGSL, "shade", &[
-            bgl_storage_ro(0),   // reservoirs
-            bgl_storage_ro(1),   // hits
-            bgl_storage_rw(2),   // output
-            bgl_uniform(3),      // params
-            bgl_storage_ro(4),   // instances
-            bgl_storage_ro(5),   // materials
-            bgl_storage_ro(6),   // sample_map
-            bgl_storage_ro(7),   // rays
-            bgl_texture_2d(8),   // env map
-            bgl_sampler(9),      // env sampler
-            bgl_uniform(10),     // env params
-        ]);
+        let (shade_pipeline, shade_bgl) = create_pipeline(
+            device,
+            SHADE_WGSL,
+            "shade",
+            &[
+                bgl_storage_ro(0), // reservoirs
+                bgl_storage_ro(1), // hits
+                bgl_storage_rw(2), // output
+                bgl_uniform(3),    // params
+                bgl_storage_ro(4), // instances
+                bgl_storage_ro(5), // materials
+                bgl_storage_ro(6), // sample_map
+                bgl_storage_ro(7), // rays
+                bgl_texture_2d(8), // env map
+                bgl_sampler(9),    // env sampler
+                bgl_uniform(10),   // env params
+            ],
+        );
 
         let mut p = Self {
-            initial_pipeline, temporal_pipeline, spatial_pipeline, shade_pipeline,
-            initial_bgl, temporal_bgl, spatial_bgl, shade_bgl,
-            reservoir_a: None, reservoir_b: None,
-            motion_buf: None, gbuf_depth: None, gbuf_normal: None,
-            width: 0, height: 0, cur_buf: 0,
+            initial_pipeline,
+            temporal_pipeline,
+            spatial_pipeline,
+            shade_pipeline,
+            initial_bgl,
+            temporal_bgl,
+            spatial_bgl,
+            shade_bgl,
+            reservoir_a: None,
+            reservoir_b: None,
+            motion_buf: None,
+            gbuf_depth: None,
+            gbuf_normal: None,
+            width: 0,
+            height: 0,
+            cur_buf: 0,
         };
         p.resize(device, width, height);
         p
@@ -101,7 +132,9 @@ impl ReSTIRPipeline {
 
     /// Resize buffers for new dimensions.
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        if self.width == width && self.height == height { return; }
+        if self.width == width && self.height == height {
+            return;
+        }
         self.width = width;
         self.height = height;
 
@@ -121,20 +154,50 @@ impl ReSTIRPipeline {
     pub fn reservoirs(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {
         let a = self.reservoir_a.as_ref().unwrap();
         let b = self.reservoir_b.as_ref().unwrap();
-        if self.cur_buf == 0 { (a, b) } else { (b, a) }
+        if self.cur_buf == 0 {
+            (a, b)
+        } else {
+            (b, a)
+        }
     }
 
     /// Swap buffers after frame.
-    pub fn swap_bufs(&mut self) { self.cur_buf = 1 - self.cur_buf; }
+    pub fn swap_bufs(&mut self) {
+        self.cur_buf = 1 - self.cur_buf;
+    }
 
     /// Get pipelines.
-    pub fn pipelines(&self) -> (&wgpu::ComputePipeline, &wgpu::ComputePipeline, &wgpu::ComputePipeline, &wgpu::ComputePipeline) {
-        (&self.initial_pipeline, &self.temporal_pipeline, &self.spatial_pipeline, &self.shade_pipeline)
+    pub fn pipelines(
+        &self,
+    ) -> (
+        &wgpu::ComputePipeline,
+        &wgpu::ComputePipeline,
+        &wgpu::ComputePipeline,
+        &wgpu::ComputePipeline,
+    ) {
+        (
+            &self.initial_pipeline,
+            &self.temporal_pipeline,
+            &self.spatial_pipeline,
+            &self.shade_pipeline,
+        )
     }
 
     /// Get bind group layouts.
-    pub fn bgls(&self) -> (&wgpu::BindGroupLayout, &wgpu::BindGroupLayout, &wgpu::BindGroupLayout, &wgpu::BindGroupLayout) {
-        (&self.initial_bgl, &self.temporal_bgl, &self.spatial_bgl, &self.shade_bgl)
+    pub fn bgls(
+        &self,
+    ) -> (
+        &wgpu::BindGroupLayout,
+        &wgpu::BindGroupLayout,
+        &wgpu::BindGroupLayout,
+        &wgpu::BindGroupLayout,
+    ) {
+        (
+            &self.initial_bgl,
+            &self.temporal_bgl,
+            &self.spatial_bgl,
+            &self.shade_bgl,
+        )
     }
 
     pub fn motion_buffer(&self) -> &wgpu::Buffer {
@@ -185,7 +248,9 @@ fn create_buf(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: size.max(16),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     })
 }

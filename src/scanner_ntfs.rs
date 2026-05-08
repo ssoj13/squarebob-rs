@@ -5,25 +5,25 @@
 use std::path::Path;
 
 #[cfg(windows)]
-use std::path::PathBuf;
-#[cfg(windows)]
-use std::sync::Arc;
-#[cfg(windows)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::scanner::ScanMsg;
 #[cfg(windows)]
 use crossbeam_channel::Sender;
+use dirstat_core::DirEntry;
 #[cfg(windows)]
 use log::{info, trace, warn};
 #[cfg(windows)]
-use crate::scanner::ScanMsg;
-use dirstat_core::DirEntry;
+use std::path::PathBuf;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::sync::Arc;
 
 /// Try opening `\\.\X:` the same way as MFT enumeration (often requires elevation).
 #[cfg(windows)]
 pub fn probe_raw_volume_access(path: &Path) -> anyhow::Result<()> {
-    use windows::Win32::Storage::FileSystem::*;
-    use windows::Win32::Foundation::{GENERIC_READ, CloseHandle};
     use windows::core::HSTRING;
+    use windows::Win32::Foundation::{CloseHandle, GENERIC_READ};
+    use windows::Win32::Storage::FileSystem::*;
 
     let drive_letter = path
         .to_string_lossy()
@@ -47,7 +47,13 @@ pub fn probe_raw_volume_access(path: &Path) -> anyhow::Result<()> {
             None,
         )
     }
-    .map_err(|e| anyhow::anyhow!("CreateFile {:?} (elevated admin may be required): {}", volume_path, e))?;
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "CreateFile {:?} (elevated admin may be required): {}",
+            volume_path,
+            e
+        )
+    })?;
     unsafe {
         let _ = CloseHandle(handle);
     }
@@ -68,17 +74,15 @@ pub fn is_ntfs_available(path: &Path) -> bool {
         _ => return false,
     };
 
-    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
     use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
 
     let root = format!("{}:\\", drive_letter);
     let root_w = HSTRING::from(&root);
     let mut fs_name = [0u16; 64];
 
     unsafe {
-        let ok = GetVolumeInformationW(
-            &root_w, None, None, None, None, Some(&mut fs_name),
-        );
+        let ok = GetVolumeInformationW(&root_w, None, None, None, None, Some(&mut fs_name));
         if ok.is_ok() {
             let fs = String::from_utf16_lossy(&fs_name);
             return fs.trim_end_matches('\0') == "NTFS";
@@ -97,13 +101,20 @@ pub fn scan_ntfs_bg(root: PathBuf, tx: Sender<ScanMsg>) -> Arc<AtomicBool> {
         .name("ntfs-scanner".into())
         .spawn(move || {
             info!("NTFS MFT scan started: {:?}", root);
-            let _ = tx.send(ScanMsg::Progress { files: 0, dirs: 0, bytes: 0, errors: 0 });
+            let _ = tx.send(ScanMsg::Progress {
+                files: 0,
+                dirs: 0,
+                bytes: 0,
+                errors: 0,
+            });
 
             match scan_mft_usn(&root, &tx, &cancel_clone) {
                 Ok(mut tree) => {
                     tree.sort_by_size();
-                    info!("NTFS MFT scan done: {} files, {} dirs, {} bytes",
-                        tree.file_count, tree.dir_count, tree.size);
+                    info!(
+                        "NTFS MFT scan done: {} files, {} dirs, {} bytes",
+                        tree.file_count, tree.dir_count, tree.size
+                    );
                     let _ = tx.send(ScanMsg::Done(tree));
                 }
                 Err(e) => {
@@ -187,8 +198,13 @@ fn parse_single_usn_record(rec: &[u8]) -> Option<MftRecord> {
     };
 
     let attributes = u32::from_le_bytes(rec.get(attrs_off..attrs_off + 4)?.try_into().ok()?);
-    let name_len = u16::from_le_bytes(rec.get(name_len_off..name_len_off + 2)?.try_into().ok()?) as usize;
-    let name_off = u16::from_le_bytes(rec.get(name_off_member..name_off_member + 2)?.try_into().ok()?) as usize;
+    let name_len =
+        u16::from_le_bytes(rec.get(name_len_off..name_len_off + 2)?.try_into().ok()?) as usize;
+    let name_off = u16::from_le_bytes(
+        rec.get(name_off_member..name_off_member + 2)?
+            .try_into()
+            .ok()?,
+    ) as usize;
 
     if name_off + name_len > record_len {
         return None;
@@ -246,7 +262,10 @@ fn accumulate_usn_buffer(
             break;
         }
         if offset + record_len > buf.len() {
-            warn!("USN truncated at offset {}; record_len {}", offset, record_len);
+            warn!(
+                "USN truncated at offset {}; record_len {}",
+                offset, record_len
+            );
             break;
         }
         let rec_slice = &buf[offset..offset + record_len];
@@ -264,7 +283,12 @@ fn accumulate_usn_buffer(
                 }
                 records.push(rec);
             }
-            None => trace!("skip USN at offset {}; len={} major={}", offset, record_len, maj),
+            None => trace!(
+                "skip USN at offset {}; len={} major={}",
+                offset,
+                record_len,
+                maj
+            ),
         }
 
         offset += record_len;
@@ -275,12 +299,16 @@ fn accumulate_usn_buffer(
 
 /// Enumerate MFT via FSCTL_ENUM_USN_DATA, build tree, fill sizes via std::fs
 #[cfg(windows)]
-fn scan_mft_usn(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyhow::Result<DirEntry> {
-    use windows::Win32::Storage::FileSystem::*;
-    use windows::Win32::System::IO::DeviceIoControl;
-    use windows::Win32::System::Ioctl::FSCTL_ENUM_USN_DATA;
-    use windows::Win32::Foundation::{GENERIC_READ, CloseHandle};
+fn scan_mft_usn(
+    root: &Path,
+    tx: &Sender<ScanMsg>,
+    cancel: &AtomicBool,
+) -> anyhow::Result<DirEntry> {
     use windows::core::HSTRING;
+    use windows::Win32::Foundation::{CloseHandle, GENERIC_READ};
+    use windows::Win32::Storage::FileSystem::*;
+    use windows::Win32::System::Ioctl::FSCTL_ENUM_USN_DATA;
+    use windows::Win32::System::IO::DeviceIoControl;
 
     let drive_str = root.to_string_lossy();
     let drive_letter = drive_str
@@ -301,7 +329,8 @@ fn scan_mft_usn(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyho
             FILE_FLAG_BACKUP_SEMANTICS,
             None,
         )
-    }.map_err(|e| anyhow::anyhow!("Cannot open volume {} (run as admin): {}", volume_path, e))?;
+    }
+    .map_err(|e| anyhow::anyhow!("Cannot open volume {} (run as admin): {}", volume_path, e))?;
     info!("Volume opened OK");
 
     // HighUsn must be i64::MAX to enumerate ALL MFT records regardless of USN journal state
@@ -323,7 +352,9 @@ fn scan_mft_usn(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyho
 
     loop {
         if cancel.load(Ordering::Relaxed) {
-            unsafe { let _ = CloseHandle(handle); }
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
             return Err(anyhow::anyhow!("Scan cancelled"));
         }
 
@@ -344,8 +375,8 @@ fn scan_mft_usn(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyho
         match ioctl_res {
             Ok(()) => {}
             Err(e) => {
-                use windows::Win32::Foundation::ERROR_HANDLE_EOF;
                 use windows::core::HRESULT;
+                use windows::Win32::Foundation::ERROR_HANDLE_EOF;
                 if e.code() == HRESULT::from_win32(ERROR_HANDLE_EOF.0) {
                     break;
                 }
@@ -362,18 +393,36 @@ fn scan_mft_usn(root: &Path, tx: &Sender<ScanMsg>, cancel: &AtomicBool) -> anyho
         }
 
         let n_before = records.len();
-        accumulate_usn_buffer(&buffer[..], ret_sz, &mut records, &mut file_count, &mut dir_count);
+        accumulate_usn_buffer(
+            &buffer[..],
+            ret_sz,
+            &mut records,
+            &mut file_count,
+            &mut dir_count,
+        );
 
         let next_ref = u64::from_le_bytes(buffer[0..8].try_into().unwrap_or([0; 8]));
         enum_data[0..8].copy_from_slice(&next_ref.to_le_bytes());
 
         if records.len() / 10_000 > n_before / 10_000 {
-            let _ = tx.send(ScanMsg::Progress { files: file_count, dirs: dir_count, bytes: 0, errors: 0 });
+            let _ = tx.send(ScanMsg::Progress {
+                files: file_count,
+                dirs: dir_count,
+                bytes: 0,
+                errors: 0,
+            });
         }
     }
 
-    unsafe { let _ = CloseHandle(handle); }
-    info!("MFT enumeration done: {} records ({} files, {} dirs)", records.len(), file_count, dir_count);
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    info!(
+        "MFT enumeration done: {} records ({} files, {} dirs)",
+        records.len(),
+        file_count,
+        dir_count
+    );
 
     // Build tree scoped to target path
     build_tree_from_mft(root, &records, tx, cancel)
@@ -386,11 +435,11 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
     use std::collections::HashMap;
     use std::fmt::Write;
 
+    use windows::core::{HRESULT, HSTRING};
     use windows::Win32::Foundation::{CloseHandle, ERROR_HANDLE_EOF, GENERIC_READ};
     use windows::Win32::Storage::FileSystem::*;
-    use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::FSCTL_ENUM_USN_DATA;
-    use windows::core::{HSTRING, HRESULT};
+    use windows::Win32::System::IO::DeviceIoControl;
 
     let drive_str = path.to_string_lossy();
     let drive_letter = drive_str
@@ -427,12 +476,17 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
     writeln!(
         &mut out,
         "volume: {:?}, max_ioctl_rounds={}",
-        volume_path, max_ioctl_loops.max(1)
+        volume_path,
+        max_ioctl_loops.max(1)
     )?;
 
     loop {
         if ioctl_round >= max_ioctl_loops.max(1) {
-            writeln!(&mut out, "stopped after {} ioctl rounds (limit)", ioctl_round)?;
+            writeln!(
+                &mut out,
+                "stopped after {} ioctl rounds (limit)",
+                ioctl_round
+            )?;
             break;
         }
         ioctl_round += 1;
@@ -469,8 +523,7 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
         writeln!(
             &mut out,
             "ioctl round {}: {} bytes out",
-            ioctl_round,
-            ret_sz,
+            ioctl_round, ret_sz,
         )?;
         if ret_sz < 8 {
             writeln!(&mut out, "(returned < 8, done)")?;
@@ -479,12 +532,17 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
 
         let buf = &buffer[..ret_sz];
         let next_ref = u64::from_le_bytes(buf[0..8].try_into().unwrap_or([0; 8]));
-        writeln!(&mut out, "  next StartFileReferenceNumber: 0x{:016x}", next_ref)?;
+        writeln!(
+            &mut out,
+            "  next StartFileReferenceNumber: 0x{:016x}",
+            next_ref
+        )?;
 
         let mut offset = 8usize;
         while offset < buf.len() {
-            let Some(rb) =
-                buf.get(offset..offset + 4).and_then(|b| TryInto::<[u8; 4]>::try_into(b).ok())
+            let Some(rb) = buf
+                .get(offset..offset + 4)
+                .and_then(|b| TryInto::<[u8; 4]>::try_into(b).ok())
             else {
                 break;
             };
@@ -544,11 +602,11 @@ pub fn diagnose_fsctl_enum_usn(_path: &Path, _max_ioctl_loops: usize) -> anyhow:
 pub fn mft_dump_names(path: &Path, max_names: usize) -> anyhow::Result<String> {
     use std::fmt::Write;
 
+    use windows::core::{HRESULT, HSTRING};
     use windows::Win32::Foundation::{CloseHandle, ERROR_HANDLE_EOF, GENERIC_READ};
     use windows::Win32::Storage::FileSystem::*;
-    use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::FSCTL_ENUM_USN_DATA;
-    use windows::core::{HSTRING, HRESULT};
+    use windows::Win32::System::IO::DeviceIoControl;
 
     let cap = max_names.clamp(1, 250_000);
     let drive_str = path.to_string_lossy();
@@ -621,7 +679,13 @@ pub fn mft_dump_names(path: &Path, max_names: usize) -> anyhow::Result<String> {
         if ret_sz < 8 {
             break;
         }
-        accumulate_usn_buffer(&buffer[..], ret_sz, &mut records, &mut file_count, &mut dir_count);
+        accumulate_usn_buffer(
+            &buffer[..],
+            ret_sz,
+            &mut records,
+            &mut file_count,
+            &mut dir_count,
+        );
         if records.len() > cap {
             records.truncate(cap);
             break;
@@ -678,15 +742,16 @@ fn build_tree_from_mft(
     let target_ref = if root == drive_root || root == PathBuf::from(format!("{}:", drive_letter)) {
         5u64
     } else {
-        let rel = root.strip_prefix(&drive_root)
+        let rel = root
+            .strip_prefix(&drive_root)
             .or_else(|_| root.strip_prefix(format!("{}:", drive_letter)))
             .unwrap_or(root.as_ref());
         let mut cur = 5u64;
         for component in rel.components() {
             let comp = component.as_os_str().to_string_lossy();
-            let children = children_map.get(&cur).ok_or_else(|| {
-                anyhow::anyhow!("Dir not found in MFT: {}", comp)
-            })?;
+            let children = children_map
+                .get(&cur)
+                .ok_or_else(|| anyhow::anyhow!("Dir not found in MFT: {}", comp))?;
             let mut found = false;
             for &ci in children {
                 let r = &records[ci];
@@ -696,18 +761,30 @@ fn build_tree_from_mft(
                     break;
                 }
             }
-            if !found { return Err(anyhow::anyhow!("Dir not found in MFT: {}", comp)); }
+            if !found {
+                return Err(anyhow::anyhow!("Dir not found in MFT: {}", comp));
+            }
         }
         cur
     };
 
     info!("Target dir MFT ref: {}", target_ref);
 
-    let root_name = root.file_name()
+    let root_name = root
+        .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| root.to_string_lossy().to_string());
 
-    let mut tree = build_subtree(target_ref, &root_name, root, true, records, &children_map, 0, cancel);
+    let mut tree = build_subtree(
+        target_ref,
+        &root_name,
+        root,
+        true,
+        records,
+        &children_map,
+        0,
+        cancel,
+    );
 
     // Fill sizes via std::fs::metadata (fast on NTFS, reads from MFT cache)
     info!("Fetching file sizes...");
@@ -722,48 +799,89 @@ fn build_tree_from_mft(
 #[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 fn build_subtree(
-    file_ref: u64, name: &str, path: &std::path::Path, is_dir: bool,
+    file_ref: u64,
+    name: &str,
+    path: &std::path::Path,
+    is_dir: bool,
     records: &[MftRecord],
     children_map: &std::collections::HashMap<u64, Vec<usize>>,
-    depth: u32, cancel: &AtomicBool,
+    depth: u32,
+    cancel: &AtomicBool,
 ) -> DirEntry {
     if !is_dir {
-        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
         return DirEntry::new_file(name.to_string(), path.to_path_buf(), 0, ext, None);
     }
-    if depth > 256 { return DirEntry::new_dir(name.to_string(), path.to_path_buf()); }
+    if depth > 256 {
+        return DirEntry::new_dir(name.to_string(), path.to_path_buf());
+    }
 
     let mut entry = DirEntry::new_dir(name.to_string(), path.to_path_buf());
     if let Some(kids) = children_map.get(&file_ref) {
         for &ci in kids {
-            if cancel.load(Ordering::Relaxed) { break; }
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
             let rec = &records[ci];
-            if rec.name == "." || rec.name == ".." || rec.name.is_empty() { continue; }
-            if rec.file_ref < 24 && rec.parent_ref == 5 { continue; }
+            if rec.name == "." || rec.name == ".." || rec.name.is_empty() {
+                continue;
+            }
+            if rec.file_ref < 24 && rec.parent_ref == 5 {
+                continue;
+            }
             // Skip system directories
-            if rec.is_dir && rec.parent_ref == 5 && is_system_dir(&rec.name) { continue; }
+            if rec.is_dir && rec.parent_ref == 5 && is_system_dir(&rec.name) {
+                continue;
+            }
 
             let cp = path.join(&rec.name);
-            entry.children.push(build_subtree(rec.file_ref, &rec.name, &cp, rec.is_dir, records, children_map, depth+1, cancel));
+            entry.children.push(build_subtree(
+                rec.file_ref,
+                &rec.name,
+                &cp,
+                rec.is_dir,
+                records,
+                children_map,
+                depth + 1,
+                cancel,
+            ));
         }
     }
     entry
 }
 
 #[cfg(windows)]
-fn fill_sizes(entry: &mut DirEntry, fc: &mut u64, dc: &mut u64, tx: &Sender<ScanMsg>, cancel: &AtomicBool) {
+fn fill_sizes(
+    entry: &mut DirEntry,
+    fc: &mut u64,
+    dc: &mut u64,
+    tx: &Sender<ScanMsg>,
+    cancel: &AtomicBool,
+) {
     if !entry.is_dir {
         if let Ok(m) = std::fs::metadata(&entry.path) {
             entry.size = m.len();
             entry.own_size = m.len();
-            entry.modified_time = m.modified().ok()
+            entry.modified_time = m
+                .modified()
+                .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs());
         }
         *fc += 1;
         if (*fc).is_multiple_of(5000) {
-            let _ = tx.send(ScanMsg::Progress { files: *fc, dirs: *dc, bytes: 0, errors: 0 });
-            if cancel.load(Ordering::Relaxed) { return; }
+            let _ = tx.send(ScanMsg::Progress {
+                files: *fc,
+                dirs: *dc,
+                bytes: 0,
+                errors: 0,
+            });
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
         }
         return;
     }
@@ -772,27 +890,47 @@ fn fill_sizes(entry: &mut DirEntry, fc: &mut u64, dc: &mut u64, tx: &Sender<Scan
         fill_sizes(child, fc, dc, tx, cancel);
     }
     entry.size = entry.children.iter().map(|c| c.size).sum();
-    entry.file_count = entry.children.iter().map(|c| if c.is_dir { c.file_count } else { 1 }).sum();
-    entry.dir_count = entry.children.iter().filter(|c| c.is_dir).map(|c| c.dir_count + 1).sum();
+    entry.file_count = entry
+        .children
+        .iter()
+        .map(|c| if c.is_dir { c.file_count } else { 1 })
+        .sum();
+    entry.dir_count = entry
+        .children
+        .iter()
+        .filter(|c| c.is_dir)
+        .map(|c| c.dir_count + 1)
+        .sum();
 }
 
 /// System/protected directories to skip at volume root
 #[cfg(windows)]
 fn is_system_dir(name: &str) -> bool {
-    matches!(name.to_lowercase().as_str(),
-        "system volume information" | "$recycle.bin" | "$windows.~bt" |
-        "$windows.~ws" | "recovery" | "$sysreset" | "$winreagent"
+    matches!(
+        name.to_lowercase().as_str(),
+        "system volume information"
+            | "$recycle.bin"
+            | "$windows.~bt"
+            | "$windows.~ws"
+            | "recovery"
+            | "$sysreset"
+            | "$winreagent"
     )
 }
 
 // Non-Windows stubs (unused but needed for cross-platform compilation)
 #[cfg(not(windows))]
 #[allow(dead_code)]
-pub fn is_ntfs_available(_path: &std::path::Path) -> bool { false }
+pub fn is_ntfs_available(_path: &std::path::Path) -> bool {
+    false
+}
 
 #[cfg(not(windows))]
 #[allow(dead_code)]
-pub fn scan_ntfs_bg(_root: std::path::PathBuf, tx: crossbeam_channel::Sender<crate::scanner::ScanMsg>) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+pub fn scan_ntfs_bg(
+    _root: std::path::PathBuf,
+    tx: crossbeam_channel::Sender<crate::scanner::ScanMsg>,
+) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
     let _ = tx.send(crate::scanner::ScanMsg::Error("NTFS not available".into()));
     std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
 }

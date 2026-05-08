@@ -48,7 +48,10 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         }
         "mft-ready" => {
             let path = ntfs_sample_path(args.get(1));
-            let max_diag = args.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
+            let max_diag = args
+                .get(2)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(3);
             #[cfg(windows)]
             {
                 use crate::scanner_ntfs;

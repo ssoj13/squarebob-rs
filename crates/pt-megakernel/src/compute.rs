@@ -1631,8 +1631,7 @@ impl PathTraceCompute {
             &self.nodes_buffer,
             &self.instances_buffer,
             &self.materials_buffer,
-        )
-        else {
+        ) else {
             self.restir_bind_groups = None;
             return;
         };

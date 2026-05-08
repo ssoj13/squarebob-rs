@@ -16,18 +16,18 @@ pub struct TreeMapOptions {
     pub style: LayoutStyle,
     pub grid: bool,
     pub grid_color: [u8; 3],
-    pub brightness: f64,   // 0..1.0 (default 0.88)
-    pub height: f64,       // >= 0.0 (default 0.38) - cushion height factor H
-    pub scale_factor: f64, // 0..1.0 (default 0.91) - scale factor F
-    pub ambient_light: f64,// 0..1.0 (default 0.13) - ambient Ia
-    pub light_x: f64,      // -4..4 (default -1.0) - light source X
-    pub light_y: f64,      // -4..4 (default -1.0) - light source Y
+    pub brightness: f64,    // 0..1.0 (default 0.88)
+    pub height: f64,        // >= 0.0 (default 0.38) - cushion height factor H
+    pub scale_factor: f64,  // 0..1.0 (default 0.91) - scale factor F
+    pub ambient_light: f64, // 0..1.0 (default 0.13) - ambient Ia
+    pub light_x: f64,       // -4..4 (default -1.0) - light source X
+    pub light_y: f64,       // -4..4 (default -1.0) - light source Y
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayoutStyle {
-    KDirStat,     // children laid out in rows
-    SequoiaView,  // classical squarification
+    KDirStat,    // children laid out in rows
+    SequoiaView, // classical squarification
 }
 
 impl Default for TreeMapOptions {
@@ -50,23 +50,23 @@ const PALETTE_BRIGHTNESS: f64 = 0.6;
 
 /// Default 18-color palette from WinDirStat
 pub const DEFAULT_PALETTE: [[u8; 3]; 18] = [
-    [0,   0,   255], // Blue
-    [255, 0,   0],   // Red
-    [0,   255, 0],   // Green
+    [0, 0, 255],     // Blue
+    [255, 0, 0],     // Red
+    [0, 255, 0],     // Green
     [255, 255, 0],   // Yellow
-    [0,   255, 255], // Cyan
-    [255, 0,   255], // Magenta
+    [0, 255, 255],   // Cyan
+    [255, 0, 255],   // Magenta
     [255, 170, 0],   // Orange
-    [0,   85,  255], // Dodger Blue
-    [255, 0,   85],  // Hot Pink
-    [85,  255, 0],   // Lime Green
-    [170, 0,   255], // Violet
-    [0,   255, 85],  // Spring Green
-    [255, 0,   170], // Deep Pink
-    [0,   170, 255], // Sky Blue
-    [255, 85,  0],   // Orange Red
-    [0,   255, 170], // Aquamarine
-    [85,  0,   255], // Indigo
+    [0, 85, 255],    // Dodger Blue
+    [255, 0, 85],    // Hot Pink
+    [85, 255, 0],    // Lime Green
+    [170, 0, 255],   // Violet
+    [0, 255, 85],    // Spring Green
+    [255, 0, 170],   // Deep Pink
+    [0, 170, 255],   // Sky Blue
+    [255, 85, 0],    // Orange Red
+    [0, 255, 170],   // Aquamarine
+    [85, 0, 255],    // Indigo
     [255, 255, 255], // White
 ];
 
@@ -104,7 +104,9 @@ pub fn ext_color(ext: &str) -> [u8; 3] {
     if ext.eq_ignore_ascii_case("nef") {
         return make_bright([80, 130, 210], PALETTE_BRIGHTNESS);
     }
-    let hash = ext.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    let hash = ext
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
     let idx = (hash as usize) % DEFAULT_PALETTE.len();
     make_bright(DEFAULT_PALETTE[idx], PALETTE_BRIGHTNESS)
 }
@@ -122,7 +124,11 @@ impl LightVec {
         let ly = opts.light_y;
         let lz = 10.0;
         let len = (lx * lx + ly * ly + lz * lz).sqrt();
-        Self { lx: lx / len, ly: ly / len, lz: lz / len }
+        Self {
+            lx: lx / len,
+            ly: ly / len,
+            lz: lz / len,
+        }
     }
 }
 
@@ -142,11 +148,15 @@ pub fn layout(root: &DirEntry, x: f32, y: f32, w: f32, h: f32, opts: &TreeMapOpt
 /// KDirStat-style row layout
 fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
     let [px, py, pw, ph] = parent.rect.get();
-    if pw <= 0.0 || ph <= 0.0 { return; }
+    if pw <= 0.0 || ph <= 0.0 {
+        return;
+    }
 
     let horizontal = pw >= ph;
     let total_size = parent.size as f64;
-    if total_size <= 0.0 { return; }
+    if total_size <= 0.0 {
+        return;
+    }
 
     let width_ratio = if horizontal {
         pw as f64 / ph as f64
@@ -175,8 +185,10 @@ fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
         let bottom = top + row_h_px;
 
         let mut left = if horizontal { px } else { py };
-        let row_size: f64 = parent.children[*start..*end].iter()
-            .map(|c| c.size as f64).sum();
+        let row_size: f64 = parent.children[*start..*end]
+            .iter()
+            .map(|c| c.size as f64)
+            .sum();
 
         for i in *start..*end {
             let child_frac = if row_size > 0.0 {
@@ -187,15 +199,29 @@ fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
 
             let child_w = child_frac as f32 * (if horizontal { pw } else { ph });
             let right = if i == end - 1 {
-                if horizontal { px + pw } else { py + ph }
+                if horizontal {
+                    px + pw
+                } else {
+                    py + ph
+                }
             } else {
                 left + child_w
             };
 
             let (cx, cy, cw, ch) = if horizontal {
-                (left + grid, top + grid, (right - left - grid).max(0.0), (row_h_px - grid).max(0.0))
+                (
+                    left + grid,
+                    top + grid,
+                    (right - left - grid).max(0.0),
+                    (row_h_px - grid).max(0.0),
+                )
             } else {
-                (top + grid, left + grid, (row_h_px - grid).max(0.0), (right - left - grid).max(0.0))
+                (
+                    top + grid,
+                    left + grid,
+                    (row_h_px - grid).max(0.0),
+                    (right - left - grid).max(0.0),
+                )
             };
 
             layout(&parent.children[i], cx, cy, cw, ch, opts);
@@ -241,7 +267,9 @@ fn calc_next_row(children: &[DirEntry], start: usize, total_size: f64, width: f6
 /// SequoiaView-style classical squarification
 fn layout_sequoia(parent: &DirEntry, opts: &TreeMapOptions) {
     let [px, py, pw, ph] = parent.rect.get();
-    if pw <= 0.0 || ph <= 0.0 { return; }
+    if pw <= 0.0 || ph <= 0.0 {
+        return;
+    }
 
     let grid = if opts.grid { 1.0_f32 } else { 0.0 };
     let mut remaining = [px, py, pw, ph];
@@ -257,7 +285,9 @@ fn layout_sequoia(parent: &DirEntry, opts: &TreeMapOptions) {
         let horizontal = rw >= rh;
         let side = if horizontal { rh } else { rw };
         let hh = (side as f64) * (side as f64) * size_per_pixel;
-        if hh <= 0.0 { break; }
+        if hh <= 0.0 {
+            break;
+        }
 
         // Find best row
         let mut row_end = head;
@@ -267,25 +297,36 @@ fn layout_sequoia(parent: &DirEntry, opts: &TreeMapOptions) {
 
         while row_end < n {
             let cs = parent.children[row_end].size as f64;
-            if cs <= 0.0 { row_end = n; break; }
+            if cs <= 0.0 {
+                row_end = n;
+                break;
+            }
             let rmin = cs;
             let new_sum = sum + rmin;
             let ss = new_sum * new_sum;
             let r1 = hh * rmax / ss;
             let r2 = ss / hh / rmin;
             let next_worst = r1.max(r2);
-            if next_worst > worst { break; }
+            if next_worst > worst {
+                break;
+            }
             sum = new_sum;
             row_end += 1;
             worst = next_worst;
         }
 
-        if sum <= 0.0 { break; }
+        if sum <= 0.0 {
+            break;
+        }
 
         // Row width in pixels
         let row_width = if sum < remaining_size {
             ((sum / remaining_size) * (if horizontal { rw } else { rh }) as f64) as f32
-        } else if horizontal { rw } else { rh };
+        } else if horizontal {
+            rw
+        } else {
+            rh
+        };
 
         // Distribute children in row
         let mut pos = if horizontal { ry } else { rx };
@@ -296,15 +337,29 @@ fn layout_sequoia(parent: &DirEntry, opts: &TreeMapOptions) {
             let frac = cs / sum;
             let child_len = frac as f32 * row_len;
             let end = if i == row_end - 1 {
-                if horizontal { ry + rh } else { rx + rw }
+                if horizontal {
+                    ry + rh
+                } else {
+                    rx + rw
+                }
             } else {
                 pos + child_len
             };
 
             let (cx, cy, cw, ch) = if horizontal {
-                (rx + grid, pos + grid, (row_width - grid).max(0.0), (end - pos - grid).max(0.0))
+                (
+                    rx + grid,
+                    pos + grid,
+                    (row_width - grid).max(0.0),
+                    (end - pos - grid).max(0.0),
+                )
             } else {
-                (pos + grid, ry + grid, (end - pos - grid).max(0.0), (row_width - grid).max(0.0))
+                (
+                    pos + grid,
+                    ry + grid,
+                    (end - pos - grid).max(0.0),
+                    (row_width - grid).max(0.0),
+                )
             };
 
             layout(&parent.children[i], cx, cy, cw, ch, opts);
@@ -342,7 +397,12 @@ pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -
     let mut buf = vec![0u8; w * h * 4]; // RGBA
 
     // Fill background with grid color (parallel)
-    let bg = [opts.grid_color[0], opts.grid_color[1], opts.grid_color[2], 255u8];
+    let bg = [
+        opts.grid_color[0],
+        opts.grid_color[1],
+        opts.grid_color[2],
+        255u8,
+    ];
     buf.par_chunks_exact_mut(4).for_each(|pixel| {
         pixel.copy_from_slice(&bg);
     });
@@ -355,21 +415,34 @@ pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -
 
     // Collect all leaf rectangles
     let mut rects = Vec::with_capacity(1024);
-    collect_rects(root, &mut rects, w, h, opts, grid_w, [0.0; 4], opts.height, true, 0);
+    collect_rects(
+        root,
+        &mut rects,
+        w,
+        h,
+        opts,
+        grid_w,
+        [0.0; 4],
+        opts.height,
+        true,
+        0,
+    );
 
     // Render based on mode
     if cushion {
         // For cushion: render row by row in parallel for better cache locality
         let brightness = opts.brightness;
         let ambient = opts.ambient_light;
-        
-        buf.par_chunks_exact_mut(w * 4).enumerate().for_each(|(y, row)| {
-            for rect in &rects {
-                if y >= rect.ly && y < rect.ry {
-                    render_cushion_row(row, y, rect, &light, brightness, ambient);
+
+        buf.par_chunks_exact_mut(w * 4)
+            .enumerate()
+            .for_each(|(y, row)| {
+                for rect in &rects {
+                    if y >= rect.ly && y < rect.ry {
+                        render_cushion_row(row, y, rect, &light, brightness, ambient);
+                    }
                 }
-            }
-        });
+            });
     } else {
         // For solid: simple parallel fill per rect
         // Since rects don't overlap, we can safely write in parallel
@@ -402,7 +475,14 @@ pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -
 }
 
 /// Render one row of a cushion-shaded rectangle
-fn render_cushion_row(row: &mut [u8], y: usize, rect: &RenderRect, light: &LightVec, brightness: f64, ambient: f64) {
+fn render_cushion_row(
+    row: &mut [u8],
+    y: usize,
+    rect: &RenderRect,
+    light: &LightVec,
+    brightness: f64,
+    ambient: f64,
+) {
     let is = 1.0 - ambient;
     let cr = rect.color[0] as f64;
     let cg = rect.color[1] as f64;
@@ -436,15 +516,24 @@ fn render_cushion_row(row: &mut [u8], y: usize, rect: &RenderRect, light: &Light
 /// Collect all leaf rectangles for parallel rendering
 #[allow(clippy::too_many_arguments)]
 fn collect_rects(
-    node: &DirEntry, rects: &mut Vec<RenderRect>, bw: usize, bh: usize,
-    opts: &TreeMapOptions, grid_w: f32,
-    surface: [f64; 4], h: f64, is_root: bool, dir_hash: u32,
+    node: &DirEntry,
+    rects: &mut Vec<RenderRect>,
+    bw: usize,
+    bh: usize,
+    opts: &TreeMapOptions,
+    grid_w: f32,
+    surface: [f64; 4],
+    h: f64,
+    is_root: bool,
+    dir_hash: u32,
 ) {
     let [x, y, w, h_px] = node.rect.get();
-    if w <= 0.0 || h_px <= 0.0 { return; }
+    if w <= 0.0 || h_px <= 0.0 {
+        return;
+    }
 
     let cushion = is_cushion(opts);
-    
+
     // Add ridge for cushion (not for root)
     let surface = if cushion && !is_root {
         add_ridge(x, y, w, h_px, surface, h)
@@ -461,14 +550,23 @@ fn collect_rects(
         let ry = ((y + h_px) as usize).min(bh);
 
         if lx < rx && ly < ry {
-            rects.push(RenderRect { lx, ly, rx, ry, color, surface });
+            rects.push(RenderRect {
+                lx,
+                ly,
+                rx,
+                ry,
+                color,
+                surface,
+            });
         }
     } else {
         // Directory: recurse
         let my_hash = path_hash(&node.name, dir_hash);
         let next_h = h * opts.scale_factor;
         for child in &node.children {
-            collect_rects(child, rects, bw, bh, opts, grid_w, surface, next_h, false, my_hash);
+            collect_rects(
+                child, rects, bw, bh, opts, grid_w, surface, next_h, false, my_hash,
+            );
         }
     }
 }
@@ -479,8 +577,10 @@ fn is_cushion(opts: &TreeMapOptions) -> bool {
 
 /// Incremental path hash: mix parent hash with directory name
 pub fn path_hash(name: &str, parent_hash: u32) -> u32 {
-    name.bytes().fold(parent_hash.wrapping_mul(31).wrapping_add(17),
-        |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
+    name.bytes()
+        .fold(parent_hash.wrapping_mul(31).wrapping_add(17), |acc, b| {
+            acc.wrapping_mul(31).wrapping_add(b as u32)
+        })
 }
 
 /// Apply a subtle hue shift to ext_color based on parent dir hash.
@@ -488,8 +588,12 @@ pub fn path_hash(name: &str, parent_hash: u32) -> u32 {
 pub fn dir_tinted_color(ext: &str, dir_hash: u32) -> [u8; 3] {
     let base = ext_color(ext);
     // Don't tint special items - keep them neutral gray
-    if ext == "__free__" || ext == "__excluded__" { return base; }
-    if dir_hash == 0 { return base; }
+    if ext == "__free__" || ext == "__excluded__" {
+        return base;
+    }
+    if dir_hash == 0 {
+        return base;
+    }
     // Derive tint hue from dir_hash (spread across color wheel)
     let hue = (dir_hash % 360) as f64;
     let (tr, tg, tb) = hue_to_rgb(hue);
@@ -498,7 +602,11 @@ pub fn dir_tinted_color(ext: &str, dir_hash: u32) -> [u8; 3] {
     let r = base[0] as f64 * (1.0 - MIX) + tr * 255.0 * MIX;
     let g = base[1] as f64 * (1.0 - MIX) + tg * 255.0 * MIX;
     let b = base[2] as f64 * (1.0 - MIX) + tb * 255.0 * MIX;
-    [r.clamp(0.0, 255.0) as u8, g.clamp(0.0, 255.0) as u8, b.clamp(0.0, 255.0) as u8]
+    [
+        r.clamp(0.0, 255.0) as u8,
+        g.clamp(0.0, 255.0) as u8,
+        b.clamp(0.0, 255.0) as u8,
+    ]
 }
 
 /// Convert hue (0-360) to RGB with full saturation and brightness
@@ -519,7 +627,9 @@ fn hue_to_rgb(h: f64) -> (f64, f64, f64) {
 fn add_ridge(x: f32, y: f32, w: f32, h: f32, mut s: [f64; 4], height: f64) -> [f64; 4] {
     let w = w as f64;
     let h = h as f64;
-    if w <= 0.0 || h <= 0.0 { return s; }
+    if w <= 0.0 || h <= 0.0 {
+        return s;
+    }
 
     let h4 = 4.0 * height;
     let wf = h4 / w;
@@ -531,7 +641,6 @@ fn add_ridge(x: f32, y: f32, w: f32, h: f32, mut s: [f64; 4], height: f64) -> [f
     s[1] -= hf;
     s
 }
-
 
 /// Make a color have a specific brightness (port of CColorSpace::MakeBrightColor)
 fn make_bright(color: [u8; 3], brightness: f64) -> [u8; 3] {
@@ -556,16 +665,26 @@ fn make_bright(color: [u8; 3], brightness: f64) -> [u8; 3] {
 fn normalize_color(mut r: i32, mut g: i32, mut b: i32) -> (u8, u8, u8) {
     if r > 255 {
         let h = (r - 255) / 2;
-        r = 255; g += h; b += h;
+        r = 255;
+        g += h;
+        b += h;
     }
     if g > 255 {
         let h = (g - 255) / 2;
-        g = 255; r = r.min(255); b += h;
+        g = 255;
+        r = r.min(255);
+        b += h;
     }
     if b > 255 {
-        b = 255; r = r.min(255); g = g.min(255);
+        b = 255;
+        r = r.min(255);
+        g = g.min(255);
     }
-    (r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8)
+    (
+        r.clamp(0, 255) as u8,
+        g.clamp(0, 255) as u8,
+        b.clamp(0, 255) as u8,
+    )
 }
 
 /// Minimum rectangle size before GPU renderers consolidate into a single rect
@@ -575,7 +694,9 @@ pub const MIN_RECT_SIZE: f32 = 3.0;
 pub fn add_ridge_f32(x: f32, y: f32, w: f32, h: f32, mut s: [f32; 4], height: f64) -> [f32; 4] {
     let w = w as f64;
     let h = h as f64;
-    if w <= 0.0 || h <= 0.0 { return s; }
+    if w <= 0.0 || h <= 0.0 {
+        return s;
+    }
     let h4 = 4.0 * height;
     let wf = h4 / w;
     s[2] += (wf * ((x as f64 + w) + x as f64)) as f32;
@@ -592,7 +713,14 @@ pub fn compute_avg_color(node: &DirEntry, dir_hash: u32) -> [u8; 3] {
     let mut r_sum: u64 = 0;
     let mut g_sum: u64 = 0;
     let mut b_sum: u64 = 0;
-    accumulate_colors(node, dir_hash, &mut total_size, &mut r_sum, &mut g_sum, &mut b_sum);
+    accumulate_colors(
+        node,
+        dir_hash,
+        &mut total_size,
+        &mut r_sum,
+        &mut g_sum,
+        &mut b_sum,
+    );
     if total_size == 0 {
         return [128, 128, 128];
     }
@@ -604,8 +732,12 @@ pub fn compute_avg_color(node: &DirEntry, dir_hash: u32) -> [u8; 3] {
 }
 
 fn accumulate_colors(
-    node: &DirEntry, dir_hash: u32,
-    total_size: &mut u64, r_sum: &mut u64, g_sum: &mut u64, b_sum: &mut u64,
+    node: &DirEntry,
+    dir_hash: u32,
+    total_size: &mut u64,
+    r_sum: &mut u64,
+    g_sum: &mut u64,
+    b_sum: &mut u64,
 ) {
     if !node.is_dir || node.children.is_empty() {
         let color = dir_tinted_color(&node.ext, dir_hash);

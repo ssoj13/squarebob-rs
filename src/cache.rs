@@ -4,8 +4,8 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use log::{info, warn, debug};
-use serde::{Serialize, Deserialize};
+use log::{debug, info, warn};
+use serde::{Deserialize, Serialize};
 
 use crate::path_key;
 use dirstat_core::DirEntry;
@@ -27,8 +27,7 @@ const CACHE_VERSION: u32 = 2;
 
 /// Get the cache directory path
 fn cache_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "dirstat-rs")
-        .map(|dirs| dirs.cache_dir().to_path_buf())
+    directories::ProjectDirs::from("", "", "dirstat-rs").map(|dirs| dirs.cache_dir().to_path_buf())
 }
 
 fn cache_filename(scan_path: &str) -> String {
@@ -54,7 +53,7 @@ pub fn serialize_cache(scan_path: &str, tree: &DirEntry) -> anyhow::Result<Vec<u
         timestamp,
         tree,
     };
-    
+
     Ok(bincode::serialize(&cached)?)
 }
 
@@ -95,7 +94,7 @@ pub fn write_cache_bytes(scan_path: &str, bytes: &[u8]) -> anyhow::Result<()> {
 /// Load a cached scan result
 pub fn load_cache(scan_path: &str) -> Option<CachedScan> {
     let cache_file = cache_path(scan_path)?;
-    
+
     if !cache_file.exists() {
         debug!("No cache found for: {}", scan_path);
         return None;
@@ -120,8 +119,10 @@ pub fn load_cache(scan_path: &str) -> Option<CachedScan> {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs().saturating_sub(cached.timestamp))
                 .unwrap_or(0);
-            info!("Cache loaded: {:?} ({} files, {} seconds old)", 
-                cache_file, cached.tree.file_count, age_secs);
+            info!(
+                "Cache loaded: {:?} ({} files, {} seconds old)",
+                cache_file, cached.tree.file_count, age_secs
+            );
             Some(cached)
         }
         Err(e) => {
@@ -156,4 +157,3 @@ pub fn format_age(seconds: u64) -> String {
         format!("{}d ago", seconds / 86400)
     }
 }
-

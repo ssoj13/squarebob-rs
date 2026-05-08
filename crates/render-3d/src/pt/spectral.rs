@@ -1,8 +1,8 @@
 //! Spectral PT backend (stub).
 
 use crate::{geometry, Renderer3D};
-use render_shared::{OrbitCamera, Render3DOptions};
 use log::warn;
+use render_shared::{OrbitCamera, Render3DOptions};
 
 pub fn render_path_traced_no_readback(
     renderer: &mut Renderer3D,

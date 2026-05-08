@@ -1,16 +1,16 @@
 //! Left file tree panel with expandable directory hierarchy.
 //! Uses virtual scrolling for large trees.
 
-use std::path::PathBuf;
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use eframe::egui;
 
 use crate::events::{NavigateIntoEvent, SelectPathEvent};
 use dirstat_core::DirEntry;
 
+use super::helpers::{collect_all_dir_paths, format_tree_label};
 use super::App;
-use super::helpers::{format_tree_label, collect_all_dir_paths};
 
 /// Row content height passed to [`egui::ScrollArea::show_rows`].
 ///
@@ -47,7 +47,10 @@ impl App {
         let panel_hovered = ui.rect_contains_pointer(ui.max_rect());
 
         // F key: scroll to selected file (only when hovering this panel)
-        if panel_hovered && ui.input(|i| i.key_pressed(egui::Key::F)) && self.selected_path.is_some() {
+        if panel_hovered
+            && ui.input(|i| i.key_pressed(egui::Key::F))
+            && self.selected_path.is_some()
+        {
             self.scroll_to_selected = true;
         }
 
@@ -65,10 +68,18 @@ impl App {
         ui.horizontal(|ui| {
             ui.heading("Files");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("\u{25bc}").on_hover_text("Expand all").clicked() {
+                if ui
+                    .small_button("\u{25bc}")
+                    .on_hover_text("Expand all")
+                    .clicked()
+                {
                     expand_all = true;
                 }
-                if ui.small_button("\u{25b2}").on_hover_text("Collapse all").clicked() {
+                if ui
+                    .small_button("\u{25b2}")
+                    .on_hover_text("Collapse all")
+                    .clicked()
+                {
                     collapse_all = true;
                 }
             });
@@ -119,7 +130,9 @@ impl App {
         let search_lc = self.search_text.to_lowercase();
 
         // Find selected index
-        let selected_idx = flat_nodes.iter().position(|n| Some(&n.node.path) == self.selected_path.as_ref());
+        let selected_idx = flat_nodes
+            .iter()
+            .position(|n| Some(&n.node.path) == self.selected_path.as_ref());
 
         // Remember if we need to scroll (consume the flag)
         let need_scroll = self.scroll_to_selected;
@@ -137,8 +150,8 @@ impl App {
             for i in row_range {
                 if let Some(flat) = flat_nodes.get(i) {
                     let is_selected = self.selected_path.as_ref() == Some(&flat.node.path);
-                    let matches_search = !search_lc.is_empty()
-                        && flat.node.name.to_lowercase().contains(&search_lc);
+                    let matches_search =
+                        !search_lc.is_empty() && flat.node.name.to_lowercase().contains(&search_lc);
 
                     ui.horizontal(|ui| {
                         // Indentation
@@ -155,7 +168,8 @@ impl App {
                         }
 
                         // Label
-                        let label = format_tree_label(&flat.node.name, flat.node.size, flat.parent_size);
+                        let label =
+                            format_tree_label(&flat.node.name, flat.node.size, flat.parent_size);
                         let resp = if matches_search {
                             ui.selectable_label(
                                 is_selected,
@@ -215,7 +229,10 @@ impl App {
         }
         // Single click = select, double click = navigate/zoom
         if let Some(path) = tree_clicked {
-            if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+            if ui.input(|i| {
+                i.pointer
+                    .button_double_clicked(egui::PointerButton::Primary)
+            }) {
                 self.events.emit(NavigateIntoEvent(path));
             } else {
                 self.events.emit(SelectPathEvent(path));

@@ -24,7 +24,11 @@ impl EnvMap {
     pub fn new_default(ctx: &GpuContext) -> Self {
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Default Env Map"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -34,12 +38,22 @@ impl EnvMap {
         });
         ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture, mip_level: 0,
-                origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All,
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             &[128u8, 128, 128, 255],
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
 
         let view = texture.create_view(&Default::default());
@@ -52,16 +66,20 @@ impl EnvMap {
             ..Default::default()
         });
 
-        let marginal_cdf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("default_env_marginal_cdf"),
-            contents: bytemuck::cast_slice(&[1.0f32]),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let conditional_cdf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("default_env_conditional_cdf"),
-            contents: bytemuck::cast_slice(&[1.0f32]),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let marginal_cdf = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("default_env_marginal_cdf"),
+                contents: bytemuck::cast_slice(&[1.0f32]),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let conditional_cdf = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("default_env_conditional_cdf"),
+                contents: bytemuck::cast_slice(&[1.0f32]),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         Self {
             texture,
@@ -78,8 +96,13 @@ impl EnvMap {
 
     /// Load env map from an image file (PNG, JPG, HDR, EXR)
     /// HDR/EXR are loaded as Rgba16Float to preserve dynamic range
-    pub fn load_from_file(&mut self, ctx: &GpuContext, path: &std::path::Path) -> anyhow::Result<()> {
-        let ext = path.extension()
+    pub fn load_from_file(
+        &mut self,
+        ctx: &GpuContext,
+        path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        let ext = path
+            .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase());
         let mut reader = ImageReader::open(path)?;
@@ -104,21 +127,24 @@ impl EnvMap {
         let (format, data, luminance): (wgpu::TextureFormat, Vec<u8>, Vec<f32>) = if is_hdr {
             // HDR: convert to f16 (Rgba16Float) to preserve dynamic range
             let rgba32 = img.to_rgba32f();
-            let f16_data: Vec<u8> = rgba32.pixels()
+            let f16_data: Vec<u8> = rgba32
+                .pixels()
                 .flat_map(|p| {
-                    p.0.iter().flat_map(|&f| {
-                        half::f16::from_f32(f).to_le_bytes()
-                    }).collect::<Vec<u8>>()
+                    p.0.iter()
+                        .flat_map(|&f| half::f16::from_f32(f).to_le_bytes())
+                        .collect::<Vec<u8>>()
                 })
                 .collect();
-            let lum: Vec<f32> = rgba32.pixels()
+            let lum: Vec<f32> = rgba32
+                .pixels()
                 .map(|p| 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2])
                 .collect();
             (wgpu::TextureFormat::Rgba16Float, f16_data, lum)
         } else {
             // LDR: standard 8-bit
             let rgba8 = img.to_rgba8();
-            let lum: Vec<f32> = rgba8.pixels()
+            let lum: Vec<f32> = rgba8
+                .pixels()
                 .map(|p| {
                     let r = p[0] as f32 / 255.0;
                     let g = p[1] as f32 / 255.0;
@@ -131,7 +157,11 @@ impl EnvMap {
 
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Env Map"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -143,12 +173,22 @@ impl EnvMap {
         let bytes_per_pixel = if is_hdr { 8u32 } else { 4u32 };
         ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture, mip_level: 0,
-                origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All,
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             &data,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bytes_per_pixel * w), rows_per_image: Some(h) },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_pixel * w),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
 
         self.view = texture.create_view(&Default::default());
@@ -159,16 +199,20 @@ impl EnvMap {
         let (conditional_cdf_data, marginal_cdf_data) = build_env_cdfs(w, h, &luminance);
         self.conditional_cdf_data = conditional_cdf_data;
         self.marginal_cdf_data = marginal_cdf_data;
-        self.conditional_cdf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("env_conditional_cdf"),
-            contents: bytemuck::cast_slice(&self.conditional_cdf_data),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        self.marginal_cdf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("env_marginal_cdf"),
-            contents: bytemuck::cast_slice(&self.marginal_cdf_data),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        self.conditional_cdf = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("env_conditional_cdf"),
+                contents: bytemuck::cast_slice(&self.conditional_cdf_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        self.marginal_cdf = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("env_marginal_cdf"),
+                contents: bytemuck::cast_slice(&self.marginal_cdf_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         info!("Loaded env map: {}x{} {:?} from {:?}", w, h, format, path);
         Ok(())

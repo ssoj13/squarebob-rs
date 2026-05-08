@@ -27,12 +27,12 @@ pub struct LodExpandInfo {
 pub struct DirEntry {
     pub name: String,
     pub path: PathBuf,
-    pub size: u64,        // total recursive size
+    pub size: u64, // total recursive size
     /// Per-file size on disk; for directories typically 0. Used by 3D height cues and NTFS fill pass.
     pub own_size: u64,
     pub children: Vec<DirEntry>,
     pub is_dir: bool,
-    pub ext: String,      // lowercase extension for color mapping
+    pub ext: String, // lowercase extension for color mapping
     pub file_count: u64,
     pub dir_count: u64,
     /// Modified time as Unix timestamp (seconds since epoch)
@@ -57,7 +57,13 @@ impl DirEntry {
             .sort_unstable_by_key(|c| std::cmp::Reverse(c.size));
     }
 
-    pub fn new_file(name: String, path: PathBuf, size: u64, ext: String, modified_time: Option<u64>) -> Self {
+    pub fn new_file(
+        name: String,
+        path: PathBuf,
+        size: u64,
+        ext: String,
+        modified_time: Option<u64>,
+    ) -> Self {
         Self {
             name,
             path,

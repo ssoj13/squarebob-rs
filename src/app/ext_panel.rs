@@ -2,8 +2,8 @@
 
 use eframe::egui;
 
-use super::App;
 use super::helpers::fmt_size;
+use super::App;
 
 impl App {
     pub(super) fn ui_ext_stats(&mut self, ui: &mut egui::Ui) {
@@ -24,7 +24,8 @@ impl App {
                     .hint_text("\u{1f50d}")
                     .desired_width(ui.available_width() - 120.0),
             );
-            if ui.checkbox(&mut self.ext_filter_invert, "Invert")
+            if ui
+                .checkbox(&mut self.ext_filter_invert, "Invert")
                 .on_hover_text("Invert extension filter selection")
                 .changed()
             {
@@ -49,7 +50,11 @@ impl App {
                 2 => a.2.cmp(&b.2),
                 _ => a.1.cmp(&b.1),
             };
-            if asc { cmp } else { cmp.reverse() }
+            if asc {
+                cmp
+            } else {
+                cmp.reverse()
+            }
         });
 
         // Calculate column width and count
@@ -80,8 +85,10 @@ impl App {
                         let label = format!("{} {:.0}%", ext, pct);
                         let resp = ui.add_sized(
                             [item_width, 0.0],
-                            egui::Button::new(egui::RichText::new(label).color(egui::Color32::from_rgb(r, g, b)))
-                                .selected(selected),
+                            egui::Button::new(
+                                egui::RichText::new(label).color(egui::Color32::from_rgb(r, g, b)),
+                            )
+                            .selected(selected),
                         );
                         if resp.clicked() {
                             if selected {

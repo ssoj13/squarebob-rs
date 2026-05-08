@@ -123,13 +123,13 @@ pub struct GpuMaterial {
 /// Unit cube corners for AABB computation.
 const UNIT_CUBE_CORNERS: [Vec3; 8] = [
     Vec3::new(-0.5, -0.5, -0.5),
-    Vec3::new( 0.5, -0.5, -0.5),
-    Vec3::new( 0.5,  0.5, -0.5),
-    Vec3::new(-0.5,  0.5, -0.5),
-    Vec3::new(-0.5, -0.5,  0.5),
-    Vec3::new( 0.5, -0.5,  0.5),
-    Vec3::new( 0.5,  0.5,  0.5),
-    Vec3::new(-0.5,  0.5,  0.5),
+    Vec3::new(0.5, -0.5, -0.5),
+    Vec3::new(0.5, 0.5, -0.5),
+    Vec3::new(-0.5, 0.5, -0.5),
+    Vec3::new(-0.5, -0.5, 0.5),
+    Vec3::new(0.5, -0.5, 0.5),
+    Vec3::new(0.5, 0.5, 0.5),
+    Vec3::new(-0.5, 0.5, 0.5),
 ];
 
 /// CPU-side cube instance for BVH building.
@@ -175,7 +175,7 @@ pub struct GpuInstance {
     pub object_id: u32,           //  4B
     pub material_id: u32,         //  4B
     pub _padding: [u32; 2],       //  8B
-}                                 // Total: 96B
+} // Total: 96B
 
 /// GPU-friendly AABB (32 bytes).
 #[repr(C)]

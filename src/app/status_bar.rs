@@ -2,9 +2,9 @@
 
 use eframe::egui;
 
-use crate::cache;
+use super::helpers::{disk_free_info, fmt_size};
 use super::App;
-use super::helpers::{fmt_size, disk_free_info};
+use crate::cache;
 
 impl App {
     /// Render bottom status bar
@@ -13,7 +13,9 @@ impl App {
             ui.horizontal(|ui| {
                 if self.progress.scanning {
                     ui.spinner();
-                    let elapsed = self.progress.start_time
+                    let elapsed = self
+                        .progress
+                        .start_time
                         .map(|t| t.elapsed().as_secs_f32())
                         .unwrap_or(0.0);
                     let err_str = if self.progress.errors > 0 {
@@ -25,8 +27,11 @@ impl App {
                     ui.label(format!(
                         "[{}] Scanning: {} files, {} dirs, {} ({:.1}s){}",
                         engine,
-                        self.progress.files, self.progress.dirs,
-                        fmt_size(self.progress.bytes), elapsed, err_str,
+                        self.progress.files,
+                        self.progress.dirs,
+                        fmt_size(self.progress.bytes),
+                        elapsed,
+                        err_str,
                     ));
                     let anim = (elapsed * 2.0).sin() * 0.5 + 0.5;
                     ui.add(egui::ProgressBar::new(anim).desired_width(100.0));
@@ -42,8 +47,11 @@ impl App {
                     };
                     ui.label(format!(
                         "{} files | {} dirs | {}{}{}",
-                        tree.file_count, tree.dir_count, fmt_size(tree.size),
-                        time_info, disk_info,
+                        tree.file_count,
+                        tree.dir_count,
+                        fmt_size(tree.size),
+                        time_info,
+                        disk_info,
                     ));
                 } else {
                     ui.label("Select a folder and click Scan to analyze disk usage");
@@ -61,10 +69,14 @@ impl App {
                         self.last_mem_update = now;
                     }
                     if self.mem_total_mb > 0 {
-                        ui.label(format!("RAM {} / {} MB", self.mem_used_mb, self.mem_total_mb));
+                        ui.label(format!(
+                            "RAM {} / {} MB",
+                            self.mem_used_mb, self.mem_total_mb
+                        ));
                     }
                     if self.last_frame_ms > 0.0 {
-                        let mut stats = format!("{:.1} FPS | {:.1} ms", self.last_fps, self.last_frame_ms);
+                        let mut stats =
+                            format!("{:.1} FPS | {:.1} ms", self.last_fps, self.last_frame_ms);
                         if self.last_samples_per_sec > 0.0 {
                             stats.push_str(&format!(" | {:.0} spp/s", self.last_samples_per_sec));
                         }
