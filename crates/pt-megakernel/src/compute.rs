@@ -110,17 +110,6 @@ impl Default for PtEnvUniform {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-struct GpuEmissiveLight {
-    center_area: [f32; 4],     // xyz=center, w=surface area
-    axis_x: [f32; 4],          // xyz=full local X edge vector
-    axis_y: [f32; 4],          // xyz=full local Y edge vector
-    axis_z: [f32; 4],          // xyz=full local Z edge vector
-    emission_weight: [f32; 4], // rgb=emission radiance, w=sampling weight
-    meta: [u32; 4],            // x=instance index
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct EmissiveLightUniform {
     params0: [u32; 4], // enabled, samples_per_hit, light_count, reserved
     params1: [f32; 4], // min_weight, total_weight, reserved
@@ -284,7 +273,8 @@ pub struct PathTraceCompute {
     env_conditional_cdf: wgpu::Buffer,
 
     // Emissive cube light sampling
-    emissive_light_buffer: wgpu::Buffer,
+    emissive_light_texture: wgpu::Texture,
+    emissive_light_view: wgpu::TextureView,
     emissive_light_uniform_buffer: wgpu::Buffer,
     emissive_sampling_enabled: bool,
     emissive_samples_per_hit: u32,
@@ -574,10 +564,10 @@ impl PathTraceCompute {
                 wgpu::BindGroupLayoutEntry {
                     binding: 13,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -823,11 +813,8 @@ impl PathTraceCompute {
             contents: bytemuck::cast_slice(&[1.0f32]),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let emissive_light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_emissive_lights"),
-            contents: bytemuck::cast_slice(&[GpuEmissiveLight::zeroed()]),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let (emissive_light_texture, emissive_light_view) =
+            Self::create_emissive_light_texture(device, queue, &[[0.0; 4]; 6], 1);
         let emissive_light_uniform_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("pt_emissive_light_uniform"),
@@ -869,7 +856,8 @@ impl PathTraceCompute {
             env_height: 1,
             env_marginal_cdf,
             env_conditional_cdf,
-            emissive_light_buffer,
+            emissive_light_texture,
+            emissive_light_view,
             emissive_light_uniform_buffer,
             emissive_sampling_enabled: true,
             emissive_samples_per_hit: 1,
@@ -1172,8 +1160,13 @@ impl PathTraceCompute {
         );
     }
 
-    fn rebuild_emissive_lights(&mut self, device: &wgpu::Device, data: &GpuInstanceSceneData) {
-        let mut lights = Vec::new();
+    fn rebuild_emissive_lights(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &GpuInstanceSceneData,
+    ) {
+        let mut rows = Vec::<[f32; 4]>::new();
         let mut total_weight = 0.0f32;
         for (inst_idx, inst) in data.instances.iter().enumerate() {
             let Some(mat) = data.materials.get(inst.material_id as usize) else {
@@ -1207,31 +1200,32 @@ impl PathTraceCompute {
                 continue;
             }
 
-            lights.push(GpuEmissiveLight {
-                center_area: [center.x, center.y, center.z, area],
-                axis_x: [axis_x.x, axis_x.y, axis_x.z, 0.0],
-                axis_y: [axis_y.x, axis_y.y, axis_y.z, 0.0],
-                axis_z: [axis_z.x, axis_z.y, axis_z.z, 0.0],
-                emission_weight: [emission.x, emission.y, emission.z, weight],
-                meta: [inst_idx as u32, 0, 0, 0],
-            });
+            rows.push([center.x, center.y, center.z, area]);
+            rows.push([axis_x.x, axis_x.y, axis_x.z, 0.0]);
+            rows.push([axis_y.x, axis_y.y, axis_y.z, 0.0]);
+            rows.push([axis_z.x, axis_z.y, axis_z.z, 0.0]);
+            rows.push([emission.x, emission.y, emission.z, weight]);
+            rows.push([inst_idx as f32, 0.0, 0.0, 0.0]);
             total_weight += weight;
         }
 
-        if lights.is_empty() {
-            lights.push(GpuEmissiveLight::zeroed());
+        if rows.is_empty() {
+            rows.extend_from_slice(&[[0.0; 4]; 6]);
             self.emissive_light_count = 0;
             self.emissive_total_weight = 0.0;
         } else {
-            self.emissive_light_count = lights.len() as u32;
+            self.emissive_light_count = (rows.len() / 6) as u32;
             self.emissive_total_weight = total_weight;
         }
 
-        self.emissive_light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_emissive_lights"),
-            contents: bytemuck::cast_slice(&lights),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let (texture, view) = Self::create_emissive_light_texture(
+            device,
+            queue,
+            &rows,
+            self.emissive_light_count.max(1),
+        );
+        self.emissive_light_texture = texture;
+        self.emissive_light_view = view;
         self.emissive_light_uniform_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("pt_emissive_light_uniform"),
@@ -2828,6 +2822,61 @@ impl PathTraceCompute {
         (tex, view)
     }
 
+    fn create_emissive_light_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        rows: &[[f32; 4]],
+        light_count: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let width = light_count.max(1);
+        let height = 6;
+        let mut pixels = vec![[0.0f32; 4]; (width * height) as usize];
+        for light_idx in 0..width as usize {
+            for row in 0..height as usize {
+                let src_idx = light_idx * height as usize + row;
+                if let Some(value) = rows.get(src_idx) {
+                    pixels[row * width as usize + light_idx] = *value;
+                }
+            }
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("pt_emissive_lights"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&pixels),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 16),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
     fn update_scene_bounds(&mut self, instances: &[Instance]) {
         if instances.is_empty() {
             self.scene_bounds = None;
@@ -2933,6 +2982,7 @@ impl PathTraceCompute {
     pub fn upload_scene(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         data: &GpuInstanceSceneData,
         instances: Option<&[Instance]>,
     ) {
@@ -2973,7 +3023,7 @@ impl PathTraceCompute {
         self.nodes_buffer = Some(nodes_buffer);
         self.instances_buffer = Some(instances_buffer);
         self.materials_buffer = Some(materials_buffer);
-        self.rebuild_emissive_lights(device, data);
+        self.rebuild_emissive_lights(device, queue, data);
         self.scene_ready = true;
         self.frame_count = 0;
         if let Some(instances) = instances {
@@ -3073,7 +3123,7 @@ impl PathTraceCompute {
         self.nodes_buffer = Some(nodes_buffer);
         self.instances_buffer = Some(instances_buffer);
         self.materials_buffer = Some(materials_buffer);
-        self.rebuild_emissive_lights(device, &gpu_data);
+        self.rebuild_emissive_lights(device, queue, &gpu_data);
         self.scene_ready = true;
         self.frame_count = 0;
         self.rebuild_bind_group(device);
@@ -3182,7 +3232,7 @@ impl PathTraceCompute {
                 },
                 wgpu::BindGroupEntry {
                     binding: 13,
-                    resource: self.emissive_light_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&self.emissive_light_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 14,

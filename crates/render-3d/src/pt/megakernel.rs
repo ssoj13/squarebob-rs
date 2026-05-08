@@ -242,7 +242,12 @@ pub(crate) fn render_path_traced_no_readback(
                 build_instance_gpu_data(&bvh, &pt_instances, &materials)
             };
 
-            pt.upload_scene(&renderer.ctx.device, &gpu_data, Some(&pt_instances));
+            pt.upload_scene(
+                &renderer.ctx.device,
+                &renderer.ctx.queue,
+                &gpu_data,
+                Some(&pt_instances),
+            );
             reset_by_scene = true;
             pt.reset_accumulation();
         }
@@ -768,7 +773,12 @@ pub(crate) fn render_path_traced(
                 gpu_data.instances.len(),
                 gpu_data.materials.len()
             );
-            pt.upload_scene(&renderer.ctx.device, &gpu_data, Some(&pt_instances));
+            pt.upload_scene(
+                &renderer.ctx.device,
+                &renderer.ctx.queue,
+                &gpu_data,
+                Some(&pt_instances),
+            );
             reset_by_scene = true;
             pt.reset_accumulation();
         }

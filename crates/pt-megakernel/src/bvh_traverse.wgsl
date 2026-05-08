@@ -92,7 +92,8 @@ struct EmissiveLight {
     axis_y: vec4<f32>,
     axis_z: vec4<f32>,
     emission_weight: vec4<f32>,
-    meta: vec4<u32>,
+    instance_idx: u32,
+    _pad0: vec3<u32>,
 };
 
 struct EmissiveLightParams {
@@ -128,7 +129,7 @@ struct VarianceData {
 @group(0) @binding(10) var<storage, read> env_conditional_cdf: array<f32>;
 @group(0) @binding(11) var<storage, read> sample_map: array<u32>;
 @group(0) @binding(12) var<storage, read_write> variance: array<VarianceData>;
-@group(0) @binding(13) var<storage, read> emissive_lights: array<EmissiveLight>;
+@group(0) @binding(13) var emissive_lights: texture_2d<f32>;
 @group(0) @binding(14) var<uniform> emissive_light_params: EmissiveLightParams;
 
 const MAX_STACK_DEPTH: u32 = 32u;
@@ -604,19 +605,32 @@ fn pdf_ggx(ndoth: f32, hdotv: f32, alpha: f32) -> f32 {
     return d * ndoth / (4.0 * hdotv + EPSILON);
 }
 
+fn load_emissive_light(idx: u32) -> EmissiveLight {
+    var light: EmissiveLight;
+    let x = i32(idx);
+    light.center_area = textureLoad(emissive_lights, vec2<i32>(x, 0), 0);
+    light.axis_x = textureLoad(emissive_lights, vec2<i32>(x, 1), 0);
+    light.axis_y = textureLoad(emissive_lights, vec2<i32>(x, 2), 0);
+    light.axis_z = textureLoad(emissive_lights, vec2<i32>(x, 3), 0);
+    light.emission_weight = textureLoad(emissive_lights, vec2<i32>(x, 4), 0);
+    light.instance_idx = u32(textureLoad(emissive_lights, vec2<i32>(x, 5), 0).x);
+    light._pad0 = vec3<u32>(0u);
+    return light;
+}
+
 fn sample_emissive_light(rng: ptr<function, u32>) -> EmissiveLightSample {
     let light_count = emissive_light_params.params0.z;
     let total_weight = max(emissive_light_params.params1.y, EPSILON);
-    var target = rand(rng) * total_weight;
-    var selected = emissive_lights[0];
+    var pick_weight = rand(rng) * total_weight;
+    var selected = load_emissive_light(0u);
     for (var i = 0u; i < light_count; i++) {
-        let candidate = emissive_lights[i];
+        let candidate = load_emissive_light(i);
         let weight = max(candidate.emission_weight.w, 0.0);
-        if target <= weight || i == light_count - 1u {
+        if pick_weight <= weight || i == light_count - 1u {
             selected = candidate;
             break;
         }
-        target -= weight;
+        pick_weight -= weight;
     }
 
     let center = selected.center_area.xyz;
@@ -669,8 +683,26 @@ fn sample_emissive_light(rng: ptr<function, u32>) -> EmissiveLightSample {
     result.normal = normal;
     result.emission = selected.emission_weight.xyz;
     result.pdf_area = max(pdf_area, EPSILON);
-    result.instance_idx = selected.meta.x;
+    result.instance_idx = selected.instance_idx;
     return result;
+}
+
+fn emissive_light_pdf_solid(instance_idx: u32, dist2: f32, light_cos: f32) -> f32 {
+    let light_count = emissive_light_params.params0.z;
+    if light_count == 0u || light_cos <= 0.0 {
+        return 0.0;
+    }
+
+    let total_weight = max(emissive_light_params.params1.y, EPSILON);
+    for (var i = 0u; i < light_count; i++) {
+        let light = load_emissive_light(i);
+        if light.instance_idx == instance_idx {
+            let area = max(light.center_area.w, EPSILON);
+            let pdf_area = (light.emission_weight.w / total_weight) / area;
+            return max(pdf_area * dist2 / max(light_cos, EPSILON), EPSILON);
+        }
+    }
+    return 0.0;
 }
 
 // ---- Environment importance sampling ----
@@ -765,7 +797,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var throughput = vec3<f32>(1.0);
     var radiance = vec3<f32>(0.0);
     var transmission_depth = 0u;
-    var allow_hit_emission = true;
+    var last_bsdf_pdf = 0.0;
+    var last_sample_was_transmission = false;
 
     for (var bounce = 0u; bounce <= camera.max_bounces; bounce++) {
         let hit = trace_ray(ray);
@@ -809,11 +842,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         let diffuse_color = (base_color * base_weight + subsurface_color * subsurface_weight) * (1.0 - metallic);
 
-        if emissive_light_params.params0.x == 0u
-            || bounce == 0u
-            || allow_hit_emission
-        {
-            radiance += throughput * emission;
+        if max(max(emission.x, emission.y), emission.z) > 0.0 {
+            var emission_mis = 1.0;
+            if emissive_light_params.params0.x != 0u
+                && bounce > 0u
+                && !last_sample_was_transmission
+                && last_bsdf_pdf > 0.0
+            {
+                let light_cos_hit = max(dot(normal, -ray.dir), 0.0);
+                let light_pdf_hit =
+                    emissive_light_pdf_solid(hit.inst_idx, hit.t * hit.t, light_cos_hit);
+                if light_pdf_hit > 0.0 {
+                    emission_mis = mis_power_heuristic(last_bsdf_pdf, light_pdf_hit);
+                }
+            }
+            radiance += throughput * emission * emission_mis;
         }
 
         // Russian roulette after first bounce
@@ -949,11 +992,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                     let pdf_light_solid =
                         max(light_sample.pdf_area * dist2 / max(light_cos, EPSILON), EPSILON);
+                    let pdf_diffuse_light = pdf_cosine_hemisphere(ndotl);
+                    let pdf_spec_light = pdf_ggx(ndoth_light, hdotv_light, alpha_light);
+                    let spec_prob_light = mix(0.5, 1.0, metallic);
+                    let pdf_bsdf_light = mix(pdf_diffuse_light, pdf_spec_light, spec_prob_light);
+                    let mis_w = mis_power_heuristic(pdf_light_solid, pdf_bsdf_light);
 
                     radiance += throughput
                         * (diffuse_contrib_light + spec_contrib_light)
                         * light_sample.emission
-                        / (pdf_light_solid * f32(light_spp));
+                        * (mis_w / (pdf_light_solid * f32(light_spp)));
                 }
             }
         }
@@ -980,7 +1028,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     throughput *= coat_color * weight / max(coat_reflect_prob, EPSILON);
                     ray.origin = p + normal * 0.001;
                     ray.dir = normalize(reflect_dir);
-                    allow_hit_emission = false;
+                    last_bsdf_pdf = max(coat_reflect_prob, EPSILON)
+                        * pdf_ggx(ndoth, hdotv, coat_alpha);
+                    last_sample_was_transmission = false;
                     continue;
                 }
             }
@@ -1027,7 +1077,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             throughput *= weight / max(p_spec, EPSILON);
             ray.origin = p + normal * 0.001;
             ray.dir = normalize(reflect_dir);
-            allow_hit_emission = false;
+            last_bsdf_pdf = max(p_spec, EPSILON) * pdf_ggx(ndoth, hdotv, alpha);
+            last_sample_was_transmission = false;
         } else if lobe_rand < p_spec + p_trans {
             // Transmission / refraction
             if transmission_depth >= camera.max_transmission_depth {
@@ -1044,14 +1095,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 throughput *= transmission_color_disp / max(p_trans, EPSILON);
                 ray.origin = p + normal * 0.001;
                 ray.dir = normalize(reflect_dir);
-                allow_hit_emission = true;
+                last_bsdf_pdf = 0.0;
+                last_sample_was_transmission = true;
             } else {
                 let cos_t = sqrt(1.0 - sin2_t);
                 let refr_dir = normalize(eta * -v_dir + (eta * cos_i - cos_t) * h_world);
                 throughput *= transmission_color_disp / max(p_trans, EPSILON);
                 ray.origin = p - normal * 0.001;
                 ray.dir = refr_dir;
-                allow_hit_emission = true;
+                last_bsdf_pdf = 0.0;
+                last_sample_was_transmission = true;
             }
         } else {
             // Lambert diffuse
@@ -1063,10 +1116,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let f_diffuse = fresnel_schlick(max(dot(normal, normalize(world_dir)), 0.0), f0);
             let diff_weight = diffuse_color * (1.0 - f_diffuse);
 
-            throughput *= diff_weight / max(1.0 - p_spec - p_trans, EPSILON);
+            let diffuse_prob = max(1.0 - p_spec - p_trans, EPSILON);
+            let diffuse_pdf = pdf_cosine_hemisphere(max(dot(normal, normalize(world_dir)), 0.0));
+            throughput *= diff_weight / diffuse_prob;
             ray.origin = p + normal * 0.001;
             ray.dir = normalize(world_dir);
-            allow_hit_emission = false;
+            last_bsdf_pdf = diffuse_prob * diffuse_pdf;
+            last_sample_was_transmission = false;
         }
     }
 

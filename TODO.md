@@ -8,7 +8,7 @@
   - Suppress duplicate non-transmission BSDF light hits after NEE.
   - Add right-panel controls for enable, samples per hit, and minimum light weight.
 
-- [ ] Full MIS for emissive cube hits
+- [x] Full MIS for emissive cube hits
   - Track previous BSDF PDF and light PDF for emissive-hit weighting.
   - Re-enable weighted BSDF light hits once the PDF bookkeeping is correct.
 
