@@ -86,7 +86,7 @@ pub struct PtCameraUniform {
     pub spectral_mode: u32,       //  4B (0=off,1=hero,2=multi)
     pub spectral_samples: u32,    //  4B
     pub spectral_dispersion: u32, //  4B
-    pub _pad4: u32,               //  4B (align to 16B)
+    pub sampler_mode: u32,        //  4B (0=PCG,1=R2; align to 16B)
 }
 
 const WG_SIZE: u32 = 8;
@@ -382,7 +382,8 @@ struct ReSTIRBindGroups {
     gbuffer_bg_a: wgpu::BindGroup,
     gbuffer_bg_b: wgpu::BindGroup,
     gbuffer_params_buf: wgpu::Buffer,
-    initial_bg: wgpu::BindGroup,
+    initial_bg_a: wgpu::BindGroup,
+    initial_bg_b: wgpu::BindGroup,
     temporal_bg: wgpu::BindGroup,
     spatial_bg: wgpu::BindGroup,
     shade_bg_cur_a: wgpu::BindGroup,
@@ -1626,8 +1627,11 @@ impl PathTraceCompute {
             self.restir_bind_groups = None;
             return;
         };
-        let (Some(instances_buf), Some(materials_buf)) =
-            (&self.instances_buffer, &self.materials_buffer)
+        let (Some(nodes_buf), Some(instances_buf), Some(materials_buf)) = (
+            &self.nodes_buffer,
+            &self.instances_buffer,
+            &self.materials_buffer,
+        )
         else {
             self.restir_bind_groups = None;
             return;
@@ -1826,44 +1830,69 @@ impl PathTraceCompute {
             mapped_at_creation: false,
         });
 
-        let initial_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("restir_initial_bg"),
-            layout: initial_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: hit_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: cur_res.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: initial_params_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.env_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&self.env_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: self.env_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: self.env_marginal_cdf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: self.env_conditional_cdf.as_entire_binding(),
-                },
-            ],
-        });
+        let build_initial_bg = |label: &str, rays: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: initial_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: hit_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: cur_res.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: initial_params_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&self.env_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&self.env_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: self.env_uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: self.env_marginal_cdf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: self.env_conditional_cdf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: rays.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: nodes_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: instances_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: wgpu::BindingResource::TextureView(&self.emissive_light_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: self.emissive_light_uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+
+        let initial_bg_a = build_initial_bg("restir_initial_bg_a", ray_a);
+        let initial_bg_b = build_initial_bg("restir_initial_bg_b", ray_b);
 
         let temporal_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("restir_temporal_bg"),
@@ -1987,7 +2016,8 @@ impl PathTraceCompute {
             gbuffer_bg_a,
             gbuffer_bg_b,
             gbuffer_params_buf,
-            initial_bg,
+            initial_bg_a,
+            initial_bg_b,
             temporal_bg,
             spatial_bg,
             shade_bg_cur_a,
@@ -2482,12 +2512,17 @@ impl PathTraceCompute {
 
                     // Pass 4: ReSTIR initial
                     {
+                        let initial_bg = if cur_set == 0 {
+                            &restir_bgs.initial_bg_a
+                        } else {
+                            &restir_bgs.initial_bg_b
+                        };
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                             label: Some("restir_initial_pass"),
                             timestamp_writes: None,
                         });
                         pass.set_pipeline(initial_pl);
-                        pass.set_bind_group(0, &restir_bgs.initial_bg, &[]);
+                        pass.set_bind_group(0, initial_bg, &[]);
                         pass.dispatch_workgroups(wg_x, wg_y, 1);
                         log::trace!("ReSTIR initial: wg=({}, {})", wg_x, wg_y);
                     }

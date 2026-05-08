@@ -32,7 +32,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var var_val = 0.0;
     if data.count > 1u {
         let v = data.m2 / f32(data.count - 1u);
-        var_val = (v.x + v.y + v.z) / 3.0; // Average luminance variance
+        var_val = dot(max(v, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
     }
 
     let min_spp = min(params.min_spp, params.max_spp);

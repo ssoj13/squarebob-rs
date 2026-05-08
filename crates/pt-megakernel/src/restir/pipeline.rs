@@ -50,6 +50,11 @@ impl ReSTIRPipeline {
             bgl_uniform(5),      // env params
             bgl_storage_ro(6),   // env marginal cdf
             bgl_storage_ro(7),   // env conditional cdf
+            bgl_storage_ro(8),   // rays
+            bgl_storage_ro(9),   // bvh nodes
+            bgl_storage_ro(10),  // instances
+            bgl_texture_2d_unfilterable(11), // emissive light texture
+            bgl_uniform(12),     // emissive light params
         ]);
 
         let (temporal_pipeline, temporal_bgl) = create_pipeline(device, TEMPORAL_WGSL, "temporal", &[
@@ -217,6 +222,19 @@ fn bgl_texture_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn bgl_texture_2d_unfilterable(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
             view_dimension: wgpu::TextureViewDimension::D2,
             multisampled: false,
         },

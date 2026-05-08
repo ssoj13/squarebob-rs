@@ -5,7 +5,7 @@ use crate::app::helpers::{multibutton_exclusive, MultiButtonAxis};
 use crate::app::App;
 use crate::renderer::{
     AdaptivePreset, ColorMode, CubeHeightMode, FolderColorMode, GlassPreset, HashTransformEffect,
-    HoverMode, RenderMode, SpectralMode,
+    HoverMode, PtSamplerMode, RenderMode, SpectralMode,
 };
 use eframe::egui;
 use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode};
@@ -925,6 +925,7 @@ impl App {
                         .on_hover_text("Use HDR CDF importance sampling + MIS for faster env map convergence")
                         .changed()
                     {
+                        pt_changed = true;
                         if let Some(r) = &mut self.renderer_3d {
                             r.mark_pt_scene_dirty();
                         }
@@ -1036,6 +1037,17 @@ impl App {
                         }
                     });
                     ui.end_row();
+
+                    ui.label("Sampler:");
+                    if multibutton_exclusive(
+                        ui,
+                        &mut self.render_3d_opts.pt_sampler_mode,
+                        &[(PtSamplerMode::Pcg, "PCG"), (PtSamplerMode::R2, "R2")],
+                        MultiButtonAxis::Horizontal,
+                    ) {
+                        pt_changed = true;
+                    }
+                    ui.end_row();
                 });
 
             // Progress bar
@@ -1055,6 +1067,14 @@ impl App {
                 } else {
                     format!("{} / {} samples", current, max)
                 }));
+                if self.render_3d_opts.pt_adaptive_sampling {
+                    ui.small(format!(
+                        "Adaptive cap: {} (Max Samples {}, Adaptive Max {})",
+                        max,
+                        self.render_3d_opts.pt_max_samples,
+                        self.render_3d_opts.pt_adaptive_max_spp
+                    ));
+                }
             }
 
             ui.separator();
@@ -1390,6 +1410,10 @@ impl App {
                         ui.label("WF Note:");
                         ui.small("0 = disabled (full frame)");
                         ui.end_row();
+
+                        ui.label("WF Parity:");
+                        ui.small("Emissive NEE/MIS and R2 sampler use megakernel.");
+                        ui.end_row();
                     }
 
                     ui.label("Adaptive Sampling:");
@@ -1438,28 +1462,30 @@ impl App {
                         ui.end_row();
 
                         ui.label("Adaptive Min SPP:");
-                        pt_changed |= ui
+                        let adaptive_min_changed = ui
                             .add(
                                 egui::DragValue::new(&mut self.render_3d_opts.pt_adaptive_min_spp)
                                     .range(32..=1024)
                                     .speed(1),
                             )
                             .changed();
-                        if pt_changed {
+                        if adaptive_min_changed {
                             self.render_3d_opts.pt_adaptive_preset = AdaptivePreset::Custom;
+                            pt_changed = true;
                         }
                         ui.end_row();
 
                         ui.label("Adaptive Max SPP:");
-                        pt_changed |= ui
+                        let adaptive_max_changed = ui
                             .add(
                                 egui::DragValue::new(&mut self.render_3d_opts.pt_adaptive_max_spp)
                                     .range(1..=16384)
                                     .speed(1),
                             )
                             .changed();
-                        if pt_changed {
+                        if adaptive_max_changed {
                             self.render_3d_opts.pt_adaptive_preset = AdaptivePreset::Custom;
+                            pt_changed = true;
                         }
                         ui.end_row();
 
@@ -1471,7 +1497,7 @@ impl App {
                         }
 
                         ui.label("Adaptive Variance:");
-                        pt_changed |= ui
+                        let adaptive_variance_changed = ui
                             .add(
                                 egui::Slider::new(
                                     &mut self.render_3d_opts.pt_adaptive_variance,
@@ -1480,21 +1506,23 @@ impl App {
                                 .logarithmic(true),
                             )
                             .changed();
-                        if pt_changed {
+                        if adaptive_variance_changed {
                             self.render_3d_opts.pt_adaptive_preset = AdaptivePreset::Custom;
+                            pt_changed = true;
                         }
                         ui.end_row();
 
                         ui.label("Adaptive Interval:");
-                        pt_changed |= ui
+                        let adaptive_interval_changed = ui
                             .add(
                                 egui::DragValue::new(&mut self.render_3d_opts.pt_adaptive_interval)
                                     .range(1..=60)
                                     .speed(1),
                             )
                             .changed();
-                        if pt_changed {
+                        if adaptive_interval_changed {
                             self.render_3d_opts.pt_adaptive_preset = AdaptivePreset::Custom;
+                            pt_changed = true;
                         }
                         ui.end_row();
                     }
@@ -1523,6 +1551,10 @@ impl App {
                     ui.end_row();
 
                     if self.render_3d_opts.pt_restir_di || self.render_3d_opts.pt_restir_gi {
+                        ui.label("Scope:");
+                        ui.small("Wavefront only; env + emissive cube candidates.");
+                        ui.end_row();
+
                         ui.label("Temporal Reuse:");
                         pt_changed |= ui
                             .checkbox(&mut self.render_3d_opts.pt_restir_temporal, "")

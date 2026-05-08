@@ -9,6 +9,34 @@ struct Hit {
     hit: u32,
 }
 
+struct BvhNode {
+    aabb_min: vec3<f32>,
+    left_or_first: u32,
+    aabb_max: vec3<f32>,
+    count: u32,
+}
+
+struct Instance {
+    model_inv_0: vec4<f32>,
+    model_inv_1: vec4<f32>,
+    model_inv_2: vec4<f32>,
+    model_inv_3: vec4<f32>,
+    color: vec4<f32>,
+    object_id: u32,
+    material_id: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+struct Ray {
+    origin: vec3<f32>,
+    pixel_id: u32,
+    dir: vec3<f32>,
+    bounce: u32,
+    throughput: vec3<f32>,
+    flags: u32,
+}
+
 struct Sample {
     position: vec3<f32>,
     valid: u32,
@@ -35,6 +63,29 @@ struct Params {
     num_candidates: u32,
 }
 
+struct EmissiveLight {
+    center_area: vec4<f32>,
+    axis_x: vec4<f32>,
+    axis_y: vec4<f32>,
+    axis_z: vec4<f32>,
+    emission_weight: vec4<f32>,
+    instance_idx: u32,
+    _pad0: vec3<u32>,
+}
+
+struct EmissiveLightSample {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    emission: vec3<f32>,
+    pdf_area: f32,
+    instance_idx: u32,
+}
+
+struct EmissiveLightParams {
+    params0: vec4<u32>,
+    params1: vec4<f32>,
+}
+
 @group(0) @binding(0) var<storage, read> hits: array<Hit>;
 @group(0) @binding(1) var<storage, read_write> reservoirs: array<Reservoir>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -43,6 +94,11 @@ struct Params {
 @group(0) @binding(5) var<uniform> env: EnvParams;
 @group(0) @binding(6) var<storage, read> env_marginal_cdf: array<f32>;
 @group(0) @binding(7) var<storage, read> env_conditional_cdf: array<f32>;
+@group(0) @binding(8) var<storage, read> rays: array<Ray>;
+@group(0) @binding(9) var<storage, read> nodes: array<BvhNode>;
+@group(0) @binding(10) var<storage, read> instances: array<Instance>;
+@group(0) @binding(11) var emissive_lights: texture_2d<f32>;
+@group(0) @binding(12) var<uniform> emissive_light_params: EmissiveLightParams;
 
 struct EnvParams {
     intensity: f32,
@@ -79,6 +135,84 @@ fn sample_sphere(seed: ptr<function, u32>) -> vec3<f32> {
 
 const PI: f32 = 3.14159265359;
 const EPS: f32 = 1e-6;
+const T_MAX: f32 = 1e30;
+const MAX_STACK_DEPTH: u32 = 32u;
+
+fn inst_model_inv(inst: Instance) -> mat4x4<f32> {
+    return mat4x4<f32>(
+        inst.model_inv_0,
+        inst.model_inv_1,
+        inst.model_inv_2,
+        inst.model_inv_3,
+    );
+}
+
+fn intersect_unit_cube(ray_o: vec3<f32>, ray_d: vec3<f32>) -> vec2<f32> {
+    let inv_d = 1.0 / ray_d;
+    let t0 = (vec3<f32>(-0.5) - ray_o) * inv_d;
+    let t1 = (vec3<f32>(0.5) - ray_o) * inv_d;
+    let tmin = min(t0, t1);
+    let tmax = max(t0, t1);
+    let t_enter = max(max(tmin.x, tmin.y), tmin.z);
+    let t_exit = min(min(tmax.x, tmax.y), tmax.z);
+    return vec2<f32>(t_enter, t_exit);
+}
+
+fn intersect_instance_shadow(ray: Ray, inst_idx: u32, max_t: f32) -> bool {
+    let inst = instances[inst_idx];
+    let m_inv = inst_model_inv(inst);
+    let o_local = (m_inv * vec4<f32>(ray.origin, 1.0)).xyz;
+    let d_local = (m_inv * vec4<f32>(ray.dir, 0.0)).xyz;
+    let tt = intersect_unit_cube(o_local, d_local);
+    let t_enter = tt.x;
+    let t_exit = tt.y;
+    if t_exit < 0.0 || t_enter > t_exit {
+        return false;
+    }
+    let t_hit = select(t_enter, t_exit, t_enter < EPS);
+    return t_hit > EPS && t_hit < max_t;
+}
+
+fn intersect_aabb(ray: Ray, inv_dir: vec3<f32>, node: BvhNode, t_best: f32) -> bool {
+    let t1 = (node.aabb_min - ray.origin) * inv_dir;
+    let t2 = (node.aabb_max - ray.origin) * inv_dir;
+    let tmin = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
+    let tmax = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
+    return tmax >= max(tmin, 0.0) && tmin < t_best;
+}
+
+fn trace_shadow_ray(ray: Ray, max_t: f32) -> bool {
+    let inv_dir = 1.0 / ray.dir;
+    var stack: array<u32, MAX_STACK_DEPTH>;
+    var sp: u32 = 1u;
+    stack[0] = 0u;
+    var loop_safety = 0u;
+
+    while sp > 0u {
+        loop_safety += 1u;
+        if loop_safety > 4096u { break; }
+
+        sp -= 1u;
+        let node = nodes[stack[sp]];
+        if !intersect_aabb(ray, inv_dir, node, max_t) {
+            continue;
+        }
+
+        if node.count > 0u {
+            for (var i = 0u; i < node.count; i++) {
+                if intersect_instance_shadow(ray, node.left_or_first + i, max_t) {
+                    return true;
+                }
+            }
+        } else if sp + 2u <= MAX_STACK_DEPTH {
+            stack[sp] = node.left_or_first + 1u;
+            sp += 1u;
+            stack[sp] = node.left_or_first;
+            sp += 1u;
+        }
+    }
+    return false;
+}
 
 fn dir_to_equirect_uv(dir: vec3<f32>, rotation: f32) -> vec2<f32> {
     let theta = atan2(dir.z, dir.x);
@@ -199,6 +333,88 @@ fn sample_env_direction(r1: f32, r2: f32) -> vec4<f32> {
     return vec4<f32>(dir, pdf);
 }
 
+fn load_emissive_light(idx: u32) -> EmissiveLight {
+    var light: EmissiveLight;
+    let x = i32(idx);
+    light.center_area = textureLoad(emissive_lights, vec2<i32>(x, 0), 0);
+    light.axis_x = textureLoad(emissive_lights, vec2<i32>(x, 1), 0);
+    light.axis_y = textureLoad(emissive_lights, vec2<i32>(x, 2), 0);
+    light.axis_z = textureLoad(emissive_lights, vec2<i32>(x, 3), 0);
+    light.emission_weight = textureLoad(emissive_lights, vec2<i32>(x, 4), 0);
+    light.instance_idx = u32(textureLoad(emissive_lights, vec2<i32>(x, 5), 0).x);
+    light._pad0 = vec3<u32>(0u);
+    return light;
+}
+
+fn sample_emissive_light(seed: ptr<function, u32>) -> EmissiveLightSample {
+    let light_count = emissive_light_params.params0.z;
+    let total_weight = max(emissive_light_params.params1.y, EPS);
+    var pick_weight = rand(seed) * total_weight;
+    var selected = load_emissive_light(0u);
+    for (var i = 0u; i < light_count; i++) {
+        let candidate = load_emissive_light(i);
+        let weight = max(candidate.emission_weight.w, 0.0);
+        if pick_weight <= weight || i == light_count - 1u {
+            selected = candidate;
+            break;
+        }
+        pick_weight -= weight;
+    }
+
+    let center = selected.center_area.xyz;
+    let axis_x = selected.axis_x.xyz;
+    let axis_y = selected.axis_y.xyz;
+    let axis_z = selected.axis_z.xyz;
+    let len_x = length(axis_x);
+    let len_y = length(axis_y);
+    let len_z = length(axis_z);
+    let area_yz = len_y * len_z;
+    let area_xz = len_x * len_z;
+    let area_xy = len_x * len_y;
+    let total_area = max(selected.center_area.w, EPS);
+
+    let face_xi = rand(seed) * total_area;
+    let u = rand(seed) - 0.5;
+    let v = rand(seed) - 0.5;
+    var position = center;
+    var normal = vec3<f32>(0.0, 1.0, 0.0);
+
+    let nx = normalize(cross(axis_y, axis_z));
+    let ny = normalize(cross(axis_z, axis_x));
+    let nz = normalize(cross(axis_x, axis_y));
+
+    if face_xi < area_yz {
+        position = center + axis_x * 0.5 + axis_y * u + axis_z * v;
+        normal = nx;
+    } else if face_xi < area_yz * 2.0 {
+        position = center - axis_x * 0.5 + axis_y * u + axis_z * v;
+        normal = -nx;
+    } else if face_xi < area_yz * 2.0 + area_xz {
+        position = center + axis_y * 0.5 + axis_x * u + axis_z * v;
+        normal = ny;
+    } else if face_xi < area_yz * 2.0 + area_xz * 2.0 {
+        position = center - axis_y * 0.5 + axis_x * u + axis_z * v;
+        normal = -ny;
+    } else if face_xi < area_yz * 2.0 + area_xz * 2.0 + area_xy {
+        position = center + axis_z * 0.5 + axis_x * u + axis_y * v;
+        normal = nz;
+    } else {
+        position = center - axis_z * 0.5 + axis_x * u + axis_y * v;
+        normal = -nz;
+    }
+
+    let light_pick_pdf = selected.emission_weight.w / total_weight;
+    let pdf_area = light_pick_pdf / total_area;
+
+    var result: EmissiveLightSample;
+    result.position = position;
+    result.normal = normal;
+    result.emission = selected.emission_weight.xyz;
+    result.pdf_area = max(pdf_area, EPS);
+    result.instance_idx = selected.instance_idx;
+    return result;
+}
+
 // Update reservoir with new sample
 fn update_reservoir(r: ptr<function, Reservoir>, s: Sample, w: f32, seed: ptr<function, u32>) {
     (*r).w_sum += w;
@@ -228,32 +444,88 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     var seed = pixel_id ^ (params.frame_count * 1973u);
+    let ray = rays[pixel_id];
+    let surface_p = ray.origin + ray.dir * hit.t;
+    let surface_n = normalize(hit.normal);
+    let emissive_available =
+        emissive_light_params.params0.x != 0u && emissive_light_params.params0.z > 0u;
+    let env_available = env.enabled > 0.5;
 
     // Generate candidates
     for (var i = 0u; i < params.num_candidates; i++) {
         var wi: vec3<f32>;
         var pdf: f32;
-        if env.enabled > 0.5 && env.use_importance_sampling > 0.5 {
+        var radiance: vec3<f32>;
+        var sample_position = vec3<f32>(0.0);
+        var sample_normal = vec3<f32>(0.0);
+        var light_type = 0u;
+
+        let both_sources = emissive_available && env_available;
+        let choose_emissive = emissive_available && (!env_available || rand(&seed) < 0.5);
+        let source_pdf_scale = select(1.0, 0.5, both_sources);
+
+        if choose_emissive {
+            let light_sample = sample_emissive_light(&seed);
+            if light_sample.instance_idx == hit.instance_id {
+                continue;
+            }
+
+            let to_light = light_sample.position - surface_p;
+            let dist2 = dot(to_light, to_light);
+            if dist2 <= EPS {
+                continue;
+            }
+
+            let dist = sqrt(dist2);
+            wi = to_light / dist;
+            let cos_theta = dot(wi, surface_n);
+            let light_cos = dot(light_sample.normal, -wi);
+            if cos_theta <= 0.0 || light_cos <= 0.0 {
+                continue;
+            }
+
+            var shadow_ray = Ray(
+                surface_p + surface_n * 0.001,
+                ray.pixel_id,
+                wi,
+                ray.bounce,
+                ray.throughput,
+                ray.flags
+            );
+            if trace_shadow_ray(shadow_ray, max(dist - 0.002, EPS)) {
+                continue;
+            }
+
+            pdf = max(light_sample.pdf_area * dist2 / max(light_cos, EPS), EPS) * source_pdf_scale;
+            radiance = light_sample.emission;
+            sample_position = light_sample.position;
+            sample_normal = light_sample.normal;
+            light_type = 1u;
+        } else if env.enabled > 0.5 && env.use_importance_sampling > 0.5 {
             let env_sample = sample_env_direction(rand(&seed), rand(&seed));
             wi = env_sample.xyz;
-            pdf = env_sample.w;
+            pdf = env_sample.w * source_pdf_scale;
+            radiance = sky_color(wi);
+            sample_position = surface_p + wi * 1e10;
+            sample_normal = -wi;
         } else {
             wi = sample_sphere(&seed);
-            pdf = 0.07957747; // 1/(4*pi)
+            pdf = 0.07957747 * source_pdf_scale; // 1/(4*pi)
+            radiance = sky_color(wi);
+            sample_position = surface_p + wi * 1e10;
+            sample_normal = -wi;
         }
 
-        let cos_theta = max(dot(wi, hit.normal), 0.0);
+        let cos_theta = max(dot(wi, surface_n), 0.0);
         if cos_theta > 0.0 {
-            let radiance = sky_color(wi);
-
             var sample: Sample;
-            sample.position = vec3<f32>(0.0); // At infinity
+            sample.position = sample_position;
             sample.valid = 1u;
             sample.wi = wi;
-            sample.light_type = 0u; // Environment
+            sample.light_type = light_type;
             sample.radiance = radiance;
-            sample.dist = 1e10;
-            sample.normal = -wi;
+            sample.dist = distance(sample_position, surface_p);
+            sample.normal = sample_normal;
 
             // Target function: radiance * cos_theta
             let target_val = max(dot(radiance, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0) * cos_theta;
@@ -265,7 +537,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Compute final weight
     if reservoir.m > 0u && reservoir.w_sum > 0.0 {
         let target_val = max(dot(reservoir.sample.radiance, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0) *
-            max(dot(reservoir.sample.wi, hit.normal), 0.0);
+            max(dot(reservoir.sample.wi, surface_n), 0.0);
         if target_val > 0.0 {
             reservoir.w = reservoir.w_sum / (f32(reservoir.m) * target_val);
         }

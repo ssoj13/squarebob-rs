@@ -60,7 +60,7 @@ struct Camera {
     spectral_mode: u32,
     spectral_samples: u32,
     spectral_dispersion: u32,
-    _pad4: u32,
+    sampler_mode: u32,
 };
 
 struct Ray {
@@ -153,6 +153,22 @@ fn pcg_hash(input: u32) -> u32 {
 fn rand(state: ptr<function, u32>) -> f32 {
     *state = pcg_hash(*state);
     return f32(*state) / 4294967296.0;
+}
+
+fn hash01(input: u32) -> f32 {
+    return f32(pcg_hash(input)) / 4294967296.0;
+}
+
+fn sample_pixel_jitter(pixel_idx: u32, frame_count: u32, rng: ptr<function, u32>) -> vec2<f32> {
+    if camera.sampler_mode == 1u {
+        let n = f32(frame_count + 1u);
+        let scramble = vec2<f32>(
+            hash01(pixel_idx ^ 0x9E3779B9u),
+            hash01(pixel_idx ^ 0xBB67AE85u)
+        );
+        return fract(scramble + n * vec2<f32>(0.754877666, 0.569840296));
+    }
+    return vec2<f32>(rand(rng), rand(rng));
 }
 
 // ---- Instance helpers ----
@@ -605,6 +621,14 @@ fn pdf_ggx(ndoth: f32, hdotv: f32, alpha: f32) -> f32 {
     return d * ndoth / (4.0 * hdotv + EPSILON);
 }
 
+fn clamp_firefly(color: vec3<f32>) -> vec3<f32> {
+    let c = max(color, vec3<f32>(0.0));
+    let lum = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let max_lum = 1000.0;
+    let scale = select(1.0, max_lum / max(lum, EPSILON), lum > max_lum);
+    return c * scale;
+}
+
 fn load_emissive_light(idx: u32) -> EmissiveLight {
     var light: EmissiveLight;
     let x = i32(idx);
@@ -790,9 +814,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     var rng = pcg_hash(pixel_idx * 1973u + camera.frame_count * 6133u + 1u);
 
-    let jx = rand(&rng);
-    let jy = rand(&rng);
-    var ray = gen_ray(f32(px.x), f32(px.y), vec2<f32>(f32(w), f32(h)), jx, jy, &rng);
+    let pixel_jitter = sample_pixel_jitter(pixel_idx, camera.frame_count, &rng);
+    var ray = gen_ray(
+        f32(px.x),
+        f32(px.y),
+        vec2<f32>(f32(w), f32(h)),
+        pixel_jitter.x,
+        pixel_jitter.y,
+        &rng
+    );
 
     var throughput = vec3<f32>(1.0);
     var radiance = vec3<f32>(0.0);
@@ -871,6 +901,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let v_dir = -ray.dir;
         let ndotv = max(dot(normal, v_dir), EPSILON);
         let basis = onb_from_normal(normal);
+        let f0_dielectric = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
+        let f0 = mix(f0_dielectric * spec_color, base_color, metallic);
+        let alpha = roughness * roughness;
+        let fresnel_estimate = fresnel_schlick(ndotv, f0);
+        let fresnel_avg = (fresnel_estimate.x + fresnel_estimate.y + fresnel_estimate.z) / 3.0;
+        let w_spec = spec_weight * fresnel_avg;
+        let w_trans = transmission_weight * (1.0 - fresnel_avg);
+        let w_diff = base_weight * (1.0 - metallic) * (1.0 - fresnel_avg);
+        let w_total = w_spec + w_trans + w_diff + EPSILON;
+        let p_spec = w_spec / w_total;
+        let p_trans = w_trans / w_total;
+        let p_diff = max(1.0 - p_spec - p_trans, EPSILON);
+        let ior_r = ior * (1.0 + dispersion * 0.15);
+        let ior_g = ior;
+        let ior_b = ior * (1.0 - dispersion * 0.15);
+        let trans_tint = vec3<f32>(ior_r, ior_g, ior_b) / max(ior, EPSILON);
+        let transmission_color_disp = transmission_color * trans_tint;
 
         // NEE: direct sun light (opaque surfaces)
         if env.enabled < 0.5 {
@@ -883,9 +930,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 shadow_ray.dir = sun_dir_sample;
 
                 if !trace_shadow_ray(shadow_ray, T_MAX) {
-                    let f0_dielectric = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
-                    let f0_nee = mix(f0_dielectric * spec_color, base_color, metallic);
-                    let f_sun = fresnel_schlick(ndotl_sun, f0_nee);
+                    let f_sun = fresnel_schlick(ndotl_sun, f0);
                     let diffuse_contrib = diffuse_color * (1.0 - f_sun) * ndotl_sun / PI;
 
                     let alpha = roughness * roughness;
@@ -894,7 +939,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     let hdotv_sun = max(dot(h_sun, v_dir), EPSILON);
                     let d_sun = ggx_d(ndoth_sun, alpha);
                     let g_sun = smith_g1(ndotv, alpha) * smith_g1(ndotl_sun, alpha);
-                    let f_spec_sun = fresnel_schlick(hdotv_sun, f0_nee);
+                    let f_spec_sun = fresnel_schlick(hdotv_sun, f0);
                     let spec_contrib = spec_weight * f_spec_sun * d_sun * g_sun / (4.0 * ndotv * ndotl_sun + EPSILON);
 
                     radiance += throughput * (diffuse_contrib + spec_contrib) * SUN_COLOR * SUN_INTENSITY;
@@ -916,24 +961,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                 if !trace_shadow_ray(shadow_ray, T_MAX) {
                     let env_radiance = sky_color(env_dir);
-                    let f0_dielectric = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
-                    let f0_env = mix(f0_dielectric * spec_color, base_color, metallic);
-                    let f_env = fresnel_schlick(ndotl_env, f0_env);
+                    let f_env = fresnel_schlick(ndotl_env, f0);
                     let diffuse_contrib_env = diffuse_color * (1.0 - f_env) * ndotl_env / PI;
 
-                    let alpha_env = roughness * roughness;
                     let h_env = normalize(v_dir + env_dir);
                     let ndoth_env = max(dot(normal, h_env), EPSILON);
                     let hdotv_env = max(dot(h_env, v_dir), EPSILON);
-                    let d_env = ggx_d(ndoth_env, alpha_env);
-                    let g_env = smith_g1(ndotv, alpha_env) * smith_g1(ndotl_env, alpha_env);
-                    let f_spec_env = fresnel_schlick(hdotv_env, f0_env);
+                    let d_env = ggx_d(ndoth_env, alpha);
+                    let g_env = smith_g1(ndotv, alpha) * smith_g1(ndotl_env, alpha);
+                    let f_spec_env = fresnel_schlick(hdotv_env, f0);
                     let spec_contrib_env = spec_weight * f_spec_env * d_env * g_env / (4.0 * ndotv * ndotl_env + EPSILON);
 
                     let pdf_diffuse_env = pdf_cosine_hemisphere(ndotl_env);
-                    let pdf_spec_env = pdf_ggx(ndoth_env, hdotv_env, alpha_env);
-                    let spec_prob_env = mix(0.5, 1.0, metallic);
-                    let pdf_bsdf_env = mix(pdf_diffuse_env, pdf_spec_env, spec_prob_env);
+                    let pdf_spec_env = pdf_ggx(ndoth_env, hdotv_env, alpha);
+                    let pdf_bsdf_env = p_diff * pdf_diffuse_env + p_spec * pdf_spec_env;
 
                     let mis_w = mis_power_heuristic(env_pdf, pdf_bsdf_env);
                     let env_contrib = (diffuse_contrib_env + spec_contrib_env) * env_radiance * mis_w / max(env_pdf, EPSILON);
@@ -974,18 +1015,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 shadow_ray.dir = light_dir;
 
                 if !trace_shadow_ray(shadow_ray, max(dist - 0.002, EPSILON)) {
-                    let f0_dielectric_light = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
-                    let f0_light = mix(f0_dielectric_light * spec_color, base_color, metallic);
-                    let f_light = fresnel_schlick(ndotl, f0_light);
+                    let f_light = fresnel_schlick(ndotl, f0);
                     let diffuse_contrib_light = diffuse_color * (1.0 - f_light) * ndotl / PI;
 
-                    let alpha_light = roughness * roughness;
                     let h_light = normalize(v_dir + light_dir);
                     let ndoth_light = max(dot(normal, h_light), EPSILON);
                     let hdotv_light = max(dot(h_light, v_dir), EPSILON);
-                    let d_light = ggx_d(ndoth_light, alpha_light);
-                    let g_light = smith_g1(ndotv, alpha_light) * smith_g1(ndotl, alpha_light);
-                    let f_spec_light = fresnel_schlick(hdotv_light, f0_light);
+                    let d_light = ggx_d(ndoth_light, alpha);
+                    let g_light = smith_g1(ndotv, alpha) * smith_g1(ndotl, alpha);
+                    let f_spec_light = fresnel_schlick(hdotv_light, f0);
                     let spec_contrib_light =
                         spec_weight * f_spec_light * d_light * g_light * ndotl
                         / (4.0 * ndotv * ndotl + EPSILON);
@@ -993,9 +1031,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     let pdf_light_solid =
                         max(light_sample.pdf_area * dist2 / max(light_cos, EPSILON), EPSILON);
                     let pdf_diffuse_light = pdf_cosine_hemisphere(ndotl);
-                    let pdf_spec_light = pdf_ggx(ndoth_light, hdotv_light, alpha_light);
-                    let spec_prob_light = mix(0.5, 1.0, metallic);
-                    let pdf_bsdf_light = mix(pdf_diffuse_light, pdf_spec_light, spec_prob_light);
+                    let pdf_spec_light = pdf_ggx(ndoth_light, hdotv_light, alpha);
+                    let pdf_bsdf_light = p_diff * pdf_diffuse_light + p_spec * pdf_spec_light;
                     let mis_w = mis_power_heuristic(pdf_light_solid, pdf_bsdf_light);
 
                     radiance += throughput
@@ -1038,23 +1075,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
 
         // Specular vs Transmission vs Diffuse sampling
-        let f0_dielectric = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
-        let f0 = mix(f0_dielectric * spec_color, base_color, metallic);
-        let alpha = roughness * roughness;
-
-        let fresnel_estimate = fresnel_schlick(ndotv, f0);
-        let fresnel_avg = (fresnel_estimate.x + fresnel_estimate.y + fresnel_estimate.z) / 3.0;
-        let w_spec = spec_weight * fresnel_avg;
-        let w_trans = transmission_weight * (1.0 - fresnel_avg);
-        let ior_r = ior * (1.0 + dispersion * 0.15);
-        let ior_g = ior;
-        let ior_b = ior * (1.0 - dispersion * 0.15);
-        let trans_tint = vec3<f32>(ior_r, ior_g, ior_b) / max(ior, EPSILON);
-        let transmission_color_disp = transmission_color * trans_tint;
-        let w_diff = base_weight * (1.0 - metallic) * (1.0 - fresnel_avg);
-        let w_total = w_spec + w_trans + w_diff + EPSILON;
-        let p_spec = w_spec / w_total;
-        let p_trans = w_trans / w_total;
         let lobe_rand = rand(&rng);
 
         if lobe_rand < p_spec {
@@ -1116,12 +1136,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let f_diffuse = fresnel_schlick(max(dot(normal, normalize(world_dir)), 0.0), f0);
             let diff_weight = diffuse_color * (1.0 - f_diffuse);
 
-            let diffuse_prob = max(1.0 - p_spec - p_trans, EPSILON);
             let diffuse_pdf = pdf_cosine_hemisphere(max(dot(normal, normalize(world_dir)), 0.0));
-            throughput *= diff_weight / diffuse_prob;
+            throughput *= diff_weight / p_diff;
             ray.origin = p + normal * 0.001;
             ray.dir = normalize(world_dir);
-            last_bsdf_pdf = diffuse_prob * diffuse_pdf;
+            last_bsdf_pdf = p_diff * diffuse_pdf;
             last_sample_was_transmission = false;
         }
     }
@@ -1139,7 +1158,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Progressive accumulation (running sum approach).
     // Clamp the incoming sample, not the running sum. Clamping accum.rgb would
     // bias the average downward as sample_count grows.
-    let sample_radiance = clamp(radiance, vec3<f32>(0.0), vec3<f32>(1000.0));
+    let sample_radiance = clamp_firefly(radiance);
 
     // Add current sample to accumulator: rgb = sum of radiance, w = sample count
     let prev = accum[pixel_idx];

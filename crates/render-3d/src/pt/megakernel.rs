@@ -301,7 +301,7 @@ pub(crate) fn render_path_traced_no_readback(
         spectral_mode: opts.pt_spectral_mode as u32,
         spectral_samples: opts.pt_spectral_samples.max(1),
         spectral_dispersion: if opts.pt_spectral_dispersion { 1 } else { 0 },
-        _pad4: 0,
+        sampler_mode: opts.pt_sampler_mode as u32,
     };
 
     let cam_pos = pos.to_array();
@@ -841,7 +841,7 @@ pub(crate) fn render_path_traced(
         spectral_mode: opts.pt_spectral_mode as u32,
         spectral_samples: opts.pt_spectral_samples.max(1),
         spectral_dispersion: if opts.pt_spectral_dispersion { 1 } else { 0 },
-        _pad4: 0,
+        sampler_mode: opts.pt_sampler_mode as u32,
     };
     // Update ReSTIR gbuffer camera matrices and detect camera movement.
     let cam_pos = pos.to_array();

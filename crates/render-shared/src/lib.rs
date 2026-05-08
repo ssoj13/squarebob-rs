@@ -163,6 +163,25 @@ impl AdaptivePreset {
     }
 }
 
+/// Path tracing pixel sampler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PtSamplerMode {
+    /// Per-sample PCG random numbers.
+    #[default]
+    Pcg,
+    /// R2 low-discrepancy pixel jitter with per-pixel scrambling.
+    R2,
+}
+
+impl PtSamplerMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            PtSamplerMode::Pcg => "PCG",
+            PtSamplerMode::R2 => "R2",
+        }
+    }
+}
+
 /// Spectral rendering mode (PT only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SpectralMode {
@@ -576,6 +595,8 @@ pub struct Render3DOptions {
     pub pt_aperture: f32,
     pub pt_focus_distance: f32,
     pub pt_env_importance_sampling: bool,
+    #[serde(default)]
+    pub pt_sampler_mode: PtSamplerMode,
     #[serde(default = "default_true")]
     pub pt_emissive_sampling: bool,
     #[serde(default = "default_emissive_samples")]
@@ -828,6 +849,7 @@ impl Default for Render3DOptions {
             pt_aperture: 2.0,
             pt_focus_distance: 500.0,
             pt_env_importance_sampling: true,
+            pt_sampler_mode: PtSamplerMode::default(),
             pt_emissive_sampling: true,
             pt_emissive_samples: default_emissive_samples(),
             pt_emissive_min_weight: default_emissive_min_weight(),
@@ -879,7 +901,7 @@ impl Default for Render3DOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::Render3DOptions;
+    use super::{PtSamplerMode, Render3DOptions};
 
     #[test]
     fn render_3d_options_deserialize_defaults() {
@@ -892,6 +914,7 @@ mod tests {
         assert_eq!(opts.pt_spectral_mode, defaults.pt_spectral_mode);
         assert_eq!(opts.pt_spectral_samples, defaults.pt_spectral_samples);
         assert_eq!(opts.pt_spectral_dispersion, defaults.pt_spectral_dispersion);
+        assert_eq!(opts.pt_sampler_mode, defaults.pt_sampler_mode);
     }
 
     #[test]
@@ -915,6 +938,25 @@ mod tests {
         assert!(restored.mat_allow_glass);
         assert_eq!(restored.mat_glass_count, 2857);
         assert_eq!(restored.mat_glass_prob, 0.0952);
+    }
+
+    #[test]
+    fn render_3d_pt_sampler_roundtrip() {
+        let opts = Render3DOptions {
+            pt_sampler_mode: PtSamplerMode::R2,
+            pt_emissive_sampling: true,
+            pt_emissive_samples: 4,
+            pt_emissive_min_weight: 0.01,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&opts).expect("serialize");
+        let restored: Render3DOptions = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.pt_sampler_mode, PtSamplerMode::R2);
+        assert!(restored.pt_emissive_sampling);
+        assert_eq!(restored.pt_emissive_samples, 4);
+        assert_eq!(restored.pt_emissive_min_weight, 0.01);
     }
 }
 

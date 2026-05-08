@@ -213,9 +213,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let roughness = max(mat.params1.z, 0.04);
     let ior = mat.params1.w;
 
-    let v_dir_raw = params.camera_pos - reservoir.sample.position;
-    let v_len = length(v_dir_raw);
-    let v_dir = select(-wi, v_dir_raw / max(v_len, EPS), v_len > EPS);
+    let ray = rays[pixel_id];
+    let surface_p = ray.origin + ray.dir * hit.t;
+    let v_dir = normalize(params.camera_pos - surface_p);
     let ndotv = max(dot(normal, v_dir), EPS);
 
     let h = normalize(v_dir + wi);
