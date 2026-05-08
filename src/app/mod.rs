@@ -112,6 +112,18 @@ impl App {
             }
         }
 
+        if !app.scan_path.is_empty() && !PathBuf::from(&app.scan_path).exists() {
+            log::warn!(
+                "Persisted scan path does not exist ({}), resetting to default",
+                app.scan_path
+            );
+            app.scan_path = if cfg!(windows) {
+                "C:\\".to_string()
+            } else {
+                "/".to_string()
+            };
+        }
+
         // CLI overrides for mode/backend
         if let Some(mode) = cli.mode {
             app.render_mode = mode;
