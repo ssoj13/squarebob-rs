@@ -571,11 +571,18 @@ impl App {
             }
         }
 
-        // TODO: Zero-copy rendering requires using eframe's device for all rendering
-        // For now, this is disabled because textures can't be shared between devices
-        // if self.render_mode == RenderMode::Mode3D && self.wgpu_render_state.is_some() { ... }
-
-        // Legacy path with CPU readback
+        // CPU-readback fallback path. The zero-copy path lives in
+        // `treemap_view::render_3d_callback` (Mode3D) and
+        // `treemap_view::render_2d_callback` (Mode2D + Backend::Gpu) and
+        // is selected via `use_callback` in `ui_treemap_pane` whenever the
+        // GpuContext was constructed from eframe's device. This function
+        // is reached when:
+        //   - render_mode == Mode2D + Backend::Cpu (CPU rasteriser), or
+        //   - eframe's device lacks POLYGON_MODE_LINE so gpu_context falls
+        //     back to a standalone wgpu device whose textures egui can't
+        //     sample, or
+        //   - the caller is `capture_viewport` for screenshots, which
+        //     always wants pixels in CPU memory.
         let pixels = match self.render_mode {
             RenderMode::Mode2D => match self.render_backend {
                 RenderBackend::Cpu => {
@@ -604,10 +611,10 @@ impl App {
                 }
             },
             RenderMode::Mode3D => {
-                // TODO: Zero-copy path disabled - needs double-buffering to avoid blocking
-                // Currently causes "Not Responding" due to GPU sync issues
-
-                // Legacy CPU readback path (slower but stable)
+                // CPU-readback fallback (the zero-copy 3D path is in
+                // treemap_view::render_3d_callback). This branch is hit
+                // for screenshot capture or when the GpuContext is on a
+                // foreign device (no POLYGON_MODE_LINE on eframe's device).
                 let mut renderer_3d = self.renderer_3d.take();
                 let pixels = if let Some(r) = &mut renderer_3d {
                     let Some(root) = self.display_root() else {

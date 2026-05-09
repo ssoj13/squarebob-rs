@@ -5,7 +5,8 @@ use eframe::egui;
 use std::sync::atomic::Ordering;
 
 use crate::events::{NavigateUpEvent, SelectPathEvent};
-use crate::renderer::RenderMode;
+use crate::renderer::{RenderBackend, RenderMode};
+use treemap::GpuRenderer2D;
 
 use super::App;
 // Zero-copy callback disabled - using register_native_texture instead
@@ -25,14 +26,21 @@ impl App {
             let w = available.x.max(1.0) as u32;
             let h = available.y.max(1.0) as u32;
 
-            // Zero-copy rendering for 3D mode (uses egui's wgpu device)
-            let use_callback = self.render_mode == RenderMode::Mode3D
-                && self.wgpu_render_state.is_some()
-                && self.gpu_context.is_some();
+            // Zero-copy rendering paths (use eframe's wgpu device so egui
+            // can sample the texture without a CPU readback round-trip).
+            // Both 3D and 2D-GPU benefit; 2D-CPU remains the legacy path.
+            let use_callback = self.wgpu_render_state.is_some()
+                && self.gpu_context.is_some()
+                && (self.render_mode == RenderMode::Mode3D
+                    || (self.render_mode == RenderMode::Mode2D
+                        && self.render_backend == RenderBackend::Gpu));
 
             if use_callback {
-                // Zero-copy 3D rendering via register_native_texture
-                self.render_3d_callback(ui, w, h);
+                if self.render_mode == RenderMode::Mode3D {
+                    self.render_3d_callback(ui, w, h);
+                } else {
+                    self.render_2d_callback(ui, w, h);
+                }
             } else {
                 // Legacy path: render to texture, then display
                 if self.needs_layout
@@ -1115,6 +1123,95 @@ impl App {
         if self.render_3d_opts.path_tracing && !pt_throttled {
             // PT: repaint continuously only when not throttled
             ctx.request_repaint();
+        }
+    }
+
+    /// Zero-copy 2D treemap rendering via register_native_texture.
+    /// Mirrors `render_3d_callback` for the 2D-GPU path. Only runs when
+    /// the renderer's `GpuContext` was constructed from eframe's device
+    /// (so the rendered texture can be sampled by egui directly without
+    /// a CPU readback round-trip).
+    ///
+    /// Architecture note: the same `render_texture_id` field on App is
+    /// reused for whichever mode is currently rendering (3D, 2D-GPU,
+    /// or — when it lands — the PT denoiser output). Mode/backend
+    /// switches clear this field so a stale TextureId doesn't display.
+    fn render_2d_callback(&mut self, ui: &mut egui::Ui, w: u32, h: u32) {
+        let ctx = ui.ctx().clone();
+
+        // Lazy-init the GPU 2D renderer with the (eframe-backed) GpuContext.
+        if self.renderer_2d_gpu.is_none() {
+            if let Some(gpu_ctx) = &self.gpu_context {
+                self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
+            }
+        }
+
+        let size_changed = self.last_render_size != (w, h);
+        let need_render =
+            self.needs_layout || size_changed || self.render_texture_id.is_none();
+
+        if need_render {
+            self.viewport.width = w;
+            self.viewport.height = h;
+            let render_state = self.wgpu_render_state.as_ref().unwrap();
+
+            // Render into the renderer's internal texture (no readback).
+            let mut renderer = self.renderer_2d_gpu.take();
+            let drew = if let Some(r) = &mut renderer {
+                let Some(root) = self.display_root() else {
+                    self.renderer_2d_gpu = renderer;
+                    return;
+                };
+                r.render_to_texture(root, &self.viewport, &self.opts)
+            } else {
+                false
+            };
+
+            // Register the texture with egui, or update the binding on resize.
+            if drew {
+                if let Some(r) = &renderer {
+                    if let Some(texture) = r.get_render_texture() {
+                        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                        let mut egui_renderer = render_state.renderer.write();
+                        if let Some(tex_id) = self.render_texture_id {
+                            if size_changed {
+                                egui_renderer.update_egui_texture_from_wgpu_texture(
+                                    &render_state.device,
+                                    &view,
+                                    wgpu::FilterMode::Linear,
+                                    tex_id,
+                                );
+                            }
+                        } else {
+                            self.render_texture_id =
+                                Some(egui_renderer.register_native_texture(
+                                    &render_state.device,
+                                    &view,
+                                    wgpu::FilterMode::Linear,
+                                ));
+                        }
+                    }
+                }
+            }
+            self.renderer_2d_gpu = renderer;
+
+            self.last_render_size = (w, h);
+            self.needs_layout = false;
+        }
+
+        // Display the texture + 2D interactions
+        if let Some(id) = self.render_texture_id {
+            let img_resp = ui.image(egui::load::SizedTexture::new(
+                id,
+                egui::vec2(w as f32, h as f32),
+            ));
+            let resp = img_resp.interact(
+                egui::Sense::click()
+                    .union(egui::Sense::hover())
+                    .union(egui::Sense::drag()),
+            );
+            self.handle_2d_interactions(ui, &resp, &ctx);
+            self.handle_context_menu(&ctx);
         }
     }
 }

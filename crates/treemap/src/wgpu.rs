@@ -230,6 +230,15 @@ impl GpuRenderer2D {
         self.current_size = (0, 0);
     }
 
+    /// Borrow the current render-target texture, if one has been created.
+    /// Used by the zero-copy display path to register the texture with egui
+    /// (`register_native_texture` / `update_egui_texture_from_wgpu_texture`)
+    /// when the renderer's GpuContext was constructed from eframe's device.
+    /// Returns None before the first `render()` call.
+    pub fn get_render_texture(&self) -> Option<&wgpu::Texture> {
+        self.render_texture.as_ref()
+    }
+
     pub fn new(ctx: Arc<GpuContext>) -> Self {
         let device = &ctx.device;
 
@@ -335,6 +344,10 @@ impl GpuRenderer2D {
             return;
         }
 
+        // TEXTURE_BINDING is required for zero-copy display via egui's
+        // `register_native_texture` / `update_egui_texture_from_wgpu_texture`.
+        // COPY_SRC is kept so the legacy CPU-readback path (when running on
+        // a separate gpu_context, not eframe's device) still works.
         let render_texture = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("2D Render Texture"),
             size: wgpu::Extent3d {
@@ -346,7 +359,9 @@ impl GpuRenderer2D {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
 
@@ -437,18 +452,25 @@ impl GpuRenderer2D {
         }
     }
 
-    /// Render the 2D treemap to a pixel buffer
-    pub fn render(
+    /// Render the 2D treemap into the internal `render_texture` (no
+    /// CPU readback). Returns `true` if anything was drawn, `false` if
+    /// the viewport is degenerate or the tree produced no rectangles.
+    /// The texture can then be sampled by egui (zero-copy display) via
+    /// `get_render_texture()` + `register_native_texture` —
+    /// **only** when this renderer's `GpuContext` was built from
+    /// eframe's device, otherwise the texture lives on a foreign device
+    /// and you must use `render()` (which copies back to CPU).
+    pub fn render_to_texture(
         &mut self,
         root: &DirEntry,
         viewport: &Viewport,
         opts: &TreeMapOptions,
-    ) -> Vec<u8> {
+    ) -> bool {
         let width = viewport.width;
         let height = viewport.height;
 
         if width == 0 || height == 0 {
-            return vec![];
+            return false;
         }
 
         // Ensure any previous GPU work is complete
@@ -474,7 +496,39 @@ impl GpuRenderer2D {
         self.instance_count = rects.len() as u32;
 
         if rects.is_empty() {
-            return vec![30; (width * height * 4) as usize];
+            // Clear-only pass so the texture isn't stale when the tree is empty.
+            let mut encoder =
+                self.ctx
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("2D Clear Encoder"),
+                    });
+            {
+                let render_view = self.render_view.as_ref().unwrap();
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("2D Clear Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: render_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 30.0 / 255.0,
+                                g: 30.0 / 255.0,
+                                b: 30.0 / 255.0,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            }
+            self.ctx.queue.submit(std::iter::once(encoder.finish()));
+            return true;
         }
 
         // Log rectangle count and buffer size for debugging
@@ -590,7 +644,39 @@ impl GpuRenderer2D {
             render_pass.draw(0..6, 0..self.instance_count);
         }
 
-        // Copy render texture to readback buffer
+        // Submit render-pass encoder. Zero-copy callers stop here; the
+        // legacy CPU-readback path (`render` below) issues a SECOND
+        // encoder for the texture-to-buffer copy.
+        self.ctx.queue.submit(std::iter::once(encoder.finish()));
+        true
+    }
+
+    /// Legacy CPU-readback path. Renders into the internal texture
+    /// (`render_to_texture`), then copies it back to a Vec<u8> RGBA
+    /// buffer for the caller. Use this on a foreign-device GpuContext
+    /// (e.g. `GpuContext::new()` standalone) where egui can't sample
+    /// our texture directly. On an eframe-shared GpuContext, prefer
+    /// `render_to_texture` + `get_render_texture` + egui's
+    /// `register_native_texture` for zero-copy display.
+    pub fn render(
+        &mut self,
+        root: &DirEntry,
+        viewport: &Viewport,
+        opts: &TreeMapOptions,
+    ) -> Vec<u8> {
+        let width = viewport.width;
+        let height = viewport.height;
+        if !self.render_to_texture(root, viewport, opts) {
+            return vec![];
+        }
+        // After render_to_texture, render_texture is guaranteed Some
+        // (ensure_render_target ran with a non-zero size).
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("2D Readback Encoder"),
+            });
         let output_buffer = gpu::readback_texture(
             &self.ctx,
             &mut encoder,
@@ -598,11 +684,7 @@ impl GpuRenderer2D {
             width,
             height,
         );
-
-        // Submit and wait
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
-
-        // Map and extract pixels
         gpu::map_readback(&self.ctx, &output_buffer, width, height)
     }
 }
