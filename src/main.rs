@@ -96,6 +96,9 @@ pub struct CliOptions {
     pub pt_restir_m_max: Option<u32>,
     pub pt_path_guiding: Option<bool>,
     pub pt_svo_resolution: Option<u32>,
+    pub pt_denoise_enabled: Option<bool>,
+    pub pt_denoise_iterations: Option<u32>,
+    pub pt_denoise_sigma_color: Option<f32>,
     pub slice_enabled: Option<bool>,
     pub slice_axis: Option<u32>,
     pub slice_position: Option<f32>,
@@ -498,6 +501,28 @@ fn parse_args() -> CliOptions {
             }
             "--no-pt-path-guiding" => {
                 opts.pt_path_guiding = Some(false);
+            }
+            "--pt-denoise" => {
+                opts.pt_denoise_enabled = Some(true);
+            }
+            "--no-pt-denoise" => {
+                opts.pt_denoise_enabled = Some(false);
+            }
+            "--pt-denoise-iterations" => {
+                i += 1;
+                if i < args.len() {
+                    if let Ok(n) = args[i].parse::<u32>() {
+                        opts.pt_denoise_iterations = Some(n.clamp(1, 5));
+                    }
+                }
+            }
+            "--pt-denoise-sigma-color" => {
+                i += 1;
+                if i < args.len() {
+                    if let Ok(v) = args[i].parse::<f32>() {
+                        opts.pt_denoise_sigma_color = Some(v.max(1e-3));
+                    }
+                }
             }
             "--pt-restir-di" => {
                 opts.pt_restir_di = Some(true);

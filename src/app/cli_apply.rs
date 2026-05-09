@@ -37,6 +37,15 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
     if let Some(pg) = cli.pt_path_guiding {
         opts.pt_path_guiding = pg;
     }
+    if let Some(d) = cli.pt_denoise_enabled {
+        opts.pt_denoise_enabled = d;
+    }
+    if let Some(it) = cli.pt_denoise_iterations {
+        opts.pt_denoise_iterations = it;
+    }
+    if let Some(sc) = cli.pt_denoise_sigma_color {
+        opts.pt_denoise_sigma_color = sc;
+    }
     if let Some(di) = cli.pt_restir_di {
         opts.pt_restir_di = di;
     }
@@ -327,6 +336,9 @@ mod tests {
             pt_restir_m_max: Some(20),
             pt_path_guiding: Some(true),
             pt_svo_resolution: Some(128),
+            pt_denoise_enabled: Some(true),
+            pt_denoise_iterations: Some(4),
+            pt_denoise_sigma_color: Some(0.5),
             slice_enabled: Some(true),
             slice_axis: Some(2),
             slice_position: Some(0.5),
@@ -355,6 +367,9 @@ mod tests {
         assert_eq!(opts.pt_max_samples, 123);
         assert!(opts.pt_gpu_bvh);
         assert!(opts.pt_path_guiding);
+        assert!(opts.pt_denoise_enabled);
+        assert_eq!(opts.pt_denoise_iterations, 4);
+        assert!((opts.pt_denoise_sigma_color - 0.5).abs() < 1e-6);
         assert!(opts.pt_restir_di);
         assert!(opts.pt_restir_gi);
         assert!(opts.pt_adaptive_sampling);

@@ -422,6 +422,8 @@ pub(crate) fn render_path_traced_no_readback(
         opts.pt_spectral_samples,
         if opts.pt_spectral_dispersion { 1 } else { 0 },
     );
+    pt.set_denoise_enabled(&renderer.ctx.device, opts.pt_denoise_enabled);
+    pt.set_denoise_options(opts.pt_denoise_iterations, opts.pt_denoise_sigma_color);
     pt.set_wavefront_tile_size(opts.pt_wavefront_tile_size);
     pt.update_env_params(
         &renderer.ctx.queue,
@@ -480,6 +482,7 @@ pub(crate) fn render_path_traced_no_readback(
     }
 
     let targets = renderer.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
+    pt.apply_denoiser(&renderer.ctx.device, &renderer.ctx.queue, &mut encoder);
     pt.blit(&mut encoder, &targets.render_view);
     log::trace!("PT: blit called, target size {:?}", targets.size);
 
@@ -946,6 +949,8 @@ pub(crate) fn render_path_traced(
         opts.pt_spectral_samples,
         if opts.pt_spectral_dispersion { 1 } else { 0 },
     );
+    pt.set_denoise_enabled(&renderer.ctx.device, opts.pt_denoise_enabled);
+    pt.set_denoise_options(opts.pt_denoise_iterations, opts.pt_denoise_sigma_color);
     pt.update_env_params(
         &renderer.ctx.queue,
         opts.env_map_intensity,
@@ -1017,6 +1022,7 @@ pub(crate) fn render_path_traced(
 
     let blit_start = std::time::Instant::now();
     let targets = renderer.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
+    pt.apply_denoiser(&renderer.ctx.device, &renderer.ctx.queue, &mut encoder);
     pt.blit(&mut encoder, &targets.render_view);
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);

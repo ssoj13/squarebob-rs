@@ -662,10 +662,23 @@ pub struct Render3DOptions {
     pub inertia_friction: f32, // Higher = faster stop (1-10 typical)
     #[serde(default = "default_inertia_cutoff")]
     pub inertia_cutoff: f32, // Stop inertia when speed is below cutoff
+    // PT denoiser (à-trous edge-aware filter; Stage D.2)
+    #[serde(default)]
+    pub pt_denoise_enabled: bool,
+    #[serde(default = "default_denoise_iterations")]
+    pub pt_denoise_iterations: u32, // 1-5 typical; default 3
+    #[serde(default = "default_denoise_sigma_color")]
+    pub pt_denoise_sigma_color: f32, // smaller = more smoothing, less edge preservation
 }
 
 fn default_lod_min_size() -> f32 {
     2.0
+}
+fn default_denoise_iterations() -> u32 {
+    3
+}
+fn default_denoise_sigma_color() -> f32 {
+    0.3
 }
 fn default_true() -> bool {
     true
@@ -895,6 +908,10 @@ impl Default for Render3DOptions {
             inertia_enabled: true,
             inertia_friction: 5.0,
             inertia_cutoff: 0.001,
+            // PT denoiser
+            pt_denoise_enabled: false,
+            pt_denoise_iterations: 3,
+            pt_denoise_sigma_color: 0.3,
         }
     }
 }

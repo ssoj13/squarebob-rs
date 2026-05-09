@@ -343,6 +343,19 @@ pub struct PathTraceCompute {
     last_pathguide_enabled: bool,
     last_pathguide_svo_resolution: u32,
     guide_buffer: wgpu::Buffer,
+
+    // Denoiser (optional, Stage D.2 — à-trous edge-aware filter).
+    // When `denoise_enabled`, dispatch() runs the filter after the PT
+    // compute pass and rewires `blit_bind_group` to read the denoised
+    // texture. When disabled, blit reads `output_view` (raw PT) directly.
+    denoiser: Option<crate::denoiser::DenoiserPipeline>,
+    denoise_enabled: bool,
+    denoise_iterations: u32,
+    denoise_sigma_color: f32,
+    /// Tracks whether `blit_bind_group` currently points at the denoiser
+    /// output (true) or at `output_view` (false). Used to avoid
+    /// rebuilding the BG every frame when state hasn't changed.
+    blit_bg_uses_denoiser: bool,
     scene_bounds: Option<([f32; 3], [f32; 3])>,
     history_dirty: bool,
 }
@@ -900,7 +913,31 @@ impl PathTraceCompute {
             spectral_samples: 1,
             spectral_dispersion: 0,
             history_dirty: false,
+            denoiser: None,
+            denoise_enabled: false,
+            denoise_iterations: 3,
+            denoise_sigma_color: 0.3,
+            blit_bg_uses_denoiser: false,
         }
+    }
+
+    /// Enable/disable the path-tracer denoiser. Lazy-instantiates the
+    /// pipeline on first enable (allocates two ping-pong textures sized
+    /// to the current viewport). Stage D.2 of the TODO4 roadmap.
+    pub fn set_denoise_enabled(&mut self, device: &wgpu::Device, enabled: bool) {
+        self.denoise_enabled = enabled;
+        if enabled && self.denoiser.is_none() {
+            self.denoiser = Some(crate::denoiser::DenoiserPipeline::new(
+                device, self.width, self.height,
+            ));
+        }
+    }
+
+    /// Update denoiser iteration count and color edge-stop sigma.
+    /// `iterations` is clamped to 1..=5; `sigma_color` to >= 1e-3.
+    pub fn set_denoise_options(&mut self, iterations: u32, sigma_color: f32) {
+        self.denoise_iterations = iterations.clamp(1, 5);
+        self.denoise_sigma_color = sigma_color.max(1e-3);
     }
 
     /// Enable/disable ReSTIR (infrastructure ready, integration pending).
@@ -2999,6 +3036,14 @@ impl PathTraceCompute {
         if let Some(ad) = &mut self.adaptive {
             ad.resize(device, width, height);
         }
+        if let Some(dn) = &mut self.denoiser {
+            dn.resize(device, width, height);
+        }
+        // Blit BG references self.output_view which has just been
+        // recreated; force rebuild on next dispatch by clearing the
+        // "denoiser owns blit input" flag (update_pipeline_bindings
+        // rebuilds blit_bind_group at end of resize-related setup).
+        self.blit_bg_uses_denoiser = false;
         let fallback_samples = vec![u32::MAX; (width * height).max(1) as usize];
         self.sample_map_fallback = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_sample_map_fallback"),
@@ -3578,6 +3623,74 @@ impl PathTraceCompute {
         let elapsed_ms = dispatch_start.elapsed().as_secs_f64() * 1000.0;
         log::trace!("PT dispatch: done ({:.2}ms)", elapsed_ms);
         true
+    }
+
+    /// Run the à-trous denoiser if enabled, and rewire the blit bind
+    /// group so the next `blit()` reads the denoised texture instead
+    /// of the raw PT output. Idempotent — when denoising is OFF, only
+    /// rebuilds the blit BG once on the OFF→ON edge to point back at
+    /// `self.output_view`. Stage D.2 of TODO4.
+    ///
+    /// Call sequence per frame: `dispatch()` → `apply_denoiser()` → `blit()`.
+    pub fn apply_denoiser(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        if self.denoise_enabled {
+            // Take ownership of the denoiser temporarily so we can
+            // borrow `self.output_view` and `self.blit_bind_group_layout`
+            // while denoiser.dispatch holds &mut to the denoiser.
+            let Some(mut denoiser) = self.denoiser.take() else {
+                return;
+            };
+            denoiser.dispatch(
+                device,
+                queue,
+                encoder,
+                &self.output_view,
+                self.denoise_iterations,
+                self.denoise_sigma_color,
+            );
+            let denoised_view = denoiser
+                .output_view()
+                .expect("denoiser output_view missing after dispatch");
+            self.blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("pt_blit_bg_denoised"),
+                layout: &self.blit_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(denoised_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                    },
+                ],
+            }));
+            self.blit_bg_uses_denoiser = true;
+            self.denoiser = Some(denoiser);
+        } else if self.blit_bg_uses_denoiser {
+            // Denoiser just turned OFF — rebuild blit BG to point at the
+            // raw PT output again.
+            self.blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("pt_blit_bg"),
+                layout: &self.blit_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.output_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                    },
+                ],
+            }));
+            self.blit_bg_uses_denoiser = false;
+        }
     }
 
     /// Blit the path tracer output to a render target with tone mapping.

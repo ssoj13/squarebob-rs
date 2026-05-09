@@ -1,6 +1,7 @@
 //! Settings panel modules.
 
 mod appearance;
+mod denoiser;
 mod exclusions;
 mod renderer;
 mod scanner;
@@ -179,6 +180,7 @@ impl App {
         let tab_labels = [
             (SettingsTab::General, "General"),
             (SettingsTab::Rendering, "Rendering"),
+            (SettingsTab::Denoiser, "Denoise"),
             (SettingsTab::Exclusions, "Exclusions"),
             (SettingsTab::Extensions, "Extensions"),
         ];
@@ -222,6 +224,9 @@ impl App {
                         self.ui_presets(ui);
                         ui.add_space(4.0);
                         self.ui_settings_renderer(ui);
+                    }
+                    SettingsTab::Denoiser => {
+                        self.ui_settings_denoiser(ui, &mut changed);
                     }
                     SettingsTab::Exclusions => {
                         self.ui_settings_exclusions(ui, &mut changed);

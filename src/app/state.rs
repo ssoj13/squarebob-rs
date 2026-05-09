@@ -37,6 +37,7 @@ pub enum SettingsTab {
     #[default]
     General,
     Rendering,
+    Denoiser,
     Exclusions,
     Extensions,
 }
