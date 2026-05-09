@@ -1,0 +1,131 @@
+{
+  "updatedAt": "2026-05-09T15:56:58.045Z",
+  "missions": [
+    {
+      "id": "session:20646fb0-067f-4fc6-af30-186795b00f4f:none",
+      "source": "session",
+      "name": "none",
+      "objective": "Session mission",
+      "createdAt": "2026-05-09T15:48:11.164Z",
+      "updatedAt": "2026-05-09T15:56:58.045Z",
+      "status": "done",
+      "workerCount": 4,
+      "taskCounts": {
+        "total": 4,
+        "pending": 0,
+        "blocked": 0,
+        "inProgress": 0,
+        "completed": 4,
+        "failed": 0
+      },
+      "agents": [
+        {
+          "name": "gsd-codebase-mapper:aeec142",
+          "role": "gsd-codebase-mapper",
+          "ownership": "aeec1422c01ab55f7",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-05-09T15:56:58.045Z"
+        },
+        {
+          "name": "gsd-codebase-mapper:a01253c",
+          "role": "gsd-codebase-mapper",
+          "ownership": "a01253c26c16b1d10",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-05-09T15:53:21.063Z"
+        },
+        {
+          "name": "gsd-codebase-mapper:ac79d36",
+          "role": "gsd-codebase-mapper",
+          "ownership": "ac79d3633b64c08dd",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-05-09T15:52:19.606Z"
+        },
+        {
+          "name": "gsd-codebase-mapper:af556b4",
+          "role": "gsd-codebase-mapper",
+          "ownership": "af556b4b7f460e3ac",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-05-09T15:52:54.690Z"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "session-start:a01253c26c16b1d10:2026-05-09T15:48:22.606Z",
+          "at": "2026-05-09T15:48:22.606Z",
+          "kind": "update",
+          "agent": "gsd-codebase-mapper:a01253c",
+          "detail": "started gsd-codebase-mapper:a01253c",
+          "sourceKey": "session-start:a01253c26c16b1d10"
+        },
+        {
+          "id": "session-start:ac79d3633b64c08dd:2026-05-09T15:48:33.670Z",
+          "at": "2026-05-09T15:48:33.670Z",
+          "kind": "update",
+          "agent": "gsd-codebase-mapper:ac79d36",
+          "detail": "started gsd-codebase-mapper:ac79d36",
+          "sourceKey": "session-start:ac79d3633b64c08dd"
+        },
+        {
+          "id": "session-start:af556b4b7f460e3ac:2026-05-09T15:48:47.792Z",
+          "at": "2026-05-09T15:48:47.792Z",
+          "kind": "update",
+          "agent": "gsd-codebase-mapper:af556b4",
+          "detail": "started gsd-codebase-mapper:af556b4",
+          "sourceKey": "session-start:af556b4b7f460e3ac"
+        },
+        {
+          "id": "session-stop:aeec1422c01ab55f7:2026-05-09T15:50:15.198Z",
+          "at": "2026-05-09T15:50:15.198Z",
+          "kind": "completion",
+          "agent": "gsd-codebase-mapper:aeec142",
+          "detail": "completed",
+          "sourceKey": "session-stop:aeec1422c01ab55f7"
+        },
+        {
+          "id": "session-stop:ac79d3633b64c08dd:2026-05-09T15:52:19.606Z",
+          "at": "2026-05-09T15:52:19.606Z",
+          "kind": "completion",
+          "agent": "gsd-codebase-mapper:ac79d36",
+          "detail": "completed",
+          "sourceKey": "session-stop:ac79d3633b64c08dd"
+        },
+        {
+          "id": "session-stop:af556b4b7f460e3ac:2026-05-09T15:52:54.690Z",
+          "at": "2026-05-09T15:52:54.690Z",
+          "kind": "completion",
+          "agent": "gsd-codebase-mapper:af556b4",
+          "detail": "completed",
+          "sourceKey": "session-stop:af556b4b7f460e3ac"
+        },
+        {
+          "id": "session-stop:a01253c26c16b1d10:2026-05-09T15:53:21.063Z",
+          "at": "2026-05-09T15:53:21.063Z",
+          "kind": "completion",
+          "agent": "gsd-codebase-mapper:a01253c",
+          "detail": "completed",
+          "sourceKey": "session-stop:a01253c26c16b1d10"
+        },
+        {
+          "id": "session-stop:a841f6d4f28bd6648:2026-05-09T15:56:58.045Z",
+          "at": "2026-05-09T15:56:58.045Z",
+          "kind": "completion",
+          "agent": "gsd-codebase-mapper:aeec142",
+          "detail": "completed",
+          "sourceKey": "session-stop:a841f6d4f28bd6648"
+        }
+      ]
+    }
+  ]
+}

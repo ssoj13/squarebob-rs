@@ -111,39 +111,57 @@
   "hotPaths": [
     {
       "path": "crates\\render-3d\\src\\lib.rs",
-      "accessCount": 60,
-      "lastAccessed": 1778291145715,
-      "type": "file"
-    },
-    {
-      "path": "crates\\render-3d\\src\\pt\\megakernel.rs",
-      "accessCount": 9,
-      "lastAccessed": 1778295283878,
+      "accessCount": 64,
+      "lastAccessed": 1778341762062,
       "type": "file"
     },
     {
       "path": "",
-      "accessCount": 7,
-      "lastAccessed": 1778295204832,
+      "accessCount": 41,
+      "lastAccessed": 1778341803208,
       "type": "directory"
     },
     {
-      "path": "crates\\render-shared\\src\\lib.rs",
-      "accessCount": 5,
-      "lastAccessed": 1778291217309,
-      "type": "directory"
+      "path": "crates\\render-3d\\src\\pt\\megakernel.rs",
+      "accessCount": 10,
+      "lastAccessed": 1778341803736,
+      "type": "file"
     },
     {
       "path": "crates\\treemap\\src\\lib.rs",
-      "accessCount": 5,
-      "lastAccessed": 1778295270288,
+      "accessCount": 8,
+      "lastAccessed": 1778341793890,
       "type": "file"
     },
     {
+      "path": "crates\\render-shared\\src\\lib.rs",
+      "accessCount": 6,
+      "lastAccessed": 1778341730698,
+      "type": "directory"
+    },
+    {
       "path": "crates\\pt-mats\\src\\lib.rs",
-      "accessCount": 4,
-      "lastAccessed": 1778289980190,
+      "accessCount": 6,
+      "lastAccessed": 1778341744862,
       "type": "file"
+    },
+    {
+      "path": "src\\app\\mod.rs",
+      "accessCount": 5,
+      "lastAccessed": 1778341792266,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.toml",
+      "accessCount": 4,
+      "lastAccessed": 1778341742646,
+      "type": "file"
+    },
+    {
+      "path": "crates",
+      "accessCount": 4,
+      "lastAccessed": 1778341750353,
+      "type": "directory"
     },
     {
       "path": "crates\\render-3d\\src",
@@ -182,16 +200,22 @@
       "type": "directory"
     },
     {
+      "path": "crates\\render-3d\\Cargo.toml",
+      "accessCount": 3,
+      "lastAccessed": 1778341701804,
+      "type": "directory"
+    },
+    {
+      "path": "src",
+      "accessCount": 3,
+      "lastAccessed": 1778341717817,
+      "type": "directory"
+    },
+    {
       "path": "crates\\render-3d\\src\\geometry.rs",
       "accessCount": 2,
       "lastAccessed": 1778289946084,
       "type": "file"
-    },
-    {
-      "path": "crates\\render-3d\\Cargo.toml",
-      "accessCount": 2,
-      "lastAccessed": 1778290182028,
-      "type": "directory"
     },
     {
       "path": "src\\app\\treemap_view.rs",
@@ -200,15 +224,87 @@
       "type": "file"
     },
     {
-      "path": "src",
+      "path": "AGENTS.md",
       "accessCount": 2,
-      "lastAccessed": 1778296307068,
-      "type": "directory"
+      "lastAccessed": 1778341732435,
+      "type": "file"
+    },
+    {
+      "path": "crates\\dirstat-core\\src\\lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1778341732869,
+      "type": "file"
+    },
+    {
+      "path": "crates\\render-core\\src\\lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1778341741290,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-core\\src\\lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1778341742518,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-megakernel\\src\\lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1778341743287,
+      "type": "file"
+    },
+    {
+      "path": "TODO2.md",
+      "accessCount": 2,
+      "lastAccessed": 1778341743482,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-wavefront\\src\\lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1778341744097,
+      "type": "file"
     },
     {
       "path": "task.md",
-      "accessCount": 1,
-      "lastAccessed": 1778264678587,
+      "accessCount": 2,
+      "lastAccessed": 1778341744321,
+      "type": "file"
+    },
+    {
+      "path": "crates\\bvh-gpu\\src\\lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1778341745519,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-core\\Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1778341778807,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-megakernel\\Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1778341779194,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-wavefront\\Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1778341779596,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-mats\\Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1778341780327,
+      "type": "file"
+    },
+    {
+      "path": "crates\\bvh-gpu\\Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1778341780729,
       "type": "file"
     },
     {
@@ -218,21 +314,9 @@
       "type": "directory"
     },
     {
-      "path": "TODO2.md",
-      "accessCount": 1,
-      "lastAccessed": 1778289906785,
-      "type": "file"
-    },
-    {
       "path": "crates\\render-3d\\shaders\\cube_object_id.wgsl",
       "accessCount": 1,
       "lastAccessed": 1778291057887,
-      "type": "file"
-    },
-    {
-      "path": "src\\app\\mod.rs",
-      "accessCount": 1,
-      "lastAccessed": 1778295319169,
       "type": "file"
     },
     {
@@ -240,6 +324,90 @@
       "accessCount": 1,
       "lastAccessed": 1778296307927,
       "type": "directory"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "accessCount": 1,
+      "lastAccessed": 1778341694572,
+      "type": "file"
+    },
+    {
+      "path": "crates\\dirstat-core\\Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1778341698676,
+      "type": "file"
+    },
+    {
+      "path": "crates\\render-core\\Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1778341702112,
+      "type": "file"
+    },
+    {
+      "path": "crates\\render-shared\\Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1778341702952,
+      "type": "file"
+    },
+    {
+      "path": "crates\\treemap\\Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1778341703254,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 1,
+      "lastAccessed": 1778341722137,
+      "type": "file"
+    },
+    {
+      "path": "DIAGRAMS.md",
+      "accessCount": 1,
+      "lastAccessed": 1778341722865,
+      "type": "file"
+    },
+    {
+      "path": "src\\main.rs",
+      "accessCount": 1,
+      "lastAccessed": 1778341723911,
+      "type": "file"
+    },
+    {
+      "path": "src\\app\\filters.rs",
+      "accessCount": 1,
+      "lastAccessed": 1778341739057,
+      "type": "file"
+    },
+    {
+      "path": "crates\\bvh-gpu\\src\\bvh_gpu\\mod.rs",
+      "accessCount": 1,
+      "lastAccessed": 1778341739866,
+      "type": "file"
+    },
+    {
+      "path": "crates\\render-3d\\src\\pt\\wavefront.rs",
+      "accessCount": 1,
+      "lastAccessed": 1778341739948,
+      "type": "file"
+    },
+    {
+      "path": "src\\scanner.rs",
+      "accessCount": 1,
+      "lastAccessed": 1778341740753,
+      "type": "file"
+    },
+    {
+      "path": "crates\\render-3d\\README.md",
+      "accessCount": 1,
+      "lastAccessed": 1778341741135,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-megakernel\\README.md",
+      "accessCount": 1,
+      "lastAccessed": 1778341741862,
+      "type": "file"
     }
   ],
   "userDirectives": []

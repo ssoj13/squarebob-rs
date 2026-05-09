@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"C:\\\\projects\\\\projects.rust.cg\\\\dirstat-rs\\\\crates\\\\render-shared\\\\src\\\\lib.rs\"}",
+  "error": "File content (26944 tokens) exceeds maximum allowed tokens (25000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+  "timestamp": "2026-05-09T15:48:58.811Z",
+  "retry_count": 2
+}
