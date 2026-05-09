@@ -8,7 +8,89 @@ adapted for a single-developer workflow that batches by sprint.
 
 ---
 
-## Unreleased — sprint-3 (2026-05-09)
+## Unreleased — sprint-3 (2026-05-09) — denoiser + monolith reduction
+
+End-of-day rolling sprint added the PT denoiser (Stage D.2) and a
+substantial modularization pass on the largest remaining monoliths.
+
+### Stage D.2 — PT à-trous denoiser (Dammertz et al. 2010)
+
+Full end-to-end implementation, ready for visual tuning by the user.
+
+- New module `crates/pt-megakernel/src/denoiser/` with
+  `atrous.wgsl` (compute kernel, color-only edge stop, 5x5 cubic
+  B-spline at increasing stride) and `pipeline.rs` (DenoiserPipeline
+  with two ping-pong Rgba32Float textures).
+- `PathTraceCompute` integration: `set_denoise_enabled`,
+  `set_denoise_options`, `apply_denoiser` (called between dispatch
+  and blit; rewires `blit_bind_group` to read denoised texture).
+- `Render3DOptions`: `pt_denoise_enabled`, `pt_denoise_iterations`,
+  `pt_denoise_sigma_color`. CLI: `--pt-denoise / --no-pt-denoise`,
+  `--pt-denoise-iterations N`, `--pt-denoise-sigma-color F`.
+- New Settings tab "Denoise" (`src/app/settings/denoiser.rs`) with
+  enable toggle, iterations slider, color sigma slider, and four
+  preset buttons (Conservative / Balanced / Aggressive / Off).
+
+MVP scope: color-only edge stopping. G-buffer guidance (normal/depth)
+deferred — the wavefront PT already produces a G-buffer for ReSTIR
+(`pt-megakernel/src/wavefront/gbuffer.wgsl`); plumbing it into the
+à-trous kernel is a 1-2 commit follow-up.
+
+### Modularization — large monoliths split
+
+Per the user's "и модуляризируй большие монолиты" directive:
+
+- **`src/main.rs`: 1102 → 159 LOC.** All CLI parsing
+  (CliOptions struct, Default impl, parse_args, print_help,
+  parse_height_mode, parse_color_mode, parse_hash_effect,
+  parse_hover_mode, parse_materialize_mode, parse_spectral_mode)
+  moved to a new `src/cli.rs` (954 LOC). main.rs now contains
+  only `mod` declarations + `pub use cli::CliOptions` (so existing
+  `crate::CliOptions` references in `app/cli_apply.rs` keep
+  working) + `fn main()`.
+- **`crates/render-3d/src/pt/megakernel.rs`: 1073 LOC → 3 files.**
+  Was a single file with two large render orchestrators
+  (`render_path_traced_no_readback` ~478 LOC, `render_path_traced`
+  ~575 LOC) plus 7 LOC of `frame_count`/`pick`. Now:
+    pt/megakernel/mod.rs                  26 LOC (imports + helpers + re-exports)
+    pt/megakernel/render.rs              579 LOC
+    pt/megakernel/render_no_readback.rs  483 LOC
+  Submodules use `use super::*` to inherit the parent imports.
+- **`crates/render-3d/src/lib.rs`: 1937 → 1797 LOC.** Eight
+  free helper functions (`lerp`, `lerp4`, `hash_f32`, `mix_material`,
+  `kelvin_to_rgb`, `apply_glass_controls`, `compute_slice_normal`,
+  `compute_slice_position`) extracted to a new
+  `renderer3d/helpers.rs` (150 LOC). They were only in `lib.rs`
+  because the file used to be a 2335-LOC god-object before B.1.
+
+### Out of scope for sprint-3
+
+- **`crates/pt-megakernel/src/compute.rs` (3722 LOC) untouched.**
+  Splitting the PathTraceCompute orchestrator into per-subsystem
+  integration files is mechanically possible but high-risk without
+  runtime verification — every method touches many private fields,
+  and a silent breakage in dispatch_megakernel/dispatch_wavefront is
+  visually invisible until path-traced output corrupts. Defer until
+  there's appetite for runtime+visual UAT.
+- **`src/scanner_ntfs.rs` (973 LOC)** is single-concern Win32 FFI
+  for FSCTL_ENUM_USN_DATA — splitting harms cohesion. Leave.
+
+### Verification
+
+Each modularization commit ran:
+  cargo build --workspace --all-targets       — ok
+  cargo clippy --workspace --all-targets -- -D warnings  — 0 warnings
+  cargo test --workspace                      — 24 unit tests pass
+
+### E.3 — gitnexus embeddings
+
+Kicked off `npx gitnexus analyze --embeddings` in the background;
+expected to take ~10-30 min to encode ~2650 symbols. No completion
+notification yet at end of session — check on next cold start.
+
+### Stage D.2 (originally — sprint-3 part 1, kept here for completeness)
+
+
 
 Single-thread post-sprint-2 batch. Closed Stage D.1 (zero-copy 2D-GPU
 display) and refreshed all .planning/ docs + AGENTS.md to match the
