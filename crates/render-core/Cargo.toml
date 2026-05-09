@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 wgpu = "29"
 pollster = "0.4"
+log = "0.4"
 
 [features]
 default = []
