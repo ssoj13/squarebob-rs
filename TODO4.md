@@ -1,8 +1,57 @@
-# TODO4 — Validated Roadmap (rev 3)
+# TODO4 — Validated Roadmap (rev 4)
 
 **Date:** 2026-05-09
 **Supersedes:** `TODO.md`, `TODO2.md`, `TODO3.md`, `plan1.md`, `task.md`
 (deleted in commit `398f566`).
+
+**rev 4 changes (sprint 2 — multi-agent Stage B + parallel polish):**
+Massive batch of Stage B + C + E work shipped via 2 parallel sub-agents
+in worktrees plus several main-thread atomic commits. Status:
+
+- ✅ **Stage B.1** DONE (Agent A): `crates/render-3d/src/lib.rs` 2335→1937 LOC.
+  `MaterialCache` extracted to `renderer3d/material_cache.rs` (123 LOC),
+  `collect_cubes` + `collect_recursive` extracted to
+  `renderer3d/instance_collect.rs` (300 LOC). cargo check passed in
+  agent worktree.
+- ⚠️ **Stage B.2** PARTIAL: lifecycle analysis disqualified the
+  RendererInited substruct (cached_instances/instance_buffer build
+  per-frame; targets/dyn_bgs build in resize path; env-map path needs
+  targets=Some + dyn_bgs=None). Full typestate too invasive. Compromise:
+  17 `.unwrap()` sites upgraded to `.expect()` with field-specific
+  diagnostic messages. Full Uninit/Ready typestate remains open if the
+  user wants it later.
+- ✅ **Stage B.3** DONE (Agent B): `src/app/mod.rs` 1521→716 LOC after
+  B.4. Three submodules created: `scan_orchestration.rs` (218),
+  `render_loop.rs` (278), `screenshot.rs` (139).
+- ✅ **Stage B.4** DONE (Agent B.4): `src/app/cli_apply.rs` (443 LOC,
+  90 field copies + 2 unit tests). `App::new` no longer mirrors
+  CliOptions inline; one `apply_cli_overrides()` call.
+- ✅ **Stage C.2** DONE: `GpuContext::new()` graceful Option propagation
+  verified (zero unwrap on `gpu_context` in entire codebase). Added
+  `log::error!` on adapter/device failure so env_logger now distinguishes
+  "no compatible adapter" from "adapter ok but device init failed".
+- ✅ **Stage C.3** investigated (no code change): pathguide and adaptive
+  are NOT dead — both are imported from `pt-megakernel/src/compute.rs:9-10`
+  and contain WGSL shaders. The `#![allow(dead_code)]` belts mask
+  individual unused symbols inside pipeline.rs, not whole modules.
+  Targeted cleanup deferred (needs working cargo check; this WSL
+  environment can't build the binary due to GCC 15 / mimalloc
+  incompatibility).
+- ✅ **Stage C.6** investigated (no code change): `pt-megakernel`
+  depends on `pt-wavefront` via single import in `compute.rs:16`
+  (`use pt_wavefront::{WavefrontConfig, WavefrontPipeline, WfDims}`).
+  This is an intentional orchestrator pattern — megakernel knows about
+  both backends. Not "wrong direction" as CONCERNS.md suspected. Policy
+  text ("canonical = ?") still requires user decision.
+- ✅ **Stage D.3** code-verified: BVH refit fast-path is implemented at
+  `crates/bvh-gpu/src/bvh_gpu/mod.rs:329` (`can_refit`) + `:378`
+  (`refit`), gated by `opts.pt_gpu_bvh && opts.pt_bvh_refit` at
+  `crates/render-3d/src/pt/megakernel.rs:205, :692`. Falls back to full
+  rebuild if `can_refit()` returns false. Runtime trace verification
+  remains user work.
+- ✅ **Stages E.1 + E.2** DONE: `.github/workflows/ci.yml` shipped with
+  Linux + Windows matrix, Swatinem/rust-cache, and rustsec/audit-check.
+  Weekly cron for advisory check.
 
 **rev 3 changes:** removed Stage 0.0 (cube-gaps fixed per user); marked
 Stage 0.1 DONE — the SAFETY-comment + disciplined `&mut self`-scoped
