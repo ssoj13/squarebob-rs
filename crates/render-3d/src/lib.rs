@@ -257,6 +257,12 @@ pub struct Renderer3D {
 
     // Instance cache (for static scenes without animation)
     cached_instances: Option<Arc<Vec<geometry::CubeInstance>>>,
+    /// Total number of times `collect_cubes` ran since renderer construction.
+    /// Used by Stage A.1 verification to confirm that toggling
+    /// `materialize_mix` (now a shader-side uniform) does NOT trigger an
+    /// instance rebuild — the counter should not advance when only the
+    /// mix slider changes between frames. Read via `instance_rebuild_count`.
+    cached_instances_rebuild_count: u64,
     cached_opts_hash: u64,
     cached_layout_size: (u32, u32),
     scene_layout_size: Option<(u32, u32)>,
@@ -603,6 +609,7 @@ impl Renderer3D {
             material_library,
             mat_cache: MaterialCache::default(),
             cached_instances: None,
+            cached_instances_rebuild_count: 0,
             cached_opts_hash: 0,
             cached_layout_size: (0, 0),
             scene_layout_size: None,
@@ -1094,6 +1101,16 @@ impl Renderer3D {
         fov: f32,
     ) -> Vec<CubeInstance> {
         let start = std::time::Instant::now();
+        // Stage A.1 verification instrumentation: every entry into this
+        // function is a full instance rebuild. Used to confirm that
+        // shader-side uniforms (e.g. materialize_mix) do not invalidate
+        // the cache. Read via `instance_rebuild_count`.
+        self.cached_instances_rebuild_count =
+            self.cached_instances_rebuild_count.wrapping_add(1);
+        debug!(
+            "collect_cubes rebuild #{}",
+            self.cached_instances_rebuild_count
+        );
         let need_picking = opts.hover_mode != HoverMode::None || opts.path_tracing;
         if need_picking {
             self.picking.reset_frame();
@@ -1868,6 +1885,15 @@ impl Renderer3D {
     /// Set selected object IDs for outline rendering
     pub fn set_selected_ids(&mut self, ids: &std::collections::HashSet<u32>) {
         self.selected_ids = ids.clone();
+    }
+
+    /// Total number of times the instance buffer has been rebuilt since
+    /// renderer construction. Used by Stage A.1 verification to confirm
+    /// that toggling `materialize_mix` (a shader-side uniform) does NOT
+    /// trigger an instance rebuild — the counter should hold steady when
+    /// only the mix slider changes between frames. Wraps on overflow.
+    pub fn instance_rebuild_count(&self) -> u64 {
+        self.cached_instances_rebuild_count
     }
 
     /// Last resolved object under the cursor (updated by GPU readback after `pick_from_existing` / `render_to_view`).
