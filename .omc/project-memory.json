@@ -200,6 +200,12 @@
       "type": "file"
     },
     {
+      "path": "src",
+      "accessCount": 2,
+      "lastAccessed": 1778296307068,
+      "type": "directory"
+    },
+    {
       "path": "task.md",
       "accessCount": 1,
       "lastAccessed": 1778264678587,
@@ -224,16 +230,16 @@
       "type": "file"
     },
     {
-      "path": "src",
-      "accessCount": 1,
-      "lastAccessed": 1778295239548,
-      "type": "directory"
-    },
-    {
       "path": "src\\app\\mod.rs",
       "accessCount": 1,
       "lastAccessed": 1778295319169,
       "type": "file"
+    },
+    {
+      "path": "src\\app\\settings\\renderer.rs",
+      "accessCount": 1,
+      "lastAccessed": 1778296307927,
+      "type": "directory"
     }
   ],
   "userDirectives": []

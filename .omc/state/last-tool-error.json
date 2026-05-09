@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"git status\",\"description\":\"Check working tree status\"}",
-  "error": "Exit code 128\nfatal: detected dubious ownership in repository at 'C:/projects/projects.rust.cg/dirstat-rs'\n'C:/projects/projects.rust.cg/dirstat-rs' is owned by:\n\tBUILTIN/Administrators (S-1-5-32-544)\nbut the current user is:\n\tALICE/joss1 (S-1-5-21-3523783991-2552557423-1111619336-1001)\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory C:/projects/projects.rust.cg/dirstat-rs",
-  "timestamp": "2026-05-08T18:24:23.227Z",
-  "retry_count": 1
-}
