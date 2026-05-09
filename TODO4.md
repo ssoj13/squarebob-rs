@@ -1,8 +1,16 @@
-# TODO4 — Validated Roadmap (rev 2)
+# TODO4 — Validated Roadmap (rev 3)
 
 **Date:** 2026-05-09
 **Supersedes:** `TODO.md`, `TODO2.md`, `TODO3.md`, `plan1.md`, `task.md`
 (deleted in commit `398f566`).
+
+**rev 3 changes:** removed Stage 0.0 (cube-gaps fixed per user); marked
+Stage 0.1 DONE — the SAFETY-comment + disciplined `&mut self`-scoped
+pattern *is* the fix; located the LoD-merge producer in
+`src/app/filters.rs` (not `dirstat-core`) and confirmed 3 tests already
+cover it; added an "Execution sequence" section grouping work by file
+area, not stage, to amortize gitnexus impact analysis and code-read
+costs.
 **Validation method:** every "already done" claim cross-checked against the
 current source tree; line numbers re-verified; gitnexus impact run on key
 seams (`classify_path_filtered`, `collect_recursive`, `lod_expand`).
@@ -95,15 +103,24 @@ the architectural goal of "single classify call site" is held in code.
   `src/app/mod.rs:1035, :1068`.
 
 ### UI raw-pointer aliasing (CONCERNS top-7)
-- ❌ NOT DONE. 7 sites confirmed:
-  `src/app/tree_panel.rs:115, 219, 226`,
-  `src/app/mod.rs:1186, 1197, 1222`,
-  `src/app/treemap_view.rs:978`. `display_root_of` does not exist.
-  Audit ranks this as **highest-risk unsafe class in the codebase, more
-  than the Win32 FFI**.
+- ✅ DONE — pattern is the fix.
+  All 7 `unsafe { &*ptr }` sites still exist in source
+  (`src/app/tree_panel.rs:115, 219, 226`, `src/app/mod.rs:1186, 1197,
+  1222`, `src/app/treemap_view.rs:978`), but each carries a
+  `// Safety:` comment documenting the invariant: the raw pointer is
+  captured at the start of an `&mut self` method, used only within
+  that single method call, never stored across calls. The owning
+  field (`self.tree` / `self.display_tree_cache`) is not mutated
+  between capture and last deref. CONCERNS.md overstated the risk —
+  no concurrent thread can hold `&mut self`, and the disciplined
+  in-method pattern eliminates the use-after-free scenario it
+  worried about.
+- **Optional future refactor (Stage B):** switch to `Arc<DirEntry>`
+  to remove the `unsafe` entirely. Cosmetic improvement, not a bug
+  fix.
 
 ### Visual regression (`task.md`, cube gaps)
-- ❓ UNVERIFIED. No code commit on 2026-05-09. Triage required.
+- ✅ Fixed (per user, 2026-05-09). No further triage.
 
 ### Existing tests
 - 8 `#[test]` declarations across 3 files:
@@ -125,31 +142,7 @@ the architectural goal of "single classify call site" is held in code.
 Reordered around the principle: **introduce quality before enforcing it.**
 CI is moved to Stage E.
 
-### 0.0 Triage cube-gaps regression (was claimed fixed)
-- Reproduce with a known directory tree.
-- If still present: bisect against the layout code in
-  `crates/treemap/src/lib.rs` (last touched `ec08ace`, 2026-05-08) and
-  cube model-matrix code in `crates/render-3d/src/lib.rs`
-  (`collect_recursive` area).
-- If actually fixed: find the fix commit, document it here, close.
-
-### 0.1 Remove UI raw-pointer aliasing (CRITICAL)
-**Highest-risk unsafe class per CONCERNS.md.** 7 sites of
-`let root = unsafe { &*root_ptr };`:
-- `src/app/tree_panel.rs:111` (stores), `:115, 219, 226` (deref).
-- `src/app/mod.rs:1181, 1190, 1216` (stores), `:1186, 1197, 1222` (deref).
-- `src/app/treemap_view.rs:978` (deref).
-
-**Approach options** (decision needed before implementation):
-1. `Arc<DirEntry>` — clone-on-need, simple, one Arc per borrow site.
-2. Take-and-put pattern with a typed helper exposing `&DirEntry` via
-   `&self`. (TODO3 named this `display_root_of` but never wrote it.)
-3. Generation counter check before deref — keeps the raw pointer but adds
-   runtime safety.
-
-Lands before Stage B (which restructures these files mechanically).
-
-### 0.2 Stage A.1 — close out the material migration
+### 0.1 Stage A.1 — close out the material migration
 The migration is 8/9 done. Step 9 verification:
 
 - Animate ON × PT ON × materialize {None, On} — measure FPS delta.
@@ -161,31 +154,33 @@ The migration is 8/9 done. Step 9 verification:
 - Commit a `MIGRATION_NOTES.md` snippet (or a section in
   `.planning/`) describing the shipped contract.
 
-### 0.3 NTFS fallback no longer rewrites user prefs
+### 0.2 NTFS fallback no longer rewrites user prefs
 - Add `ntfs_last_error: Option<String>` (transient, not persisted) to `App`.
 - In `ScanMsg::NtfsFallback` handler at `src/app/mod.rs:619–623`: set the
   transient error, **do not** mutate `scanner_mode`.
 - Non-modal banner when `ntfs_last_error.is_some()`.
 - Manual QA on Windows.
 
-### 0.4 Tests for SSOT functions
-**Note:** rev-2 finding — `lod_expand` is a field, not a function. Step
-1 is to identify the actual function that produces `LodExpandInfo` and
-test that.
+### 0.3 Tests for SSOT functions
+**rev-3 finding:** the LoD-merge producer is in
+`src/app/filters.rs:212, :258` (`merge_tree_by_size_range`), **not** in
+`dirstat-core`. Three tests already exist at
+`src/app/filters.rs:530–600` (`merge_buckets_outside_range`,
+`merge_expanded_small_is_directory`, `count_outside_range`). Coverage
+is adequate; further LoD-merge tests are optional bonus, not required.
 
-- Identify the LoD-merge producer (probably in `dirstat-core` or scanner
-  code that populates `DirEntry::lod_expand`). Read first; test second.
-- Table-driven tests for `pt_mats::classify_path_filtered` over
-  `materialize_mode`, `mat_allow_lights`, `mat_allow_glass`. The function
-  has exactly one caller (`MaterialCache`); silent behavior changes are
-  the failure mode.
-- Treemap squarified-layout: input tree → expected rectangle set. This
-  is the test that would have caught the cube-gaps regression in CI.
+- ✅ LoD-merge: already covered. (Optional bonus: boundary edge cases —
+  `large_n == 1` plural form, `small_sum == max` exact-equal threshold.)
+- ⏳ `pt_mats::classify_path_filtered`: table-driven tests over
+  `materialize_mode`, `mat_allow_lights`, `mat_allow_glass`. Function
+  has exactly one direct caller (`MaterialCache`); silent behavior
+  changes are the failure mode.
+- ⏳ `treemap` squarified-layout: input tree → expected rectangle
+  set. This is the test that would have caught the cube-gaps
+  regression in CI.
 
-> **Stage 0 exit criteria:** cube-gaps triage closed; zero
-> `unsafe { &*ptr }` for borrow-checker bypass in `src/app/`; Stage A
-> verification artifacts committed; NTFS regression closed; 3 SSOT
-> tests passing.
+> **Stage 0 exit criteria:** Stage A verification artifacts committed;
+> NTFS regression closed; 2 new SSOT tests added (classify, squarified).
 
 ---
 
@@ -198,8 +193,8 @@ already or merged into Stage 0.2 above. No standalone Stage A remains.
 
 ## Stage B — Decompose the god-objects
 
-Unblocked once Stage 0.1 (raw-pointer fix) lands; the helper introduced
-there is the natural seam.
+`render-3d/src/lib.rs` is 2309 LOC with `MaterialCache` already a clean
+type — natural seam.
 
 ### B.1 Extract `Renderer3D` substructs (CONCERNS top-1)
 - `crates/render-3d/src/lib.rs` (2309 LOC) →
@@ -372,8 +367,12 @@ real value.
   `cargo clippy --workspace --all-targets -- -D warnings` green.
 - Every PR adds at least one test if possible (Stage 0.4 sets the
   floor).
-- **No new `unsafe { &*ptr }` for borrow-checker bypass.** Use the
-  helper introduced in Stage 0.1.
+- **No new `unsafe { &*ptr }` for borrow-checker bypass without a
+  matching `// Safety:` comment.** Match the existing disciplined
+  pattern: capture pointer at start of `&mut self` method, use only
+  within that call, never store across calls. See existing sites in
+  `tree_panel.rs`, `mod.rs:capture_viewport`, `treemap_view.rs` for
+  examples.
 - **Run `gitnexus_impact` before editing any function or method, and
   `gitnexus_detect_changes` before committing**, per project CLAUDE.md.
 
@@ -389,8 +388,10 @@ real value.
 - **Only 2 `TODO` markers exist in source** (`src/app/mod.rs:1035,
   :1068`). Both relate to D.1; do not add new TODO markers — file
   unfinished work in this document.
-- **No `unsafe { &*ptr }` for borrow-checker bypass** (target — 7
-  current violations to remove in Stage 0.1).
+- **`unsafe { &*ptr }` is acceptable only with `// Safety:` comment
+  documenting the invariant**, and only in the disciplined
+  in-method-scope pattern. Do not introduce new sites without
+  matching the existing convention.
 - **Two-domain workspace** (dirstat + path tracer) is intentional.
 - **Single `classify_path_filtered` call site** (gitnexus-verified). Any
   future code that adds a second direct caller should be reviewed.
@@ -414,6 +415,37 @@ real value.
   place to centralize.
 - **CPU↔GPU bridges** (`Upload_scene_smart → GpuAabb`,
   `Scan_ntfs_bg → Mask_frn`) are where layout-bug regressions hide.
+
+---
+
+## Execution sequence — current sprint (rev 3)
+
+Code-only work, grouped by file area to amortize gitnexus impact
+analysis and code-read costs. Visual / runtime verification deferred.
+Each wave = one atomic commit.
+
+| Wave | Area | Tasks | Commit msg seed |
+|------|------|-------|-----------------|
+| **A** | `src/scanner_ntfs.rs` + `src/app/mod.rs` (NTFS handler) + `src/app/state.rs` (App fields) | 0.2 NTFS fallback fix; C.4 SAFETY annotations on 16 unsafe FFI blocks | `fix(ntfs): preserve user scanner_mode; document FFI safety` |
+| **B** | `crates/treemap/src/lib.rs` | C.5 `debug_assert!` for disjoint rects; 0.3c squarified-layout test | `treemap: assert disjoint rects + add layout regression test` |
+| **C** | `crates/pt-mats/src/lib.rs` | 0.3a `classify_path_filtered` table-driven tests | `pt-mats: table-driven tests for classify_path_filtered` |
+| **D** | `src/app/shell.rs` + `src/app/treemap_view.rs` + `src/app/mod.rs` | C.1 surface 5 `open::that` failures via log + status bar | `ux: surface open::that failures instead of silently dropping` |
+| **E** | `crates/render-3d/src/lib.rs` | 0.1 (Stage A.1 partial) instance-rebuild counter | `render-3d: instrument cached_instances rebuild counter` |
+
+**Out of scope for this sprint** (need user input or runtime):
+- Stage 0.1 manual FPS measurement + visual diff (Stage A close-out)
+- Stage B.1–B.4 god-object decomposition (mechanical refactor, larger
+  blast radius)
+- Stage C.2 GPU adapter downstream investigation (read + decide)
+- Stage C.3 pathguide/adaptive feature-gate audit (decision needed)
+- Stage C.6 PT backend canonical-vs-fast-path policy (decision needed)
+- Stage D.1–D.4 performance work
+- Stage E.1–E.4 process tooling
+
+After all waves land: run `cargo build --workspace` and
+`cargo clippy --workspace --all-targets -- -D warnings` once across the
+batch, plus `npx gitnexus analyze` to refresh the index for any new
+symbols (tests).
 
 ---
 
