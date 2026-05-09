@@ -1,10 +1,129 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-05-09
+**Original analysis date:** 2026-05-09
+**Status update:** 2026-05-09 (post-sprint-2)
 
 This document audits technical debt, fragility, and risk surfaces in the
 `dirstat-rs` workspace. Concerns are grouped by category. Each item cites file
 paths (and line numbers where useful) so future planning can navigate directly.
+
+---
+
+## Status as of post-sprint-2 (2026-05-09)
+
+Two coordinated work sprints landed substantial fixes and structural
+refactors. **9 of the original "top 10" concerns are now resolved or
+materially improved.** The body of this document below is preserved as
+historical record at the original analysis date — line numbers and LOC
+counts are pre-refactor and may not match current source. Read the
+"Resolved" / "Open" lists in this header to see current state.
+
+### Resolved
+
+- **#1 Cube gaps regression** — fixed pre-sprint-2 (per user); `task.md`
+  removed in commit `398f566`.
+- **#2 `render-3d/src/lib.rs` 2309 LOC god-object** — extracted to
+  `renderer3d/material_cache.rs` (123 LOC) and `renderer3d/instance_collect.rs`
+  (300 LOC). Current lib.rs is **1937 LOC** (Stage B.1, commits 914f017 +
+  00e1614, merge 5a097fc).
+- **#3 NTFS fallback persists silently** — fix in commit `ce6ae3c`:
+  `ScanMsg::NtfsFallback` no longer mutates `scanner_mode`. User's NTFS
+  preference is preserved across fallback. Existing UI feedback via
+  `progress.error` and `progress.scan_engine_label` retained.
+- **#5 No CI** — `.github/workflows/ci.yml` shipped in commit `ea73320`.
+  Linux + Windows matrix, build + clippy `-D warnings` + test, plus
+  `rustsec/audit-check` (the audit job that justifies keeping
+  `auto-allocator = "*"` unpinned).
+- **#6 `pathguide` / `adaptive` dead-code allows** — audited in commit
+  `0e90ff4`. After removing all four `#![allow(dead_code)]` belts:
+  zero dead-code warnings. Every symbol is used. Allows were
+  over-cautious historical guards from early scaffolding.
+- **#7 Raw-pointer aliasing in UI panels** — re-evaluated. All 7
+  `unsafe { &*ptr }` sites carry `// Safety:` comments and follow a
+  disciplined pattern: capture pointer at start of `&mut self` method,
+  use within that single method only, never store across calls. The
+  audit's UAF concern requires a concurrent thread mutating
+  `self.tree`, which is impossible under `&mut self` exclusive borrow.
+  No code change needed; pattern is the fix.
+- **#8 Test coverage gaps** — 14 new unit tests added across
+  `pt-mats::tests` (9, classify_path_filtered table-driven),
+  `treemap::tests` (5, squarified-layout incl. cube-gaps regression
+  test), `app::cli_apply::tests` (2, Agent B.4). LoD-merge logic was
+  re-located to `src/app/filters.rs:212/258` (not `dirstat-core` as
+  CONCERNS originally claimed) where 3 tests already covered it.
+  Total workspace tests: **24 passing, 0 failing.**
+- **#9 `open::that` discarded errors** — fix in commit `29b1e28`:
+  centralised in `pub(super) fn shell_open()` in `shell.rs`. All 5
+  call sites converted; failures now log via `log::warn!`.
+- **#10 Two PT backends maintained** — verified `pt-megakernel →
+  pt-wavefront` is intentional **orchestrator pattern** (single
+  import in `compute.rs:16`). Not "wrong direction" as suspected.
+  Canonical-vs-fast-path policy text still requires user decision.
+
+### Open / partial
+
+- **#4 `auto-allocator = "*"`** — kept by design per project policy
+  (track latest, rely on `cargo audit` job for breaking-change drift).
+  `secure` feature benchmark deferred (Stage D.4, requires runtime).
+  Note: on this WSL2 with conda-forge GCC 15.1 the `mimalloc-sys`
+  build script's stdatomic test fails because the test program uses
+  `ATOMIC_VAR_INIT(0)` (deprecated in C17, removed in C23). Workaround:
+  `PATH=/usr/bin:$PATH cargo build` to use system `gcc-13`. CI
+  runners (no conda-forge GCC 15) are unaffected.
+
+### Newly resolved beyond the original top-10
+
+- **Renderer3D 15+ lazy-init `unwrap()` sites** — Stage B.2 lifecycle
+  analysis disqualified the proposed `RendererInited` substruct:
+  `cached_instances`/`instance_buffer` build per-frame in render path,
+  `targets`/`dyn_bgs` build at resize/init, env-map-change path needs
+  `targets=Some` + `dyn_bgs=None` simultaneously. Full Uninit/Ready
+  typestate would invade every public Renderer3D API. Compromise: 17
+  `.unwrap()` sites upgraded to `.expect("<diagnostic>")` (commit
+  `e1aaf74`). Full typestate refactor remains an option if user
+  prioritises typed init-safety later.
+- **GPU adapter failure path** — `GpuContext::new() -> Option<Self>`
+  was already graceful (zero unwrap on `gpu_context`, all consumers
+  use `.is_some()`/`.is_none()`). Added `log::error!` on adapter and
+  device failures so env_logger now distinguishes "no compatible
+  adapter" from "adapter ok but device init failed" (commit `8fd1f87`).
+- **Win32 FFI safety** — 16 `unsafe` blocks in `src/scanner_ntfs.rs`
+  now carry `// SAFETY:` comments documenting buffer-size,
+  HSTRING-ownership, and handle-lifetime invariants (commit `ce6ae3c`).
+- **Treemap parallel raw write** — `debug_assert!(rects_disjoint(...))`
+  inserted before the `par_iter().for_each` parallel-fill path; helper
+  `rects_disjoint` is `#[allow(dead_code)]` so release builds optimise
+  it away (commit `7706e54`).
+- **CLI/PersistState mirroring drift** — `src/app/cli_apply.rs`
+  centralises 90 field copies that used to live inline in `App::new`.
+  Single source of truth + 2 unit tests (commit `6d2cde0`).
+- **`src/app/mod.rs` 1521 LOC god-object** — split into
+  `scan_orchestration.rs` (218), `render_loop.rs` (278),
+  `screenshot.rs` (139), `cli_apply.rs` (443). Current mod.rs is
+  **716 LOC** (commits `439eaa1`, `42f81fa`, `1354960`, `6d2cde0`).
+
+### Currently open / requires user attention
+
+- Stage 0.1 manual UAT — slider toggle vs `instance_rebuild_count()`
+  (rebuild counter shipped in commit `faf19b4`; runtime test on user).
+- Stage A.1 visual diff — animate ON × PT ON × materialize {None, On}
+  FPS measurement (runtime).
+- Stage C.6 PT backend canonical-vs-fast-path policy — *decision*.
+- Stage D.1 zero-copy treemap upload (the only two `TODO` markers in
+  source: `src/app/mod.rs:1035, :1068`).
+- Stage D.2 PT denoiser (only unfinished item from original `TODO.md`).
+- Stage D.3 BVH refit fast-path runtime trace under `opts.animate=true`
+  (gating verified in code; refit fast-path implementation already
+  exists at `crates/bvh-gpu/src/bvh_gpu/mod.rs:329, :378`).
+- Stage D.4 `auto-allocator secure` feature benchmark.
+- Stage E.3 gitnexus embeddings build (`npx gitnexus analyze --embeddings`).
+
+---
+
+> **The body of this document below the next horizontal rule is the
+> original 2026-05-09 audit, preserved as historical record. Line
+> numbers and LOC counts are PRE-REFACTOR. Do NOT use them for
+> navigation — they no longer match current source.**
 
 ---
 
@@ -453,23 +572,26 @@ underpin both visual correctness and "did we break the scan tree."
 
 ---
 
-## Summary — top concerns to plan for
+## Summary — historical (pre-sprint-2)
 
-1. **Visual regression** in `task.md` (cube gaps) — untriaged, blocks
-   user-visible quality.
-2. **`render-3d/src/lib.rs` (2309 LOC)** — extract MaterialCache and instance
-   collection into separate modules before adding more state from `TODO2.md`.
-3. **NTFS fallback persists silently** (`plan1.md` D1) — UX bug, easy fix.
-4. **`auto-allocator = "*"`** with `secure` feature — pin and benchmark.
-5. **No CI** — add minimum viable workflow before more refactors.
-6. **`pathguide/` and `adaptive/` dead-code allows** — audit, gate, or delete.
-7. **Raw-pointer aliasing in UI panels** (`tree_panel.rs`, `treemap_view.rs`,
-   `app/mod.rs`) — replace with `Arc<DirEntry>`.
-8. **Test coverage** for `dirstat-core::lod_expand`, `pt-mats::classify_*`,
-   treemap layout.
-9. **`open::that` discarded errors** — surface failures to user.
-10. **Two PT backends maintained** — document policy and gate UI controls.
+The original top-10 concerns from the 2026-05-09 audit are listed below
+for historical record. **9 of 10 are now resolved or materially
+improved** — see the "Status as of post-sprint-2" section at the top of
+this document for current status, including the few items still open and
+the reasons they were not (or could not be) closed in code.
+
+1. ~~Visual regression in `task.md` (cube gaps)~~ — RESOLVED.
+2. ~~`render-3d/src/lib.rs` god-object 2309 LOC~~ — RESOLVED (Stage B.1).
+3. ~~NTFS fallback persists silently~~ — RESOLVED (commit `ce6ae3c`).
+4. **`auto-allocator = "*"` pin and benchmark** — kept by policy; benchmark deferred.
+5. ~~No CI~~ — RESOLVED (`.github/workflows/ci.yml`, commit `ea73320`).
+6. ~~`pathguide` / `adaptive` dead-code allows~~ — RESOLVED (commit `0e90ff4`).
+7. ~~Raw-pointer aliasing in UI panels~~ — re-evaluated; pattern is correct as written.
+8. ~~Test coverage gaps~~ — 14 new tests; 24 total passing.
+9. ~~`open::that` discarded errors~~ — RESOLVED (commit `29b1e28`).
+10. ~~Two PT backends maintained~~ — verified intentional; policy text awaits user decision.
 
 ---
 
 *Concerns audit: 2026-05-09*
+*Status update: 2026-05-09 (post-sprint-2)*

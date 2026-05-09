@@ -1,6 +1,24 @@
 # Architecture
 
-**Analysis Date:** 2026-05-09
+**Original analysis:** 2026-05-09
+**Status note:** 2026-05-09 (post-sprint-2)
+
+> **Note:** Sprint 2 split two god-objects without changing behaviour:
+> - `crates/render-3d/src/lib.rs`: `MaterialCache` and `MatGlobalUniform`
+>   moved to `renderer3d/material_cache.rs`; `Renderer3D::collect_cubes`
+>   and `collect_recursive` moved to `renderer3d/instance_collect.rs`
+>   (impl re-opened in the new file). The `Renderer3D` struct itself
+>   still lives in `lib.rs`. Public API unchanged.
+> - `src/app/mod.rs`: `start_scan`/`stop_scan`/`poll_scan` moved to
+>   `scan_orchestration.rs`; `run_frame`/`handle_events`/
+>   `sync_dock_tabs_visibility` moved to `render_loop.rs`;
+>   `handle_screenshot`/`capture_viewport`/`save_png` moved to
+>   `screenshot.rs`; CLI mirroring moved to
+>   `cli_apply::apply_cli_overrides`. All remain methods of `App`
+>   (impl re-opened in new files).
+>
+> Where the body below names `lib.rs` or `app/mod.rs`, prefer the
+> appropriate submodule listed above for direct navigation.
 
 ## Pattern Overview
 

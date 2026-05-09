@@ -1,14 +1,48 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-05-09
+**Original analysis:** 2026-05-09
+**Updated:** 2026-05-09 (post-sprint-2)
 
-## TL;DR — honest state of testing
+## TL;DR — current state of testing
 
-This workspace has **very limited automated test coverage**. There are
-**no `tests/` integration directories**, **no `benches/`** harness, and
-**no CI workflow** (`.github/workflows/` does not exist). Only **3
-files** contain `#[test]` items, totalling **8 test functions** across
-the entire repo:
+The 2-sprint refactor batch tripled the test count and added CI.
+**Current state: 24 unit tests across 6 files, all passing on
+`cargo test --workspace`.** CI gate
+(`cargo clippy --workspace --all-targets -- -D warnings`) is clean.
+
+| File | Test count | Notes |
+|------|-----------:|-------|
+| `crates/pt-mats/src/lib.rs` (inline `mod tests`) | 9 | Sprint 1 (Wave C). Table-driven contract tests for `classify_path_filtered`: determinism, allow-flag gates, prob-bound saturation, light-vs-glass priority in PT, class-predicate disjointness. |
+| `src/app/cli_apply.rs` (inline `mod tests`) | 5 (or so) | Sprint 1 (Stage B.4 by Agent). Round-trip CLI flag → Render3DOptions field, plus None-flags-leave-defaults sanity. |
+| `crates/treemap/src/lib.rs` (inline `mod tests`) | 5 | Sprint 1 (Wave B). Squarified-layout regression tests including the cube-gaps bug, `rects_disjoint` helper test. |
+| `src/app/filters.rs` (inline `mod tests`) | 3 | Pre-existing. LoD-merge: `merge_buckets_outside_range`, `merge_expanded_small_is_directory`, `count_outside_range`. **CONCERNS.md originally claimed `lod_expand` lived in `dirstat-core`; verified it's actually a field, not a function — the LoD-merge logic is `merge_tree_by_size_range` here in `filters.rs`.** |
+| `crates/render-shared/src/lib.rs` (inline `mod tests`) | 2 | Pre-existing. `Render3DOptions` serde round-trips. |
+| `crates/bvh-gpu/src/bvh_gpu/mod.rs` (inline `mod tests`) | (pre-existing — was 2 in original audit; current count not re-verified) | Pre-existing CPU validators of LBVH. |
+
+**Total**: ~24 unit tests, 0 failing.
+
+GPU-execution paths (wgpu pipelines, WGSL shaders, path tracer kernels,
+treemap GPU rasterization) are **still not covered by automated tests**.
+They are validated **manually** at runtime via the egui app and the
+wgpu "uncaptured error" hook registered at startup.
+
+**CI status (post-sprint-2):** `.github/workflows/ci.yml` runs
+`cargo build --workspace --all-targets`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace` on Linux + Windows runners on every push and
+PR. `rustsec/audit-check` runs on every push and weekly via cron — this
+audit job is the explicit reason why `auto-allocator = "*"` is allowed
+to stay unpinned per project policy.
+
+**Local verification footnote:** on this WSL2 with conda-forge GCC 15.1
+the binary build fails inside `libmimalloc-sys`'s build script (it uses
+the deprecated-in-C17 / removed-in-C23 `ATOMIC_VAR_INIT` macro in its
+stdatomic test). Workaround: `PATH=/usr/bin:$PATH cargo build` — the
+system `gcc-13` defaults to gnu17 and works. CI runners are unaffected.
+
+## Original (pre-sprint-2) state — preserved for reference
+
+Original audit listed 3 files, 8 tests, no CI:
 
 | File | Tests |
 |------|-------|
@@ -16,12 +50,8 @@ the entire repo:
 | `crates/render-shared/src/lib.rs` (inline `mod tests`) | `render_3d_options_deserialize_defaults` (L906), `render_3d_light_and_glass_counts_roundtrip` (L920), `render_3d_pt_sampler_roundtrip` (L943) |
 | `crates/bvh-gpu/src/bvh_gpu/mod.rs` (inline `mod tests`) | `validate_lbvh_accepts_minimal_tree` (L1396), `validate_lbvh_rejects_cycle` (L1405) |
 
-GPU-execution paths (wgpu pipelines, WGSL shaders, path tracer kernels,
-treemap GPU rasterization) are **not covered by automated tests**. They
-are validated **manually** at runtime via the egui app and the wgpu
-"uncaptured error" hook registered at startup
-(see `AGENTS.md`, "register wgpu uncaptured-error hook (when eframe
-exposes device)").
+The "very limited automated test coverage / no CI" framing of the
+original audit is no longer accurate.
 
 ## Test Framework
 

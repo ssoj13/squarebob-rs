@@ -1,6 +1,15 @@
 # Codebase Structure
 
-**Analysis Date:** 2026-05-09
+**Original analysis:** 2026-05-09
+**Updated:** 2026-05-09 (post-sprint-2)
+
+> **Note:** the directory listings below have been updated to match
+> the post-sprint-2 layout. Stage B refactors split two god-objects
+> (`app/mod.rs` and `render-3d/src/lib.rs`); new submodules
+> (`app/{scan_orchestration,render_loop,screenshot,cli_apply}.rs` and
+> `render-3d/src/renderer3d/{material_cache,instance_collect}.rs`)
+> are reflected here. CONCERNS.md is the source of truth for "what's
+> done vs open"; this file is layout-only.
 
 ## Directory Layout
 
@@ -12,11 +21,10 @@ dirstat-rs/
 ├── README.md                 # User-facing overview, features, shortcuts, build
 ├── AGENTS.md                 # Agent-resume context: SSOT table, ASCII dataflow, open items
 ├── DIAGRAMS.md               # Mermaid diagrams (app layer, NTFS fallback, display pipeline)
-├── TODO.md                   # Active task list
-├── TODO2.md                  # Secondary/historical tasks
-├── plan1.md                  # In-flight implementation plan
-├── task.md                   # Current task spec
+├── TODO4.md                  # Active validated roadmap (supersedes TODO/TODO2/TODO3/plan1/task)
+├── CHANGELOG.md              # Sprint summaries, behaviour-affecting changes
 ├── LICENSE                   # MIT
+├── .github/workflows/ci.yml  # GitHub Actions CI (Linux + Windows + cargo-audit)
 │
 ├── src/                      # Binary crate "dirstat-rs" (egui shell)
 │   ├── main.rs               # CLI parser (CliOptions ~110 fields), env_logger, eframe::run_native
@@ -29,17 +37,21 @@ dirstat-rs/
 │   ├── path_key.rs           # sha256-based stable cache keys (scan_path_id_hex)
 │   ├── cli_test.rs           # `dirstat-rs test ...` headless harness
 │   └── app/                  # egui application module
-│       ├── mod.rs            # App lifecycle, start_scan/poll_scan, render_treemap, run_frame
+│       ├── mod.rs            # App::new, render_treemap, event handling, kb shortcuts (~716 LOC after Stage B.3)
 │       ├── state.rs          # App, PersistState, ScannerMode, ScanProgress, SavedOpts
+│       ├── scan_orchestration.rs  # start_scan, stop_scan, poll_scan, scan_engine_label_for_mode (Stage B.3)
+│       ├── render_loop.rs    # run_frame, handle_events, sync_dock_tabs_visibility (Stage B.3)
+│       ├── screenshot.rs     # handle_screenshot, capture_viewport, save_png (Stage B.3)
+│       ├── cli_apply.rs      # apply_cli_overrides(&mut Render3DOptions, &CliOptions) + tests (Stage B.4)
 │       ├── dock.rs           # egui_dock layout, DockTab, DockTabs
 │       ├── toolbar.rs        # Top toolbar + path bar
 │       ├── status_bar.rs     # Bottom status bar (FPS, samples/sec, scan progress)
 │       ├── tree_panel.rs     # Left virtual file tree
 │       ├── treemap_view.rs   # Central treemap/3D viewport + interactions
 │       ├── ext_panel.rs      # Right extension stats panel
-│       ├── filters.rs        # Tree filter/mask/glob/size-range/exclusion logic
+│       ├── filters.rs        # Tree filter/mask/glob/size-range/exclusion logic + LoD-merge tests
 │       ├── helpers.rs        # compute_ext_stats, compute_size_range, find_node_by_path, fmt_size, disk_free_total
-│       ├── shell.rs          # OS shell ops (reveal in explorer, trash, open terminal)
+│       ├── shell.rs          # OS shell ops + shell_open() helper (logs open::that failures)
 │       ├── presets.rs        # Settings preset save/load + autosave
 │       └── settings/         # Settings panel (modular tabs)
 │           ├── mod.rs
@@ -131,15 +143,23 @@ dirstat-rs/
 │   │   ├── Cargo.toml
 │   │   ├── README.md
 │   │   ├── src/
-│   │   │   ├── lib.rs        # Renderer3D, PtState, MaterialCache (THE hot file)
-│   │   │   ├── geometry.rs   # CubeInstance, CUBE_INDICES
+│   │   │   ├── lib.rs        # Renderer3D, PtState, MatGlobalUniform import, instance_rebuild_count() (~1937 LOC after Stage B.1)
+│   │   │   ├── geometry.rs   # CubeInstance (with material_id slot 9), CUBE_INDICES
 │   │   │   ├── pipelines.rs  # BindGroupLayouts, Pipelines
 │   │   │   ├── targets.rs    # RenderTargets, DynamicBindGroups
 │   │   │   ├── picking.rs    # GPU object-id readback + path mapping
 │   │   │   ├── env_map.rs    # HDR/EXR environment map loader
+│   │   │   ├── renderer3d/   # Stage B.1 extraction
+│   │   │   │   ├── mod.rs    # pub(crate) submodule declarations
+│   │   │   │   ├── material_cache.rs  # MaterialCache, MatGlobalUniform, mat_settings_hash, settings_from_opts
+│   │   │   │   └── instance_collect.rs # impl Renderer3D::collect_cubes + collect_recursive
 │   │   │   └── pt/
-│   │   │       └── wavefront.rs  # Wavefront backend dispatcher
+│   │   │       ├── mod.rs       # PtBackendKind enum
+│   │   │       ├── megakernel.rs # Megakernel backend dispatch
+│   │   │       ├── wavefront.rs  # Wavefront backend dispatch
+│   │   │       └── spectral.rs   # Spectral mode helpers
 │   │   └── shaders/
+│   │       ├── cube_pbr.wgsl     # Per-instance materials via material_id, mat_global UBO (Stage A)
 │   │       ├── cube_object_id.wgsl
 │   │       ├── outline.wgsl
 │   │       └── skybox.wgsl
