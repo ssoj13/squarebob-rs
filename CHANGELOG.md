@@ -8,6 +8,67 @@ adapted for a single-developer workflow that batches by sprint.
 
 ---
 
+## Unreleased — sprint-3 (2026-05-09)
+
+Single-thread post-sprint-2 batch. Closed Stage D.1 (zero-copy 2D-GPU
+display) and refreshed all .planning/ docs + AGENTS.md to match the
+post-sprint-2 codebase. New CHANGELOG.md, ~/.claude/CLAUDE.md
+augmented with cross-project insights.
+
+### Added
+- `crates/treemap/src/wgpu.rs::GpuRenderer2D::render_to_texture(&mut self, ...) -> bool`
+  — renders into the internal `render_texture` with no CPU readback.
+- `crates/treemap/src/wgpu.rs::GpuRenderer2D::get_render_texture(&self) -> Option<&wgpu::Texture>`
+  — borrows the rendered texture for egui registration.
+- `src/app/treemap_view.rs::render_2d_callback` — mirrors
+  `render_3d_callback` for the 2D-GPU zero-copy display path.
+- `CHANGELOG.md` (this file).
+
+### Changed
+- `GpuRenderer2D` render-target texture usage now includes
+  `TEXTURE_BINDING` so egui can sample it without a CPU round-trip.
+- `treemap_view.rs::ui_treemap_pane` — `use_callback` extended to
+  fire on Mode2D + Backend::Gpu (in addition to existing Mode3D),
+  selecting between `render_2d_callback` and `render_3d_callback`.
+- `GpuRenderer2D::render` (the legacy CPU-readback API) now
+  delegates to `render_to_texture` + a separate readback encoder
+  (two submits on the fallback path; readback dominates timing
+  anyway).
+- The two `TODO` markers in `src/app/mod.rs` (per CONCERNS.md the
+  only `TODO` markers in source) replaced with accurate comments
+  describing why this is now the CPU-readback fallback, not the
+  primary path.
+- `CONCERNS.md`, `STRUCTURE.md`, `TESTING.md`, `ARCHITECTURE.md`,
+  `AGENTS.md` — sprint-2 state captured. Originals preserved as
+  historical record where useful.
+
+### Removed
+- 4 blanket `#![allow(dead_code)]` belts in the PT pipeline.rs files
+  (Stage C.3 audit found nothing was actually dead).
+
+### Architectural prep for deferred Stage D.2 (denoiser)
+- The `register_native_texture` infrastructure now used by both 3D
+  and 2D-GPU paths is the integration point for the denoiser's
+  output: PT pipeline gets a `get_denoised_texture() -> Option<&wgpu::Texture>`
+  accessor; treemap_view registers it with egui via the existing
+  `render_texture_id`. No new display path needed.
+
+### Verified locally with `PATH=/usr/bin:$PATH`
+- `cargo build --workspace --all-targets` — ok in ~3-5s warm.
+- `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings.
+- `cargo test --workspace` — 24 unit tests passing.
+
+### Open after sprint-3
+- Stage 0.1 manual UAT (runtime: slider toggle vs `instance_rebuild_count()`).
+- Stage A.1 visual diff (runtime: animate ON × PT ON × materialize FPS).
+- Stage C.6 PT backend canonical-vs-fast-path policy (decision).
+- Stage D.2 denoiser (deferred per user; architecturally prepared).
+- Stage D.3 BVH refit runtime trace (runtime).
+- Stage D.4 `auto-allocator secure` benchmark (runtime).
+- Stage E.3 `npx gitnexus analyze --embeddings` (one user command).
+
+---
+
 ## Unreleased — sprint-2 (2026-05-09)
 
 Multi-agent + main-thread sprint. 16 commits on `main`. Closed 9 of the

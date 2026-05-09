@@ -1,8 +1,35 @@
-# TODO4 — Validated Roadmap (rev 4)
+# TODO4 — Validated Roadmap (rev 5)
 
 **Date:** 2026-05-09
 **Supersedes:** `TODO.md`, `TODO2.md`, `TODO3.md`, `plan1.md`, `task.md`
 (deleted in commit `398f566`).
+
+**rev 5 changes (Stage D.1 + Stage C.3 cleanup + docs refresh):**
+Sprint 3: zero-copy 2D-GPU display path implemented as
+`render_2d_callback` (mirrors the existing `render_3d_callback`).
+`GpuRenderer2D::render_to_texture` + `get_render_texture` are now
+public; render-target texture has `TEXTURE_BINDING` usage. The two
+stale `TODO` markers in `src/app/mod.rs` (the ONLY TODO markers in
+source per CONCERNS.md) replaced with accurate comments describing
+the CPU-readback fallback path.
+
+Architectural note for deferred Stage D.2 (denoiser): the
+`register_native_texture` infrastructure used by both 3D and 2D-GPU
+paths is the natural integration point for the denoiser's RGBA output.
+Add a `get_denoised_texture()` accessor on the PT pipeline → register
+with egui → display via the existing `render_texture_id`. No new
+display infrastructure needed.
+
+Stage C.3 audit closed: removed all four blanket `#![allow(dead_code)]`
+belts in `pt-megakernel`/`pt-wavefront` pipeline.rs files. With the
+allows removed, `cargo clippy --workspace --all-targets -- -D warnings`
+produces 0 warnings — every symbol is reachable.
+
+CONCERNS.md, STRUCTURE.md, TESTING.md, ARCHITECTURE.md, AGENTS.md
+refreshed with post-sprint state. New `CHANGELOG.md` covers sprints
+1–3. ~/.claude/CLAUDE.md updated with cross-project insights (GCC 15
++ libmimalloc workaround, multi-agent orchestration patterns,
+plans-inherit-errors discipline, Rust gotchas).
 
 **rev 4 changes (sprint 2 — multi-agent Stage B + parallel polish):**
 Massive batch of Stage B + C + E work shipped via 2 parallel sub-agents
