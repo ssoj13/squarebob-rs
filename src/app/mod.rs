@@ -617,7 +617,9 @@ impl App {
                 }
                 #[cfg(windows)]
                 ScanMsg::NtfsFallback(msg) => {
-                    self.scanner_mode = ScannerMode::Standard;
+                    // Do NOT mutate self.scanner_mode here — it persists into PersistState
+                    // and would silently strip the user's NTFS preference on the next save.
+                    // The fallback is per-scan recovery; user opt-in is preserved.
                     self.progress.scan_engine_label = Some("jwalk (NTFS fallback)".to_string());
                     self.progress.error =
                         Some(format!("NTFS failed ({}), using standard scanner", msg));

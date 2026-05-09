@@ -36,6 +36,9 @@ pub fn probe_raw_volume_access(path: &Path) -> anyhow::Result<()> {
         })?;
 
     let volume_path = format!("\\\\.\\{}:", drive_letter);
+    // SAFETY: HSTRING owns the wide-string volume path for the call; the flag
+    // bitfields are valid Win32 constants from the windows crate. No raw pointers
+    // are aliased — `None` for security_attributes/template, owned HSTRING input.
     let handle = unsafe {
         CreateFileW(
             &HSTRING::from(&volume_path),
@@ -54,6 +57,8 @@ pub fn probe_raw_volume_access(path: &Path) -> anyhow::Result<()> {
             e
         )
     })?;
+    // SAFETY: `handle` was returned by CreateFileW above (Ok branch reached this
+    // point), is owned exclusively, and is not used after this call.
     unsafe {
         let _ = CloseHandle(handle);
     }
@@ -81,6 +86,9 @@ pub fn is_ntfs_available(path: &Path) -> bool {
     let root_w = HSTRING::from(&root);
     let mut fs_name = [0u16; 64];
 
+    // SAFETY: HSTRING owns the wide-string root path; `fs_name` is a stack-
+    // allocated [u16; 64] borrowed mutably for the duration of the FFI call.
+    // Other out-params are None — Windows tolerates that for unwanted fields.
     unsafe {
         let ok = GetVolumeInformationW(&root_w, None, None, None, None, Some(&mut fs_name));
         if ok.is_ok() {
@@ -319,6 +327,9 @@ fn scan_mft_usn(
     let volume_path = format!("\\\\.\\{}:", drive_letter);
     info!("Opening volume: {}", volume_path);
 
+    // SAFETY: HSTRING owns the wide-string volume path. OPEN_EXISTING +
+    // FILE_FLAG_BACKUP_SEMANTICS is the documented combination to open a raw
+    // volume handle. Caller-supplied flags are validated by the windows crate.
     let handle = unsafe {
         CreateFileW(
             &HSTRING::from(&volume_path),
@@ -352,6 +363,8 @@ fn scan_mft_usn(
 
     loop {
         if cancel.load(Ordering::Relaxed) {
+            // SAFETY: handle is owned, valid (CreateFileW returned Ok), and
+            // closed exactly once before propagating the cancellation error.
             unsafe {
                 let _ = CloseHandle(handle);
             }
@@ -359,6 +372,10 @@ fn scan_mft_usn(
         }
 
         let mut returned: u32 = 0;
+        // SAFETY: `enum_data` is a 24-byte stack array borrowed via *const for
+        // the call; `buffer` is a Vec<u8> with len == buf_size, borrowed mutably
+        // via *mut. The kernel writes at most `buf_size` bytes and reports the
+        // count via `returned`; we read only `&buffer[..returned as usize]` after.
         let ioctl_res = unsafe {
             DeviceIoControl(
                 handle,
@@ -380,6 +397,8 @@ fn scan_mft_usn(
                 if e.code() == HRESULT::from_win32(ERROR_HANDLE_EOF.0) {
                     break;
                 }
+                // SAFETY: handle owned, valid; closed before propagating the
+                // ioctl error so the descriptor does not leak.
                 unsafe {
                     let _ = CloseHandle(handle);
                 }
@@ -414,6 +433,7 @@ fn scan_mft_usn(
         }
     }
 
+    // SAFETY: handle owned, loop exited cleanly, not used after this call.
     unsafe {
         let _ = CloseHandle(handle);
     }
@@ -448,6 +468,8 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
         .ok_or_else(|| anyhow::anyhow!("path must contain a drive letter"))?;
     let volume_path = format!("\\\\.\\{}:", drive_letter);
 
+    // SAFETY: same invariants as scan_mft_usn — HSTRING owns the path,
+    // OPEN_EXISTING + FILE_FLAG_BACKUP_SEMANTICS is the canonical combination.
     let handle = unsafe {
         CreateFileW(
             &HSTRING::from(&volume_path),
@@ -492,6 +514,9 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
         ioctl_round += 1;
 
         let mut returned: u32 = 0;
+        // SAFETY: same invariants as the scan_mft_usn ioctl — `enum_data` is a
+        // 24-byte stack array, `buffer` is a Vec sized to `buf_size`, and we
+        // only read up to `returned` bytes back.
         let ioctl_res = unsafe {
             DeviceIoControl(
                 handle,
@@ -512,6 +537,8 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
                     writeln!(&mut out, "ioctl round {}: EOF {:?}", ioctl_round, e)?;
                     break;
                 }
+                // SAFETY: handle owned, valid; closed before propagating the
+                // ioctl error.
                 unsafe {
                     let _ = CloseHandle(handle);
                 }
@@ -573,6 +600,7 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
         enum_data[0..8].copy_from_slice(&next_ref.to_le_bytes());
     }
 
+    // SAFETY: handle owned, valid; closed once at end of function.
     unsafe {
         let _ = CloseHandle(handle);
     }
@@ -616,6 +644,8 @@ pub fn mft_dump_names(path: &Path, max_names: usize) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("path must contain a drive letter"))?;
     let volume_path = format!("\\\\.\\{}:", drive_letter);
 
+    // SAFETY: same invariants as scan_mft_usn — HSTRING owns the path, valid
+    // OPEN_EXISTING + FILE_FLAG_BACKUP_SEMANTICS combination.
     let handle = unsafe {
         CreateFileW(
             &HSTRING::from(&volume_path),
@@ -651,6 +681,8 @@ pub fn mft_dump_names(path: &Path, max_names: usize) -> anyhow::Result<String> {
             break;
         }
         let mut returned: u32 = 0;
+        // SAFETY: same invariants as the scan_mft_usn ioctl — fixed-size
+        // input/output buffers borrowed for the call; bounded read after.
         let ioctl_res = unsafe {
             DeviceIoControl(
                 handle,
@@ -669,6 +701,8 @@ pub fn mft_dump_names(path: &Path, max_names: usize) -> anyhow::Result<String> {
                 if e.code() == HRESULT::from_win32(ERROR_HANDLE_EOF.0) {
                     break;
                 }
+                // SAFETY: handle owned, valid; closed before propagating the
+                // ioctl error.
                 unsafe {
                     let _ = CloseHandle(handle);
                 }
@@ -694,6 +728,7 @@ pub fn mft_dump_names(path: &Path, max_names: usize) -> anyhow::Result<String> {
         enum_data[0..8].copy_from_slice(&next_ref.to_le_bytes());
     }
 
+    // SAFETY: handle owned, valid; closed once at end of function.
     unsafe {
         let _ = CloseHandle(handle);
     }
