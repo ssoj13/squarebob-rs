@@ -920,3 +920,181 @@ fn default_material() -> GpuMaterial {
         params2: [0.0, 0.1, 1.5, 1.0],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Table-driven tests for `classify_path_filtered`.
+    //!
+    //! The function is the single classify call site in the codebase
+    //! (verified via gitnexus impact: only `MaterialCache.classify_or_get`
+    //! depends on it). Silent behaviour drift here propagates to both PBR
+    //! and PT cube colouring without any compiler warning, so these tests
+    //! pin the contract: light/glass overrides are gated by their
+    //! respective allow flags and probability values, the PT-only branch
+    //! never fires in PBR mode, and the function is deterministic for
+    //! identical inputs.
+    //!
+    //! Strategy: fix one variable (the property under test), iterate the
+    //! `name_hash` across many values, and assert a universal property
+    //! across the iteration. The actual class returned for a single hash
+    //! is implementation detail and intentionally not asserted —
+    //! changing seed, distribution algorithm, or palette ordering must
+    //! not break these tests.
+    use super::*;
+
+    fn settings(allow_lights: bool, allow_glass: bool, is_pt: bool) -> MaterializeSettings {
+        MaterializeSettings {
+            allow_lights,
+            allow_glass,
+            is_pt,
+            ..MaterializeSettings::default()
+        }
+    }
+
+    /// Mix of hashes — simple counter mixed by FNV-style multiplication so
+    /// adjacent values are not also adjacent in hash space.
+    fn hash_set(n: u32) -> impl Iterator<Item = u32> {
+        (0..n).map(|i| i.wrapping_mul(2_654_435_761).wrapping_add(0xDEAD_BEEF))
+    }
+
+    #[test]
+    fn determinism_same_inputs_same_class() {
+        let path = Path::new("/foo/bar/baz.txt");
+        let s = settings(true, true, true);
+        for h in hash_set(50) {
+            let a = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            let b = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            assert_eq!(a, b, "non-deterministic for hash {h}");
+        }
+    }
+
+    #[test]
+    fn no_glass_when_allow_glass_is_false() {
+        let path = Path::new("/x");
+        let s = settings(false, false, false);
+        for h in hash_set(500) {
+            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            assert!(
+                !c.is_glass(),
+                "produced glass class {:?} with allow_glass=false (hash {h})",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn no_light_when_allow_lights_is_false() {
+        let path = Path::new("/x");
+        // is_pt=true so the light branch *would* fire if allow_lights were true.
+        let s = settings(false, false, true);
+        for h in hash_set(500) {
+            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            assert!(
+                !c.is_light(),
+                "produced light class {:?} with allow_lights=false (hash {h})",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn no_light_in_pbr_even_with_allow_lights() {
+        let path = Path::new("/x");
+        // allow_lights=true but is_pt=false. apply_filters guards the light
+        // override on `settings.is_pt`, so PBR mode must never produce lights
+        // even with light_prob saturated.
+        let mut s = settings(true, false, false);
+        s.light_prob = 1.0;
+        for h in hash_set(500) {
+            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            assert!(
+                !c.is_light(),
+                "PBR mode produced light {:?} (hash {h})",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn glass_prob_zero_means_never_glass() {
+        let path = Path::new("/x");
+        let mut s = settings(false, true, false);
+        s.glass_prob = 0.0;
+        for h in hash_set(500) {
+            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            assert!(
+                !c.is_glass(),
+                "glass_prob=0 produced glass {:?} (hash {h})",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn glass_prob_one_pbr_always_glass() {
+        let path = Path::new("/x");
+        // is_pt=false → light branch can't fire → glass branch sees 100% of inputs.
+        let mut s = settings(false, true, false);
+        s.glass_prob = 1.0;
+        for h in hash_set(500) {
+            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            assert!(
+                c.is_glass(),
+                "glass_prob=1 produced non-glass {:?} (hash {h})",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn light_prob_one_pt_always_light() {
+        let path = Path::new("/x");
+        // is_pt=true and light_prob=1.0 → light branch always fires before glass.
+        let mut s = settings(true, false, true);
+        s.light_prob = 1.0;
+        for h in hash_set(500) {
+            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            assert!(
+                c.is_light(),
+                "light_prob=1 in PT produced non-light {:?} (hash {h})",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn light_branch_takes_priority_over_glass_in_pt() {
+        let path = Path::new("/x");
+        // Both allowed at prob=1 in PT — light fires first per apply_filters().
+        let mut s = settings(true, true, true);
+        s.light_prob = 1.0;
+        s.glass_prob = 1.0;
+        for h in hash_set(200) {
+            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+            assert!(
+                c.is_light(),
+                "light should win over glass in PT, got {:?} (hash {h})",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn class_predicates_are_disjoint() {
+        // Sanity: a class is never both light and glass.
+        use MaterialClass::*;
+        for c in [
+            Default, Rubber, GlassClear, GlassBlue, GlassGreen, GlassAmber, GlassPink,
+            Metal, Plastic, Water, Emissive, LightWarm2700, LightWarm3500, LightNeutral4500,
+            LightCool6500, LightCool10000, Paint, Chalk, Ceramic, Concrete, Gold, Copper,
+            Silver, Ruby, Jade, Diamond, Velvet, Wood, Marble, Neon, NeonPink, NeonPurple,
+            NeonOrange, NeonBlue,
+        ] {
+            assert!(
+                !(c.is_light() && c.is_glass()),
+                "class {:?} reports both is_light and is_glass",
+                c
+            );
+        }
+    }
+}
