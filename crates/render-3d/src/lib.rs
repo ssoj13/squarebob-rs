@@ -629,7 +629,7 @@ impl Renderer3D {
 
         // Own an `Arc` so we can call `pick_from_existing` (`&mut self`) without borrowing `cached_instances`.
         let instances_arc: Arc<Vec<CubeInstance>> = if cache_valid {
-            Arc::clone(self.cached_instances.as_ref().unwrap())
+            Arc::clone(self.cached_instances.as_ref().expect("cached_instances not built — collect_cubes must run before render"))
         } else {
             log::debug!(
                 "cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
@@ -757,9 +757,9 @@ impl Renderer3D {
 
             // Add outline pass for PT mode (render over PT result)
             if opts.hover_mode != HoverMode::None && hovered_id != 0 {
-                let targets = self.targets.as_ref().unwrap();
-                let dyn_bgs = self.dyn_bgs.as_ref().unwrap();
-                let ib = self.instance_buffer.as_ref().unwrap();
+                let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
+                let dyn_bgs = self.dyn_bgs.as_ref().expect("dyn_bgs not built — call ensure_render_targets before render");
+                let ib = self.instance_buffer.as_ref().expect("instance_buffer not built — collect_cubes must upload before encode_passes");
 
                 let mut enc =
                     self.ctx
@@ -832,8 +832,8 @@ impl Renderer3D {
         }
 
         // Encode PBR/wireframe passes
-        let targets = self.targets.as_ref().unwrap();
-        let dyn_bgs = self.dyn_bgs.as_ref().unwrap();
+        let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
+        let dyn_bgs = self.dyn_bgs.as_ref().expect("dyn_bgs not built — call ensure_render_targets before render");
         info!(
             "render_to_view: calling encode_passes, targets {:?}",
             targets.size
@@ -842,7 +842,7 @@ impl Renderer3D {
         info!("render_to_view: encode_passes done, submitting");
 
         // Submit picking readback (uses pending_pick set by set_mouse_pos)
-        let targets = self.targets.as_ref().unwrap();
+        let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
         self.picking
             .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
 
@@ -955,7 +955,7 @@ impl Renderer3D {
             self.targets = Some(targets);
         } else if self.dyn_bgs.is_none() {
             // Recreate dynamic bind groups (e.g. after env map change)
-            let targets = self.targets.as_ref().unwrap();
+            let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
             self.dyn_bgs = Some(DynamicBindGroups::new(
                 &self.ctx.device,
                 &self.layouts,
@@ -1713,7 +1713,7 @@ impl Renderer3D {
 
         let instances = if cache_valid {
             // Reuse cached instances
-            self.cached_instances.as_ref().unwrap()
+            self.cached_instances.as_ref().expect("cached_instances not built — collect_cubes must run before render")
         } else {
             log::debug!(
                 "PT cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
@@ -1751,11 +1751,11 @@ impl Renderer3D {
                 self.cached_instances = Some(arc);
                 self.cached_opts_hash = opts_hash;
                 self.cached_layout_size = (layout_w, layout_h);
-                self.cached_instances.as_ref().unwrap()
+                self.cached_instances.as_ref().expect("cached_instances not built — collect_cubes must run before render")
             } else {
                 // For animated mode, store temporarily and return reference
                 self.cached_instances = Some(arc);
-                self.cached_instances.as_ref().unwrap()
+                self.cached_instances.as_ref().expect("cached_instances not built — collect_cubes must run before render")
             }
         };
 
@@ -1835,18 +1835,18 @@ impl Renderer3D {
 
         // We need targets and dyn_bgs — borrow them safely
         let passes_start = std::time::Instant::now();
-        let targets = self.targets.as_ref().unwrap();
-        let dyn_bgs = self.dyn_bgs.as_ref().unwrap();
+        let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
+        let dyn_bgs = self.dyn_bgs.as_ref().expect("dyn_bgs not built — call ensure_render_targets before render");
         self.encode_passes(&mut encoder, targets, dyn_bgs, opts, hovered_id);
         let passes_ms = passes_start.elapsed().as_secs_f64() * 1000.0;
         debug!("render_passes: {:.2}ms", passes_ms);
 
         // Submit picking readback
-        let targets = self.targets.as_ref().unwrap();
+        let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
         self.picking
             .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
 
-        let targets = self.targets.as_ref().unwrap();
+        let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
         let output_buffer = gpu::readback_texture(
             &self.ctx,
             &mut encoder,

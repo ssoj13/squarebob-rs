@@ -479,7 +479,7 @@ pub(crate) fn render_path_traced_no_readback(
         pt.update_adaptive_sample_map(&mut encoder, &renderer.ctx.queue);
     }
 
-    let targets = renderer.targets.as_ref().unwrap();
+    let targets = renderer.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
     pt.blit(&mut encoder, &targets.render_view);
     log::trace!("PT: blit called, target size {:?}", targets.size);
 
@@ -1016,7 +1016,7 @@ pub(crate) fn render_path_traced(
     );
 
     let blit_start = std::time::Instant::now();
-    let targets = renderer.targets.as_ref().unwrap();
+    let targets = renderer.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
     pt.blit(&mut encoder, &targets.render_view);
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);
