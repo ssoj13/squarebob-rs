@@ -438,6 +438,25 @@ struct RenderRect {
     surface: [f64; 4],
 }
 
+/// Pairwise disjoint check used by `debug_assert!` in `render`. O(n²); only
+/// runs in debug builds (release optimises the dead branch away). Two rects
+/// overlap iff both x and y ranges overlap.
+#[allow(dead_code)]
+fn rects_disjoint(rects: &[RenderRect]) -> bool {
+    for i in 0..rects.len() {
+        for j in (i + 1)..rects.len() {
+            let a = &rects[i];
+            let b = &rects[j];
+            let x_overlap = a.lx < b.rx && b.lx < a.rx;
+            let y_overlap = a.ly < b.ry && b.ly < a.ry;
+            if x_overlap && y_overlap {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Render the treemap into an RGBA pixel buffer (parallel version)
 pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -> Vec<u8> {
     let w = width as usize;
@@ -474,6 +493,14 @@ pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -
         opts.height,
         true,
         0,
+    );
+
+    // Layout invariant: rects must not overlap. The solid-mode parallel
+    // path writes through a raw pointer relying on this; the cushion-mode
+    // row-parallel path also assumes per-rect ranges are independent.
+    debug_assert!(
+        rects_disjoint(&rects),
+        "treemap layout produced overlapping rects — layout regression?"
     );
 
     // Render based on mode
@@ -820,4 +847,153 @@ pub fn hit_test(node: &DirEntry, x: f32, y: f32) -> Option<&DirEntry> {
     }
 
     Some(node)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn file(name: &str, size: u64) -> DirEntry {
+        DirEntry::new_file(
+            name.to_string(),
+            PathBuf::from(name),
+            size,
+            "txt".to_string(),
+            None,
+        )
+    }
+
+    fn dir_with(name: &str, mut children: Vec<DirEntry>) -> DirEntry {
+        let mut d = DirEntry::new_dir(name.to_string(), PathBuf::from(name));
+        for c in &children {
+            d.size += c.size;
+            d.file_count += c.file_count;
+        }
+        // layout requires children sorted by size descending
+        children.sort_unstable_by_key(|c| std::cmp::Reverse(c.size));
+        d.children = children;
+        d
+    }
+
+    fn rect_area(r: [f32; 4]) -> f32 {
+        r[2] * r[3]
+    }
+
+    fn rects_overlap(a: [f32; 4], b: [f32; 4]) -> bool {
+        let ax2 = a[0] + a[2];
+        let ay2 = a[1] + a[3];
+        let bx2 = b[0] + b[2];
+        let by2 = b[1] + b[3];
+        // Overlap iff both x and y ranges overlap (open intervals).
+        a[0] < bx2 && b[0] < ax2 && a[1] < by2 && b[1] < ay2
+    }
+
+    #[test]
+    fn layout_two_equal_children_cover_parent_no_overlap() {
+        let root = dir_with("root", vec![file("a", 50), file("b", 50)]);
+        let opts = TreeMapOptions::default();
+        layout(&root, 0.0, 0.0, 100.0, 100.0, &opts);
+
+        let r0 = root.children[0].rect.get();
+        let r1 = root.children[1].rect.get();
+
+        // Children together cover parent area (this is the cube-gaps regression test).
+        let parent_area = 100.0 * 100.0;
+        let area_sum = rect_area(r0) + rect_area(r1);
+        assert!(
+            (area_sum - parent_area).abs() < 1.0,
+            "child area sum {area_sum} != parent area {parent_area}; rects {r0:?} {r1:?}"
+        );
+
+        // No overlap.
+        assert!(
+            !rects_overlap(r0, r1),
+            "two children overlap: {r0:?} vs {r1:?}"
+        );
+    }
+
+    #[test]
+    fn layout_three_unequal_children_sum_to_parent() {
+        let root = dir_with(
+            "root",
+            vec![file("big", 70), file("med", 20), file("small", 10)],
+        );
+        let opts = TreeMapOptions::default();
+        layout(&root, 0.0, 0.0, 200.0, 100.0, &opts);
+
+        let parent_area = 200.0 * 100.0;
+        let area_sum: f32 = root.children.iter().map(|c| rect_area(c.rect.get())).sum();
+        assert!(
+            (area_sum - parent_area).abs() < 1.0,
+            "child area sum {area_sum} != parent area {parent_area}"
+        );
+
+        // Pairwise no-overlap.
+        for i in 0..root.children.len() {
+            for j in (i + 1)..root.children.len() {
+                let a = root.children[i].rect.get();
+                let b = root.children[j].rect.get();
+                assert!(!rects_overlap(a, b), "child {i} overlaps child {j}");
+            }
+        }
+    }
+
+    #[test]
+    fn layout_empty_dir_keeps_assigned_rect() {
+        // size==0 short-circuits in `layout`; rect should still be set.
+        let root = DirEntry::new_dir("empty".to_string(), PathBuf::from("empty"));
+        let opts = TreeMapOptions::default();
+        layout(&root, 5.0, 10.0, 20.0, 30.0, &opts);
+        assert_eq!(root.rect.get(), [5.0, 10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn layout_sequoia_style_also_covers_parent() {
+        let root = dir_with(
+            "root",
+            vec![file("a", 40), file("b", 30), file("c", 20), file("d", 10)],
+        );
+        let mut opts = TreeMapOptions::default();
+        opts.style = LayoutStyle::SequoiaView;
+        layout(&root, 0.0, 0.0, 300.0, 200.0, &opts);
+
+        let parent_area = 300.0 * 200.0;
+        let area_sum: f32 = root.children.iter().map(|c| rect_area(c.rect.get())).sum();
+        assert!(
+            (area_sum - parent_area).abs() < 2.0,
+            "sequoia: child area sum {area_sum} != parent area {parent_area}"
+        );
+    }
+
+    #[test]
+    fn rects_disjoint_helper_detects_overlap() {
+        let a = RenderRect {
+            lx: 0,
+            ly: 0,
+            rx: 10,
+            ry: 10,
+            color: [0; 3],
+            surface: [0.0; 4],
+        };
+        let b = RenderRect {
+            lx: 5,
+            ly: 5,
+            rx: 15,
+            ry: 15,
+            color: [0; 3],
+            surface: [0.0; 4],
+        };
+        let c = RenderRect {
+            lx: 20,
+            ly: 20,
+            rx: 30,
+            ry: 30,
+            color: [0; 3],
+            surface: [0.0; 4],
+        };
+
+        assert!(!rects_disjoint(&[a.clone(), b.clone()]), "a/b overlap");
+        assert!(rects_disjoint(&[a, c]), "a/c are disjoint");
+    }
 }
