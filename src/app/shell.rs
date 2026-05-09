@@ -6,6 +6,18 @@
 
 use std::path::Path;
 
+/// Wrapper around `open::that` that logs failures instead of silently
+/// dropping them. Centralises the `let _ = open::that(...)` pattern that
+/// used to swallow errors at 5 call sites across the app — now any
+/// missing handler / unsupported MIME / path issue lands in env_logger
+/// output instead of vanishing.
+pub(super) fn shell_open<P: AsRef<Path>>(path: P) {
+    let p = path.as_ref();
+    if let Err(e) = open::that(p) {
+        log::warn!("Failed to open '{}': {}", p.display(), e);
+    }
+}
+
 // ── Cross-platform context menu labels ──
 
 /// Get platform-specific label for "reveal in file manager" action
@@ -91,13 +103,13 @@ pub(super) fn shell_reveal(path: &Path) {
             .spawn();
         if dbus_result.is_err() {
             // Fallback: just open the containing folder
-            let _ = open::that(dir);
+            shell_open(dir);
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let dir = path_to_dir(path);
-        let _ = open::that(dir);
+        shell_open(dir);
     }
 }
 

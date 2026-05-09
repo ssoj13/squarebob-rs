@@ -13,7 +13,7 @@ use super::App;
 use super::helpers::{find_node_by_path, fmt_size, path_to_dir};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::shell::{properties_label, shell_properties};
-use super::shell::{reveal_label, shell_open_terminal, shell_reveal, shell_trash, trash_label};
+use super::shell::{reveal_label, shell_open, shell_open_terminal, shell_reveal, shell_trash, trash_label};
 use super::state::HoverInfo;
 
 impl App {
@@ -796,12 +796,12 @@ impl App {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_min_width(180.0);
                     if ui.button("Open").clicked() {
-                        let _ = open::that(&menu_path);
+                        shell_open(&menu_path);
                         close = true;
                     }
                     if ui.button("Open folder").clicked() {
                         let dir = path_to_dir(&menu_path);
-                        let _ = open::that(dir);
+                        shell_open(dir);
                         close = true;
                     }
                     if ui.button(reveal_label()).clicked() {

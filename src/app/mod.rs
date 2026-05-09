@@ -1318,7 +1318,7 @@ impl App {
         }
         if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.alt) {
             if let Some(sel) = &self.selected_path {
-                let _ = open::that(sel);
+                shell::shell_open(sel);
             }
         }
         #[cfg(any(target_os = "windows", target_os = "macos"))]
