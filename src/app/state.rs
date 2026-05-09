@@ -220,6 +220,12 @@ pub struct App {
     pub(super) last_fps: f32,
     pub(super) last_samples_per_sec: f32,
     pub(super) last_samples_per_frame: u32,
+    /// Sliding 1-second window of (timestamp, frame_ms) pairs. Used to compute
+    /// `avg_frame_ms` / `avg_fps` shown in the status bar — a stable bench display
+    /// that ignores per-frame jitter.
+    pub(super) frame_history: std::collections::VecDeque<(std::time::Instant, f32)>,
+    pub(super) avg_frame_ms: f32,
+    pub(super) avg_fps: f32,
     pub(super) mem_used_mb: u64,
     pub(super) mem_total_mb: u64,
     pub(super) last_mem_update: std::time::Instant,
@@ -342,6 +348,9 @@ impl Default for App {
             render_tick_3d: true,
             last_frame_ms: 0.0,
             last_fps: 0.0,
+            frame_history: std::collections::VecDeque::with_capacity(256),
+            avg_frame_ms: 0.0,
+            avg_fps: 0.0,
             last_samples_per_sec: 0.0,
             last_samples_per_frame: 0,
             mem_used_mb: 0,

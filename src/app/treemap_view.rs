@@ -1042,6 +1042,25 @@ impl App {
             } else {
                 0.0
             };
+            // 1-second sliding-window bench: stable readings for benchmarking.
+            // Push current frame's interval (which captures actual wall time between
+            // frames, including idle/limit gaps), drop entries older than 1s, average.
+            self.frame_history
+                .push_back((now, interval_ms.max(0.0) as f32));
+            let cutoff = now - std::time::Duration::from_secs(1);
+            while let Some(&(t, _)) = self.frame_history.front() {
+                if t < cutoff {
+                    self.frame_history.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if self.frame_history.len() >= 2 {
+                let sum_ms: f32 = self.frame_history.iter().map(|(_, m)| *m).sum();
+                let avg = sum_ms / self.frame_history.len() as f32;
+                self.avg_frame_ms = avg;
+                self.avg_fps = if avg > 0.0 { 1000.0 / avg } else { 0.0 };
+            }
             if pt_throttled {
                 self.render_tick_3d = false;
             }

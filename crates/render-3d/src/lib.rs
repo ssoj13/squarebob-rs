@@ -21,11 +21,13 @@ use wgpu::util::DeviceExt;
 
 use dirstat_core::DirEntry;
 use pt_core::bvh::GpuMaterial;
-use pt_mats::{classify_path_filtered, MaterialLibrary, MaterializeMode, MaterializeSettings};
+use pt_mats::{
+    classify_path_filtered, MaterialClass, MaterialLibrary, MaterializeMode, MaterializeSettings,
+};
 use render_core::gpu::{self, GpuContext};
 use render_shared::{
     hash_transform, hash_transform_offset, name_hash, CameraUniform, CubeHeightMode,
-    EnvParamsUniform, HoverMode, HoverParamsUniform, LightRigUniform, MaterialParamsUniform,
+    EnvParamsUniform, HoverMode, HoverParamsUniform, LightRigUniform,
     OrbitCamera, Render3DOptions,
 };
 use treemap::{self, TreeMapOptions};
@@ -74,6 +76,122 @@ impl Default for PtState {
     }
 }
 
+/// Global material params shared across all cubes in the PBR shader. Currently holds
+/// only the materialize-mix (instance color → library albedo blend factor). Kept
+/// separate from per-instance data so the slider doesn't trigger an instance rebuild.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MatGlobalUniform {
+    materialize_mix: f32,
+    _pad: [f32; 3],
+}
+
+impl Default for MatGlobalUniform {
+    fn default() -> Self {
+        Self {
+            materialize_mix: 1.0,
+            _pad: [0.0; 3],
+        }
+    }
+}
+
+/// Per-path material classification cache. Invalidated only when material settings
+/// change; survives layout/animation/camera updates.
+#[derive(Default)]
+struct MaterialCache {
+    settings_hash: u64,
+    classes_pbr: std::collections::HashMap<u32, MaterialClass>,
+    classes_pt: std::collections::HashMap<u32, MaterialClass>,
+}
+
+impl MaterialCache {
+    /// Drop cached classifications when mat-settings hash changes. Call once per frame
+    /// before any classify_or_get calls.
+    fn ensure(&mut self, opts: &Render3DOptions) {
+        let h = mat_settings_hash(opts);
+        if h != self.settings_hash {
+            self.classes_pbr.clear();
+            self.classes_pt.clear();
+            self.settings_hash = h;
+        }
+    }
+
+    /// Look up the cached class for `path` or compute it. `is_pt` selects the PT-specific
+    /// classification path (light overrides depend on `is_pt`).
+    fn classify_or_get(
+        &mut self,
+        path: &std::path::Path,
+        size: u64,
+        opts: &Render3DOptions,
+        is_pt: bool,
+    ) -> MaterialClass {
+        if opts.materialize_mode == MaterializeMode::None {
+            return MaterialClass::Default;
+        }
+        let path_str = path.to_string_lossy();
+        let path_hash = name_hash(&path_str);
+        let bucket = if is_pt {
+            &mut self.classes_pt
+        } else {
+            &mut self.classes_pbr
+        };
+        if let Some(&c) = bucket.get(&path_hash) {
+            return c;
+        }
+        let class = classify_path_filtered(
+            path,
+            size,
+            path_hash,
+            opts.materialize_mode,
+            settings_from_opts(opts, is_pt),
+        );
+        bucket.insert(path_hash, class);
+        class
+    }
+}
+
+/// Hash of all option fields the material classifier reads. Excludes runtime knobs
+/// like `materialize_mix` (handled in shader) and animation/camera state.
+fn mat_settings_hash(opts: &Render3DOptions) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (opts.materialize_mode as u8).hash(&mut h);
+    opts.mat_allow_lights.hash(&mut h);
+    opts.mat_light_prob.to_bits().hash(&mut h);
+    opts.mat_light_warm.to_bits().hash(&mut h);
+    opts.mat_light_cool.to_bits().hash(&mut h);
+    opts.mat_allow_glass.hash(&mut h);
+    opts.mat_glass_prob.to_bits().hash(&mut h);
+    opts.mat_seed.hash(&mut h);
+    (opts.mat_source as u8).hash(&mut h);
+    (opts.mat_distribution as u8).hash(&mut h);
+    opts.mat_quant_levels.hash(&mut h);
+    opts.mat_band_count.hash(&mut h);
+    opts.mat_spatial_scale.to_bits().hash(&mut h);
+    opts.mat_include_dirs.hash(&mut h);
+    h.finish()
+}
+
+/// Build `MaterializeSettings` from `Render3DOptions`. Single source of truth so PBR
+/// and PT paths stay in sync.
+fn settings_from_opts(opts: &Render3DOptions, is_pt: bool) -> MaterializeSettings {
+    MaterializeSettings {
+        allow_lights: opts.mat_allow_lights,
+        light_prob: opts.mat_light_prob,
+        light_warm: opts.mat_light_warm,
+        light_cool: opts.mat_light_cool,
+        allow_glass: opts.mat_allow_glass,
+        glass_prob: opts.mat_glass_prob,
+        is_pt,
+        seed: opts.mat_seed,
+        source: opts.mat_source,
+        distribution: opts.mat_distribution,
+        quant_levels: opts.mat_quant_levels,
+        band_count: opts.mat_band_count,
+        spatial_scale: opts.mat_spatial_scale,
+    }
+}
+
 /// 3D Renderer with multi-pass PBR pipeline
 pub struct Renderer3D {
     ctx: Arc<GpuContext>,
@@ -88,7 +206,14 @@ pub struct Renderer3D {
     // Uniform buffers
     camera_buf: wgpu::Buffer,
     light_rig_buf: wgpu::Buffer,
-    material_buf: wgpu::Buffer,
+    /// Storage buffer holding the full `MaterialLibrary` (array of GpuMaterial).
+    /// Indexed per cube via `CubeInstance.material_id` in the PBR shader. Owned by
+    /// the renderer so the bind group keeps a live GPU handle (dead-code lint can't
+    /// see the bind group reference).
+    #[allow(dead_code)]
+    materials_buf: wgpu::Buffer,
+    /// UBO with global mat params (currently `materialize_mix`).
+    mat_global_buf: wgpu::Buffer,
     env_params_buf: wgpu::Buffer,
     hover_params_buf: wgpu::Buffer,
     /// Selected IDs buffer for object_id shader (marks selected with SELECTED_BIT)
@@ -126,6 +251,9 @@ pub struct Renderer3D {
 
     // Material presets (for PT materializer)
     material_library: MaterialLibrary,
+
+    // Per-path classification cache; invalidated only on mat-settings change.
+    mat_cache: MaterialCache,
 
     // Instance cache (for static scenes without animation)
     cached_instances: Option<Arc<Vec<geometry::CubeInstance>>>,
@@ -356,9 +484,17 @@ impl Renderer3D {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let material_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Material UBO"),
-            contents: bytemuck::bytes_of(&MaterialParamsUniform::default()),
+        // Per-instance material library: storage buffer with full GpuMaterial array.
+        // Sized & filled from the in-memory MaterialLibrary used by both PBR and PT.
+        let material_library = MaterialLibrary::new();
+        let materials_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Materials Storage"),
+            contents: bytemuck::cast_slice(material_library.materials()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let mat_global_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("MatGlobal UBO"),
+            contents: bytemuck::bytes_of(&MatGlobalUniform::default()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -400,7 +536,11 @@ impl Renderer3D {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: material_buf.as_entire_binding(),
+                    resource: materials_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: mat_global_buf.as_entire_binding(),
                 },
             ],
         });
@@ -443,7 +583,8 @@ impl Renderer3D {
             instance_count: 0,
             camera_buf,
             light_rig_buf,
-            material_buf,
+            materials_buf,
+            mat_global_buf,
             env_params_buf,
             hover_params_buf,
             selected_ids_buf,
@@ -459,7 +600,8 @@ impl Renderer3D {
             mouse_pos: None,
             light_rig,
             pt: PtState::default(),
-            material_library: MaterialLibrary::new(),
+            material_library,
+            mat_cache: MaterialCache::default(),
             cached_instances: None,
             cached_opts_hash: 0,
             cached_layout_size: (0, 0),
@@ -518,6 +660,10 @@ impl Renderer3D {
         }
         w.hash(&mut hasher);
         h.hash(&mut hasher);
+        // Material settings (mode/seed/lights/glass/etc.) need to bake into the instance
+        // hash because they change per-cube `material_id`. `materialize_mix` is excluded
+        // from this hash (handled by shader uniform), so the slider stays live.
+        mat_settings_hash(opts).hash(&mut hasher);
         hasher.finish()
     }
 
@@ -952,6 +1098,8 @@ impl Renderer3D {
         if need_picking {
             self.picking.reset_frame();
         }
+        // Drop mat-class cache once per frame if mat-settings changed.
+        self.mat_cache.ensure(opts);
         let mut instances = Vec::new();
         let lod_ctx = if opts.lod_enabled {
             Some((camera_eye, screen_height, fov, opts.lod_min_screen_size))
@@ -1057,17 +1205,6 @@ impl Renderer3D {
             }
             CubeHeightMode::Constant => height_value * opts.height_scale * 10.0,
         }
-    }
-
-    fn node_footprint(node: &DirEntry, x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32, f32) {
-        if node.is_dir {
-            return (x, y, w.max(0.5), h.max(0.5));
-        }
-
-        let side = w.min(h).max(0.5);
-        let cx = x + w * 0.5;
-        let cy = y + h * 0.5;
-        (cx - side * 0.5, cy - side * 0.5, side, side)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1218,61 +1355,23 @@ impl Renderer3D {
                 }
             }
 
-            let mix = if opts.materialize_mode != MaterializeMode::None {
-                opts.materialize_mix.clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-
             let allow_dirs = opts.mat_include_dirs || !node.is_dir;
-            let materialized_color = if opts.materialize_mode != MaterializeMode::None && allow_dirs
-            {
-                let mat_class = classify_path_filtered(
-                    &node.path,
-                    node.size,
-                    name_hash(&node.path.to_string_lossy()),
-                    opts.materialize_mode,
-                    MaterializeSettings {
-                        allow_lights: opts.mat_allow_lights,
-                        light_prob: opts.mat_light_prob,
-                        light_warm: opts.mat_light_warm,
-                        light_cool: opts.mat_light_cool,
-                        allow_glass: opts.mat_allow_glass,
-                        glass_prob: opts.mat_glass_prob,
-                        is_pt: false,
-                        seed: opts.mat_seed,
-                        source: opts.mat_source,
-                        distribution: opts.mat_distribution,
-                        quant_levels: opts.mat_quant_levels,
-                        band_count: opts.mat_band_count,
-                        spatial_scale: opts.mat_spatial_scale,
-                    },
-                );
-                let color = mat_class.color();
-                Some([
-                    color[0] as f32 / 255.0,
-                    color[1] as f32 / 255.0,
-                    color[2] as f32 / 255.0,
-                    1.0,
-                ])
+            // Material classification is cached, so this is O(1) on warm cache.
+            // The shader handles albedo blending via `mat_global.materialize_mix`,
+            // so we do NOT lerp on the CPU anymore — instances stay stable across
+            // slider changes, the slider itself just rewrites the small UBO.
+            let mat_class = if opts.materialize_mode != MaterializeMode::None && allow_dirs {
+                self.mat_cache
+                    .classify_or_get(&node.path, node.size, opts, false)
             } else {
-                None
+                MaterialClass::Default
             };
-
-            let color_f = if let Some(mat_color) = materialized_color {
-                base_color[0] = base_color[0] + (mat_color[0] - base_color[0]) * mix;
-                base_color[1] = base_color[1] + (mat_color[1] - base_color[1]) * mix;
-                base_color[2] = base_color[2] + (mat_color[2] - base_color[2]) * mix;
-                base_color
-            } else {
-                base_color
-            };
-            let mut color_f = color_f;
-            color_f[3] = mix;
+            let material_id = self.material_library.material_id(mat_class);
+            // color_f is the pure color_mode result (per-instance tint).
+            let color_f = base_color;
 
             // Treemap XY -> 3D XY (wall facing camera), depth (height) along -Z
-            let (fx, fy, fw, fh) = Self::node_footprint(node, x, y, w, h);
-            let pos = Vec3::new(fx + fw / 2.0, -(fy + fh / 2.0), -base_height / 2.0);
+            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
             let transform = hash_transform(
                 &node.name,
                 pos,
@@ -1283,7 +1382,7 @@ impl Renderer3D {
             );
             let model = Mat4::from_translation(pos + transform.offset)
                 * Mat4::from_quat(transform.rotation)
-                * Mat4::from_scale(Vec3::new(fw, fh, base_height.max(0.5)));
+                * Mat4::from_scale(Vec3::new(w.max(0.5), h.max(0.5), base_height.max(0.5)));
 
             let hash = name_hash(&node.name);
             let oid = if need_picking {
@@ -1291,7 +1390,7 @@ impl Renderer3D {
             } else {
                 0
             };
-            out.push(CubeInstance::new(model, color_f, hash, oid));
+            out.push(CubeInstance::new(model, color_f, hash, oid, material_id));
         } else {
             let my_hash = treemap::path_hash(&node.name, dir_hash);
             for child in &node.children {
@@ -1407,8 +1506,7 @@ impl Renderer3D {
         if !node.is_dir || node.children.is_empty() || too_small {
             let base_height = Self::compute_cube_height(node, depth, opts);
 
-            let (fx, fy, fw, fh) = Self::node_footprint(node, x, y, w, h);
-            let pos = Vec3::new(fx + fw / 2.0, -(fy + fh / 2.0), -base_height / 2.0);
+            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
             let offset = hash_transform_offset(
                 &node.name,
                 pos,
@@ -1418,7 +1516,7 @@ impl Renderer3D {
                 opts.animation_time,
             );
             let center = pos + offset;
-            let scale = Vec3::new(fw, fh, base_height.max(0.5));
+            let scale = Vec3::new(w.max(0.5), h.max(0.5), base_height.max(0.5));
             let half = scale * 0.5;
             let min = center - half;
             let max = center + half;
@@ -1488,14 +1586,19 @@ impl Renderer3D {
 
         q.write_buffer(&self.light_rig_buf, 0, bytemuck::bytes_of(&self.light_rig));
 
+        // Per-frame mat-global update. Cheap (16 bytes); enables live materialize_mix
+        // slider without rebuilding cube instances.
+        let mat_mix = if opts.materialize_mode != MaterializeMode::None {
+            opts.materialize_mix.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         q.write_buffer(
-            &self.material_buf,
+            &self.mat_global_buf,
             0,
-            bytemuck::bytes_of(&MaterialParamsUniform {
-                roughness: opts.roughness,
-                metalness: opts.metalness,
-                specular_ior: opts.specular_ior,
-                specular_weight: 1.0,
+            bytemuck::bytes_of(&MatGlobalUniform {
+                materialize_mix: mat_mix,
+                _pad: [0.0; 3],
             }),
         );
 

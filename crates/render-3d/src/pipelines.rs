@@ -89,7 +89,18 @@ impl BindGroupLayouts {
                 entries: &[
                     uniform_entry(0, vf), // Camera
                     uniform_entry(1, f),  // LightRig
-                    uniform_entry(2, f),  // Material
+                    // Per-instance material library (storage array of GpuMaterial)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: vf,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    uniform_entry(3, f), // Global mat params (materialize_mix)
                 ],
             }),
             env: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

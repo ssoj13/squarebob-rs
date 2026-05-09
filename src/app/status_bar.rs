@@ -75,8 +75,20 @@ impl App {
                         ));
                     }
                     if self.last_frame_ms > 0.0 {
-                        let mut stats =
-                            format!("{:.1} FPS | {:.1} ms", self.last_fps, self.last_frame_ms);
+                        // Show 1-second averaged FPS/ms when we have enough samples,
+                        // otherwise fall back to the instantaneous reading. Stable
+                        // values are easier to read while benchmarking.
+                        let (fps, ms) = if self.frame_history.len() >= 2 {
+                            (self.avg_fps, self.avg_frame_ms)
+                        } else {
+                            (self.last_fps, self.last_frame_ms)
+                        };
+                        let mut stats = format!(
+                            "{:.1} FPS | {:.2} ms (1s avg, n={})",
+                            fps,
+                            ms,
+                            self.frame_history.len()
+                        );
                         if self.last_samples_per_sec > 0.0 {
                             stats.push_str(&format!(" | {:.0} spp/s", self.last_samples_per_sec));
                         }

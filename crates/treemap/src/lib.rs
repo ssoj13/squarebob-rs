@@ -152,6 +152,22 @@ fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
         return;
     }
 
+    // KDirStat splits the parent rect along its long axis into full-length rows.
+    // Two failure modes produce slivers:
+    //   (a) the parent itself is already a sliver — every row inherits the bad aspect.
+    //   (b) tiny dominant child within a normal parent — full-pw row × tiny row_h
+    //       gives the child a horizontal sliver.
+    // Squarified layout solves both because rows occupy only the length they need.
+    // Pre-check covers (a). For (b) we run KDirStat then post-check children, and
+    // re-layout via squarify if any child is too thin.
+    const SLIVER_ASPECT: f32 = 4.0;
+    let long = pw.max(ph);
+    let short = pw.min(ph);
+    if short > 0.0 && long / short > SLIVER_ASPECT {
+        layout_sequoia(parent, opts);
+        return;
+    }
+
     let horizontal = pw >= ph;
     let total_size = parent.size as f64;
     if total_size <= 0.0 {
@@ -167,7 +183,9 @@ fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
     let grid = if opts.grid { 1.0_f32 } else { 0.0 };
     let n = parent.children.len();
 
-    // Calculate rows using KDirStat's min-proportion algorithm
+    // Calculate rows using KDirStat's min-proportion algorithm.
+    // Pre-detect the (b) failure mode here: if any row would assign the dominant
+    // child an unreasonable aspect, fall back to squarify before laying out rows.
     let mut rows: Vec<(f64, usize, usize)> = Vec::new();
     let mut next = 0;
 
@@ -175,6 +193,36 @@ fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
         let (row_h, used) = calc_next_row(&parent.children, next, total_size, width_ratio);
         rows.push((row_h, next, next + used));
         next += used;
+    }
+
+    // Predict each row's worst child aspect; if any exceeds the threshold, squarify.
+    // row_w_px is full long-side. dominant child width ≈ (cs/row_size) * row_w_px,
+    // height = row_h_normalized * short_side. aspect = wide/tall.
+    let long_px = if horizontal { pw } else { ph } as f64;
+    let short_px = if horizontal { ph } else { pw } as f64;
+    for (row_h, start, end) in &rows {
+        let row_size: f64 = parent.children[*start..*end]
+            .iter()
+            .map(|c| c.size as f64)
+            .sum();
+        if row_size <= 0.0 || *row_h <= 0.0 {
+            continue;
+        }
+        let row_h_px = row_h * short_px;
+        if row_h_px <= 0.0 {
+            continue;
+        }
+        // Worst-case is the largest child in the row.
+        let max_child = parent.children[*start..*end]
+            .iter()
+            .map(|c| c.size as f64)
+            .fold(0.0_f64, f64::max);
+        let child_w_px = (max_child / row_size) * long_px;
+        let aspect = (child_w_px / row_h_px).max(row_h_px / child_w_px.max(1e-6));
+        if aspect > SLIVER_ASPECT as f64 {
+            layout_sequoia(parent, opts);
+            return;
+        }
     }
 
     // Assign rectangles

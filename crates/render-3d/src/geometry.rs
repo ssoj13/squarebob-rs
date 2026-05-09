@@ -8,31 +8,40 @@ use glam::Mat4;
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct CubeInstance {
     pub model: [[f32; 4]; 4], // 64B: model matrix (4 columns)
-    pub color: [f32; 4],      // 16B: RGBA
+    pub color: [f32; 4],      // 16B: RGBA — per-instance tint (color_mode result)
     pub hash: u32,            //  4B: name hash for effects
     pub object_id: u32,       //  4B: unique ID for picking
-    pub _padding: [u32; 2],   //  8B: align to 16
+    pub material_id: u32,     //  4B: index into MaterialLibrary
+    pub _pad: u32,            //  4B: align to 16
 } // Total: 96B
 
 impl CubeInstance {
-    pub fn new(model: Mat4, color: [f32; 4], hash: u32, object_id: u32) -> Self {
+    pub fn new(
+        model: Mat4,
+        color: [f32; 4],
+        hash: u32,
+        object_id: u32,
+        material_id: u32,
+    ) -> Self {
         Self {
             model: model.to_cols_array_2d(),
             color,
             hash,
             object_id,
-            _padding: [0; 2],
+            material_id,
+            _pad: 0,
         }
     }
 
-    const ATTRIBS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    const ATTRIBS: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
         2 => Float32x4, // model col 0
         3 => Float32x4, // model col 1
         4 => Float32x4, // model col 2
         5 => Float32x4, // model col 3
         6 => Float32x4, // color
-        7 => Uint32,     // hash
-        8 => Uint32,     // object_id
+        7 => Uint32,    // hash
+        8 => Uint32,    // object_id
+        9 => Uint32,    // material_id
     ];
 
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {

@@ -1722,27 +1722,6 @@ impl Default for LightRigUniform {
     }
 }
 
-/// Global PBR material params (16 bytes)
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-pub struct MaterialParamsUniform {
-    pub roughness: f32,
-    pub metalness: f32,
-    pub specular_ior: f32,
-    pub specular_weight: f32,
-}
-
-impl Default for MaterialParamsUniform {
-    fn default() -> Self {
-        Self {
-            roughness: 0.5,
-            metalness: 0.0,
-            specular_ior: 1.5,
-            specular_weight: 1.0,
-        }
-    }
-}
-
 /// Environment map params (16 bytes)
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

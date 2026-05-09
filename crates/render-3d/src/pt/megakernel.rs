@@ -6,7 +6,7 @@ use crate::{
 };
 use glam::Mat4;
 use log::{debug, info, trace};
-use pt_mats::{classify_path_filtered, MaterialClass, MaterializeMode, MaterializeSettings};
+use pt_mats::{MaterialClass, MaterializeMode};
 use render_core::gpu;
 use render_shared::{HashTransformEffect, OrbitCamera, Render3DOptions};
 
@@ -117,42 +117,27 @@ pub(crate) fn render_path_traced_no_readback(
             .material_library
             .material_id(MaterialClass::Default);
 
+        renderer.mat_cache.ensure(opts);
+
         let pt_instances: Vec<Instance> = instances
             .iter()
             .map(|inst| {
                 let model = Mat4::from_cols_array_2d(&inst.model);
                 let material_id = if opts.materialize_mode != MaterializeMode::None {
-                    if let Some(path) = renderer.picking.path_for_id(inst.object_id) {
-                        let is_dir = renderer
-                            .picking
-                            .is_dir_for_id(inst.object_id)
-                            .unwrap_or(false);
+                    // 2021 disjoint-capture lets &renderer.picking and &mut renderer.mat_cache
+                    // coexist in this closure since they touch different fields.
+                    let path_opt = renderer.picking.path_for_id(inst.object_id);
+                    let is_dir = renderer
+                        .picking
+                        .is_dir_for_id(inst.object_id)
+                        .unwrap_or(false);
+                    let size = renderer.picking.size_for_id(inst.object_id).unwrap_or(0);
+                    if let Some(path) = path_opt {
                         if is_dir && !opts.mat_include_dirs {
                             default_id
                         } else {
-                            let size = renderer.picking.size_for_id(inst.object_id).unwrap_or(0);
                             let hash = render_shared::name_hash(&path.to_string_lossy());
-                            let class = classify_path_filtered(
-                                path,
-                                size,
-                                hash,
-                                opts.materialize_mode,
-                                MaterializeSettings {
-                                    allow_lights: opts.mat_allow_lights,
-                                    light_prob: opts.mat_light_prob,
-                                    light_warm: opts.mat_light_warm,
-                                    light_cool: opts.mat_light_cool,
-                                    allow_glass: opts.mat_allow_glass,
-                                    glass_prob: opts.mat_glass_prob,
-                                    is_pt: true,
-                                    seed: opts.mat_seed,
-                                    source: opts.mat_source,
-                                    distribution: opts.mat_distribution,
-                                    quant_levels: opts.mat_quant_levels,
-                                    band_count: opts.mat_band_count,
-                                    spatial_scale: opts.mat_spatial_scale,
-                                },
-                            );
+                            let class = renderer.mat_cache.classify_or_get(path, size, opts, true);
                             if class.is_light()
                                 && (light_intensity != 1.0 || light_color_rand > 0.0)
                             {
@@ -612,42 +597,27 @@ pub(crate) fn render_path_traced(
             .material_library
             .material_id(MaterialClass::Default);
 
+        renderer.mat_cache.ensure(opts);
+
         let pt_instances: Vec<Instance> = instances
             .iter()
             .map(|inst| {
                 let model = Mat4::from_cols_array_2d(&inst.model);
                 let material_id = if opts.materialize_mode != MaterializeMode::None {
-                    if let Some(path) = renderer.picking.path_for_id(inst.object_id) {
-                        let is_dir = renderer
-                            .picking
-                            .is_dir_for_id(inst.object_id)
-                            .unwrap_or(false);
+                    // 2021 disjoint-capture lets &renderer.picking and &mut renderer.mat_cache
+                    // coexist in this closure since they touch different fields.
+                    let path_opt = renderer.picking.path_for_id(inst.object_id);
+                    let is_dir = renderer
+                        .picking
+                        .is_dir_for_id(inst.object_id)
+                        .unwrap_or(false);
+                    let size = renderer.picking.size_for_id(inst.object_id).unwrap_or(0);
+                    if let Some(path) = path_opt {
                         if is_dir && !opts.mat_include_dirs {
                             default_id
                         } else {
-                            let size = renderer.picking.size_for_id(inst.object_id).unwrap_or(0);
                             let hash = render_shared::name_hash(&path.to_string_lossy());
-                            let class = classify_path_filtered(
-                                path,
-                                size,
-                                hash,
-                                opts.materialize_mode,
-                                MaterializeSettings {
-                                    allow_lights: opts.mat_allow_lights,
-                                    light_prob: opts.mat_light_prob,
-                                    light_warm: opts.mat_light_warm,
-                                    light_cool: opts.mat_light_cool,
-                                    allow_glass: opts.mat_allow_glass,
-                                    glass_prob: opts.mat_glass_prob,
-                                    is_pt: true,
-                                    seed: opts.mat_seed,
-                                    source: opts.mat_source,
-                                    distribution: opts.mat_distribution,
-                                    quant_levels: opts.mat_quant_levels,
-                                    band_count: opts.mat_band_count,
-                                    spatial_scale: opts.mat_spatial_scale,
-                                },
-                            );
+                            let class = renderer.mat_cache.classify_or_get(path, size, opts, true);
                             if class.is_light()
                                 && (light_intensity != 1.0 || light_color_rand > 0.0)
                             {
