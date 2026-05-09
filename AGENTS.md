@@ -56,13 +56,16 @@ update() / run_frame() (app/render_loop.rs)   [Stage B.3 extraction]
   └─ handle_events() → Navigate/Select/LayoutDirty/RenderTick3D
   └─ rebuild_display_tree() when filters/size/exclusions change
 
-render_treemap(app/mod.rs)
-  ├─ ensure GpuContext when 3D or 2D-GPU
-  │     (failures now logged via log::error! per Stage C.2)
-  ├─ Mode2D + Cpu → renderer::cpu::render
-  ├─ Mode2D + Gpu → treemap::GpuRenderer2D (readback RGBA)
-  └─ Mode3D → Renderer3D::render (readback RGBA); fallback CPU treemap if no GPU
-       └─ ColorImage → ctx.load_texture (full upload each frame — Stage D.1 target)
+ui_treemap_pane(app/treemap_view.rs)        [main display dispatch]
+  └─ if eframe device + gpu_context: zero-copy via register_native_texture
+  │     ├─ Mode3D → render_3d_callback (3D PBR + PT, denoiser when it lands)
+  │     └─ Mode2D + Gpu → render_2d_callback                  [Stage D.1]
+  └─ else CPU-readback fallback via render_treemap(app/mod.rs)
+       ├─ ensure GpuContext (failures logged via log::error! per Stage C.2)
+       ├─ Mode2D + Cpu → renderer::cpu::render
+       ├─ Mode2D + Gpu fallback → treemap::GpuRenderer2D::render (readback RGBA)
+       └─ Mode3D fallback → Renderer3D::render (readback RGBA)
+            └─ ColorImage → ctx.load_texture (only on the fallback path now)
 ```
 
 ## Single sources of truth (SSOT)
@@ -77,19 +80,26 @@ render_treemap(app/mod.rs)
 
 ## Open engineering items (tracked in code, see CHANGELOG.md / TODO4.md)
 
-- **Zero-copy / shared device** (Stage D.1): `src/app/mod.rs` carries
-  the only two `TODO` markers in source (~L1035, ~L1068) for the
-  intentional CPU readback that allocates `ColorImage` + uploads via
-  `ctx.load_texture` per frame. Plan: share eframe's `wgpu::Device`
-  with `Renderer3D`'s context + ping-pong texture pool.
-- **PT denoiser** (Stage D.2): deferred per user, but architecturally
-  scoped — preserve G-buffer extension points
-  (normal/depth/albedo) when touching the PT pipeline so the denoiser
-  can land later without a rewrite.
+- **PT denoiser** (Stage D.2): deferred per user. The
+  `register_native_texture` path used by both 3D and 2D-GPU display
+  is the natural integration point — denoiser will produce an RGBA
+  wgpu texture on eframe's device, register with egui via
+  `render_texture_id`, no new display infrastructure needed. Just
+  preserve G-buffer extension points (normal/depth/albedo) inside
+  the PT pipeline so the denoiser can sample them.
+- **Two PT backends policy** (Stage C.6): documented as intentional
+  orchestrator pattern (`pt-megakernel` depends on `pt-wavefront` via
+  single import in `compute.rs:16`). Final canonical-vs-fast-path
+  policy text awaits user decision.
+- **Runtime-verification items** (user, not code): Stage 0.1 slider
+  toggle vs `instance_rebuild_count()`, Stage A.1 visual diff,
+  Stage D.3 BVH refit fast-path trace, Stage D.4 allocator benchmark,
+  Stage E.3 `npx gitnexus analyze --embeddings`.
 
-(The "wide `#![allow(dead_code)]`" item from the previous version of
-this section was resolved in commit `0e90ff4` — all four blanket
-allows removed; nothing was actually dead.)
+(Items resolved earlier this session: zero-copy 3D + 2D-GPU via
+`register_native_texture`, the only two `TODO` markers replaced with
+explanatory comments, all four blanket `#![allow(dead_code)]` removed
+because nothing was actually dead — see CHANGELOG.md.)
 
 ## Maintenance commands
 
@@ -111,7 +121,7 @@ this on Linux + Windows.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dirstat-rs** (2647 symbols, 6555 relationships, 229 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dirstat-rs** (2651 symbols, 6575 relationships, 230 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
