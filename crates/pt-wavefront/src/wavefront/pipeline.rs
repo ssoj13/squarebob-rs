@@ -1,5 +1,4 @@
 //! Wavefront pipeline orchestration.
-#![allow(dead_code)]
 
 use super::buffers::{WfHit, WfRay};
 use bytemuck::{Pod, Zeroable};

@@ -1,5 +1,4 @@
 //! ReSTIR pipeline orchestration.
-#![allow(dead_code)]
 
 use super::reservoir::{MotionVector, Reservoir};
 

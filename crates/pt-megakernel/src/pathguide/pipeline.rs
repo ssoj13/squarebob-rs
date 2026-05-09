@@ -1,5 +1,4 @@
 //! Path guiding pipeline.
-#![allow(dead_code)]
 
 use super::svo::SvoNode;
 use log::debug;

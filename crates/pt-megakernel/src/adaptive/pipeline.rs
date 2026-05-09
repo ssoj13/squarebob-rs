@@ -1,5 +1,4 @@
 //! Adaptive sampling pipeline.
-#![allow(dead_code)]
 
 use bytemuck::{Pod, Zeroable};
 
