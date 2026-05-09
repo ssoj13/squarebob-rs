@@ -44,7 +44,7 @@ use render_core::gpu::GpuContext;
 use treemap::GpuRenderer2D;
 use treemap::{self, LayoutStyle};
 
-pub use dock::{DockTab, DockTabs};
+pub use dock::DockTab;
 pub use state::{App, ScannerMode};
 // Render3DResources removed - using egui native texture display
 use filters::{

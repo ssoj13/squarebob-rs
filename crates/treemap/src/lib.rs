@@ -954,8 +954,10 @@ mod tests {
             "root",
             vec![file("a", 40), file("b", 30), file("c", 20), file("d", 10)],
         );
-        let mut opts = TreeMapOptions::default();
-        opts.style = LayoutStyle::SequoiaView;
+        let opts = TreeMapOptions {
+            style: LayoutStyle::SequoiaView,
+            ..TreeMapOptions::default()
+        };
         layout(&root, 0.0, 0.0, 300.0, 200.0, &opts);
 
         let parent_area = 300.0 * 200.0;

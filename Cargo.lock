@@ -3170,6 +3170,7 @@ dependencies = [
 name = "render-core"
 version = "0.1.0"
 dependencies = [
+ "log",
  "pollster",
  "wgpu",
 ]

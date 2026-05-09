@@ -47,8 +47,8 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             }
         }
         "mft-ready" => {
-            let path = ntfs_sample_path(args.get(1));
-            let max_diag = args
+            let _path = ntfs_sample_path(args.get(1));
+            let _max_diag = args
                 .get(2)
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(3);
@@ -80,8 +80,8 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             }
         }
         "enum-diagnose" => {
-            let path = ntfs_sample_path(args.get(1));
-            let max_lp = args
+            let _path = ntfs_sample_path(args.get(1));
+            let _max_lp = args
                 .get(2)
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(8);
@@ -97,8 +97,8 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             }
         }
         "mft-list" => {
-            let path = ntfs_sample_path(args.get(1));
-            let n = args
+            let _path = ntfs_sample_path(args.get(1));
+            let _n = args
                 .get(2)
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(40);

@@ -8,7 +8,6 @@ use std::path::Path;
 use crate::scanner::ScanMsg;
 #[cfg(windows)]
 use crossbeam_channel::Sender;
-use dirstat_core::DirEntry;
 #[cfg(windows)]
 use log::{info, trace, warn};
 #[cfg(windows)]
@@ -66,6 +65,7 @@ pub fn probe_raw_volume_access(path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)] // API-parity stub; real impl lives in cfg(windows) above.
 pub fn probe_raw_volume_access(_path: &Path) -> anyhow::Result<()> {
     anyhow::bail!("raw volume probe is only supported on Windows");
 }
@@ -621,6 +621,7 @@ pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::R
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)] // API-parity stub; real impl lives in cfg(windows) above.
 pub fn diagnose_fsctl_enum_usn(_path: &Path, _max_ioctl_loops: usize) -> anyhow::Result<String> {
     anyhow::bail!("diagnose_fsctl_enum_usn is Windows-only")
 }
@@ -746,6 +747,7 @@ pub fn mft_dump_names(path: &Path, max_names: usize) -> anyhow::Result<String> {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)] // API-parity stub; real impl lives in cfg(windows) above.
 pub fn mft_dump_names(_path: &Path, _max_names: usize) -> anyhow::Result<String> {
     anyhow::bail!("mft_dump_names is Windows-only")
 }
