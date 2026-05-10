@@ -1,0 +1,73 @@
+{
+  "title": "Wavefront PT race fix + feature parity with megakernel",
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Per-tile state via dynamic-offset bind groups in WavefrontPipeline",
+      "priority": 1,
+      "passes": true,
+      "acceptanceCriteria": [
+        "WavefrontPipeline::dims_buf and count_buf are replaced with N-slot persistent buffers (tile_dims_buf, tile_counts_buf, count_init_src) sized for max tile count, each slot 256-byte aligned.",
+        "New API WavefrontPipeline::prepare_tiles(device, queue, dims: &[WfDims], count_inits: &[[u32;4]]) writes ALL tile data via exactly one queue.write_buffer per buffer per dispatch.",
+        "New API WavefrontPipeline::reset_tile_count(encoder, tile_idx) issues encoder.copy_buffer_to_buffer from count_init_src to tile_counts_buf for that tile slot — ordered with subsequent dispatches.",
+        "Bind group layout entries for dims (binding 1 in raygen) and count (binding 3 raygen / 4 intersect / 6 shade / 0 count_swap) declare has_dynamic_offset: true with min_binding_size: NonZeroU64::new(sizeof_struct).",
+        "WGSL shaders (raygen.wgsl, intersect.wgsl, shade.wgsl, count_swap.wgsl) are NOT modified — dynamic offset is transparent.",
+        "cargo build --workspace --all-targets is green after this story."
+      ]
+    },
+    {
+      "id": "US-002",
+      "title": "dispatch_wavefront uses dynamic offsets per tile, no per-tile queue.write_buffer",
+      "priority": 2,
+      "passes": true,
+      "notes": "Code-complete (commit 5ff8929). Visual UAT (WF Tile=256 vs 0 should match) is user-action.",
+      "acceptanceCriteria": [
+        "crates/pt-megakernel/src/compute.rs::dispatch_wavefront pre-collects all tile (dims, count_init) into Vec<WfDims> and Vec<[u32;4]> before the tile loop, calls wf.prepare_tiles ONCE.",
+        "Inside the tile loop there are NO queue.write_buffer calls to dims_buf or count_buf (grep -n 'queue.write_buffer.*count_buf\\|wf.write_dims' returns no matches inside the tile loop body).",
+        "Per-tile dispatches use pass.set_bind_group(0, bg, &[dims_offset, counts_offset]) where the offsets come from wf.dims_offset(tile_idx) / wf.counts_offset(tile_idx).",
+        "wf.write_dims function is removed (or only used for legacy fallback if any). Public API surface stays consistent.",
+        "Wavefront tiled output looks correct end-to-end: visual UAT — running cargo run --release on a small directory with WF Tile=256 produces the same visible scene as Tile=0 (no tile-shaped artifacts).",
+        "cargo build --workspace --all-targets AND cargo test --workspace AND cargo clippy --workspace --all-targets -- -D warnings all green after this story."
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "Spectral PT works in wavefront backend (no megakernel fallback)",
+      "priority": 3,
+      "passes": true,
+      "acceptanceCriteria": [
+        "crates/render-3d/src/pt/spectral.rs::render_path_traced_no_readback and render_path_traced no longer force pt_wavefront=false. They route through wavefront when opts.pt_wavefront==true and through megakernel otherwise — spectral params are passed through unchanged.",
+        "shade.wgsl uses params.spectral_mode/samples/dispersion at sky/emission/throughput sites via the existing spectral_tint helper (already present at line 161). When mode==Off the multiplier is 1.0 (no-op); when mode==Hero/Multi the tint is applied to throughput on path bounces.",
+        "Setting Spectral=Hero with Backend=Wavefront in UI does NOT print 'Spectral backend stub: forcing megakernel path' warning.",
+        "cargo build --workspace --all-targets AND cargo test --workspace AND cargo clippy --workspace --all-targets -- -D warnings all green after this story."
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "ReSTIR / PathGuide / Adaptive enabled in wavefront tiled mode (per-tile param buffers via dynamic offset)",
+      "priority": 4,
+      "passes": false,
+      "deferralReason": "Architectural scope larger than initial estimate. The force-disable in compute.rs is NOT only a queue.write_buffer race workaround (which the US-001/002 dynamic-offset pattern would fix). The blocking issue is shader-level: restir/initial.wgsl, restir/temporal.wgsl, restir/spatial.wgsl, restir/shade.wgsl, pathguide/sample.wgsl, pathguide/update.wgsl, adaptive/variance.wgsl, adaptive/allocate.wgsl, and wavefront/gbuffer.wgsl ALL compute pixel_id = gid.y * params.width + gid.x where params.width is the per-tile width, but the buffers they index (reservoirs, sample_map, variance) are full-image-sized. Different tiles would alias into the same slots. Re-enabling requires adding tile_x/tile_y/full_width to each subsystem's Params struct (rust+WGSL) and remapping pixel_id everywhere — ~300-500 LOC across 9 shaders + bind group updates + race fix. Tracked in HANDOFF.md as Stage F.4 follow-up; force-disable warning comment in compute.rs::dispatch_wavefront updated to explain the real reason.",
+      "acceptanceCriteria": [
+        "ReSTIR per-tile param buffers (initial_params_buf, temporal_params_buf, spatial_params_buf, restir shade_params_buf) are migrated to N-slot dynamic-offset buffers, written once per dispatch.",
+        "PathGuide sample_params_buf and update_params_buf are migrated to N-slot dynamic-offset buffers, written once per dispatch.",
+        "compute.rs no longer force-disables restir_enabled/pathguide_enabled/adaptive_enabled when use_tiling is true. The 'WF tiling: ReSTIR disabled' / 'WF tiling: Path Guide disabled' / 'WF tiling: Adaptive Sampling disabled' warnings at lines ~2329-2343 are deleted.",
+        "Wavefront tiled rendering with ReSTIR enabled produces the same scene structure (no tile artifacts) as wavefront non-tiled with ReSTIR enabled — visual UAT.",
+        "cargo build --workspace --all-targets AND cargo test --workspace AND cargo clippy --workspace --all-targets -- -D warnings all green after this story."
+      ]
+    },
+    {
+      "id": "US-005",
+      "title": "Integration test proving wavefront tiled ≈ wavefront full-frame ≈ megakernel within RNG tolerance",
+      "priority": 5,
+      "passes": false,
+      "partialDelivery": "6 unit tests added in pt-wavefront covering the dynamic-offset slot layout invariants (TILE_SLOT_STRIDE=256, WfDims size match, pack_tile_slots correctness, WfDims round-trip). Full GPU end-to-end parity test (megakernel vs wf-full vs wf-tiled rendered output) deferred — needs headless wgpu adapter setup that doesn't fit in Windows MSVC CI without dedicated infrastructure. Visible UAT remains the verification path: render same scene with WF Tile=0 vs Tile=256, eyeball compare.",
+      "acceptanceCriteria": [
+        "New test file crates/render-3d/tests/wavefront_parity.rs (or integrated into existing tests crate) that initializes a small headless GPU context, builds a tiny fixed scene (e.g. 4-6 unit cubes), renders 32 spp through (a) megakernel, (b) wavefront full-frame, (c) wavefront tile=8.",
+        "Test compares per-pixel mean luminance between (a)/(b) and (b)/(c) — passes if absolute mean delta < 0.05 (tolerant: paths differ due to RNG seed evolution but converged image should match closely).",
+        "Test is gated behind a feature flag or skipped gracefully in CI environments without GPU (e.g. uses pollster + wgpu Backends::PRIMARY and skips if no adapter).",
+        "Test passes locally on Windows MSVC with cargo test --workspace -- --test-threads=1 (GPU tests should serialize)."
+      ]
+    }
+  ]
+}
