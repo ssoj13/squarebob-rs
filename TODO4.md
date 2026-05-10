@@ -532,68 +532,45 @@ symbols (tests).
 | F.1 wavefront tile-state race | ✅ shipped (commit `5ff8929`) — N-slot persistent buffers + dynamic-offset bind groups + `prepare_tiles` / `reset_tile_count` API |
 | F.2 spectral wavefront (drop stub) | ✅ shipped (commit `407ff73`) — `spectral.rs` no longer forces megakernel; `shade.wgsl` applies `spectral_tint` at transmission too |
 | F.3 tile-size input safety | ✅ shipped (commit `ddbdd26`) — UI snap + code clamp + hard assert (`MAX_TILE_CAPACITY = 4096`) so transient `WF Tile=2` cannot hang the GPU |
-| F.4 ReSTIR/PG/Adaptive in tiled mode | ⏳ deferred — see below |
+| F.4 ReSTIR/PG/Adaptive in tiled mode | ✅ shipped — Adaptive (`43e9376`), F.4-A PathGuide (`6ef6aac`), F.4-B..G gbuffer + 4 ReSTIR shaders (`0bec861`); force-disable lifted |
 | F.5 Windows build fix | ✅ shipped (commit `b6e84e9`) — `cli_test.rs` / `scanner_ntfs.rs` / `scan_orchestration.rs` after WIP unused-var rename broke Windows-only paths |
 | F.6 wavefront unit tests | ✅ shipped (commit `76c28f5`) — 6 new tests on tile-slot layout invariants; workspace 32→38 tests |
 
-### F.4 — ReSTIR / Path Guide / Adaptive in tiled wavefront mode
+### F.4 — ReSTIR / Path Guide / Adaptive in tiled wavefront mode (shipped)
 
-Currently force-disabled when wavefront tiling is on. The comment in
-`compute.rs::dispatch_wavefront` near the warnings has been re-framed
-to document the real blocker. **Adaptive variance/allocate is actually
-already tile-safe** (runs once per frame *after* the tile loop on the
-full image with `width = full_w, height = full_h`); just removing its
-force-disable would work. ReSTIR + Path Guide + the gbuffer pass need
-proper shader-level tile awareness.
+Closed in the order proposed (lowest risk first), each shipped with
+build/test/clippy green:
 
-Required changes (roughly 300-500 LOC):
+1. **Adaptive** (`43e9376`) — already tile-safe by construction
+   (variance/allocate run once per frame on the full image after the
+   tile loop). Lifted force-disable + warn only.
+2. **F.4-A Path Guide sample** (`6ef6aac`) — added `tile_pos` to
+   `PathGuideSampleParams`, remapped `gid.x` to a global pixel index in
+   `pathguide/sample.wgsl`, migrated its params binding to dynamic-offset
+   with per-tile pre-packing (`PG_SAMPLE_PARAMS_SIZE=96`). Update.wgsl
+   is `workgroup_size(1)`, no change needed. Force-disable removed for
+   PathGuide. Side effect: `MAX_TILE_CAPACITY`, `DEFAULT_TILE_CAPACITY`,
+   `pack_tile_slots` are now `pub` from `pt-wavefront`.
+3. **F.4-B..G gbuffer + 4 ReSTIR shaders** (`0bec861`) — five WGSL
+   kernels distinguish `local_id` (tile-sized rays/hits) from `pixel_id`
+   (full-image reservoirs / depth / normal / motion / sample_map /
+   output). Five params bindings (gbuffer@5, restir initial@2 /
+   temporal@5 / spatial@4 / shade@3) migrated to dynamic-offset with
+   per-tile pre-packing. ReSTIR force-disable + warn removed; tiling
+   now coexists with the whole stack.
 
-1. **Rust param structs** (`crates/pt-megakernel/src/compute.rs`): add
-   `tile_x, tile_y, full_width, full_height` to `RestirInitialParams`,
-   `RestirTemporalParams`, `RestirSpatialParams`, `RestirShadeParams`,
-   `PathGuideSampleParams`, `PathGuideUpdateParams`, and the gbuffer
-   `Params` (currently has `prev_view_proj` / `curr_view_proj` only,
-   needs tile origin too). Adaptive doesn't need the change.
+Total: ~370 LOC of net additions across 7 WGSL files +
+`compute.rs` + `restir/pipeline.rs` + `pathguide/pipeline.rs`.
 
-2. **WGSL shaders**: matching field additions in `Params` + remap
-   `pixel_id` to global coords:
-   ```wgsl
-   if gid.x >= params.tile_width || gid.y >= params.tile_height { return; }
-   let global_x = params.tile_x + gid.x;
-   let global_y = params.tile_y + gid.y;
-   let pixel_id = global_y * params.full_width + global_x;
-   ```
-   Touch: `restir/initial.wgsl` (×2 sites), `restir/temporal.wgsl`
-   (×2 + the `prev_pixel` neighbor), `restir/spatial.wgsl` (×3 + the
-   `neighbor_id`), `restir/shade.wgsl` (×2),
-   `pathguide/sample.wgsl` (×1), `pathguide/update.wgsl` (×1, if it
-   uses pixel_id at all), `wavefront/gbuffer.wgsl` (×3 — pixel_id at
-   line 45, motion px at lines 67-73).
+Visual UAT for the user (HANDOFF.md "F.4 UAT" section): render WF
+Tile=0 vs WF Tile=256 with each of {PathGuide, Adaptive, ReSTIR DI,
+ReSTIR DI+GI} and with all of them on at once — each pair should
+converge to the same image. No "X disabled" warning in the console.
 
-3. **Race fix for per-tile param uploads**: ReSTIR has 4 per-tile param
-   buffers, PathGuide has 2 — same `queue.write_buffer`-in-tile-loop
-   pattern as the wavefront dims/count race. Apply the same
-   dynamic-offset bind-group pattern (or `encoder.copy_buffer_to_buffer`
-   from a pre-filled staging buffer; same end-result, less invasive on
-   bind group layouts).
-
-4. **Compute.rs dispatch loop**: drop the force-disable warnings at
-   `dispatch_wavefront` lines ~2415-2447; pass the per-tile dims into
-   the uploaded params; pass dynamic offsets into the
-   `pass.set_bind_group(0, ..., &[off])` calls (or perform the
-   per-tile staging copy).
-
-5. **Verification**: visual UAT (WF Tile=256 with ReSTIR DI/GI ON
-   should match WF Tile=0 with ReSTIR ON), plus an automated
-   parity test (megakernel ≈ wavefront-full ≈ wavefront-tiled within
-   RNG noise tolerance) when GPU CI is available.
-
-Order of attack: start with **Adaptive only** (lowest risk — no shader
-change, just remove the force-disable + verify variance still
-converges). Then **gbuffer.wgsl + ReSTIR initial** (since ReSTIR
-gates G-buffer use). Then **temporal + spatial + ReSTIR shade**.
-Finally **PathGuide**. Each step ships independently with build/test/
-clippy green and visual UAT.
+Pre-existing limitation (not introduced by F.4): `prev_view_proj`
+equals `curr_view_proj` because the matrix cache only retains the
+latest frame; ReSTIR temporal reuse therefore sees zero motion vectors.
+Tracked separately.
 
 ---
 

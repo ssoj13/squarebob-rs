@@ -32,34 +32,58 @@ Stage F.1 wavefront tile race + spectral parity landed in this session
   has 6 new tests for the dynamic-offset slot layout invariants
   (`TILE_SLOT_STRIDE == 256`, `pack_tile_slots` correctness, etc.).
 
-### Open follow-up: F.4 — ReSTIR/PathGuide/Adaptive in tiled wavefront
+### Stage F.4 — ReSTIR/PathGuide/Adaptive in tiled wavefront (DONE)
 
-Currently force-disabled when wavefront tiling is on, with an explicit
-comment in `compute.rs::dispatch_wavefront` near the warnings.
-**Reason:** their WGSL shaders index `reservoirs[pixel_id]` etc. with
-`pixel_id = gid.y * params.width + gid.x`, where `params.width` is the
-PER-TILE width but the reservoir / sample-map / variance buffers are
-full-image-sized. Different tiles would alias into the same slots.
+All five advanced subsystems now coexist with wavefront tiling. The
+"WF tiling: X disabled" force-disable warnings in `compute.rs::
+dispatch_wavefront` are gone.
 
-To re-enable them in tiled mode (separate phase, ~300-500 LOC):
-1. Add `tile_x, tile_y, full_width, full_height` fields to:
-   - `RestirInitialParams`, `RestirTemporalParams`, `RestirSpatialParams`,
-     `RestirShadeParams`
-   - `PathGuideSampleParams`, `PathGuideUpdateParams`
-   - Adaptive variance/allocate params
-   - And matching WGSL `struct Params` in 7 shaders.
-2. Remap `pixel_id = (params.tile_y + gid.y) * params.full_width +
-   (params.tile_x + gid.x)` everywhere; replace `params.width` with
-   `params.full_width` for indexing reservoirs / neighbors.
-3. Route per-tile param uploads through the same dynamic-offset (or
-   `encoder.copy_buffer_to_buffer` from a pre-filled staging buffer)
-   pattern used for wavefront dims/count.
-4. Delete the force-disable warnings in `compute.rs::dispatch_wavefront`.
-5. Verify with both visual UAT and a megakernel-vs-wf-tiled-with-ReSTIR
-   parity test.
+What was done (commits `43e9376` → `0bec861`):
 
-The wavefront `gbuffer.wgsl` (used in the ReSTIR primary pass) has the
-same tile-local pixel_id pattern at line 45; that needs the same fix.
+- **Adaptive** (`43e9376`) — tile-safe by construction: variance +
+  allocate run once per frame on the full image after the tile loop.
+  Just lifted the force-disable.
+- **PathGuide sample** (`6ef6aac`, F.4-A) — `gid.x` is now remapped from
+  the tile-pixel range to a global pixel index, so the per-pixel `guide`
+  buffer no longer aliases between tiles. PathGuide update.wgsl is
+  workgroup_size(1) and was always tile-safe.
+- **gbuffer + ReSTIR initial/temporal/spatial/shade** (`0bec861`, F.4-B..F)
+  — five WGSL shaders distinguish `local_id` (gid.y * tile_w + gid.x)
+  for tile-sized rays/hits buffers from `pixel_id` (gy * full_w + gx)
+  for full-image buffers (reservoirs, depth/normal/motion, sample_map,
+  output). RNG seeding uses the global pixel_id so accumulation stays
+  reproducible across tile boundaries.
+
+Per-tile params for all five subsystems are packed once at the start of
+`dispatch_wavefront` via `pack_tile_slots(&Vec<T>)` and uploaded with a
+single `queue.write_buffer` per buffer. The per-tile dispatch sets the
+dynamic offset (= tile_idx * `TILE_SLOT_STRIDE`) on the params binding
+— same pattern that fixed the original wavefront dims/count race.
+
+Buffers are fixed-size at `MAX_TILE_CAPACITY * TILE_SLOT_STRIDE` (~1 MB
+per subsystem, ~5 MB total) so bind groups stay valid across tile-count
+changes; no rebuild is needed.
+
+### F.4 UAT (please verify)
+
+Open the renderer with `Backend = Wavefront` and try these combinations
+(WF Tile = 0 means non-tiled, ≥64 means tiled). Each pair should
+converge to the same image within sampling noise; nothing should print
+"X disabled" in the console.
+
+- WF Tile = 0 vs WF Tile = 256, **PathGuide = On** — F.4-A
+- WF Tile = 0 vs WF Tile = 256, **Adaptive = On** — adaptive enable
+- WF Tile = 0 vs WF Tile = 256, **ReSTIR DI = On** — F.4-C/F gbuffer +
+  initial + shade chain
+- WF Tile = 0 vs WF Tile = 256, **ReSTIR DI + GI = On** — adds spatial
+  + temporal
+- WF Tile = 256 with all of {PathGuide, ReSTIR DI/GI, Adaptive} = On
+  simultaneously — full stack
+
+Known caveat: when ReSTIR is enabled the `prev_view_proj` is identical
+to `curr_view_proj` (the matrix cache only keeps the latest frame), so
+motion vectors will be zero and temporal reuse is effectively disabled.
+This is **pre-existing** (not introduced by F.4) and tracked separately.
 
 ### What still needs YOUR eyes (UAT)
 

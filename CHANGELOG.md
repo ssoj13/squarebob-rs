@@ -110,25 +110,57 @@ covering the dynamic-offset slot layout invariants:
 `pack_tile_slots` layout / empty / round-trip cases. Workspace test
 count: 32 → 38.
 
-### Open follow-up: F.4 — ReSTIR/PathGuide/Adaptive in tiled mode
+### Stage F.4 — ReSTIR/PathGuide/Adaptive coexist with tiling
 
-Currently force-disabled when wavefront tiling is on, with a comment
-in `compute.rs::dispatch_wavefront` documenting the real reason. Not
-just a queue-write race (which the F.1 pattern would fix) — their
-WGSL kernels (`restir/{initial,temporal,spatial,shade}.wgsl`,
-`pathguide/{sample,update}.wgsl`, `wavefront/gbuffer.wgsl`) compute
-`pixel_id = gid.y * params.width + gid.x` where `params.width` is the
-per-tile width, but the buffers they index (reservoirs, sample_map,
-motion_buf) are full-image-sized; different tiles would alias into the
-same slots. **Adaptive sampling (variance/allocate) is already correct**
-because it runs once per frame *after* the tile loop on the full image.
+All five advanced wavefront subsystems are now tile-safe; the force-
+disable warnings in `compute.rs::dispatch_wavefront` are gone.
 
-Re-enable plan tracked in `HANDOFF.md` Stage F.4: add `tile_x, tile_y,
-full_width, full_height` to each subsystem's Params (Rust + WGSL), remap
-`pixel_id` to global coords, route per-tile param uploads through the
-same dynamic-offset / encoder-staging-copy pattern used for wavefront
-dims/count, then drop the force-disable. ~300-500 LOC across 7 shaders
-+ param structs + bind group updates.
+- **Adaptive sampling** (commit `43e9376`) — already tile-safe by
+  construction (variance + allocate run once per frame on the full image
+  *after* the tile loop). Just lifted the force-disable + warn.
+- **F.4-A PathGuide sample** (commit `6ef6aac`) — `gid.x` is remapped
+  from the tile-pixel range to a global pixel index so the per-pixel
+  `guide` buffer (full-image sized) no longer aliases between tiles.
+  `update.wgsl` is `workgroup_size(1)` and was always tile-safe.
+- **F.4-B..F gbuffer + 4 ReSTIR shaders** (commit `0bec861`) — five
+  WGSL kernels (`wavefront/gbuffer.wgsl`,
+  `restir/{initial,temporal,spatial,shade}.wgsl`) now distinguish
+  `local_id` (`gid.y * tile_w + gid.x`) for tile-sized rays/hits
+  buffers from `pixel_id` (`gy * full_w + gx`) for full-image buffers
+  (reservoirs, depth/normal/motion, sample_map, output). RNG seeding
+  uses the global pixel_id so accumulation stays reproducible across
+  tile boundaries. Motion-vector reprojection and ReSTIR spatial
+  neighbor sampling switched to full-image coords.
+
+Host plumbing (`compute.rs`, `restir/pipeline.rs`, `pathguide/
+pipeline.rs`):
+
+- Five subsystem params bindings (gbuffer@5, restir initial@2 /
+  temporal@5 / spatial@4 / shade@3, pathguide sample@2) now use
+  `has_dynamic_offset=true` with `min_binding_size` set to the WGSL
+  struct size. Size constants exposed as `GBUFFER_PARAMS_SIZE=160`,
+  `RESTIR_INITIAL_PARAMS_SIZE=32`, `RESTIR_TEMPORAL/SPATIAL/SHADE
+  _PARAMS_SIZE=48`, `PG_SAMPLE_PARAMS_SIZE=96`.
+- Each subsystem's params buffer is fixed-size at
+  `MAX_TILE_CAPACITY * TILE_SLOT_STRIDE` (~1 MB per buffer, ~5 MB
+  total). No bind-group rebuild when tile count changes.
+- Per-tile params are packed once at the start of `dispatch_wavefront`
+  via `pack_tile_slots(&Vec<T>)` (re-exported from `pt-wavefront`) and
+  uploaded with a single `queue.write_buffer` per buffer. The per-tile
+  dispatch sets dynamic offset = `tile_idx * TILE_SLOT_STRIDE`. This
+  fixes the same queue-flush race that previously left only the last
+  tile's values visible to all dispatches.
+- Removed the per-tile struct construction + `queue.write_buffer` for
+  RestirInitial/Temporal/Spatial/Shade params from the dispatch loop.
+- Pub-exported `MAX_TILE_CAPACITY`, `DEFAULT_TILE_CAPACITY`, and
+  `pack_tile_slots` from `pt-wavefront` so downstream crates can reuse
+  the per-tile packing pattern.
+
+**Known caveat (pre-existing):** `prev_view_proj` equals
+`curr_view_proj` because the matrix cache only retains the latest
+frame's matrix. ReSTIR temporal reuse therefore sees zero motion
+vectors and effectively no inter-frame reservoir reuse. Not introduced
+by F.4; tracked separately.
 
 ---
 
