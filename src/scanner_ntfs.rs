@@ -9,6 +9,8 @@ use crate::scanner::ScanMsg;
 #[cfg(windows)]
 use crossbeam_channel::Sender;
 #[cfg(windows)]
+use dirstat_core::DirEntry;
+#[cfg(windows)]
 use log::{info, trace, warn};
 #[cfg(windows)]
 use std::path::PathBuf;

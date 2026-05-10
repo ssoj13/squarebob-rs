@@ -47,14 +47,14 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             }
         }
         "mft-ready" => {
-            let _path = ntfs_sample_path(args.get(1));
-            let _max_diag = args
-                .get(2)
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(3);
             #[cfg(windows)]
             {
                 use crate::scanner_ntfs;
+                let path = ntfs_sample_path(args.get(1));
+                let max_diag = args
+                    .get(2)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(3);
                 println!("path: {:?}", path.display());
                 let fs_ok = scanner_ntfs::is_ntfs_available(&path);
                 println!("is_ntfs_available: {}", fs_ok);
@@ -76,39 +76,42 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             }
             #[cfg(not(windows))]
             {
+                let _ = args;
                 anyhow::bail!("mft-ready is Windows-only")
             }
         }
         "enum-diagnose" => {
-            let _path = ntfs_sample_path(args.get(1));
-            let _max_lp = args
-                .get(2)
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(8);
             #[cfg(windows)]
             {
+                let path = ntfs_sample_path(args.get(1));
+                let max_lp = args
+                    .get(2)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(8);
                 let report = crate::scanner_ntfs::diagnose_fsctl_enum_usn(&path, max_lp)?;
                 println!("{}", report);
                 Ok(())
             }
             #[cfg(not(windows))]
             {
+                let _ = args;
                 anyhow::bail!("enum-diagnose is Windows-only")
             }
         }
         "mft-list" => {
-            let _path = ntfs_sample_path(args.get(1));
-            let _n = args
-                .get(2)
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(40);
             #[cfg(windows)]
             {
+                let path = ntfs_sample_path(args.get(1));
+                let n = args
+                    .get(2)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(40);
                 print!("{}", crate::scanner_ntfs::mft_dump_names(&path, n)?);
                 Ok(())
             }
             #[cfg(not(windows))]
             {
+                let _ = args;
                 anyhow::bail!("mft-list is Windows-only")
             }
         }

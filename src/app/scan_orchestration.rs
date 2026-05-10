@@ -21,7 +21,7 @@ impl App {
     // ── Scanning ──
 
     /// Effective backend name for UI (matches spawn choice in [`start_scan`])
-    fn scan_engine_label_for_mode(mode: ScannerMode, _path: &std::path::Path) -> String {
+    fn scan_engine_label_for_mode(mode: ScannerMode, path: &std::path::Path) -> String {
         match mode {
             ScannerMode::Standard => "jwalk".to_string(),
             ScannerMode::Ntfs => {
