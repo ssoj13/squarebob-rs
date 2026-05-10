@@ -154,9 +154,17 @@ pub struct PickResult {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+// Tile-aware gbuffer params. In non-tiled mode tile_x=tile_y=0 and
+// tile_w/h == full_w/h. In tiled mode tile_w/h size the wavefront ray/hit
+// reads while full_w/h size the depth/normal/motion writes; the host packs
+// one slot per tile (see F.4 work in HANDOFF.md / TODO4.md).
 struct GBufferParams {
-    width: u32,
-    height: u32,
+    tile_w: u32,
+    tile_h: u32,
+    tile_x: u32,
+    tile_y: u32,
+    full_w: u32,
+    full_h: u32,
     _pad0: [u32; 2],
     prev_view_proj: [[f32; 4]; 4],
     curr_view_proj: [[f32; 4]; 4],
@@ -1753,9 +1761,15 @@ impl PathTraceCompute {
             self.gbuffer_bgl = Some(bgl);
         }
 
+        // Non-tiled-mode defaults; when wavefront tiling is enabled with
+        // ReSTIR (Stage F.4), host will pack per-tile params instead.
         let gbuffer_params = GBufferParams {
-            width: self.width,
-            height: self.height,
+            tile_w: self.width,
+            tile_h: self.height,
+            tile_x: 0,
+            tile_y: 0,
+            full_w: self.width,
+            full_h: self.height,
             _pad0: [0; 2],
             prev_view_proj: self.last_view_proj.unwrap_or([[0.0; 4]; 4]),
             curr_view_proj: self.last_view_proj.unwrap_or([[0.0; 4]; 4]),
@@ -3475,8 +3489,12 @@ impl PathTraceCompute {
     ) {
         if let Some(restir_bgs) = &self.restir_bind_groups {
             let params = GBufferParams {
-                width: self.width,
-                height: self.height,
+                tile_w: self.width,
+                tile_h: self.height,
+                tile_x: 0,
+                tile_y: 0,
+                full_w: self.width,
+                full_h: self.height,
                 _pad0: [0; 2],
                 prev_view_proj: prev,
                 curr_view_proj: curr,
