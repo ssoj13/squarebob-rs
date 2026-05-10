@@ -43,6 +43,16 @@ pub const TILE_SLOT_STRIDE: u64 = 256;
 pub const WF_DIMS_SIZE: u64 = std::mem::size_of::<WfDims>() as u64;
 /// Bytes actually consumed per tile slot for the [count_in, count_out, _, _] u32x4 block.
 pub const WF_COUNTS_SIZE: u64 = 16;
+
+// Compile-time invariants: WebGPU dynamic-offset bind groups read at most
+// `TILE_SLOT_STRIDE` bytes per slot, so each subsystem's data must fit. The
+// 256-byte stride is also the WebGPU min{Uniform,Storage}BufferOffsetAlignment
+// for every desktop adapter we target.
+const _: () = assert!(TILE_SLOT_STRIDE == 256);
+const _: () = assert!(WF_DIMS_SIZE == 32);
+const _: () = assert!(WF_DIMS_SIZE <= TILE_SLOT_STRIDE);
+const _: () = assert!(WF_COUNTS_SIZE == 16);
+const _: () = assert!(WF_COUNTS_SIZE <= TILE_SLOT_STRIDE);
 /// Default initial tile slot capacity. Grows on demand via `prepare_tiles`.
 pub const DEFAULT_TILE_CAPACITY: u32 = 64;
 /// Hard upper bound on tile count per frame. With 256-byte stride this caps
@@ -553,78 +563,6 @@ fn bgl_sampler(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Tile slot stride must satisfy the WebGPU dynamic-offset alignment
-    /// requirement (`min{Uniform,Storage}BufferOffsetAlignment`) which is
-    /// 256 bytes on every desktop adapter we target.
-    #[test]
-    fn tile_slot_stride_is_256() {
-        assert_eq!(TILE_SLOT_STRIDE, 256);
-    }
-
-    /// `WfDims` size must match what raygen.wgsl expects.
-    #[test]
-    fn wf_dims_size_matches() {
-        assert_eq!(std::mem::size_of::<WfDims>() as u64, WF_DIMS_SIZE);
-        // 8 u32 fields, 32 bytes; fits within one 256-byte slot.
-        assert_eq!(WF_DIMS_SIZE, 32);
-        assert!(WF_DIMS_SIZE <= TILE_SLOT_STRIDE);
-    }
-
-    /// `WF_COUNTS_SIZE` covers the [count_in, count_out, _, _] u32x4 block.
-    #[test]
-    fn wf_counts_size_matches() {
-        assert_eq!(WF_COUNTS_SIZE, 16);
-        assert!(WF_COUNTS_SIZE <= TILE_SLOT_STRIDE);
-    }
-
-    /// `pack_tile_slots` lays each item at slot_idx * 256, zero-padding the
-    /// remainder. This is the contract dynamic-offset bind groups rely on.
-    #[test]
-    fn pack_tile_slots_layout() {
-        let items: [[u32; 4]; 3] = [[10, 0, 0, 0], [20, 0, 0, 0], [30, 0, 0, 0]];
-        let blob = pack_tile_slots(&items);
-        assert_eq!(blob.len(), 3 * TILE_SLOT_STRIDE as usize);
-        // Slot 0 starts at byte 0
-        assert_eq!(&blob[0..4], &10u32.to_le_bytes());
-        // Slot 1 starts at byte 256
-        assert_eq!(&blob[256..260], &20u32.to_le_bytes());
-        // Slot 2 starts at byte 512
-        assert_eq!(&blob[512..516], &30u32.to_le_bytes());
-        // Padding between slot 0 (16 bytes) and slot 1 (256) must be zero.
-        assert!(blob[16..256].iter().all(|&b| b == 0));
-    }
-
-    /// Packing an empty slice yields an empty blob.
-    #[test]
-    fn pack_tile_slots_empty() {
-        let items: [[u32; 4]; 0] = [];
-        assert!(pack_tile_slots(&items).is_empty());
-    }
-
-    /// `WfDims` round-trips through `pack_tile_slots`.
-    #[test]
-    fn pack_tile_slots_wf_dims() {
-        let dims = WfDims {
-            full_width: 1920,
-            full_height: 1080,
-            tile_width: 256,
-            tile_height: 256,
-            tile_x: 768,
-            tile_y: 256,
-            _pad: [0, 0],
-        };
-        let blob = pack_tile_slots(std::slice::from_ref(&dims));
-        let recovered: &WfDims = bytemuck::from_bytes(&blob[0..WF_DIMS_SIZE as usize]);
-        assert_eq!(recovered.full_width, 1920);
-        assert_eq!(recovered.tile_x, 768);
-        assert_eq!(recovered.tile_y, 256);
-    }
-}
-
 // Finalize pipeline: copy accum buffer to output texture
 fn create_finalize_pipeline(
     device: &wgpu::Device,
@@ -689,4 +627,56 @@ fn create_finalize_pipeline(
     });
 
     (pipeline, bgl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: TILE_SLOT_STRIDE / WF_DIMS_SIZE / WF_COUNTS_SIZE invariants are
+    // checked at compile time via `const _: () = assert!(...)` near their
+    // declarations; no runtime test is needed for those constants.
+
+    /// `pack_tile_slots` lays each item at slot_idx * 256, zero-padding the
+    /// remainder. This is the contract dynamic-offset bind groups rely on.
+    #[test]
+    fn pack_tile_slots_layout() {
+        let items: [[u32; 4]; 3] = [[10, 0, 0, 0], [20, 0, 0, 0], [30, 0, 0, 0]];
+        let blob = pack_tile_slots(&items);
+        assert_eq!(blob.len(), 3 * TILE_SLOT_STRIDE as usize);
+        // Slot 0 starts at byte 0
+        assert_eq!(&blob[0..4], &10u32.to_le_bytes());
+        // Slot 1 starts at byte 256
+        assert_eq!(&blob[256..260], &20u32.to_le_bytes());
+        // Slot 2 starts at byte 512
+        assert_eq!(&blob[512..516], &30u32.to_le_bytes());
+        // Padding between slot 0 (16 bytes) and slot 1 (256) must be zero.
+        assert!(blob[16..256].iter().all(|&b| b == 0));
+    }
+
+    /// Packing an empty slice yields an empty blob.
+    #[test]
+    fn pack_tile_slots_empty() {
+        let items: [[u32; 4]; 0] = [];
+        assert!(pack_tile_slots(&items).is_empty());
+    }
+
+    /// `WfDims` round-trips through `pack_tile_slots`.
+    #[test]
+    fn pack_tile_slots_wf_dims() {
+        let dims = WfDims {
+            full_width: 1920,
+            full_height: 1080,
+            tile_width: 256,
+            tile_height: 256,
+            tile_x: 768,
+            tile_y: 256,
+            _pad: [0, 0],
+        };
+        let blob = pack_tile_slots(std::slice::from_ref(&dims));
+        let recovered: &WfDims = bytemuck::from_bytes(&blob[0..WF_DIMS_SIZE as usize]);
+        assert_eq!(recovered.full_width, 1920);
+        assert_eq!(recovered.tile_x, 768);
+        assert_eq!(recovered.tile_y, 256);
+    }
 }

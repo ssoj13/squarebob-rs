@@ -353,16 +353,17 @@ pub(crate) fn render_path_traced(
         pt.mark_history_dirty();
     }
     let cam_moved = (pt.last_camera_pos != Some(cam_pos)) || (pt.last_view_proj != Some(cam_vp));
+    // Always roll prev_view_proj forward (independent of cam_moved) so a
+    // static camera after motion has a coherent prev/curr pair, and ReSTIR
+    // temporal can correctly see "this pixel didn't move" rather than a
+    // stale matrix from earlier in the session.
+    pt.prev_view_proj = pt.last_view_proj;
+    pt.last_view_proj = Some(cam_vp);
     if cam_moved {
         pt.mark_history_dirty();
         reset_by_cam = true;
         pt.reset_accumulation();
         pt.last_camera_pos = Some(cam_pos);
-        // Roll the previous frame's matrix into prev_view_proj so the
-        // wavefront gbuffer + ReSTIR temporal pass can reproject world
-        // positions into the previous screen for motion vectors.
-        pt.prev_view_proj = pt.last_view_proj;
-        pt.last_view_proj = Some(cam_vp);
     }
 
     // Check slice plane changes
