@@ -1616,14 +1616,23 @@ impl App {
             if self.render_3d_opts.pt_wavefront {
                 control_label(ui, "WF Tile:");
                 ui.horizontal(|ui| {
-                    *pt_changed |= ui
-                        .add(
-                            egui::DragValue::new(&mut self.render_3d_opts.pt_wavefront_tile_size)
-                                .range(0..=8192)
-                                .speed(16),
-                        )
-                        .changed();
-                    ui.small("0 = full frame");
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut self.render_3d_opts.pt_wavefront_tile_size)
+                            .range(0..=8192)
+                            .speed(16),
+                    );
+                    if resp.changed() {
+                        // Snap to {0, ≥64}. Smaller non-zero values produce
+                        // pathologically many tiles (tile=2 on FullHD ≈ 520k
+                        // tiles) and would hang the GPU. Mirrors the clamp
+                        // in PathTraceCompute::set_wavefront_tile_size.
+                        let v = self.render_3d_opts.pt_wavefront_tile_size;
+                        if v != 0 && v < 64 {
+                            self.render_3d_opts.pt_wavefront_tile_size = 64;
+                        }
+                        *pt_changed = true;
+                    }
+                    ui.small("0 = full frame, min 64");
                 });
                 ui.end_row();
 

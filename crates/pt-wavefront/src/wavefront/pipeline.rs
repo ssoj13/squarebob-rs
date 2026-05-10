@@ -45,6 +45,12 @@ pub const WF_DIMS_SIZE: u64 = std::mem::size_of::<WfDims>() as u64;
 pub const WF_COUNTS_SIZE: u64 = 16;
 /// Default initial tile slot capacity. Grows on demand via `prepare_tiles`.
 const DEFAULT_TILE_CAPACITY: u32 = 64;
+/// Hard upper bound on tile count per frame. With 256-byte stride this caps
+/// per-tile staging buffer growth at 4096 * 256 = 1 MiB per buffer, and keeps
+/// the GPU command queue from drowning in dispatches when a misconfigured
+/// tile size would otherwise produce hundreds of thousands of tiles
+/// (e.g. tile=2 on FullHD ≈ 520k tiles).
+const MAX_TILE_CAPACITY: u32 = 4096;
 
 /// Wavefront path tracer pipeline.
 pub struct WavefrontPipeline {
@@ -325,6 +331,13 @@ impl WavefrontPipeline {
         if n == 0 {
             return false;
         }
+        assert!(
+            n <= MAX_TILE_CAPACITY,
+            "tile count {} exceeds MAX_TILE_CAPACITY ({}). Increase \
+             wavefront tile_size or raise MAX_TILE_CAPACITY.",
+            n,
+            MAX_TILE_CAPACITY
+        );
         let realloc = if n > self.tile_capacity {
             // Grow to next power-of-two ≥ n, capped reasonably.
             let new_cap = n.next_power_of_two().max(DEFAULT_TILE_CAPACITY);
