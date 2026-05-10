@@ -65,11 +65,10 @@ counts are pre-refactor and may not match current source. Read the
 - **#4 `auto-allocator = "*"`** — kept by design per project policy
   (track latest, rely on `cargo audit` job for breaking-change drift).
   `secure` feature benchmark deferred (Stage D.4, requires runtime).
-  Note: on this WSL2 with conda-forge GCC 15.1 the `mimalloc-sys`
-  build script's stdatomic test fails because the test program uses
-  `ATOMIC_VAR_INIT(0)` (deprecated in C17, removed in C23). Workaround:
-  `PATH=/usr/bin:$PATH cargo build` to use system `gcc-13`. CI
-  runners (no conda-forge GCC 15) are unaffected.
+  *(Earlier note about a conda-forge GCC 15 / `ATOMIC_VAR_INIT` build
+  failure resolved 2026-05-10 by `conda install gcc=13`; mimalloc-sys
+  now compiles cleanly. CI runners on Linux + Windows were unaffected
+  to begin with.)*
 
 ### Newly resolved beyond the original top-10
 

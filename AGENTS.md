@@ -109,10 +109,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace                     # 24 unit tests, all passing
 ```
 
-Local note: on conda-forge GCC 15 WSL2, prepend `PATH=/usr/bin:` to
-make `cc` resolve to system `gcc-13` (avoids an upstream bug in
-`auto-allocator-0.1.0/build.rs` that uses C23-removed `ATOMIC_VAR_INIT`).
-CI runners are unaffected.
+Local toolchain: conda-forge `gcc=13` (downgraded from 15.1 on
+2026-05-10 to avoid the C23-removed `ATOMIC_VAR_INIT` issue in
+auto-allocator's build script). Plain `cargo build` works without
+PATH workarounds.
 
 Last bughunt pass (sprint-2): clippy clean — 0 warnings with
 `-D warnings`. CI workflow at `.github/workflows/ci.yml` enforces

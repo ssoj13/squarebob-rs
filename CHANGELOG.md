@@ -162,7 +162,7 @@ augmented with cross-project insights.
   accessor; treemap_view registers it with egui via the existing
   `render_texture_id`. No new display path needed.
 
-### Verified locally with `PATH=/usr/bin:$PATH`
+### Verified locally (2026-05-10: GCC 13 in conda env, no PATH workaround needed)
 - `cargo build --workspace --all-targets` — ok in ~3-5s warm.
 - `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings.
 - `cargo test --workspace` — 24 unit tests passing.
@@ -304,9 +304,10 @@ build/test verification.
   C23). Conda-forge GCC 15.1 defaults to C23 → test fails →
   build.rs incorrectly concludes "stdatomic.h unavailable". This is
   an upstream bug in `auto-allocator`, not this project.
-  Workaround: `PATH=/usr/bin:$PATH cargo build` (uses system
-  `gcc-13`). CI runners on Linux + Windows are unaffected because
-  they don't have conda-forge GCC.
+  **Resolved 2026-05-10**: `conda install -c conda-forge gcc=13 gxx=13`
+  in the local env. GCC 13.4 defaults to gnu17, `ATOMIC_VAR_INIT`
+  works, mimalloc-sys compiles cleanly, plain `cargo build` works.
+  CI runners on Linux + Windows were unaffected to begin with.
 
 ---
 

@@ -34,11 +34,11 @@ PR. `rustsec/audit-check` runs on every push and weekly via cron — this
 audit job is the explicit reason why `auto-allocator = "*"` is allowed
 to stay unpinned per project policy.
 
-**Local verification footnote:** on this WSL2 with conda-forge GCC 15.1
-the binary build fails inside `libmimalloc-sys`'s build script (it uses
-the deprecated-in-C17 / removed-in-C23 `ATOMIC_VAR_INIT` macro in its
-stdatomic test). Workaround: `PATH=/usr/bin:$PATH cargo build` — the
-system `gcc-13` defaults to gnu17 and works. CI runners are unaffected.
+**Local verification footnote:** the local conda-forge toolchain is
+pinned at `gcc=13` (downgraded from 15.1 on 2026-05-10 because
+`libmimalloc-sys`'s build script uses the C23-removed `ATOMIC_VAR_INIT`
+macro). Plain `cargo build` / `cargo test` / `cargo clippy` work
+without any PATH workaround. CI runners are unaffected either way.
 
 ## Original (pre-sprint-2) state — preserved for reference
 
