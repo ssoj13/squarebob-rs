@@ -7,14 +7,15 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::adaptive::{AdaptiveConfig, AdaptivePipeline};
-use crate::pathguide::{PathGuideConfig, PathGuidePipeline};
+use crate::pathguide::{PathGuideConfig, PathGuidePipeline, PG_SAMPLE_PARAMS_SIZE};
 use crate::restir::{ReSTIRConfig, ReSTIRPipeline, Reservoir};
 use bvh_gpu::{GpuBvhBuilder, GpuBvhConfig};
 use glam::{Mat4, Vec3};
 use pt_core::bvh::Instance;
 use pt_core::gpu_data::GpuInstanceSceneData;
 use pt_wavefront::{
-    WavefrontConfig, WavefrontPipeline, WfDims, WF_COUNTS_SIZE, WF_DIMS_SIZE,
+    pack_tile_slots, WavefrontConfig, WavefrontPipeline, WfDims, MAX_TILE_CAPACITY,
+    TILE_SLOT_STRIDE, WF_COUNTS_SIZE, WF_DIMS_SIZE,
 };
 use std::num::NonZeroU64;
 
@@ -226,11 +227,16 @@ struct PathGuideUpdateParams {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+// Per-tile pathguide sample params. Mirrors `Params` in pathguide/sample.wgsl.
+// In non-tiled mode tile_pos = [0, 0, full_w, full_h] and params0.z/.w hold
+// full_w/full_h. In tiled mode tile_pos.xy is the tile origin, .zw the full
+// image dimensions, and params0.z/.w the per-tile width/height.
 struct PathGuideSampleParams {
     scene_min: [f32; 4],
     scene_max: [f32; 4],
-    params0: [u32; 4], // resolution, frame_count
-    params1: [f32; 4], // guide_weight
+    params0: [u32; 4], // x=resolution, y=frame_count, z=tile_w, w=tile_h
+    params1: [f32; 4], // x=guide_weight
+    tile_pos: [u32; 4], // x=tile_x, y=tile_y, z=full_w, w=full_h
 }
 
 /// Path trace compute pipeline state.
@@ -2156,22 +2162,14 @@ impl PathTraceCompute {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let sample_params = PathGuideSampleParams {
-            scene_min: {
-                let v = self.scene_bounds.map(|b| b.0).unwrap_or([0.0; 3]);
-                [v[0], v[1], v[2], 0.0]
-            },
-            scene_max: {
-                let v = self.scene_bounds.map(|b| b.1).unwrap_or([1.0; 3]);
-                [v[0], v[1], v[2], 0.0]
-            },
-            params0: [self.pathguide_config.svo_resolution, self.frame_count, 0, 0],
-            params1: [self.pathguide_config.guide_weight, 0.0, 0.0, 0.0],
-        };
-        let sample_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // Per-tile pathguide sample params: each tile gets its own 256-byte
+        // slot. The host writes all slots once per frame via pack_tile_slots,
+        // and the bind group uses a dynamic offset to address each tile.
+        let sample_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pathguide_sample_params"),
-            contents: bytemuck::bytes_of(&sample_params),
+            size: u64::from(MAX_TILE_CAPACITY) * TILE_SLOT_STRIDE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let guide = &self.guide_buffer;
@@ -2205,9 +2203,15 @@ impl PathTraceCompute {
                     binding: 1,
                     resource: guide.as_entire_binding(),
                 },
+                // Dynamic-offset binding: size must equal the BGL's
+                // min_binding_size (PG_SAMPLE_PARAMS_SIZE).
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: sample_params_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &sample_params_buf,
+                        offset: 0,
+                        size: NonZeroU64::new(PG_SAMPLE_PARAMS_SIZE),
+                    }),
                 },
             ],
         });
@@ -2363,6 +2367,31 @@ impl PathTraceCompute {
             self.rebuild_wavefront_bind_groups(device);
         }
 
+        // Pre-pack per-tile pathguide sample params (one slot per tile).
+        // The buffer is fixed-size at MAX_TILE_CAPACITY slots so no bind
+        // group rebuild is needed when tile count changes.
+        if self.pathguide_config.enabled && self.pathguide.is_some() {
+            if let Some(pg_bgs) = self.pathguide_bind_groups.as_ref() {
+                let scene_min_v = self.scene_bounds.map(|b| b.0).unwrap_or([0.0; 3]);
+                let scene_max_v = self.scene_bounds.map(|b| b.1).unwrap_or([1.0; 3]);
+                let svo_res = self.pathguide_config.svo_resolution;
+                let guide_w = self.pathguide_config.guide_weight;
+                let frame = self.frame_count;
+                let pg_params: Vec<PathGuideSampleParams> = tiles_meta
+                    .iter()
+                    .map(|d| PathGuideSampleParams {
+                        scene_min: [scene_min_v[0], scene_min_v[1], scene_min_v[2], 0.0],
+                        scene_max: [scene_max_v[0], scene_max_v[1], scene_max_v[2], 0.0],
+                        params0: [svo_res, frame, d.tile_width, d.tile_height],
+                        params1: [guide_w, 0.0, 0.0, 0.0],
+                        tile_pos: [d.tile_x, d.tile_y, d.full_width, d.full_height],
+                    })
+                    .collect();
+                let blob = pack_tile_slots(&pg_params);
+                queue.write_buffer(&pg_bgs.sample_params_buf, 0, &blob);
+            }
+        }
+
         let wf = self.wavefront.as_ref().unwrap();
 
         // Get current bind group set (will swap between bounces)
@@ -2426,39 +2455,17 @@ impl PathTraceCompute {
             && self.restir.is_some()
             && self.restir_bind_groups.is_some()
             && self.gbuffer_pipeline.is_some();
-        let mut pathguide_enabled = self.pathguide_config.enabled;
+        let pathguide_enabled = self.pathguide_config.enabled;
         let adaptive_enabled = self.adaptive_config.enabled;
-        // ReSTIR / Path Guide are force-disabled when tiling is on.
-        //
-        // This is NOT a queue.write_buffer race workaround — that race was
-        // fixed for the wavefront dims/count via dynamic-offset bind groups
-        // and prepare_tiles. The remaining issue is shader-level: those
-        // subsystems' WGSL kernels compute `pixel_id = gid.y * params.width
-        // + gid.x` where `params.width` is the per-tile width, but the
-        // reservoir / sample-map / variance buffers are full-image-sized.
-        // Different tiles would alias into the same buffer slots.
-        //
-        // Re-enabling them in tiled mode requires adding tile_x/tile_y/
-        // full_width/full_height fields to each subsystem's Params (and
-        // matching WGSL structs), remapping pixel_id to global coords, and
-        // routing per-tile param uploads through the same dynamic-offset
-        // (or encoder-staging-copy) pattern used for wavefront dims/count.
-        // Tracked as a follow-up phase; see HANDOFF.md (Stage F.4).
-        //
-        // Adaptive sampling is *not* affected by the tile-local pixel_id
-        // issue: variance + allocate pipelines run ONCE per frame after
-        // the tile loop with `width = full_w, height = full_h`, indexing
-        // accum / variance / sample_map by global pixel_id. So tiling and
-        // adaptive coexist correctly.
-        if use_tiling {
-            if restir_enabled {
-                log::warn!("WF tiling: ReSTIR disabled (tile_size={})", tile_size);
-            }
-            if pathguide_enabled {
-                log::warn!("WF tiling: Path Guide disabled (tile_size={})", tile_size);
-            }
+        // ReSTIR is still force-disabled in tiled mode pending its shader-
+        // level tile-awareness work (Stage F.4-C..F). Path Guide and gbuffer
+        // have been migrated to dynamic-offset per-tile params + tile-aware
+        // shaders (F.4-A, F.4-B). Adaptive sampling has always been tile-safe
+        // because variance/allocate run once per frame on the full image
+        // after the tile loop.
+        if use_tiling && restir_enabled {
+            log::warn!("WF tiling: ReSTIR disabled (tile_size={})", tile_size);
             restir_enabled = false;
-            pathguide_enabled = false;
         }
         log::debug!(
             "WF dispatch: frame {}/{}, full={}x{}, wf_buf={}x{}, tile={}, bounces={}, restir={}, pathguide={}, adaptive={}",
@@ -2504,27 +2511,12 @@ impl PathTraceCompute {
                 // ordered with subsequent dispatches (unlike queue.write_buffer).
                 wf.reset_tile_count(encoder, tile_idx);
 
-                // Path guiding: sample guided directions from previous SVO
+                // Path guiding: sample guided directions from previous SVO.
+                // Per-tile params were pre-packed before the tile loop; the
+                // bind group uses dynamic offset to address this tile's slot.
                 if pathguide_enabled && !restir_enabled {
                     if let (Some(pg), Some(pg_bgs)) = (&self.pathguide, &self.pathguide_bind_groups)
                     {
-                        let sample_params = PathGuideSampleParams {
-                            scene_min: {
-                                let v = self.scene_bounds.map(|b| b.0).unwrap_or([0.0; 3]);
-                                [v[0], v[1], v[2], 0.0]
-                            },
-                            scene_max: {
-                                let v = self.scene_bounds.map(|b| b.1).unwrap_or([1.0; 3]);
-                                [v[0], v[1], v[2], 0.0]
-                            },
-                            params0: [self.pathguide_config.svo_resolution, self.frame_count, 0, 0],
-                            params1: [self.pathguide_config.guide_weight, 0.0, 0.0, 0.0],
-                        };
-                        queue.write_buffer(
-                            &pg_bgs.sample_params_buf,
-                            0,
-                            bytemuck::bytes_of(&sample_params),
-                        );
                         let (_, sample_pl) = pg.pipelines();
                         let wg = tile_pixels.max(1).div_ceil(64);
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -2532,7 +2524,7 @@ impl PathTraceCompute {
                             timestamp_writes: None,
                         });
                         pass.set_pipeline(sample_pl);
-                        pass.set_bind_group(0, &pg_bgs.sample_bg, &[]);
+                        pass.set_bind_group(0, &pg_bgs.sample_bg, &[tile_off]);
                         pass.dispatch_workgroups(wg, 1, 1);
                         log::trace!("WF pathguide sample: wg={}", wg);
                     }

@@ -13,6 +13,6 @@ mod svo;
 #[allow(unused_imports)]
 pub use config::PathGuideConfig;
 #[allow(unused_imports)]
-pub use pipeline::PathGuidePipeline;
+pub use pipeline::{PathGuidePipeline, PG_SAMPLE_PARAMS_SIZE};
 #[allow(unused_imports)]
 pub use svo::{SvoConfig, SvoNode};

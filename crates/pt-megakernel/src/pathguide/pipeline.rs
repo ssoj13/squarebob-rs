@@ -2,6 +2,11 @@
 
 use super::svo::SvoNode;
 use log::debug;
+use std::num::NonZeroU64;
+
+/// WGSL `Params` struct size for pathguide sample. Keep in sync with
+/// `crate::compute::PathGuideSampleParams`.
+pub const PG_SAMPLE_PARAMS_SIZE: u64 = 96;
 
 const UPDATE_WGSL: &str = include_str!("update.wgsl");
 const SAMPLE_WGSL: &str = include_str!("sample.wgsl");
@@ -43,9 +48,9 @@ impl PathGuidePipeline {
             SAMPLE_WGSL,
             "sample",
             &[
-                bgl_storage_ro(0), // SVO nodes
-                bgl_storage_rw(1), // guide buffer
-                bgl_uniform(2),    // params
+                bgl_storage_ro(0),                              // SVO nodes
+                bgl_storage_rw(1),                              // guide buffer
+                bgl_uniform_dyn(2, PG_SAMPLE_PARAMS_SIZE),      // params (per-tile)
             ],
         );
 
@@ -144,6 +149,19 @@ fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
             min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+fn bgl_uniform_dyn(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: NonZeroU64::new(size),
         },
         count: None,
     }

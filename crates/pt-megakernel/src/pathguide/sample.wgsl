@@ -10,8 +10,9 @@ struct SvoNode {
 struct Params {
     scene_min: vec4<f32>,   // xyz=min
     scene_max: vec4<f32>,   // xyz=max
-    params0: vec4<u32>,     // x=resolution, y=frame_count
+    params0: vec4<u32>,     // x=resolution, y=frame_count, z=tile_w, w=tile_h
     params1: vec4<f32>,     // x=guide_weight
+    tile_pos: vec4<u32>,    // x=tile_x, y=tile_y, z=full_w, w=full_h
 }
 
 @group(0) @binding(0) var<storage, read> svo: array<SvoNode>;
@@ -123,9 +124,23 @@ fn sample_guided(pos: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32> {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    var seed = gid.x ^ (params.params0.y * 1973u);
+    // gid.x indexes into the *tile* pixel range [0, tile_w*tile_h). Remap
+    // to a global pixel index so that the per-pixel `guide` buffer (which
+    // is sized for the full image) does not alias between tiles.
+    let local_idx = gid.x;
+    let tile_w = params.params0.z;
+    let tile_h = params.params0.w;
+    let lx = local_idx % max(tile_w, 1u);
+    let ly = local_idx / max(tile_w, 1u);
+    if ly >= tile_h { return; }
+    let gx = params.tile_pos.x + lx;
+    let gy = params.tile_pos.y + ly;
+    if gx >= params.tile_pos.z || gy >= params.tile_pos.w { return; }
+    let pixel_idx = gy * params.tile_pos.z + gx;
 
-    let base = guide_base(gid.x);
+    var seed = pixel_idx ^ (params.params0.y * 1973u);
+
+    let base = guide_base(pixel_idx);
     let guided = load_vec4(base);
     let sample_pos = load_vec4(base + 2u);
     let sample_rad = load_vec4(base + 4u);
