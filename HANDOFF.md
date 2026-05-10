@@ -82,10 +82,11 @@ converge to the same image within sampling noise; nothing should print
 
 (Previously the matrix cache only held the latest frame so
 `prev_view_proj == curr_view_proj` and motion vectors collapsed to zero.
-Fixed in commit `2767548`: `PathTraceCompute` now tracks
-`prev_view_proj` separately, rolled forward by the renderer on each
-camera move. ReSTIR temporal reuse now reprojects against the real
-previous-frame projection.)
+Fixed in commits `2767548` + `b312afc`: `PathTraceCompute` tracks
+`prev_view_proj` separately, rolled forward by the renderer **every
+frame** — unconditional, not gated on `cam_moved` — so a static-camera
+frame after motion has a coherent prev/curr pair. ReSTIR temporal reuse
+now reprojects against the real previous-frame projection.)
 
 ### What still needs YOUR eyes (UAT)
 

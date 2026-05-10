@@ -534,7 +534,8 @@ symbols (tests).
 | F.3 tile-size input safety | ✅ shipped (commit `ddbdd26`) — UI snap + code clamp + hard assert (`MAX_TILE_CAPACITY = 4096`) so transient `WF Tile=2` cannot hang the GPU |
 | F.4 ReSTIR/PG/Adaptive in tiled mode | ✅ shipped — Adaptive (`43e9376`), F.4-A PathGuide (`6ef6aac`), F.4-B..G gbuffer + 4 ReSTIR shaders (`0bec861`); force-disable lifted |
 | F.5 Windows build fix | ✅ shipped (commit `b6e84e9`) — `cli_test.rs` / `scanner_ntfs.rs` / `scan_orchestration.rs` after WIP unused-var rename broke Windows-only paths |
-| F.6 wavefront unit tests | ✅ shipped (commit `76c28f5`) — 6 new tests on tile-slot layout invariants; workspace 32→38 tests |
+| F.6 wavefront unit tests | ✅ shipped (commit `76c28f5`) — 6 new tests on tile-slot layout invariants; 3 const-only ones folded into compile-time `const _: () = assert!(...)` in F.7 |
+| F.7 clippy cleanup | ✅ shipped (commit `b312afc`) — `mod tests` moved to end of `pipeline.rs`, const-only runtime asserts converted to compile-time, `cargo clippy --workspace` zero warnings |
 
 ### F.4 — ReSTIR / Path Guide / Adaptive in tiled wavefront mode (shipped)
 
@@ -567,12 +568,13 @@ Tile=0 vs WF Tile=256 with each of {PathGuide, Adaptive, ReSTIR DI,
 ReSTIR DI+GI} and with all of them on at once — each pair should
 converge to the same image. No "X disabled" warning in the console.
 
-Bonus fix (commit `2767548`): the prior `prev_view_proj ==
-curr_view_proj` caveat was resolved by adding a `prev_view_proj`
+Bonus fix (commits `2767548` + `b312afc`): the prior `prev_view_proj
+== curr_view_proj` caveat was resolved by adding a `prev_view_proj`
 matrix cache to `PathTraceCompute`. The two renderer entry points
 (`render.rs`, `render_no_readback.rs`) roll the existing matrix into
-prev before storing the new one on a camera-move. ReSTIR temporal
-reuse now reprojects against the real previous-frame projection.
+prev every frame (unconditional — not gated on `cam_moved`) so
+static-after-motion frames stay coherent. ReSTIR temporal reuse now
+reprojects against the real previous-frame projection.
 
 ---
 

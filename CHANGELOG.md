@@ -107,8 +107,9 @@ inside the `#[cfg(windows)]` arms (or restoring the parameter names).
 `crates/pt-wavefront/src/wavefront/pipeline.rs` gained six unit tests
 covering the dynamic-offset slot layout invariants:
 `TILE_SLOT_STRIDE == 256`, `WfDims` size match, `WF_COUNTS_SIZE` size,
-`pack_tile_slots` layout / empty / round-trip cases. Workspace test
-count: 32 → 38.
+`pack_tile_slots` layout / empty / round-trip cases. (Three of the
+const-only ones were later folded into compile-time `const _: () =
+assert!(...)` in Stage F.7 below.)
 
 ### Stage F.4 — ReSTIR/PathGuide/Adaptive coexist with tiling
 
@@ -156,12 +157,36 @@ pipeline.rs`):
   `pack_tile_slots` from `pt-wavefront` so downstream crates can reuse
   the per-tile packing pattern.
 
-**Bonus fix (commit `2767548`):** `prev_view_proj == curr_view_proj`
-because the matrix cache only retained the latest frame; ReSTIR
-temporal reuse saw zero motion. `PathTraceCompute` now keeps a
-`prev_view_proj` field rolled forward by the renderer on each
-camera-move, so the gbuffer motion-vector pass sees the real previous
-projection.
+**Bonus fix — ReSTIR motion vectors (commits `2767548`, `b312afc`):**
+`prev_view_proj == curr_view_proj` because the matrix cache only
+retained the latest frame; ReSTIR temporal reuse saw zero motion.
+`PathTraceCompute` now keeps a `prev_view_proj` field; both renderer
+entry points (`megakernel/render.rs`, `megakernel/render_no_readback.rs`)
+roll the prior `last_view_proj` into `prev_view_proj` every frame
+(unconditional, not gated on `cam_moved`) so a static-camera frame
+after motion has a coherent prev/curr pair rather than a stale matrix
+from an earlier session. First frame falls back to `prev = curr` =
+zero motion (matching prior behaviour).
+
+### Stage F.7 — Clippy cleanup (commit `b312afc`)
+
+The unit-test module in `crates/pt-wavefront/src/wavefront/pipeline.rs`
+sat in the middle of the file (before `create_finalize_pipeline`) and
+contained three pure const-vs-const `assert!` invariants. Cleanup:
+
+- Moved `mod tests` to the end of the file (clears `clippy::
+  items_after_test_module`).
+- Replaced the redundant runtime tests `tile_slot_stride_is_256`,
+  `wf_dims_size_matches`, `wf_counts_size_matches` with compile-time
+  `const _: () = assert!(...)` next to the constant declarations
+  (clears `clippy::assertions_on_constants`, also strengthens the
+  contract: failures become build errors, not test failures).
+- The three real runtime tests (`pack_tile_slots_layout/empty/wf_dims`)
+  stay; workspace test count: 38 → 35 (3 const-only tests folded into
+  compile-time asserts).
+
+Final workspace state: `cargo clippy --workspace --all-targets` zero
+warnings, `cargo test --workspace` 21 test sets, 0 failures.
 
 ---
 
