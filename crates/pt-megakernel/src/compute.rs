@@ -3024,7 +3024,17 @@ impl PathTraceCompute {
         }
 
         let wf_ms = wf_start.elapsed().as_secs_f64() * 1000.0;
-        log::trace!("WF dispatch: done ({:.2}ms)", wf_ms);
+        // Per-frame summary. Fires at info when slow (>16 ms = below 60 fps CPU
+        // side); trace otherwise. ms here is CPU encoding cost only — actual
+        // GPU work happens at submit time elsewhere.
+        if wf_ms > 16.0 {
+            log::info!(
+                "WF dispatch: {:.1}ms (tiles={}, restir={}, pathguide={}, adaptive={}, tile_size={})",
+                wf_ms, tiles_meta.len(), restir_enabled, pathguide_enabled, adaptive_enabled, tile_size
+            );
+        } else {
+            log::trace!("WF dispatch: done ({:.2}ms)", wf_ms);
+        }
 
         true
     }
@@ -3261,6 +3271,7 @@ impl PathTraceCompute {
         data: &GpuInstanceSceneData,
         instances: Option<&[Instance]>,
     ) {
+        let scene_start = std::time::Instant::now();
         let nodes_bytes = data.nodes_bytes();
         let inst_bytes = data.instances_bytes();
         let mat_bytes = data.materials_bytes();
@@ -3311,6 +3322,15 @@ impl PathTraceCompute {
         }
         self.rebuild_restir_bind_groups(device);
         self.rebuild_pathguide_bind_groups(device);
+        let scene_ms = scene_start.elapsed().as_secs_f64() * 1000.0;
+        log::info!(
+            "upload_scene: {:.1}ms (nodes={}B, inst={}B, mats={}B, wf_bgs={}, restir+pg_bgs=yes)",
+            scene_ms,
+            nodes_bytes.len(),
+            inst_bytes.len(),
+            mat_bytes.len(),
+            self.wavefront.is_some(),
+        );
     }
 
     /// Update BVH configuration from UI options.

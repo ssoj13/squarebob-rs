@@ -80,7 +80,7 @@ impl Renderer3D {
         let instances_arc: Arc<Vec<CubeInstance>> = if cache_valid {
             Arc::clone(self.cached_instances.as_ref().expect("cached_instances not built — collect_cubes must run before render"))
         } else {
-            log::debug!(
+            log::info!(
                 "cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
                 opts.animate,
                 self.cached_instances.is_some(),
