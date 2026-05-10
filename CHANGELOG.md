@@ -82,11 +82,38 @@ Each modularization commit ran:
   cargo clippy --workspace --all-targets -- -D warnings  — 0 warnings
   cargo test --workspace                      — 24 unit tests pass
 
-### E.3 — gitnexus embeddings
+### E.3 — gitnexus embeddings — BLOCKED by environment
 
-Kicked off `npx gitnexus analyze --embeddings` in the background;
-expected to take ~10-30 min to encode ~2650 symbols. No completion
-notification yet at end of session — check on next cold start.
+Tried `npx gitnexus analyze --embeddings --force`. The command exits
+"successfully" (exit 0) but `embeddings: 0` afterwards because two
+native-binary ABI conflicts surface on this WSL2 / conda-forge stack:
+
+1. **ONNX runtime segfault**: `@huggingface/transformers`'s
+   `onnxruntime-node` ships a `.node` napi-v6 binding compiled against
+   a Node ABI incompatible with the Bun runtime that `bunx`/`npx`
+   resolves to on this machine. Loading the binding causes a
+   `panic(main thread): Segmentation fault at address 0x0`.
+
+2. **Kùzu VECTOR extension undefined symbol**:
+   `~/.lbdb/extension/0.15.0/linux_amd64/vector/libvector.lbug_extension`
+   fails to load with `undefined symbol: _ZTIN4lbug7catalog12IndexAuxInfoE`
+   — a C++ name-mangling mismatch between the shipped extension and
+   the runtime's libstdc++.
+
+Same category of issue as the GCC 15 / `mimalloc` ATOMIC_VAR_INIT
+problem documented in CLAUDE.md: shipped binary artifacts assume an
+ABI different from this machine's toolchain.
+
+Workarounds (not applied — defer to user):
+- Run gitnexus via plain `node` instead of `bunx`/`npx` if a non-Bun
+  path can be forced.
+- Upgrade gitnexus to a version where the extensions are recompiled
+  against current GCC.
+- Run the embedding step in Docker with a known-good toolchain.
+
+Pragmatic: BM25-only ranking via `gitnexus_query` works very well on
+this Rust codebase (expressive symbol names). The semantic embedding
+upgrade is nice-to-have, not blocking.
 
 ### Stage D.2 (originally — sprint-3 part 1, kept here for completeness)
 
