@@ -63,6 +63,9 @@ struct Material {
     params2: vec4<f32>,
 };
 
+// Tile-aware params: width/height are the full image. rays/hits are
+// tile-local layout (sized by tile_w*tile_h); reservoirs/output/sample_map
+// are full-image-sized.
 struct Params {
     width: u32,
     height: u32,
@@ -70,6 +73,10 @@ struct Params {
     _pad: u32,
     camera_pos: vec3<f32>,
     _pad2: f32,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
 }
 
 struct EnvParams {
@@ -169,11 +176,16 @@ fn smith_g1(ndotv: f32, alpha: f32) -> f32 {
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= params.width || gid.y >= params.height { return; }
-
-    let pixel_id = gid.y * params.width + gid.x;
+    if gid.x >= params.tile_w || gid.y >= params.tile_h { return; }
+    let gx = params.tile_x + gid.x;
+    let gy = params.tile_y + gid.y;
+    if gx >= params.width || gy >= params.height { return; }
+    // local_id: tile-local index for rays/hits buffers.
+    let local_id = gid.y * params.tile_w + gid.x;
+    // pixel_id: full-image global index for reservoirs/output/sample_map.
+    let pixel_id = gy * params.width + gx;
     let reservoir = reservoirs[pixel_id];
-    let hit = hits[pixel_id];
+    let hit = hits[local_id];
     let spp_limit = sample_map[pixel_id];
     // Use actual sample count from output buffer (not frame_count which is batched on CPU)
     let current_samples = u32(output[pixel_id].w);
@@ -184,7 +196,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Check for valid sample and hit
     if hit.hit == 0u || reservoir.sample.valid == 0u {
         if hit.hit == 0u {
-            let ray = rays[pixel_id];
+            let ray = rays[local_id];
             let dir = normalize(ray.dir);
             output[pixel_id] += vec4<f32>(sky_color(dir), 1.0);
         }
@@ -213,7 +225,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let roughness = max(mat.params1.z, 0.04);
     let ior = mat.params1.w;
 
-    let ray = rays[pixel_id];
+    let ray = rays[local_id];
     let surface_p = ray.origin + ray.dir * hit.t;
     let v_dir = normalize(params.camera_pos - surface_p);
     let ndotv = max(dot(normal, v_dir), EPS);

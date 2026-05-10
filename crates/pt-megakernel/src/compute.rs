@@ -8,7 +8,10 @@ use wgpu::util::DeviceExt;
 
 use crate::adaptive::{AdaptiveConfig, AdaptivePipeline};
 use crate::pathguide::{PathGuideConfig, PathGuidePipeline, PG_SAMPLE_PARAMS_SIZE};
-use crate::restir::{ReSTIRConfig, ReSTIRPipeline, Reservoir};
+use crate::restir::{
+    ReSTIRConfig, ReSTIRPipeline, Reservoir, RESTIR_INITIAL_PARAMS_SIZE,
+    RESTIR_SHADE_PARAMS_SIZE, RESTIR_SPATIAL_PARAMS_SIZE, RESTIR_TEMPORAL_PARAMS_SIZE,
+};
 use bvh_gpu::{GpuBvhBuilder, GpuBvhConfig};
 use glam::{Mat4, Vec3};
 use pt_core::bvh::Instance;
@@ -19,14 +22,17 @@ use pt_wavefront::{
 };
 use std::num::NonZeroU64;
 
-fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
+/// WGSL `Params` struct size for wavefront gbuffer (mirrors `GBufferParams`).
+const GBUFFER_PARAMS_SIZE: u64 = 160;
+
+fn bgl_uniform_dyn(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
+            has_dynamic_offset: true,
+            min_binding_size: NonZeroU64::new(size),
         },
         count: None,
     }
@@ -173,11 +179,20 @@ struct GBufferParams {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+// All four ReSTIR params structs gained tile_{x,y,w,h} fields. width/height
+// remain the full image dimensions (mirroring the WGSL `Params` declarations
+// in restir/{initial,temporal,spatial,shade}.wgsl). In non-tiled mode the
+// host sets tile_x/y=0 and tile_w/h==width/height; in tiled mode each tile
+// gets its own slot in a dynamic-offset uniform buffer.
 struct RestirInitialParams {
     width: u32,
     height: u32,
     frame_count: u32,
     num_candidates: u32,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
 }
 
 #[repr(C)]
@@ -189,7 +204,10 @@ struct RestirTemporalParams {
     m_max: u32,
     depth_threshold: f32,
     _pad: [f32; 3],
-    _pad2: [f32; 4],
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
 }
 
 #[repr(C)]
@@ -203,6 +221,10 @@ struct RestirSpatialParams {
     normal_threshold: f32,
     depth_threshold: f32,
     _pad: f32,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
 }
 
 #[repr(C)]
@@ -214,6 +236,10 @@ struct RestirShadeParams {
     _pad: u32,
     camera_pos: [f32; 3],
     _pad2: f32,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
 }
 
 #[repr(C)]
@@ -1742,12 +1768,12 @@ impl PathTraceCompute {
             let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("wf_gbuffer_bgl"),
                 entries: &[
-                    bgl_storage_ro(0), // rays
-                    bgl_storage_ro(1), // hits
-                    bgl_storage_rw(2), // depth
-                    bgl_storage_rw(3), // normal
-                    bgl_storage_rw(4), // motion
-                    bgl_uniform(5),    // params
+                    bgl_storage_ro(0),                            // rays
+                    bgl_storage_ro(1),                            // hits
+                    bgl_storage_rw(2),                            // depth
+                    bgl_storage_rw(3),                            // normal
+                    bgl_storage_rw(4),                            // motion
+                    bgl_uniform_dyn(5, GBUFFER_PARAMS_SIZE),      // params (per-tile)
                 ],
             });
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1767,23 +1793,13 @@ impl PathTraceCompute {
             self.gbuffer_bgl = Some(bgl);
         }
 
-        // Non-tiled-mode defaults; when wavefront tiling is enabled with
-        // ReSTIR (Stage F.4), host will pack per-tile params instead.
-        let gbuffer_params = GBufferParams {
-            tile_w: self.width,
-            tile_h: self.height,
-            tile_x: 0,
-            tile_y: 0,
-            full_w: self.width,
-            full_h: self.height,
-            _pad0: [0; 2],
-            prev_view_proj: self.last_view_proj.unwrap_or([[0.0; 4]; 4]),
-            curr_view_proj: self.last_view_proj.unwrap_or([[0.0; 4]; 4]),
-        };
-        let gbuffer_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // Per-tile gbuffer params: N TILE_SLOT_STRIDE slots, populated each
+        // frame via pack_tile_slots + a single queue.write_buffer.
+        let gbuffer_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wf_gbuffer_params"),
-            contents: bytemuck::bytes_of(&gbuffer_params),
+            size: u64::from(MAX_TILE_CAPACITY) * TILE_SLOT_STRIDE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let gbuffer_bgl = self.gbuffer_bgl.as_ref().unwrap();
@@ -1813,7 +1829,11 @@ impl PathTraceCompute {
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: gbuffer_params_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &gbuffer_params_buf,
+                        offset: 0,
+                        size: NonZeroU64::new(GBUFFER_PARAMS_SIZE),
+                    }),
                 },
             ],
         });
@@ -1843,7 +1863,11 @@ impl PathTraceCompute {
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: gbuffer_params_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &gbuffer_params_buf,
+                        offset: 0,
+                        size: NonZeroU64::new(GBUFFER_PARAMS_SIZE),
+                    }),
                 },
             ],
         });
@@ -1851,62 +1875,35 @@ impl PathTraceCompute {
         let (initial_pl, temporal_pl, spatial_pl, shade_pl) = rs.pipelines();
         let (initial_bgl, temporal_bgl, spatial_bgl, shade_bgl) = rs.bgls();
 
-        let initial_params = RestirInitialParams {
-            width: self.width,
-            height: self.height,
-            frame_count: self.frame_count,
-            num_candidates: self.restir_config.initial_candidates,
-        };
-        let initial_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // Per-tile ReSTIR params buffers: one TILE_SLOT_STRIDE-aligned slot
+        // per tile, populated each frame via pack_tile_slots + a single
+        // queue.write_buffer. The bind groups use dynamic offsets to address
+        // each tile. Sized at MAX_TILE_CAPACITY so they don't need to be
+        // reallocated when the tile count changes.
+        let tile_buf_size = u64::from(MAX_TILE_CAPACITY) * TILE_SLOT_STRIDE;
+        let initial_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("restir_initial_params"),
-            contents: bytemuck::bytes_of(&initial_params),
+            size: tile_buf_size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-
-        let temporal_params = RestirTemporalParams {
-            width: self.width,
-            height: self.height,
-            frame_count: self.frame_count,
-            m_max: self.restir_config.m_max,
-            depth_threshold: 0.1,
-            _pad: [0.0; 3],
-            _pad2: [0.0; 4],
-        };
-        let temporal_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let temporal_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("restir_temporal_params"),
-            contents: bytemuck::bytes_of(&temporal_params),
+            size: tile_buf_size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-
-        let spatial_params = RestirSpatialParams {
-            width: self.width,
-            height: self.height,
-            frame_count: self.frame_count,
-            num_neighbors: self.restir_config.spatial_neighbors,
-            radius: self.restir_config.spatial_radius,
-            normal_threshold: 0.5,
-            depth_threshold: 0.1,
-            _pad: 0.0,
-        };
-        let spatial_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let spatial_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("restir_spatial_params"),
-            contents: bytemuck::bytes_of(&spatial_params),
+            size: tile_buf_size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-
-        let cam_pos = self.last_camera_pos.unwrap_or([0.0, 0.0, 0.0]);
-        let shade_params = RestirShadeParams {
-            width: self.width,
-            height: self.height,
-            frame_count: self.frame_count,
-            _pad: 0,
-            camera_pos: cam_pos,
-            _pad2: 0.0,
-        };
-        let shade_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let shade_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("restir_shade_params"),
-            contents: bytemuck::bytes_of(&shade_params),
+            size: tile_buf_size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let (cur_res, prev_res) = rs.reservoirs();
@@ -1932,9 +1929,14 @@ impl PathTraceCompute {
                         binding: 1,
                         resource: cur_res.as_entire_binding(),
                     },
+                    // Dynamic-offset binding: size matches BGL min_binding_size.
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: initial_params_buf.as_entire_binding(),
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &initial_params_buf,
+                            offset: 0,
+                            size: NonZeroU64::new(RESTIR_INITIAL_PARAMS_SIZE),
+                        }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
@@ -2009,7 +2011,11 @@ impl PathTraceCompute {
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: temporal_params_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &temporal_params_buf,
+                        offset: 0,
+                        size: NonZeroU64::new(RESTIR_TEMPORAL_PARAMS_SIZE),
+                    }),
                 },
             ],
         });
@@ -2036,7 +2042,11 @@ impl PathTraceCompute {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: spatial_params_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &spatial_params_buf,
+                        offset: 0,
+                        size: NonZeroU64::new(RESTIR_SPATIAL_PARAMS_SIZE),
+                    }),
                 },
             ],
         });
@@ -2060,7 +2070,11 @@ impl PathTraceCompute {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: shade_params_buf.as_entire_binding(),
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &shade_params_buf,
+                            offset: 0,
+                            size: NonZeroU64::new(RESTIR_SHADE_PARAMS_SIZE),
+                        }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
@@ -2392,6 +2406,131 @@ impl PathTraceCompute {
             }
         }
 
+        // Pre-pack per-tile ReSTIR + gbuffer params. Each subsystem's bind
+        // group reads its own buffer at offset = tile_idx * TILE_SLOT_STRIDE.
+        // Doing this once per frame (instead of queue.write_buffer per tile
+        // inside the loop) avoids the queue-flush race that wrote only the
+        // last tile's values into the shared buffer.
+        let restir_active = (self.restir_config.di_enabled || self.restir_config.gi_enabled)
+            && self.restir.is_some()
+            && self.restir_bind_groups.is_some()
+            && self.gbuffer_pipeline.is_some();
+        if restir_active {
+            if let Some(restir_bgs) = self.restir_bind_groups.as_ref() {
+                let frame = self.frame_count;
+                let view_proj = self.last_view_proj.unwrap_or([[0.0; 4]; 4]);
+                let cam_pos = self.last_camera_pos.unwrap_or([0.0, 0.0, 0.0]);
+                let num_candidates = self.restir_config.initial_candidates;
+                let m_max = self.restir_config.m_max;
+                let num_neighbors = self.restir_config.spatial_neighbors;
+                let spatial_radius = self.restir_config.spatial_radius;
+
+                let initial_params: Vec<RestirInitialParams> = tiles_meta
+                    .iter()
+                    .map(|d| RestirInitialParams {
+                        width: d.full_width,
+                        height: d.full_height,
+                        frame_count: frame,
+                        num_candidates,
+                        tile_x: d.tile_x,
+                        tile_y: d.tile_y,
+                        tile_w: d.tile_width,
+                        tile_h: d.tile_height,
+                    })
+                    .collect();
+                queue.write_buffer(
+                    &restir_bgs.initial_params_buf,
+                    0,
+                    &pack_tile_slots(&initial_params),
+                );
+
+                let temporal_params: Vec<RestirTemporalParams> = tiles_meta
+                    .iter()
+                    .map(|d| RestirTemporalParams {
+                        width: d.full_width,
+                        height: d.full_height,
+                        frame_count: frame,
+                        m_max,
+                        depth_threshold: 0.1,
+                        _pad: [0.0; 3],
+                        tile_x: d.tile_x,
+                        tile_y: d.tile_y,
+                        tile_w: d.tile_width,
+                        tile_h: d.tile_height,
+                    })
+                    .collect();
+                queue.write_buffer(
+                    &restir_bgs.temporal_params_buf,
+                    0,
+                    &pack_tile_slots(&temporal_params),
+                );
+
+                let spatial_params: Vec<RestirSpatialParams> = tiles_meta
+                    .iter()
+                    .map(|d| RestirSpatialParams {
+                        width: d.full_width,
+                        height: d.full_height,
+                        frame_count: frame,
+                        num_neighbors,
+                        radius: spatial_radius,
+                        normal_threshold: 0.5,
+                        depth_threshold: 0.1,
+                        _pad: 0.0,
+                        tile_x: d.tile_x,
+                        tile_y: d.tile_y,
+                        tile_w: d.tile_width,
+                        tile_h: d.tile_height,
+                    })
+                    .collect();
+                queue.write_buffer(
+                    &restir_bgs.spatial_params_buf,
+                    0,
+                    &pack_tile_slots(&spatial_params),
+                );
+
+                let shade_params: Vec<RestirShadeParams> = tiles_meta
+                    .iter()
+                    .map(|d| RestirShadeParams {
+                        width: d.full_width,
+                        height: d.full_height,
+                        frame_count: frame,
+                        _pad: 0,
+                        camera_pos: cam_pos,
+                        _pad2: 0.0,
+                        tile_x: d.tile_x,
+                        tile_y: d.tile_y,
+                        tile_w: d.tile_width,
+                        tile_h: d.tile_height,
+                    })
+                    .collect();
+                queue.write_buffer(
+                    &restir_bgs.shade_params_buf,
+                    0,
+                    &pack_tile_slots(&shade_params),
+                );
+
+                let gbuffer_params: Vec<GBufferParams> = tiles_meta
+                    .iter()
+                    .map(|d| GBufferParams {
+                        tile_w: d.tile_width,
+                        tile_h: d.tile_height,
+                        tile_x: d.tile_x,
+                        tile_y: d.tile_y,
+                        full_w: d.full_width,
+                        full_h: d.full_height,
+                        _pad0: [0; 2],
+                        prev_view_proj: view_proj,
+                        curr_view_proj: view_proj,
+                    })
+                    .collect();
+                queue.write_buffer(
+                    &restir_bgs.gbuffer_params_buf,
+                    0,
+                    &pack_tile_slots(&gbuffer_params),
+                );
+            }
+        }
+
         let wf = self.wavefront.as_ref().unwrap();
 
         // Get current bind group set (will swap between bounces)
@@ -2451,22 +2590,20 @@ impl PathTraceCompute {
 
         let (raygen_pl, intersect_pl, shade_pl) = wf.pipelines();
 
-        let mut restir_enabled = (self.restir_config.di_enabled || self.restir_config.gi_enabled)
+        let restir_enabled = (self.restir_config.di_enabled || self.restir_config.gi_enabled)
             && self.restir.is_some()
             && self.restir_bind_groups.is_some()
             && self.gbuffer_pipeline.is_some();
         let pathguide_enabled = self.pathguide_config.enabled;
         let adaptive_enabled = self.adaptive_config.enabled;
-        // ReSTIR is still force-disabled in tiled mode pending its shader-
-        // level tile-awareness work (Stage F.4-C..F). Path Guide and gbuffer
-        // have been migrated to dynamic-offset per-tile params + tile-aware
-        // shaders (F.4-A, F.4-B). Adaptive sampling has always been tile-safe
-        // because variance/allocate run once per frame on the full image
-        // after the tile loop.
-        if use_tiling && restir_enabled {
-            log::warn!("WF tiling: ReSTIR disabled (tile_size={})", tile_size);
-            restir_enabled = false;
-        }
+        // All advanced subsystems are now tile-safe:
+        //  - PathGuide: tile-aware sample.wgsl + dyn-offset params (F.4-A)
+        //  - gbuffer + ReSTIR initial/temporal/spatial/shade: tile-aware
+        //    shaders distinguishing local_id (tile-sized rays/hits) from
+        //    pixel_id (full-image reservoirs/depth/normal/output) +
+        //    dyn-offset per-tile params (F.4-B..F).
+        //  - Adaptive: variance/allocate run once after the tile loop on
+        //    the full image and were always tile-safe by construction.
         log::debug!(
             "WF dispatch: frame {}/{}, full={}x{}, wf_buf={}x{}, tile={}, bounces={}, restir={}, pathguide={}, adaptive={}",
             self.frame_count,
@@ -2553,63 +2690,9 @@ impl PathTraceCompute {
                     let restir_bgs = self.restir_bind_groups.as_ref().unwrap();
                     let gbuffer_pl = self.gbuffer_pipeline.as_ref().unwrap();
 
-                    let initial_params = RestirInitialParams {
-                        width: tile_w,
-                        height: tile_h,
-                        frame_count: self.frame_count,
-                        num_candidates: self.restir_config.initial_candidates,
-                    };
-                    queue.write_buffer(
-                        &restir_bgs.initial_params_buf,
-                        0,
-                        bytemuck::bytes_of(&initial_params),
-                    );
-
-                    let temporal_params = RestirTemporalParams {
-                        width: tile_w,
-                        height: tile_h,
-                        frame_count: self.frame_count,
-                        m_max: self.restir_config.m_max,
-                        depth_threshold: 0.1,
-                        _pad: [0.0; 3],
-                        _pad2: [0.0; 4],
-                    };
-                    queue.write_buffer(
-                        &restir_bgs.temporal_params_buf,
-                        0,
-                        bytemuck::bytes_of(&temporal_params),
-                    );
-
-                    let spatial_params = RestirSpatialParams {
-                        width: tile_w,
-                        height: tile_h,
-                        frame_count: self.frame_count,
-                        num_neighbors: self.restir_config.spatial_neighbors,
-                        radius: self.restir_config.spatial_radius,
-                        normal_threshold: 0.5,
-                        depth_threshold: 0.1,
-                        _pad: 0.0,
-                    };
-                    queue.write_buffer(
-                        &restir_bgs.spatial_params_buf,
-                        0,
-                        bytemuck::bytes_of(&spatial_params),
-                    );
-
-                    let cam_pos = self.last_camera_pos.unwrap_or([0.0, 0.0, 0.0]);
-                    let shade_params = RestirShadeParams {
-                        width: tile_w,
-                        height: tile_h,
-                        frame_count: self.frame_count,
-                        _pad: 0,
-                        camera_pos: cam_pos,
-                        _pad2: 0.0,
-                    };
-                    queue.write_buffer(
-                        &restir_bgs.shade_params_buf,
-                        0,
-                        bytemuck::bytes_of(&shade_params),
-                    );
+                    // Per-tile ReSTIR + gbuffer params were pre-packed into
+                    // dynamic-offset buffers before the tile loop; the bind
+                    // groups below read this tile's slot via `tile_off`.
 
                     // Pass 2: Intersect (primary rays)
                     {
@@ -2636,7 +2719,7 @@ impl PathTraceCompute {
                             timestamp_writes: None,
                         });
                         pass.set_pipeline(gbuffer_pl);
-                        pass.set_bind_group(0, gbuffer_bg, &[]);
+                        pass.set_bind_group(0, gbuffer_bg, &[tile_off]);
                         let wg_x = tile_w.div_ceil(8);
                         let wg_y = tile_h.div_ceil(8);
                         pass.dispatch_workgroups(wg_x, wg_y, 1);
@@ -2659,7 +2742,7 @@ impl PathTraceCompute {
                             timestamp_writes: None,
                         });
                         pass.set_pipeline(initial_pl);
-                        pass.set_bind_group(0, initial_bg, &[]);
+                        pass.set_bind_group(0, initial_bg, &[tile_off]);
                         pass.dispatch_workgroups(wg_x, wg_y, 1);
                         log::trace!("ReSTIR initial: wg=({}, {})", wg_x, wg_y);
                     }
@@ -2671,7 +2754,7 @@ impl PathTraceCompute {
                             timestamp_writes: None,
                         });
                         tpass.set_pipeline(temporal_pl);
-                        tpass.set_bind_group(0, &restir_bgs.temporal_bg, &[]);
+                        tpass.set_bind_group(0, &restir_bgs.temporal_bg, &[tile_off]);
                         tpass.dispatch_workgroups(wg_x, wg_y, 1);
                         log::trace!("ReSTIR temporal: wg=({}, {})", wg_x, wg_y);
                     }
@@ -2683,7 +2766,7 @@ impl PathTraceCompute {
                             timestamp_writes: None,
                         });
                         spass.set_pipeline(spatial_pl);
-                        spass.set_bind_group(0, &restir_bgs.spatial_bg, &[]);
+                        spass.set_bind_group(0, &restir_bgs.spatial_bg, &[tile_off]);
                         spass.dispatch_workgroups(wg_x, wg_y, 1);
                         log::trace!("ReSTIR spatial: wg=({}, {})", wg_x, wg_y);
                     }
@@ -2701,7 +2784,7 @@ impl PathTraceCompute {
                             timestamp_writes: None,
                         });
                         spass.set_pipeline(shade_pl);
-                        spass.set_bind_group(0, shade_bg, &[]);
+                        spass.set_bind_group(0, shade_bg, &[tile_off]);
                         spass.dispatch_workgroups(wg_x, wg_y, 1);
                         log::trace!("ReSTIR shade: wg=({}, {})", wg_x, wg_y);
                     }

@@ -56,11 +56,19 @@ struct Reservoir {
     _pad: u32,
 }
 
+// Tile-aware params: width/height are the full image; tile_w/h size the
+// wavefront ray/hit buffers (tile-local layout); tile_x/y is the tile
+// origin in full-image coordinates. In non-tiled mode tile_w==width and
+// tile_x==tile_y==0.
 struct Params {
-    width: u32,
-    height: u32,
+    width: u32,        // full image width
+    height: u32,       // full image height
     frame_count: u32,
     num_candidates: u32,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
 }
 
 struct EmissiveLight {
@@ -426,10 +434,16 @@ fn update_reservoir(r: ptr<function, Reservoir>, s: Sample, w: f32, seed: ptr<fu
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= params.width || gid.y >= params.height { return; }
-
-    let pixel_id = gid.y * params.width + gid.x;
-    let hit = hits[pixel_id];
+    // Bounds-check against the tile, not the full image.
+    if gid.x >= params.tile_w || gid.y >= params.tile_h { return; }
+    let gx = params.tile_x + gid.x;
+    let gy = params.tile_y + gid.y;
+    if gx >= params.width || gy >= params.height { return; }
+    // local_id: index into tile-sized rays/hits buffers.
+    let local_id = gid.y * params.tile_w + gid.x;
+    // pixel_id: full-image global index for reservoirs + RNG seeding.
+    let pixel_id = gy * params.width + gx;
+    let hit = hits[local_id];
 
     // Initialize reservoir
     var reservoir: Reservoir;
@@ -444,7 +458,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     var seed = pixel_id ^ (params.frame_count * 1973u);
-    let ray = rays[pixel_id];
+    let ray = rays[local_id];
     let surface_p = ray.origin + ray.dir * hit.t;
     let surface_n = normalize(hit.normal);
     let emissive_available =

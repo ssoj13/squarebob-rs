@@ -1,11 +1,21 @@
 //! ReSTIR pipeline orchestration.
 
 use super::reservoir::{MotionVector, Reservoir};
+use std::num::NonZeroU64;
 
 const INITIAL_WGSL: &str = include_str!("initial.wgsl");
 const TEMPORAL_WGSL: &str = include_str!("temporal.wgsl");
 const SPATIAL_WGSL: &str = include_str!("spatial.wgsl");
 const SHADE_WGSL: &str = include_str!("shade.wgsl");
+
+/// WGSL `Params` struct sizes. Keep in sync with the matching Rust structs
+/// in `crate::compute` and the WGSL declarations. All are 16-byte aligned
+/// (uniform buffer rules) and per-tile slots are 256-byte strided in the
+/// dynamic-offset buffer.
+pub const RESTIR_INITIAL_PARAMS_SIZE: u64 = 32;
+pub const RESTIR_TEMPORAL_PARAMS_SIZE: u64 = 48;
+pub const RESTIR_SPATIAL_PARAMS_SIZE: u64 = 48;
+pub const RESTIR_SHADE_PARAMS_SIZE: u64 = 48;
 
 /// ReSTIR pipeline state.
 pub struct ReSTIRPipeline {
@@ -45,19 +55,19 @@ impl ReSTIRPipeline {
             INITIAL_WGSL,
             "initial",
             &[
-                bgl_storage_ro(0),               // hits
-                bgl_storage_rw(1),               // reservoirs
-                bgl_uniform(2),                  // params
-                bgl_texture_2d(3),               // env map
-                bgl_sampler(4),                  // env sampler
-                bgl_uniform(5),                  // env params
-                bgl_storage_ro(6),               // env marginal cdf
-                bgl_storage_ro(7),               // env conditional cdf
-                bgl_storage_ro(8),               // rays
-                bgl_storage_ro(9),               // bvh nodes
-                bgl_storage_ro(10),              // instances
-                bgl_texture_2d_unfilterable(11), // emissive light texture
-                bgl_uniform(12),                 // emissive light params
+                bgl_storage_ro(0),                                // hits
+                bgl_storage_rw(1),                                // reservoirs
+                bgl_uniform_dyn(2, RESTIR_INITIAL_PARAMS_SIZE),   // params (per-tile)
+                bgl_texture_2d(3),                                // env map
+                bgl_sampler(4),                                   // env sampler
+                bgl_uniform(5),                                   // env params
+                bgl_storage_ro(6),                                // env marginal cdf
+                bgl_storage_ro(7),                                // env conditional cdf
+                bgl_storage_ro(8),                                // rays
+                bgl_storage_ro(9),                                // bvh nodes
+                bgl_storage_ro(10),                               // instances
+                bgl_texture_2d_unfilterable(11),                  // emissive light texture
+                bgl_uniform(12),                                  // emissive light params
             ],
         );
 
@@ -66,12 +76,12 @@ impl ReSTIRPipeline {
             TEMPORAL_WGSL,
             "temporal",
             &[
-                bgl_storage_ro(0), // prev reservoirs
-                bgl_storage_rw(1), // curr reservoirs
-                bgl_storage_ro(2), // motion vectors
-                bgl_storage_ro(3), // prev depth
-                bgl_storage_ro(4), // curr depth
-                bgl_uniform(5),    // params
+                bgl_storage_ro(0),                                 // prev reservoirs
+                bgl_storage_rw(1),                                 // curr reservoirs
+                bgl_storage_ro(2),                                 // motion vectors
+                bgl_storage_ro(3),                                 // prev depth
+                bgl_storage_ro(4),                                 // curr depth
+                bgl_uniform_dyn(5, RESTIR_TEMPORAL_PARAMS_SIZE),   // params (per-tile)
             ],
         );
 
@@ -80,11 +90,11 @@ impl ReSTIRPipeline {
             SPATIAL_WGSL,
             "spatial",
             &[
-                bgl_storage_ro(0), // reservoirs input
-                bgl_storage_rw(1), // reservoirs output
-                bgl_storage_ro(2), // depth
-                bgl_storage_ro(3), // normal
-                bgl_uniform(4),    // params
+                bgl_storage_ro(0),                                // reservoirs input
+                bgl_storage_rw(1),                                // reservoirs output
+                bgl_storage_ro(2),                                // depth
+                bgl_storage_ro(3),                                // normal
+                bgl_uniform_dyn(4, RESTIR_SPATIAL_PARAMS_SIZE),   // params (per-tile)
             ],
         );
 
@@ -93,17 +103,17 @@ impl ReSTIRPipeline {
             SHADE_WGSL,
             "shade",
             &[
-                bgl_storage_ro(0), // reservoirs
-                bgl_storage_ro(1), // hits
-                bgl_storage_rw(2), // output
-                bgl_uniform(3),    // params
-                bgl_storage_ro(4), // instances
-                bgl_storage_ro(5), // materials
-                bgl_storage_ro(6), // sample_map
-                bgl_storage_ro(7), // rays
-                bgl_texture_2d(8), // env map
-                bgl_sampler(9),    // env sampler
-                bgl_uniform(10),   // env params
+                bgl_storage_ro(0),                              // reservoirs
+                bgl_storage_ro(1),                              // hits
+                bgl_storage_rw(2),                              // output
+                bgl_uniform_dyn(3, RESTIR_SHADE_PARAMS_SIZE),   // params (per-tile)
+                bgl_storage_ro(4),                              // instances
+                bgl_storage_ro(5),                              // materials
+                bgl_storage_ro(6),                              // sample_map
+                bgl_storage_ro(7),                              // rays
+                bgl_texture_2d(8),                              // env map
+                bgl_sampler(9),                                 // env sampler
+                bgl_uniform(10),                                // env params
             ],
         );
 
@@ -262,6 +272,19 @@ fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
             min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+fn bgl_uniform_dyn(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: NonZeroU64::new(size),
         },
         count: None,
     }

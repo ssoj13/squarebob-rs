@@ -26,6 +26,10 @@ struct MotionVector {
     valid: u32,
 }
 
+// Tile-aware params: width/height are the full image (all buffers below
+// are full-image-sized). tile_x/y is the tile origin in full-image coords,
+// tile_w/h size the dispatch — gid.xy is remapped to global coords before
+// indexing.
 struct Params {
     width: u32,
     height: u32,
@@ -33,6 +37,10 @@ struct Params {
     m_max: u32,
     depth_threshold: f32,
     _pad: vec3<f32>,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
 }
 
 @group(0) @binding(0) var<storage, read> prev_reservoirs: array<Reservoir>;
@@ -73,9 +81,12 @@ fn combine_reservoirs(
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= params.width || gid.y >= params.height { return; }
-
-    let pixel_id = gid.y * params.width + gid.x;
+    // Dispatch is tile-sized; remap gid.xy to full-image coords.
+    if gid.x >= params.tile_w || gid.y >= params.tile_h { return; }
+    let gx = params.tile_x + gid.x;
+    let gy = params.tile_y + gid.y;
+    if gx >= params.width || gy >= params.height { return; }
+    let pixel_id = gy * params.width + gx;
     var reservoir = curr_reservoirs[pixel_id];
     var seed = pixel_id ^ (params.frame_count * 7919u);
 
@@ -90,7 +101,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let prev_pos = vec2<f32>(gid.xy) + mv.motion;
+    // prev_pos must use global pixel coords (motion is in full-image space).
+    let prev_pos = vec2<f32>(f32(gx), f32(gy)) + mv.motion;
     let prev_x = i32(prev_pos.x);
     let prev_y = i32(prev_pos.y);
 
