@@ -390,7 +390,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             new_dir = normalize(eta * ray.dir + (eta * cos_i - cos_t) * hit.normal);
         }
         let trans_tint = vec3<f32>(ior_r, ior_g, ior_b) / max(ior, 0.0001);
-        let transmission_color_disp = transmission_color * trans_tint;
+        // Spectral wavelength tint at transmission events (parity with
+        // megakernel). When spectral_mode==Off this is (1,1,1) no-op.
+        let spec_tint = spectral_tint(&seed, params.spectral_mode, params.spectral_samples, params.spectral_dispersion, ray.bounce);
+        let transmission_color_disp = transmission_color * trans_tint * spec_tint;
         let new_throughput = ray.throughput * transmission_color_disp / max(transmission_weight * continue_prob, 1e-5);
         let out_idx = atomicAdd(&counts[1], 1u);
         rays_out[out_idx] = Ray(

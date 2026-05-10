@@ -1,7 +1,15 @@
-//! Spectral PT backend (stub).
+//! Spectral PT backend dispatcher.
+//!
+//! Spectral path tracing is supported by both megakernel and wavefront
+//! WGSL backends — the spectral mode/samples/dispersion fields flow
+//! through `PtCameraUniform` (megakernel) and `ShadeParams` (wavefront)
+//! to the shaders, where `spectral_tint` is applied at light events
+//! (sky miss, emission, transmission throughput).
+//!
+//! This dispatcher just normalises the sample count and routes to the
+//! requested backend; it does NOT force a megakernel fallback.
 
 use crate::{geometry, Renderer3D};
-use log::warn;
 use render_shared::{OrbitCamera, Render3DOptions};
 
 pub fn render_path_traced_no_readback(
@@ -12,11 +20,7 @@ pub fn render_path_traced_no_readback(
     width: u32,
     height: u32,
 ) {
-    if opts.pt_wavefront {
-        warn!("Spectral backend stub: forcing megakernel path (pt_wavefront=false)");
-    }
     let mut local_opts = opts.clone();
-    local_opts.pt_wavefront = false;
     if local_opts.pt_spectral_samples < 1 {
         local_opts.pt_spectral_samples = 1;
     }
@@ -31,11 +35,7 @@ pub fn render_path_traced(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    if opts.pt_wavefront {
-        warn!("Spectral backend stub: forcing megakernel path (pt_wavefront=false)");
-    }
     let mut local_opts = opts.clone();
-    local_opts.pt_wavefront = false;
     if local_opts.pt_spectral_samples < 1 {
         local_opts.pt_spectral_samples = 1;
     }
