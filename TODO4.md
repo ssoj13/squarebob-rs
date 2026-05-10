@@ -525,6 +525,78 @@ symbols (tests).
 
 ---
 
+## Stage F — Wavefront race fix + parity (sprint-4, 2026-05-10)
+
+| Stage | Status |
+|-------|--------|
+| F.1 wavefront tile-state race | ✅ shipped (commit `5ff8929`) — N-slot persistent buffers + dynamic-offset bind groups + `prepare_tiles` / `reset_tile_count` API |
+| F.2 spectral wavefront (drop stub) | ✅ shipped (commit `407ff73`) — `spectral.rs` no longer forces megakernel; `shade.wgsl` applies `spectral_tint` at transmission too |
+| F.3 tile-size input safety | ✅ shipped (commit `ddbdd26`) — UI snap + code clamp + hard assert (`MAX_TILE_CAPACITY = 4096`) so transient `WF Tile=2` cannot hang the GPU |
+| F.4 ReSTIR/PG/Adaptive in tiled mode | ⏳ deferred — see below |
+| F.5 Windows build fix | ✅ shipped (commit `b6e84e9`) — `cli_test.rs` / `scanner_ntfs.rs` / `scan_orchestration.rs` after WIP unused-var rename broke Windows-only paths |
+| F.6 wavefront unit tests | ✅ shipped (commit `76c28f5`) — 6 new tests on tile-slot layout invariants; workspace 32→38 tests |
+
+### F.4 — ReSTIR / Path Guide / Adaptive in tiled wavefront mode
+
+Currently force-disabled when wavefront tiling is on. The comment in
+`compute.rs::dispatch_wavefront` near the warnings has been re-framed
+to document the real blocker. **Adaptive variance/allocate is actually
+already tile-safe** (runs once per frame *after* the tile loop on the
+full image with `width = full_w, height = full_h`); just removing its
+force-disable would work. ReSTIR + Path Guide + the gbuffer pass need
+proper shader-level tile awareness.
+
+Required changes (roughly 300-500 LOC):
+
+1. **Rust param structs** (`crates/pt-megakernel/src/compute.rs`): add
+   `tile_x, tile_y, full_width, full_height` to `RestirInitialParams`,
+   `RestirTemporalParams`, `RestirSpatialParams`, `RestirShadeParams`,
+   `PathGuideSampleParams`, `PathGuideUpdateParams`, and the gbuffer
+   `Params` (currently has `prev_view_proj` / `curr_view_proj` only,
+   needs tile origin too). Adaptive doesn't need the change.
+
+2. **WGSL shaders**: matching field additions in `Params` + remap
+   `pixel_id` to global coords:
+   ```wgsl
+   if gid.x >= params.tile_width || gid.y >= params.tile_height { return; }
+   let global_x = params.tile_x + gid.x;
+   let global_y = params.tile_y + gid.y;
+   let pixel_id = global_y * params.full_width + global_x;
+   ```
+   Touch: `restir/initial.wgsl` (×2 sites), `restir/temporal.wgsl`
+   (×2 + the `prev_pixel` neighbor), `restir/spatial.wgsl` (×3 + the
+   `neighbor_id`), `restir/shade.wgsl` (×2),
+   `pathguide/sample.wgsl` (×1), `pathguide/update.wgsl` (×1, if it
+   uses pixel_id at all), `wavefront/gbuffer.wgsl` (×3 — pixel_id at
+   line 45, motion px at lines 67-73).
+
+3. **Race fix for per-tile param uploads**: ReSTIR has 4 per-tile param
+   buffers, PathGuide has 2 — same `queue.write_buffer`-in-tile-loop
+   pattern as the wavefront dims/count race. Apply the same
+   dynamic-offset bind-group pattern (or `encoder.copy_buffer_to_buffer`
+   from a pre-filled staging buffer; same end-result, less invasive on
+   bind group layouts).
+
+4. **Compute.rs dispatch loop**: drop the force-disable warnings at
+   `dispatch_wavefront` lines ~2415-2447; pass the per-tile dims into
+   the uploaded params; pass dynamic offsets into the
+   `pass.set_bind_group(0, ..., &[off])` calls (or perform the
+   per-tile staging copy).
+
+5. **Verification**: visual UAT (WF Tile=256 with ReSTIR DI/GI ON
+   should match WF Tile=0 with ReSTIR ON), plus an automated
+   parity test (megakernel ≈ wavefront-full ≈ wavefront-tiled within
+   RNG noise tolerance) when GPU CI is available.
+
+Order of attack: start with **Adaptive only** (lowest risk — no shader
+change, just remove the force-disable + verify variance still
+converges). Then **gbuffer.wgsl + ReSTIR initial** (since ReSTIR
+gates G-buffer use). Then **temporal + spatial + ReSTIR shade**.
+Finally **PathGuide**. Each step ships independently with build/test/
+clippy green and visual UAT.
+
+---
+
 ## Index of references
 
 - `.planning/codebase/CONCERNS.md` — top-concerns list and per-area

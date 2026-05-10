@@ -8,6 +8,130 @@ adapted for a single-developer workflow that batches by sprint.
 
 ---
 
+## Unreleased — sprint-4 (2026-05-10) — wavefront race fix + spectral parity
+
+End-of-day fix sprint targeting the visible wavefront tile-rendering bug
+the user encountered (only the bottom-right tile rendered, rest black-
+with-noise) and the longstanding `spectral.rs` stub that silently fell
+back to megakernel.
+
+### Stage F.1 — Wavefront tile race fix (commit `5ff8929`)
+
+Root cause: WebGPU/wgpu flushes ALL `queue.write_buffer` calls *before*
+any encoder commands at submit time, so per-tile writes to the shared
+`dims_buf` and `count_buf` collapsed to last-tile values. Result: only
+the last tile saw correct state; other regions of the image got
+corrupted noise / black bands.
+
+- `crates/pt-wavefront/src/wavefront/pipeline.rs`: replaced single-slot
+  `dims_buf` / `count_buf` with three N-slot persistent buffers
+  (`tile_dims_buf`, `tile_counts_buf`, `count_init_src`), each padded
+  to 256-byte WebGPU dynamic-offset alignment. Capacity grows on demand
+  (next-power-of-two) when tile count exceeds it.
+- New API:
+  - `prepare_tiles(device, queue, dims, count_inits) -> bool` — writes
+    ALL per-tile state via exactly one `queue.write_buffer` per buffer
+    per dispatch. Returns true if a buffer reallocation happened so the
+    caller can rebuild bind groups.
+  - `reset_tile_count(encoder, tile_idx)` — issues
+    `encoder.copy_buffer_to_buffer` from `count_init_src` into
+    `tile_counts_buf` for that slot. Encoder-ordered so dispatches see
+    fresh counts (this is what fixes the race for count_in / count_out).
+  - `tile_offset(idx) -> u32` — dynamic-offset byte index per slot.
+  - `pack_tile_slots<T: Pod>` — pure helper for stride-aligned blob
+    packing, unit-tested.
+- Bind group layouts for dims (binding 1, raygen) and counts
+  (bindings 3 / 4 / 6 / 0 across raygen / intersect / shade /
+  count_swap) declare `has_dynamic_offset: true` with `min_binding_size`
+  set to actual struct size; bind groups now use `BufferBinding{ offset:
+  0, size: slot_size }` instead of `as_entire_binding`, so the dynamic
+  offset selects exactly one slot's view.
+- WGSL shaders **unchanged** — dynamic offset is transparent at the
+  shader binding level.
+
+In `compute.rs::dispatch_wavefront`:
+- Pre-collects `Vec<WfDims>` + `Vec<[u32;4]>` for all tiles in a small
+  pass before encoding, hands off to `prepare_tiles` once.
+- If `prepare_tiles` reports a reallocation, `rebuild_wavefront_bind_groups`.
+- Per tile: `reset_tile_count` (encoder-ordered) +
+  `pass.set_bind_group(0, bg, &[tile_off, ...])` for the dynamic-offset
+  slots. **No `queue.write_buffer` in the tile loop body.**
+- Removed `wf.write_dims` and `wf.count_buf` accessors.
+
+### Stage F.2 — Spectral PT actually runs in wavefront (commit `407ff73`)
+
+`crates/render-3d/src/pt/spectral.rs` used to forcibly set
+`pt_wavefront = false` and warn `Spectral backend stub: forcing
+megakernel path`, hiding the fact that wavefront's `shade.wgsl` already
+applies `spectral_tint` at sky-miss and emission events.
+
+- Dropped the forced megakernel fallback; the dispatcher just
+  normalises `pt_spectral_samples` (>=1) and routes through the user's
+  selected backend.
+- `crates/pt-wavefront/src/wavefront/shade.wgsl`: also applies
+  `spectral_tint` to the transmission throughput (parity with
+  megakernel's `compute.rs` spectral usage). Combined with the existing
+  IOR-based dispersion `trans_tint`, gives wavelength-aware transmission
+  tinting when `spectral_mode != Off`; when `Off` the helper returns
+  `(1, 1, 1)` so the multiply is a no-op.
+
+### Stage F.3 — Tile-size input safety (commit `ddbdd26`)
+
+Typing a multi-digit tile size (e.g. "256") in the UI with rendering
+active triggered a transient pass with `tile_size = 2`, producing
+~520k tiles on FullHD and hanging the GPU command queue / staging
+buffer allocator. Fixed with three layers:
+
+1. `PathTraceCompute::set_wavefront_tile_size` clamps any non-zero
+   value to >= 64 (with a debug log).
+2. `WavefrontPipeline::prepare_tiles` asserts tile count <= 4096 (with
+   the >=64 size clamp, FullHD produces at most 30 × 17 = 510 tiles).
+3. The settings UI snaps the entered value to {0, >=64} on
+   `.changed()` so the user sees the effective value immediately;
+   helper text updated to "0 = full frame, min 64".
+
+### Stage F.5 — Build fix (commit `b6e84e9`)
+
+The prior WIP commit had renamed unused-on-Linux let-bindings to
+`_path` / `_max_diag` / `_max_lp` / `_n` in `src/cli_test.rs`, but the
+Windows-only `#[cfg(windows)]` arms still referenced them as
+`path` / `max_diag` / `max_lp` / `n` — and the parser sees `path` as
+the built-in `#[path]` attribute, not a value. Two related issues in
+`src/scanner_ntfs.rs` (missing `use dirstat_core::DirEntry`) and
+`src/app/scan_orchestration.rs` (`_path` parameter referenced as
+`path` in body) had the same pattern. Fixed by moving the let-bindings
+inside the `#[cfg(windows)]` arms (or restoring the parameter names).
+
+### Tests added (commit `76c28f5`)
+
+`crates/pt-wavefront/src/wavefront/pipeline.rs` gained six unit tests
+covering the dynamic-offset slot layout invariants:
+`TILE_SLOT_STRIDE == 256`, `WfDims` size match, `WF_COUNTS_SIZE` size,
+`pack_tile_slots` layout / empty / round-trip cases. Workspace test
+count: 32 → 38.
+
+### Open follow-up: F.4 — ReSTIR/PathGuide/Adaptive in tiled mode
+
+Currently force-disabled when wavefront tiling is on, with a comment
+in `compute.rs::dispatch_wavefront` documenting the real reason. Not
+just a queue-write race (which the F.1 pattern would fix) — their
+WGSL kernels (`restir/{initial,temporal,spatial,shade}.wgsl`,
+`pathguide/{sample,update}.wgsl`, `wavefront/gbuffer.wgsl`) compute
+`pixel_id = gid.y * params.width + gid.x` where `params.width` is the
+per-tile width, but the buffers they index (reservoirs, sample_map,
+motion_buf) are full-image-sized; different tiles would alias into the
+same slots. **Adaptive sampling (variance/allocate) is already correct**
+because it runs once per frame *after* the tile loop on the full image.
+
+Re-enable plan tracked in `HANDOFF.md` Stage F.4: add `tile_x, tile_y,
+full_width, full_height` to each subsystem's Params (Rust + WGSL), remap
+`pixel_id` to global coords, route per-tile param uploads through the
+same dynamic-offset / encoder-staging-copy pattern used for wavefront
+dims/count, then drop the force-disable. ~300-500 LOC across 7 shaders
++ param structs + bind group updates.
+
+---
+
 ## Unreleased — sprint-3 (2026-05-09) — denoiser + monolith reduction
 
 End-of-day rolling sprint added the PT denoiser (Stage D.2) and a
