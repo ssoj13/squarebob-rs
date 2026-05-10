@@ -13,7 +13,10 @@ use bvh_gpu::{GpuBvhBuilder, GpuBvhConfig};
 use glam::{Mat4, Vec3};
 use pt_core::bvh::Instance;
 use pt_core::gpu_data::GpuInstanceSceneData;
-use pt_wavefront::{WavefrontConfig, WavefrontPipeline, WfDims};
+use pt_wavefront::{
+    WavefrontConfig, WavefrontPipeline, WfDims, WF_COUNTS_SIZE, WF_DIMS_SIZE,
+};
+use std::num::NonZeroU64;
 
 fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -1314,9 +1317,21 @@ impl PathTraceCompute {
 
         let (raygen_bgl, intersect_bgl, shade_bgl) = wf.bgls();
         let (ray_a, ray_b) = wf.ray_bufs_raw(); // Get both buffers directly
-        let count_buf = wf.count_buf();
+        let tile_counts_buf = wf.tile_counts_buf();
         let hit_buf = wf.hit_buf();
-        let dims_buf = wf.dims_buf();
+        let tile_dims_buf = wf.tile_dims_buf();
+        // Per-tile uniform/storage views: dynamic offset selects the active slot,
+        // static size = single struct size so the shader sees one Dims/counts block.
+        let dims_slot_resource = || wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: tile_dims_buf,
+            offset: 0,
+            size: NonZeroU64::new(WF_DIMS_SIZE),
+        });
+        let counts_slot_resource = || wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: tile_counts_buf,
+            offset: 0,
+            size: NonZeroU64::new(WF_COUNTS_SIZE),
+        });
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1384,7 +1399,7 @@ impl PathTraceCompute {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: dims_buf.as_entire_binding(),
+                        resource: dims_slot_resource(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -1392,7 +1407,7 @@ impl PathTraceCompute {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: count_buf.as_entire_binding(),
+                        resource: counts_slot_resource(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
@@ -1428,7 +1443,7 @@ impl PathTraceCompute {
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
-                        resource: count_buf.as_entire_binding(),
+                        resource: counts_slot_resource(),
                     },
                 ],
             });
@@ -1464,7 +1479,7 @@ impl PathTraceCompute {
                     },
                     wgpu::BindGroupEntry {
                         binding: 6,
-                        resource: count_buf.as_entire_binding(),
+                        resource: counts_slot_resource(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 7,
@@ -1507,7 +1522,7 @@ impl PathTraceCompute {
             layout: wf.count_swap_bgl(),
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: count_buf.as_entire_binding(),
+                resource: counts_slot_resource(),
             }],
         });
 
@@ -2245,12 +2260,15 @@ impl PathTraceCompute {
             }
         }
 
-        let wf = self.wavefront.as_ref().unwrap();
-        let (wf_w, wf_h) = wf.dimensions();
+        // Read current ray-buffer dims in a tiny scope so the shared borrow drops
+        // before we may need a mutable borrow to upload tile params.
+        let (wf_w, wf_h) = {
+            let wf_ref = self.wavefront.as_ref().unwrap();
+            wf_ref.dimensions()
+        };
 
         // CRITICAL: If wavefront dimensions were clamped below tile capacity,
         // we MUST enable tiling to avoid out-of-bounds ray buffer access.
-        // This can happen when storage buffer limits are exceeded.
         if (wf_w < tile_capacity_w || wf_h < tile_capacity_h) && !use_tiling {
             log::warn!(
                 "WF dispatch: forcing tiling due to buffer clamping (requested {}x{}, got {}x{})",
@@ -2261,6 +2279,59 @@ impl PathTraceCompute {
             );
             use_tiling = true;
         }
+
+        // Pre-collect per-tile (dims, count_init) for THIS frame.
+        //
+        // This is the heart of the wavefront tiling fix: we batch all
+        // per-tile state into one upload via `prepare_tiles`, then rely on
+        // dynamic-offset bind groups + `reset_tile_count` (which goes through
+        // the encoder) to drive each tile. Per-tile `queue.write_buffer` to
+        // shared dims/count buffers would lose all but the last tile's data
+        // because wgpu flushes queue writes BEFORE encoder commands at submit.
+        let step_y_pre = if use_tiling { wf_h.min(tile_capacity_h) } else { full_h };
+        let step_x_pre = if use_tiling { wf_w.min(tile_capacity_w) } else { full_w };
+        let mut tiles_meta: Vec<WfDims> = Vec::new();
+        let mut tile_count_inits: Vec<[u32; 4]> = Vec::new();
+        {
+            let mut ty = 0u32;
+            while ty < full_h {
+                let mut tx = 0u32;
+                let th = (full_h - ty).min(wf_h);
+                while tx < full_w {
+                    let tw = (full_w - tx).min(wf_w);
+                    tiles_meta.push(WfDims {
+                        full_width: full_w,
+                        full_height: full_h,
+                        tile_width: tw,
+                        tile_height: th,
+                        tile_x: tx,
+                        tile_y: ty,
+                        _pad: [0, 0],
+                    });
+                    tile_count_inits.push([tw * th, 0, 0, 0]);
+                    if !use_tiling {
+                        break;
+                    }
+                    tx = tx.saturating_add(step_x_pre);
+                }
+                if !use_tiling {
+                    break;
+                }
+                ty = ty.saturating_add(step_y_pre);
+            }
+        }
+
+        // One bulk upload of all tile params (mutable borrow scope).
+        let realloc = self
+            .wavefront
+            .as_mut()
+            .unwrap()
+            .prepare_tiles(device, queue, &tiles_meta, &tile_count_inits);
+        if realloc {
+            self.rebuild_wavefront_bind_groups(device);
+        }
+
+        let wf = self.wavefront.as_ref().unwrap();
 
         // Get current bind group set (will swap between bounces)
         let bgs = self.wavefront_bind_groups.as_ref().unwrap();
@@ -2360,7 +2431,6 @@ impl PathTraceCompute {
         // Get the starting bind group set
         let start_set = if cur_set == 0 { &bgs.set_a } else { &bgs.set_b };
 
-        let count_buf = wf.count_buf();
         let mut tile_y = 0u32;
         // Use actual wavefront dimensions for step size to respect buffer limits
         let step_y = if use_tiling {
@@ -2373,6 +2443,7 @@ impl PathTraceCompute {
         } else {
             full_w
         };
+        let mut tile_idx: u32 = 0;
         while tile_y < full_h {
             let mut tile_x = 0u32;
             // Clamp tile dimensions to actual wavefront buffer size
@@ -2380,17 +2451,11 @@ impl PathTraceCompute {
             while tile_x < full_w {
                 let tile_w = (full_w - tile_x).min(wf_w);
                 let tile_pixels = tile_w * tile_h;
+                let tile_off = wf.tile_offset(tile_idx);
 
-                let dims = WfDims {
-                    full_width: full_w,
-                    full_height: full_h,
-                    tile_width: tile_w,
-                    tile_height: tile_h,
-                    tile_x,
-                    tile_y,
-                    _pad: [0, 0],
-                };
-                wf.write_dims(queue, &dims);
+                // Reset count_in/count_out for this tile via encoder copy —
+                // ordered with subsequent dispatches (unlike queue.write_buffer).
+                wf.reset_tile_count(encoder, tile_idx);
 
                 // Path guiding: sample guided directions from previous SVO
                 if pathguide_enabled && !restir_enabled {
@@ -2426,12 +2491,8 @@ impl PathTraceCompute {
                     }
                 }
 
-                // Initialize counts buffer (count_in + count_out) before raygen
-                queue.write_buffer(
-                    count_buf,
-                    0,
-                    bytemuck::bytes_of(&[tile_pixels, 0u32, 0u32, 0u32]),
-                );
+                // (count_in/count_out reset is via reset_tile_count above —
+                //  encoder-ordered, so the dispatch will see fresh values.)
 
                 // Pass 1: Generate camera rays (always uses the current set's raygen)
                 {
@@ -2440,7 +2501,8 @@ impl PathTraceCompute {
                         timestamp_writes: None,
                     });
                     pass.set_pipeline(raygen_pl);
-                    pass.set_bind_group(0, &start_set.raygen_bg, &[]);
+                    // raygen has 2 dynamic-offset bindings (dims @1, count @3).
+                    pass.set_bind_group(0, &start_set.raygen_bg, &[tile_off, tile_off]);
                     let wg_x = tile_w.div_ceil(8);
                     let wg_y = tile_h.div_ceil(8);
                     pass.dispatch_workgroups(wg_x, wg_y, 1);
@@ -2517,7 +2579,7 @@ impl PathTraceCompute {
                             timestamp_writes: None,
                         });
                         pass.set_pipeline(intersect_pl);
-                        pass.set_bind_group(0, &start_set.intersect_bg, &[]);
+                        pass.set_bind_group(0, &start_set.intersect_bg, &[tile_off]);
                         let wg = tile_pixels.div_ceil(64);
                         pass.dispatch_workgroups(wg, 1, 1);
                         log::trace!("WF intersect (primary): wg={}", wg);
@@ -2635,7 +2697,7 @@ impl PathTraceCompute {
                                     timestamp_writes: None,
                                 });
                             pass.set_pipeline(intersect_pl);
-                            pass.set_bind_group(0, &current_set.intersect_bg, &[]);
+                            pass.set_bind_group(0, &current_set.intersect_bg, &[tile_off]);
                             let wg = tile_pixels.div_ceil(64);
                             pass.dispatch_workgroups(wg, 1, 1);
                             log::trace!("WF intersect: wg={}", wg);
@@ -2649,7 +2711,7 @@ impl PathTraceCompute {
                                     timestamp_writes: None,
                                 });
                             pass.set_pipeline(shade_pl);
-                            pass.set_bind_group(0, &current_set.shade_bg, &[]);
+                            pass.set_bind_group(0, &current_set.shade_bg, &[tile_off]);
                             let wg = tile_pixels.div_ceil(64);
                             pass.dispatch_workgroups(wg, 1, 1);
                             log::trace!("WF shade: wg={}", wg);
@@ -2663,7 +2725,7 @@ impl PathTraceCompute {
                                     timestamp_writes: None,
                                 });
                             pass.set_pipeline(wf.count_swap_pipeline());
-                            pass.set_bind_group(0, &bgs.count_swap_bg, &[]);
+                            pass.set_bind_group(0, &bgs.count_swap_bg, &[tile_off]);
                             pass.dispatch_workgroups(1, 1, 1);
                             log::trace!("WF count swap");
                         }
@@ -2714,6 +2776,7 @@ impl PathTraceCompute {
                     }
                 }
 
+                tile_idx += 1;
                 if !use_tiling {
                     break;
                 }

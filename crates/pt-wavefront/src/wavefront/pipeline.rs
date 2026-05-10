@@ -1,11 +1,22 @@
 //! Wavefront pipeline orchestration.
+//!
+//! Per-tile state (dims uniform + counts) lives in N-slot persistent buffers
+//! addressed via *dynamic offsets* in the bind group, so all per-tile values
+//! for one frame can be uploaded with a single `queue.write_buffer` per buffer
+//! before the encoder runs. Per-tile resets happen via
+//! `encoder.copy_buffer_to_buffer`, which is ordered with the dispatches and
+//! avoids the WebGPU pre-submit write race that loses per-tile state when
+//! `queue.write_buffer` is called repeatedly inside a tile loop.
+//!
+//! WGSL shaders see a plain `Dims` uniform / `array<atomic<u32>>` count and
+//! are unaware of the multi-slot layout — dynamic offset is transparent.
 
 use super::buffers::{WfHit, WfRay};
 use bytemuck::{Pod, Zeroable};
 use log::debug;
-use wgpu::util::DeviceExt;
+use std::num::NonZeroU64;
 
-/// Dims uniform for raygen pass.
+/// Dims uniform for raygen pass. Mirrored 1:1 in raygen.wgsl `struct Dims`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct WfDims {
@@ -23,6 +34,17 @@ const INTERSECT_WGSL: &str = include_str!("intersect.wgsl");
 const SHADE_WGSL: &str = include_str!("shade.wgsl");
 const FINALIZE_WGSL: &str = include_str!("finalize.wgsl");
 const COUNT_SWAP_WGSL: &str = include_str!("count_swap.wgsl");
+
+/// Per-tile slot stride for dynamic-offset bind groups.
+/// 256 bytes is the WebGPU minimum dynamic offset alignment for both
+/// uniform and storage buffers; using it for both keeps offsets uniform.
+pub const TILE_SLOT_STRIDE: u64 = 256;
+/// Bytes actually consumed per tile slot for `WfDims` (the rest is alignment pad).
+pub const WF_DIMS_SIZE: u64 = std::mem::size_of::<WfDims>() as u64;
+/// Bytes actually consumed per tile slot for the [count_in, count_out, _, _] u32x4 block.
+pub const WF_COUNTS_SIZE: u64 = 16;
+/// Default initial tile slot capacity. Grows on demand via `prepare_tiles`.
+const DEFAULT_TILE_CAPACITY: u32 = 64;
 
 /// Wavefront path tracer pipeline.
 pub struct WavefrontPipeline {
@@ -45,11 +67,17 @@ pub struct WavefrontPipeline {
     ray_buf_b: Option<wgpu::Buffer>,
     hit_buf: Option<wgpu::Buffer>,
 
-    // Count buffer (count_in at [0], count_out at [1])
-    count_buf: wgpu::Buffer,
-
-    // Dims uniform
-    dims_buf: wgpu::Buffer,
+    // Per-tile dims uniform: tile_capacity * TILE_SLOT_STRIDE bytes.
+    // Bound with has_dynamic_offset; per-dispatch offset selects a tile.
+    tile_dims_buf: wgpu::Buffer,
+    // Per-tile [count_in, count_out, _, _] storage: tile_capacity * TILE_SLOT_STRIDE.
+    // Mutated via atomic ops in shaders; reset before each tile via
+    // `reset_tile_count` from `count_init_src`.
+    tile_counts_buf: wgpu::Buffer,
+    // Source buffer holding initial [tile_pixels, 0, 0, 0] for each tile slot.
+    // Filled once per dispatch via prepare_tiles, copied per-tile via reset_tile_count.
+    count_init_src: wgpu::Buffer,
+    tile_capacity: u32,
 
     // Dimensions and state
     width: u32,
@@ -65,12 +93,12 @@ impl WavefrontPipeline {
             RAYGEN_WGSL,
             "raygen",
             &[
-                bgl_uniform(0),    // camera
-                bgl_uniform(1),    // dims
-                bgl_storage_rw(2), // ray output
-                bgl_storage_rw(3), // count
-                bgl_storage_ro(4), // sample map
-                bgl_storage_ro(5), // accum buffer (for sample count check)
+                bgl_uniform(0),                                // camera
+                bgl_uniform_dyn(1, WF_DIMS_SIZE),              // dims (per-tile)
+                bgl_storage_rw(2),                             // ray output
+                bgl_storage_rw_dyn(3, WF_COUNTS_SIZE),         // count (per-tile)
+                bgl_storage_ro(4),                             // sample map
+                bgl_storage_ro(5),                             // accum (read-only check)
             ],
         );
 
@@ -79,11 +107,11 @@ impl WavefrontPipeline {
             INTERSECT_WGSL,
             "intersect",
             &[
-                bgl_storage_ro(0), // nodes
-                bgl_storage_ro(1), // instances
-                bgl_storage_ro(2), // rays
-                bgl_storage_rw(3), // hits
-                bgl_storage_rw(4), // count
+                bgl_storage_ro(0),                             // nodes
+                bgl_storage_ro(1),                             // instances
+                bgl_storage_ro(2),                             // rays
+                bgl_storage_rw(3),                             // hits
+                bgl_storage_rw_dyn(4, WF_COUNTS_SIZE),         // count (per-tile)
             ],
         );
 
@@ -92,18 +120,18 @@ impl WavefrontPipeline {
             SHADE_WGSL,
             "shade",
             &[
-                bgl_storage_ro(0),  // instances
-                bgl_storage_ro(1),  // materials
-                bgl_storage_ro(2),  // rays in
-                bgl_storage_ro(3),  // hits
-                bgl_storage_rw(4),  // rays out
-                bgl_storage_rw(5),  // accum
-                bgl_storage_rw(6),  // counts (in/out)
-                bgl_uniform(7),     // params
-                bgl_texture_2d(8),  // env_map
-                bgl_sampler(9),     // env_sampler
-                bgl_uniform(10),    // env_params
-                bgl_storage_rw(11), // guide buffer
+                bgl_storage_ro(0),                             // instances
+                bgl_storage_ro(1),                             // materials
+                bgl_storage_ro(2),                             // rays in
+                bgl_storage_ro(3),                             // hits
+                bgl_storage_rw(4),                             // rays out
+                bgl_storage_rw(5),                             // accum
+                bgl_storage_rw_dyn(6, WF_COUNTS_SIZE),         // counts (per-tile)
+                bgl_uniform(7),                                // params
+                bgl_texture_2d(8),                             // env_map
+                bgl_sampler(9),                                // env_sampler
+                bgl_uniform(10),                               // env_params
+                bgl_storage_rw(11),                            // guide buffer
             ],
         );
 
@@ -113,33 +141,13 @@ impl WavefrontPipeline {
             COUNT_SWAP_WGSL,
             "count_swap",
             &[
-                bgl_storage_rw(0), // counts (in/out)
+                bgl_storage_rw_dyn(0, WF_COUNTS_SIZE),         // counts (per-tile)
             ],
         );
 
-        let count_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("wf_counts"),
-            size: 16, // count_in, count_out, padding
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let dims = WfDims {
-            full_width: width,
-            full_height: height,
-            tile_width: width,
-            tile_height: height,
-            tile_x: 0,
-            tile_y: 0,
-            _pad: [0, 0],
-        };
-        let dims_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wf_dims"),
-            contents: bytemuck::bytes_of(&dims),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let tile_dims_buf = create_tile_dims_buf(device, DEFAULT_TILE_CAPACITY);
+        let tile_counts_buf = create_tile_counts_buf(device, DEFAULT_TILE_CAPACITY);
+        let count_init_src = create_count_init_src(device, DEFAULT_TILE_CAPACITY);
 
         let mut p = Self {
             raygen_pipeline,
@@ -155,8 +163,10 @@ impl WavefrontPipeline {
             ray_buf_a: None,
             ray_buf_b: None,
             hit_buf: None,
-            count_buf,
-            dims_buf,
+            tile_dims_buf,
+            tile_counts_buf,
+            count_init_src,
+            tile_capacity: DEFAULT_TILE_CAPACITY,
             width: 0,
             height: 0,
             cur_buf: 0,
@@ -165,7 +175,8 @@ impl WavefrontPipeline {
         p
     }
 
-    /// Resize buffers for new dimensions.
+    /// Resize ray/hit buffers for new viewport (or wavefront tile capacity).
+    /// Caller must rebuild bind groups after this.
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.width == width && self.height == height {
             return;
@@ -190,22 +201,6 @@ impl WavefrontPipeline {
         self.ray_buf_b = Some(create_buf(device, "wf_ray_b", n * ray_sz));
         self.hit_buf = Some(create_buf(device, "wf_hit", n * hit_sz));
         self.cur_buf = 0;
-
-        // Update dims uniform
-        let dims = WfDims {
-            full_width: self.width,
-            full_height: self.height,
-            tile_width: self.width,
-            tile_height: self.height,
-            tile_x: 0,
-            tile_y: 0,
-            _pad: [0, 0],
-        };
-        self.dims_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wf_dims"),
-            contents: bytemuck::bytes_of(&dims),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
     }
 
     fn clamp_dimensions(device: &wgpu::Device, width: u32, height: u32) -> (u32, u32) {
@@ -252,7 +247,6 @@ impl WavefrontPipeline {
         self.cur_buf = 1 - self.cur_buf;
     }
 
-    /// Get buffers and pipelines.
     pub fn hit_buf(&self) -> &wgpu::Buffer {
         self.hit_buf.as_ref().unwrap()
     }
@@ -293,21 +287,102 @@ impl WavefrontPipeline {
         &self.count_swap_bgl
     }
 
-    pub fn dims_buf(&self) -> &wgpu::Buffer {
-        &self.dims_buf
+    /// Per-tile dims uniform buffer. Bind with `has_dynamic_offset: true`
+    /// and `min_binding_size = WF_DIMS_SIZE`.
+    pub fn tile_dims_buf(&self) -> &wgpu::Buffer {
+        &self.tile_dims_buf
     }
+    /// Per-tile counts storage buffer. Bind with `has_dynamic_offset: true`
+    /// and `min_binding_size = WF_COUNTS_SIZE`.
+    pub fn tile_counts_buf(&self) -> &wgpu::Buffer {
+        &self.tile_counts_buf
+    }
+
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
-    pub fn count_buf(&self) -> &wgpu::Buffer {
-        &self.count_buf
+
+    /// Dynamic offset (bytes) for tile `idx` into the per-tile dims/counts buffers.
+    pub fn tile_offset(&self, idx: u32) -> u32 {
+        debug_assert!(idx < self.tile_capacity, "tile_idx out of range");
+        idx.checked_mul(TILE_SLOT_STRIDE as u32).expect("tile offset overflow")
     }
-    pub fn write_dims(&self, queue: &wgpu::Queue, dims: &WfDims) {
-        queue.write_buffer(&self.dims_buf, 0, bytemuck::bytes_of(dims));
+
+    /// Upload all per-tile dims and the per-tile count-init source for one frame's
+    /// dispatch with **one `queue.write_buffer` per buffer**. Grows tile capacity
+    /// (and therefore reallocates the per-tile buffers) if `dims.len()` exceeds
+    /// the current capacity. Returns true if a reallocation happened (caller must
+    /// rebuild bind groups in that case).
+    pub fn prepare_tiles(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        dims: &[WfDims],
+        count_inits: &[[u32; 4]],
+    ) -> bool {
+        assert_eq!(dims.len(), count_inits.len(), "tile param length mismatch");
+        let n = dims.len() as u32;
+        if n == 0 {
+            return false;
+        }
+        let realloc = if n > self.tile_capacity {
+            // Grow to next power-of-two ≥ n, capped reasonably.
+            let new_cap = n.next_power_of_two().max(DEFAULT_TILE_CAPACITY);
+            debug!(
+                "WavefrontPipeline::prepare_tiles grow capacity {} -> {}",
+                self.tile_capacity, new_cap
+            );
+            self.tile_dims_buf = create_tile_dims_buf(device, new_cap);
+            self.tile_counts_buf = create_tile_counts_buf(device, new_cap);
+            self.count_init_src = create_count_init_src(device, new_cap);
+            self.tile_capacity = new_cap;
+            true
+        } else {
+            false
+        };
+
+        // Pack dims into stride-padded blob: TILE_SLOT_STRIDE bytes per slot,
+        // first WF_DIMS_SIZE bytes hold WfDims, rest is zero pad.
+        let stride = TILE_SLOT_STRIDE as usize;
+        let mut dims_blob = vec![0u8; n as usize * stride];
+        for (i, d) in dims.iter().enumerate() {
+            let off = i * stride;
+            let bytes = bytemuck::bytes_of(d);
+            dims_blob[off..off + bytes.len()].copy_from_slice(bytes);
+        }
+        queue.write_buffer(&self.tile_dims_buf, 0, &dims_blob);
+
+        // Pack count-init values similarly.
+        let mut count_blob = vec![0u8; n as usize * stride];
+        for (i, c) in count_inits.iter().enumerate() {
+            let off = i * stride;
+            let bytes = bytemuck::bytes_of(c);
+            count_blob[off..off + bytes.len()].copy_from_slice(bytes);
+        }
+        queue.write_buffer(&self.count_init_src, 0, &count_blob);
+
+        realloc
+    }
+
+    /// Reset tile `idx`'s [count_in, count_out, _, _] block by copying the
+    /// init slot into the live counts buffer. **This goes through the encoder
+    /// and is therefore ordered with the subsequent dispatches**, fixing the
+    /// race that exists when using `queue.write_buffer` per-tile.
+    pub fn reset_tile_count(&self, encoder: &mut wgpu::CommandEncoder, idx: u32) {
+        debug_assert!(idx < self.tile_capacity, "tile_idx out of range");
+        let off = u64::from(idx) * TILE_SLOT_STRIDE;
+        encoder.copy_buffer_to_buffer(
+            &self.count_init_src,
+            off,
+            &self.tile_counts_buf,
+            off,
+            WF_COUNTS_SIZE,
+        );
     }
 }
 
-// Helper: create compute pipeline
+// ── pipeline / bgl helpers ──
+
 fn create_pipeline(
     device: &wgpu::Device,
     wgsl: &str,
@@ -347,6 +422,37 @@ fn create_buf(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
     })
 }
 
+fn create_tile_dims_buf(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wf_tile_dims"),
+        size: u64::from(capacity) * TILE_SLOT_STRIDE,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_tile_counts_buf(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wf_tile_counts"),
+        size: u64::from(capacity) * TILE_SLOT_STRIDE,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_count_init_src(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wf_tile_count_init_src"),
+        size: u64::from(capacity) * TILE_SLOT_STRIDE,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    })
+}
+
 fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -355,6 +461,19 @@ fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
             min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+fn bgl_uniform_dyn(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: NonZeroU64::new(size),
         },
         count: None,
     }
@@ -381,6 +500,19 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
             ty: wgpu::BufferBindingType::Storage { read_only: false },
             has_dynamic_offset: false,
             min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+fn bgl_storage_rw_dyn(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: true,
+            min_binding_size: NonZeroU64::new(size),
         },
         count: None,
     }

@@ -18,4 +18,4 @@ pub use config::WavefrontConfig;
 #[allow(unused_imports)]
 pub use pipeline::WavefrontPipeline;
 #[allow(unused_imports)]
-pub use pipeline::WfDims;
+pub use pipeline::{WfDims, TILE_SLOT_STRIDE, WF_COUNTS_SIZE, WF_DIMS_SIZE};
