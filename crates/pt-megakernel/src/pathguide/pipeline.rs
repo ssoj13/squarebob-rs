@@ -4,9 +4,10 @@ use super::svo::SvoNode;
 use log::debug;
 use std::num::NonZeroU64;
 
-/// WGSL `Params` struct size for pathguide sample. Keep in sync with
-/// `crate::compute::PathGuideSampleParams`.
-pub const PG_SAMPLE_PARAMS_SIZE: u64 = 96;
+/// WGSL `Params` struct size for pathguide sample. Five vec4 fields =
+/// 5 × 16 = 80 bytes. Keep in sync with `crate::compute::
+/// PathGuideSampleParams`.
+pub const PG_SAMPLE_PARAMS_SIZE: u64 = 80;
 
 const UPDATE_WGSL: &str = include_str!("update.wgsl");
 const SAMPLE_WGSL: &str = include_str!("sample.wgsl");

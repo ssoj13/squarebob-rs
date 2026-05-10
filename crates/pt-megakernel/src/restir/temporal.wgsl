@@ -30,13 +30,21 @@ struct MotionVector {
 // are full-image-sized). tile_x/y is the tile origin in full-image coords,
 // tile_w/h size the dispatch — gid.xy is remapped to global coords before
 // indexing.
+//
+// IMPORTANT: padding is three f32 scalars, NOT vec3<f32>. WGSL uniform
+// layout rules align vec3<f32> to 16 bytes and round the struct up to a
+// multiple of the largest member's align — that would make WGSL size 64
+// while the Rust mirror is 48, breaking min_binding_size matching at
+// pipeline creation.
 struct Params {
     width: u32,
     height: u32,
     frame_count: u32,
     m_max: u32,
     depth_threshold: f32,
-    _pad: vec3<f32>,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
     tile_x: u32,
     tile_y: u32,
     tile_w: u32,
