@@ -2433,7 +2433,26 @@ impl PathTraceCompute {
                 let cam_pos = self.last_camera_pos.unwrap_or([0.0, 0.0, 0.0]);
                 let num_candidates = self.restir_config.initial_candidates;
                 let m_max = self.restir_config.m_max;
-                let num_neighbors = self.restir_config.spatial_neighbors;
+                // ReSTIR spatial reuse reads cur_reservoirs[neighbor_id], which
+                // in tiled mode may fall inside a tile that hasn't been
+                // processed yet this frame — that neighbor slot still holds
+                // pre-swap (frame N-2 ish) data and corrupts the resampled
+                // reservoir. The proper fix is a two-pass tile loop (initial +
+                // temporal for all tiles, then spatial pass on the full image,
+                // then shade per-tile). Until that lands, force the neighbor
+                // count to zero in tile mode so the spatial pass becomes a
+                // straight copy `reservoirs_out = reservoirs_in` (temporal's
+                // result), which `shade` then reads correctly.
+                let num_neighbors = if use_tiling {
+                    if self.restir_config.spatial_neighbors > 0 {
+                        log::debug!(
+                            "ReSTIR spatial reuse disabled in tile mode (cross-tile reservoir aliasing); set WF Tile=0 for full spatial reuse"
+                        );
+                    }
+                    0
+                } else {
+                    self.restir_config.spatial_neighbors
+                };
                 let spatial_radius = self.restir_config.spatial_radius;
 
                 let initial_params: Vec<RestirInitialParams> = tiles_meta
