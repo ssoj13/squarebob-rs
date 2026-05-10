@@ -80,10 +80,12 @@ converge to the same image within sampling noise; nothing should print
 - WF Tile = 256 with all of {PathGuide, ReSTIR DI/GI, Adaptive} = On
   simultaneously — full stack
 
-Known caveat: when ReSTIR is enabled the `prev_view_proj` is identical
-to `curr_view_proj` (the matrix cache only keeps the latest frame), so
-motion vectors will be zero and temporal reuse is effectively disabled.
-This is **pre-existing** (not introduced by F.4) and tracked separately.
+(Previously the matrix cache only held the latest frame so
+`prev_view_proj == curr_view_proj` and motion vectors collapsed to zero.
+Fixed in commit `2767548`: `PathTraceCompute` now tracks
+`prev_view_proj` separately, rolled forward by the renderer on each
+camera move. ReSTIR temporal reuse now reprojects against the real
+previous-frame projection.)
 
 ### What still needs YOUR eyes (UAT)
 

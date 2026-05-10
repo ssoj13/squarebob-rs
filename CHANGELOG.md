@@ -156,11 +156,12 @@ pipeline.rs`):
   `pack_tile_slots` from `pt-wavefront` so downstream crates can reuse
   the per-tile packing pattern.
 
-**Known caveat (pre-existing):** `prev_view_proj` equals
-`curr_view_proj` because the matrix cache only retains the latest
-frame's matrix. ReSTIR temporal reuse therefore sees zero motion
-vectors and effectively no inter-frame reservoir reuse. Not introduced
-by F.4; tracked separately.
+**Bonus fix (commit `2767548`):** `prev_view_proj == curr_view_proj`
+because the matrix cache only retained the latest frame; ReSTIR
+temporal reuse saw zero motion. `PathTraceCompute` now keeps a
+`prev_view_proj` field rolled forward by the renderer on each
+camera-move, so the gbuffer motion-vector pass sees the real previous
+projection.
 
 ---
 

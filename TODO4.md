@@ -567,10 +567,12 @@ Tile=0 vs WF Tile=256 with each of {PathGuide, Adaptive, ReSTIR DI,
 ReSTIR DI+GI} and with all of them on at once — each pair should
 converge to the same image. No "X disabled" warning in the console.
 
-Pre-existing limitation (not introduced by F.4): `prev_view_proj`
-equals `curr_view_proj` because the matrix cache only retains the
-latest frame; ReSTIR temporal reuse therefore sees zero motion vectors.
-Tracked separately.
+Bonus fix (commit `2767548`): the prior `prev_view_proj ==
+curr_view_proj` caveat was resolved by adding a `prev_view_proj`
+matrix cache to `PathTraceCompute`. The two renderer entry points
+(`render.rs`, `render_no_readback.rs`) roll the existing matrix into
+prev before storing the new one on a camera-move. ReSTIR temporal
+reuse now reprojects against the real previous-frame projection.
 
 ---
 
