@@ -2396,6 +2396,22 @@ impl PathTraceCompute {
             && self.gbuffer_pipeline.is_some();
         let mut pathguide_enabled = self.pathguide_config.enabled;
         let mut adaptive_enabled = self.adaptive_config.enabled;
+        // ReSTIR / Path Guide / Adaptive are force-disabled when tiling is on.
+        //
+        // This is NOT a queue.write_buffer race workaround — that race was
+        // fixed for the wavefront dims/count via dynamic-offset bind groups
+        // and prepare_tiles. The remaining issue is shader-level: those
+        // subsystems' WGSL kernels compute `pixel_id = gid.y * params.width
+        // + gid.x` where `params.width` is the per-tile width, but the
+        // reservoir / sample-map / variance buffers are full-image-sized.
+        // Different tiles would alias into the same buffer slots.
+        //
+        // Re-enabling them in tiled mode requires adding tile_x/tile_y/
+        // full_width/full_height fields to each subsystem's Params (and
+        // matching WGSL structs), remapping pixel_id to global coords, and
+        // routing per-tile param uploads through the same dynamic-offset
+        // (or encoder-staging-copy) pattern used for wavefront dims/count.
+        // Tracked as a follow-up phase; see HANDOFF.md.
         if use_tiling {
             if restir_enabled {
                 log::warn!("WF tiling: ReSTIR disabled (tile_size={})", tile_size);

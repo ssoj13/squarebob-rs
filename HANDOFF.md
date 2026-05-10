@@ -1,8 +1,84 @@
 # HANDOFF — dirstat-rs cross-machine resume
 
-**Date:** 2026-05-10
-**Last commit (origin/main):** `51eaf11`
+**Date:** 2026-05-10 (rev 2)
+**Last commit:** see `git log -1`
 **Branch:** main
+
+## 2026-05-10 update — Wavefront race + spectral fixes
+
+Stage F.1 wavefront tile race + spectral parity landed in this session
+(commits between `51eaf11` and HEAD):
+
+- **F.1 wavefront tile race fix** — per-tile `dims_buf` / `count_buf`
+  state was collapsing to last-tile values because wgpu flushes all
+  `queue.write_buffer` calls before encoder commands at submit. Replaced
+  the single-slot buffers with N-slot persistent buffers
+  (`tile_dims_buf`, `tile_counts_buf`, `count_init_src`) addressed via
+  dynamic-offset bind groups. Per-frame upload is now ONE
+  `queue.write_buffer` per buffer (`prepare_tiles`); per-tile init goes
+  through `encoder.copy_buffer_to_buffer` (`reset_tile_count`),
+  encoder-ordered with the dispatches. WGSL shaders unchanged.
+  See `crates/pt-wavefront/src/wavefront/pipeline.rs` and the
+  refactored `dispatch_wavefront` in
+  `crates/pt-megakernel/src/compute.rs`.
+
+- **F.2 spectral really runs in wavefront** —
+  `crates/render-3d/src/pt/spectral.rs` no longer forces
+  `pt_wavefront=false`; the wavefront `shade.wgsl` already applied
+  `spectral_tint` at sky/emission and now also at transmission events
+  (parity with megakernel).
+
+- **F.3 unit tests** — `crates/pt-wavefront/src/wavefront/pipeline.rs`
+  has 6 new tests for the dynamic-offset slot layout invariants
+  (`TILE_SLOT_STRIDE == 256`, `pack_tile_slots` correctness, etc.).
+
+### Open follow-up: F.4 — ReSTIR/PathGuide/Adaptive in tiled wavefront
+
+Currently force-disabled when wavefront tiling is on, with an explicit
+comment in `compute.rs::dispatch_wavefront` near the warnings.
+**Reason:** their WGSL shaders index `reservoirs[pixel_id]` etc. with
+`pixel_id = gid.y * params.width + gid.x`, where `params.width` is the
+PER-TILE width but the reservoir / sample-map / variance buffers are
+full-image-sized. Different tiles would alias into the same slots.
+
+To re-enable them in tiled mode (separate phase, ~300-500 LOC):
+1. Add `tile_x, tile_y, full_width, full_height` fields to:
+   - `RestirInitialParams`, `RestirTemporalParams`, `RestirSpatialParams`,
+     `RestirShadeParams`
+   - `PathGuideSampleParams`, `PathGuideUpdateParams`
+   - Adaptive variance/allocate params
+   - And matching WGSL `struct Params` in 7 shaders.
+2. Remap `pixel_id = (params.tile_y + gid.y) * params.full_width +
+   (params.tile_x + gid.x)` everywhere; replace `params.width` with
+   `params.full_width` for indexing reservoirs / neighbors.
+3. Route per-tile param uploads through the same dynamic-offset (or
+   `encoder.copy_buffer_to_buffer` from a pre-filled staging buffer)
+   pattern used for wavefront dims/count.
+4. Delete the force-disable warnings in `compute.rs::dispatch_wavefront`.
+5. Verify with both visual UAT and a megakernel-vs-wf-tiled-with-ReSTIR
+   parity test.
+
+The wavefront `gbuffer.wgsl` (used in the ReSTIR primary pass) has the
+same tile-local pixel_id pattern at line 45; that needs the same fix.
+
+### What still needs YOUR eyes (UAT)
+
+The 4 prior "needs your eyes" items from the original handoff still
+apply (Stage 0.1 slider rebuild, Stage A.1 FPS replay, Stage D.2
+denoiser tuning, Stage D.3 BVH refit trace, Smoke 8 2D-GPU). Plus:
+
+- **F.1 visual UAT** — set `WF Tile = 256` (or any non-zero value smaller
+  than your viewport) with `Backend = Wavefront` and `Spectral = Off`.
+  Before the fix this produced black-with-noise tile borders + only the
+  bottom-right corner rendered. After the fix the whole viewport should
+  render cleanly, matching `WF Tile = 0` output (just with the same
+  small per-tile bookkeeping cost).
+- **F.2 visual UAT** — `Backend = Wavefront` + `Spectral = Hero` should
+  no longer print "Spectral backend stub: forcing megakernel path" in
+  the console; the rendered image should show transmission tinting on
+  glass-like materials.
+
+---
 
 This file is the cross-machine handoff: WSL2 (where this work was done)
 → Windows (where you continue).
