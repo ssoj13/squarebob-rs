@@ -2413,8 +2413,8 @@ impl PathTraceCompute {
             && self.restir_bind_groups.is_some()
             && self.gbuffer_pipeline.is_some();
         let mut pathguide_enabled = self.pathguide_config.enabled;
-        let mut adaptive_enabled = self.adaptive_config.enabled;
-        // ReSTIR / Path Guide / Adaptive are force-disabled when tiling is on.
+        let adaptive_enabled = self.adaptive_config.enabled;
+        // ReSTIR / Path Guide are force-disabled when tiling is on.
         //
         // This is NOT a queue.write_buffer race workaround — that race was
         // fixed for the wavefront dims/count via dynamic-offset bind groups
@@ -2429,7 +2429,13 @@ impl PathTraceCompute {
         // matching WGSL structs), remapping pixel_id to global coords, and
         // routing per-tile param uploads through the same dynamic-offset
         // (or encoder-staging-copy) pattern used for wavefront dims/count.
-        // Tracked as a follow-up phase; see HANDOFF.md.
+        // Tracked as a follow-up phase; see HANDOFF.md (Stage F.4).
+        //
+        // Adaptive sampling is *not* affected by the tile-local pixel_id
+        // issue: variance + allocate pipelines run ONCE per frame after
+        // the tile loop with `width = full_w, height = full_h`, indexing
+        // accum / variance / sample_map by global pixel_id. So tiling and
+        // adaptive coexist correctly.
         if use_tiling {
             if restir_enabled {
                 log::warn!("WF tiling: ReSTIR disabled (tile_size={})", tile_size);
@@ -2437,15 +2443,8 @@ impl PathTraceCompute {
             if pathguide_enabled {
                 log::warn!("WF tiling: Path Guide disabled (tile_size={})", tile_size);
             }
-            if adaptive_enabled {
-                log::warn!(
-                    "WF tiling: Adaptive Sampling disabled (tile_size={})",
-                    tile_size
-                );
-            }
             restir_enabled = false;
             pathguide_enabled = false;
-            adaptive_enabled = false;
         }
         log::debug!(
             "WF dispatch: frame {}/{}, full={}x{}, wf_buf={}x{}, tile={}, bounces={}, restir={}, pathguide={}, adaptive={}",
