@@ -190,10 +190,18 @@ impl App {
             return;
         }
         self.treemap_tex = None;
-        if self.render_mode == RenderMode::Mode2D {
-            // Drop any 3D zero-copy texture id to avoid stale display in 2D.
-            self.render_texture_id = None;
+        // Free the previous mode's egui texture registration, then clear the
+        // id so the next mode starts fresh. Skipping `free_texture` would
+        // leak the registration in egui_wgpu's internal map on every mode
+        // switch. Both 3D and 2D-GPU paths register native textures
+        // (post-Stage D.1), so this applies to either direction.
+        if let (Some(render_state), Some(id)) =
+            (&self.wgpu_render_state, self.render_texture_id)
+        {
+            let mut renderer = render_state.renderer.write();
+            renderer.free_texture(&id);
         }
+        self.render_texture_id = None;
         self.needs_layout = true;
 
         if let Some(renderer) = &mut self.renderer_3d {
