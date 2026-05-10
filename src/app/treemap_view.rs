@@ -372,7 +372,17 @@ impl App {
             }
         }
 
-        // LMB - orbit (inertia optional, not with shift - that's marquee select)
+        // LMB - orbit (inertia optional, not with shift - that's marquee select).
+        //
+        // Camera rotation does NOT change scene geometry — cube positions are
+        // world-space and the BVH is camera-independent. Set `needs_render_3d`
+        // (repaint only). `render_to_view`'s `opts_hash` still detects LOD-
+        // quantized camera changes and will rebuild instances on its own when
+        // LOD is enabled. Previously this set `needs_layout = true` which
+        // unconditionally invalidated the instance cache AND marked the PT
+        // scene dirty, triggering `upload_scene` (3 buffer recreations + 4
+        // bind-group chain rebuilds) every drag frame — the dominant cost
+        // when rotating with PT on.
         if resp.dragged_by(egui::PointerButton::Primary) && !ctrl_held && !shift_held {
             self.orbit_camera.cancel_animation(); // User took control
             let delta = resp.drag_delta();
@@ -381,7 +391,7 @@ impl App {
             } else {
                 self.orbit_camera.orbit(-delta.x, delta.y);
             }
-            self.needs_layout = true;
+            self.needs_render_3d = true;
         }
 
         // Shift+LMB drag - marquee selection
