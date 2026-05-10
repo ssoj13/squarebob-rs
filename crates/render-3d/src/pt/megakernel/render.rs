@@ -358,6 +358,10 @@ pub(crate) fn render_path_traced(
         reset_by_cam = true;
         pt.reset_accumulation();
         pt.last_camera_pos = Some(cam_pos);
+        // Roll the previous frame's matrix into prev_view_proj so the
+        // wavefront gbuffer + ReSTIR temporal pass can reproject world
+        // positions into the previous screen for motion vectors.
+        pt.prev_view_proj = pt.last_view_proj;
         pt.last_view_proj = Some(cam_vp);
     }
 

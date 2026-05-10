@@ -337,6 +337,12 @@ pub struct PathTraceCompute {
     pub last_camera_pos: Option<[f32; 3]>,
     /// Last view-projection matrix for change detection
     pub last_view_proj: Option<[[f32; 4]; 4]>,
+    /// Previous frame's view-projection matrix. Needed by ReSTIR temporal
+    /// reuse (and the wavefront gbuffer's motion-vector pass) to reproject
+    /// world positions into the previous-frame screen. The renderer rolls
+    /// the prior `last_view_proj` into this field before storing the new
+    /// matrix each frame.
+    pub prev_view_proj: Option<[[f32; 4]; 4]>,
     /// Last slice plane params for change detection (enabled, axis, position, invert)
     pub last_slice_params: Option<(bool, [f32; 3], f32, bool)>,
 
@@ -895,6 +901,7 @@ impl PathTraceCompute {
             max_samples: 512,
             last_camera_pos: None,
             last_view_proj: None,
+            prev_view_proj: None,
             last_slice_params: None,
             camera_buffer,
             output_texture,
@@ -2418,7 +2425,11 @@ impl PathTraceCompute {
         if restir_active {
             if let Some(restir_bgs) = self.restir_bind_groups.as_ref() {
                 let frame = self.frame_count;
-                let view_proj = self.last_view_proj.unwrap_or([[0.0; 4]; 4]);
+                let curr_vp = self.last_view_proj.unwrap_or([[0.0; 4]; 4]);
+                // Fall back to current frame for the very first frame, when
+                // no previous matrix exists yet — yields zero motion as the
+                // historical behaviour.
+                let prev_vp = self.prev_view_proj.unwrap_or(curr_vp);
                 let cam_pos = self.last_camera_pos.unwrap_or([0.0, 0.0, 0.0]);
                 let num_candidates = self.restir_config.initial_candidates;
                 let m_max = self.restir_config.m_max;
@@ -2519,8 +2530,8 @@ impl PathTraceCompute {
                         full_w: d.full_width,
                         full_h: d.full_height,
                         _pad0: [0; 2],
-                        prev_view_proj: view_proj,
-                        curr_view_proj: view_proj,
+                        prev_view_proj: prev_vp,
+                        curr_view_proj: curr_vp,
                     })
                     .collect();
                 queue.write_buffer(
