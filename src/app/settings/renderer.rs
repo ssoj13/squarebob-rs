@@ -167,6 +167,9 @@ impl App {
         // Effects settings
         self.ui_3d_effects(ui);
 
+        // Animation: master + per-timeline knobs in one place.
+        self.ui_3d_animation(ui);
+
         // Mode-specific panels
         let is_shaded = !self.render_3d_opts.show_wireframe && !self.render_3d_opts.path_tracing;
         if is_shaded {
@@ -456,27 +459,6 @@ impl App {
                         ui.end_row();
                     }
 
-                    // Master animate toggle + global pace. Lives in the
-                    // Effects section so Space-bar toggle is right next
-                    // to the effect knobs.
-                    control_label(ui, "Animate");
-                    ui.horizontal(|ui| {
-                        if ui
-                            .checkbox(&mut self.render_3d_opts.animate, "")
-                            .changed()
-                        {
-                            self.needs_layout = true;
-                        }
-                        ui.add_enabled(
-                            self.render_3d_opts.animate,
-                            egui::Slider::new(
-                                &mut self.render_3d_opts.animation_speed,
-                                0.0..=5.0,
-                            )
-                            .show_value(true),
-                        );
-                    });
-                    ui.end_row();
                 });
 
             // Slice plane controls
@@ -612,6 +594,46 @@ impl App {
                         ui.end_row();
                     });
             }
+        });
+    }
+
+    /// Animation panel: master Animate + global speed for the object
+    /// timeline, plus the env-timeline toggle + speed. Env runs
+    /// independently (own gate) so the sky can keep rolling when cubes
+    /// are paused with Space.
+    fn ui_3d_animation(&mut self, ui: &mut egui::Ui) {
+        tinted_section(ui, "Animation", false, self.settings_tint_mix, |ui| {
+            settings_grid(ui, "animation_grid", |ui| {
+                control_label(ui, "Animate");
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut self.render_3d_opts.animate, "")
+                        .changed()
+                    {
+                        self.needs_layout = true;
+                    }
+                    ui.add_enabled(
+                        self.render_3d_opts.animate,
+                        egui::Slider::new(
+                            &mut self.render_3d_opts.animation_speed,
+                            0.0..=5.0,
+                        )
+                        .show_value(true),
+                    );
+                });
+                ui.end_row();
+
+                control_label(ui, "Env");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.render_3d_opts.env_animate, "Animate");
+                    ui.add_enabled(
+                        self.render_3d_opts.env_animate,
+                        egui::Slider::new(&mut self.render_3d_opts.env_speed, 0.0..=5.0)
+                            .show_value(true),
+                    );
+                });
+                ui.end_row();
+            });
         });
     }
 
@@ -1955,25 +1977,18 @@ impl App {
                 });
 
             if self.render_3d_opts.env_map_enabled {
-                egui::Grid::new("env_anim_grid")
+                egui::Grid::new("env_visibility_grid")
                     .num_columns(2)
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        control_label(ui, "Env Anim:");
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.render_3d_opts.env_map_visible, "Visible")
-                                .on_hover_text(
-                                    "Show the env background while keeping lighting enabled",
-                                );
-                            ui.checkbox(&mut self.render_3d_opts.env_animate, "Animate");
-                            if self.render_3d_opts.env_animate {
-                                ui.add(egui::Slider::new(
-                                    &mut self.render_3d_opts.env_speed,
-                                    0.1..=5.0,
-                                ));
-                            }
-                        });
+                        // Visibility only — env animation lives in the
+                        // Animation section.
+                        control_label(ui, "Visible");
+                        ui.checkbox(&mut self.render_3d_opts.env_map_visible, "")
+                            .on_hover_text(
+                                "Show the env background while keeping its lighting contribution",
+                            );
                         ui.end_row();
                     });
             }

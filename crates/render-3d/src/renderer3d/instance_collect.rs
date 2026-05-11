@@ -127,11 +127,12 @@ impl Renderer3D {
         let camera_lod_collapse = if let Some((cam_eye, screen_h, fov, min_size)) = lod_ctx {
             if node.is_dir && !node.children.is_empty() && !too_small && depth > 0 {
                 let base_height = Self::compute_cube_height(node, depth, opts);
-                // Cube extruded BEHIND the treemap plane (treemap plane = front
-// wall facing camera). Extruding forward put camera *inside* tall
-// cubes for big files and choked the renderer / PT — keep the
-// original "wall facing camera" placement.
-let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
+                // Cube centred on the treemap plane (z=0): extends half forward
+// toward the camera, half behind. This keeps the camera *outside*
+// every cube as long as `base_height / 2` stays under the camera
+// distance — works for typical scenes. Outliers (huge files) can
+// still poke into the camera; pending a global height clamp.
+let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
                 let cube_size = w.max(h).max(base_height);
                 let dist = (pos - cam_eye).length().max(0.01);
                 let proj_size = (cube_size / dist) * screen_h / (2.0 * (fov / 2.0).tan());
@@ -263,11 +264,12 @@ let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
             let color_f = base_color;
 
             // Treemap XY -> 3D XY (wall facing camera), depth (height) along -Z
-            // Cube extruded BEHIND the treemap plane (treemap plane = front
-// wall facing camera). Extruding forward put camera *inside* tall
-// cubes for big files and choked the renderer / PT — keep the
-// original "wall facing camera" placement.
-let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
+            // Cube centred on the treemap plane (z=0): extends half forward
+// toward the camera, half behind. This keeps the camera *outside*
+// every cube as long as `base_height / 2` stays under the camera
+// distance — works for typical scenes. Outliers (huge files) can
+// still poke into the camera; pending a global height clamp.
+let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
             let transform = hash_transform(
                 &node.name,
                 pos,

@@ -105,8 +105,8 @@ impl Renderer3D {
         if !node.is_dir || node.children.is_empty() || too_small {
             let base_height = Self::compute_cube_height(node, depth, opts);
 
-            // Mirror instance_collect cube placement.
-            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
+            // Mirror instance_collect: cube centred on the treemap plane.
+            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
             let offset = hash_transform_offset(
                 &node.name,
                 pos,

@@ -117,8 +117,8 @@
     },
     {
       "path": "src\\app\\settings\\renderer.rs",
-      "accessCount": 46,
-      "lastAccessed": 1778485668864,
+      "accessCount": 52,
+      "lastAccessed": 1778486093396,
       "type": "file"
     },
     {
@@ -206,6 +206,12 @@
       "type": "file"
     },
     {
+      "path": "crates/pt-megakernel/src",
+      "accessCount": 6,
+      "lastAccessed": 1778485972577,
+      "type": "directory"
+    },
+    {
       "path": "crates\\pt-megakernel\\src",
       "accessCount": 5,
       "lastAccessed": 1778437208802,
@@ -234,12 +240,6 @@
       "accessCount": 5,
       "lastAccessed": 1778460903876,
       "type": "file"
-    },
-    {
-      "path": "crates/pt-megakernel/src",
-      "accessCount": 5,
-      "lastAccessed": 1778471868873,
-      "type": "directory"
     },
     {
       "path": "src",
