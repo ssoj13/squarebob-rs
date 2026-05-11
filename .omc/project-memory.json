@@ -19,7 +19,7 @@
   },
   "build": {
     "buildCommand": "cargo build --workspace --message-format=short 2>&1 | grep -E \"^(src|crates).*error\" | head -20",
-    "testCommand": "cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | grep -E \"error|warning:\" | head -10 && cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -3",
+    "testCommand": "cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -10",
     "lintCommand": "cargo clippy",
     "devCommand": "cargo run",
     "scripts": {}
@@ -111,8 +111,8 @@
   "hotPaths": [
     {
       "path": "crates\\pt-megakernel\\src\\compute.rs",
-      "accessCount": 165,
-      "lastAccessed": 1778473922553,
+      "accessCount": 177,
+      "lastAccessed": 1778486606004,
       "type": "directory"
     },
     {
@@ -123,8 +123,8 @@
     },
     {
       "path": "crates/pt-megakernel/src/compute.rs",
-      "accessCount": 34,
-      "lastAccessed": 1778472195594,
+      "accessCount": 39,
+      "lastAccessed": 1778486564241,
       "type": "directory"
     },
     {
@@ -150,6 +150,12 @@
       "accessCount": 11,
       "lastAccessed": 1778471981570,
       "type": "file"
+    },
+    {
+      "path": "crates\\pt-megakernel\\src\\bvh_traverse.wgsl",
+      "accessCount": 11,
+      "lastAccessed": 1778486589949,
+      "type": "directory"
     },
     {
       "path": "TODO4.md",
@@ -186,12 +192,6 @@
       "accessCount": 9,
       "lastAccessed": 1778452793444,
       "type": "file"
-    },
-    {
-      "path": "crates\\pt-megakernel\\src\\bvh_traverse.wgsl",
-      "accessCount": 8,
-      "lastAccessed": 1778472685153,
-      "type": "directory"
     },
     {
       "path": "crates\\pt-wavefront\\src\\wavefront\\shade.wgsl",

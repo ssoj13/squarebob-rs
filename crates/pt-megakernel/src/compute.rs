@@ -64,6 +64,79 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// Per-entry table for Vose's alias method. With this table light
+/// selection collapses from O(N) linear scan to two array loads + two
+/// random draws. WGSL mirrors this layout as
+/// `struct AliasEntry { prob: f32, alias: u32 }`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
+struct AliasEntry {
+    prob: f32,
+    alias: u32,
+}
+
+/// Vose's alias method: build an alias table that lets each entry stand
+/// in for an over-represented neighbour so a uniform draw + a single
+/// bias check selects an index proportional to its weight. O(N)
+/// construction, O(1) sampling. Returns at least one entry so the GPU
+/// buffer always has size ≥ 8 bytes.
+fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
+    let n = weights.len();
+    if n == 0 {
+        return vec![AliasEntry::default()];
+    }
+    let total: f64 = weights.iter().map(|&w| w.max(0.0) as f64).sum();
+    if !total.is_finite() || total <= 0.0 {
+        return vec![
+            AliasEntry {
+                prob: 1.0,
+                alias: 0,
+            };
+            n
+        ];
+    }
+    let avg = total / n as f64;
+    let mut p: Vec<f64> = weights
+        .iter()
+        .map(|&w| (w.max(0.0) as f64) / avg)
+        .collect();
+    let mut small: Vec<usize> = Vec::with_capacity(n);
+    let mut large: Vec<usize> = Vec::with_capacity(n);
+    for (i, &pi) in p.iter().enumerate() {
+        if pi < 1.0 {
+            small.push(i);
+        } else {
+            large.push(i);
+        }
+    }
+    let mut table = vec![AliasEntry::default(); n];
+    while let (Some(s), Some(&l)) = (small.pop(), large.last()) {
+        table[s] = AliasEntry {
+            prob: p[s] as f32,
+            alias: l as u32,
+        };
+        let new_pl = p[l] + p[s] - 1.0;
+        p[l] = new_pl;
+        if new_pl < 1.0 {
+            large.pop();
+            small.push(l);
+        }
+    }
+    while let Some(l) = large.pop() {
+        table[l] = AliasEntry {
+            prob: 1.0,
+            alias: l as u32,
+        };
+    }
+    while let Some(s) = small.pop() {
+        table[s] = AliasEntry {
+            prob: 1.0,
+            alias: s as u32,
+        };
+    }
+    table
+}
+
 /// Stage G.A: dummy storage buffers for megakernel ReSTIR bindings 15/16/17
 /// when ReSTIR is disabled. Sized to one element each so wgpu validation
 /// passes even though the WGSL shader never reads them. Two reservoir
@@ -348,6 +421,11 @@ pub struct PathTraceCompute {
     emissive_light_texture: wgpu::Texture,
     emissive_light_view: wgpu::TextureView,
     emissive_light_uniform_buffer: wgpu::Buffer,
+    /// Vose alias table: collapses O(N) light selection to O(1) on the
+    /// GPU. Sized to `max(1, light_count)`; a single-entry dummy lives
+    /// here when there are no emissive lights so the bind group stays
+    /// valid.
+    emissive_alias_buf: wgpu::Buffer,
     emissive_sampling_enabled: bool,
     emissive_samples_per_hit: u32,
     emissive_min_weight: f32,
@@ -719,6 +797,20 @@ impl PathTraceCompute {
                     },
                     count: None,
                 },
+                // @binding(18) Alias table for O(1) light sampling.
+                // Replaces the linear-scan over emissive lights with two
+                // memory loads + two random draws. Built CPU-side via
+                // Vose's algorithm in `build_alias_table`.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 18,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -961,6 +1053,11 @@ impl PathTraceCompute {
                 contents: bytemuck::bytes_of(&EmissiveLightUniform::default()),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
+        let emissive_alias_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("pt_emissive_alias_init"),
+            contents: bytemuck::bytes_of(&AliasEntry::default()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
         Self {
             pipeline,
@@ -1000,6 +1097,7 @@ impl PathTraceCompute {
             emissive_light_texture,
             emissive_light_view,
             emissive_light_uniform_buffer,
+            emissive_alias_buf,
             emissive_sampling_enabled: true,
             emissive_samples_per_hit: 1,
             emissive_min_weight: 0.001,
@@ -1361,6 +1459,7 @@ impl PathTraceCompute {
         data: &GpuInstanceSceneData,
     ) {
         let mut rows = Vec::<[f32; 4]>::new();
+        let mut weights = Vec::<f32>::new();
         let mut total_weight = 0.0f32;
         for (inst_idx, inst) in data.instances.iter().enumerate() {
             let Some(mat) = data.materials.get(inst.material_id as usize) else {
@@ -1400,6 +1499,7 @@ impl PathTraceCompute {
             rows.push([axis_z.x, axis_z.y, axis_z.z, 0.0]);
             rows.push([emission.x, emission.y, emission.z, weight]);
             rows.push([inst_idx as f32, 0.0, 0.0, 0.0]);
+            weights.push(weight);
             total_weight += weight;
         }
 
@@ -1420,6 +1520,17 @@ impl PathTraceCompute {
         );
         self.emissive_light_texture = texture;
         self.emissive_light_view = view;
+        // Build alias table from collected per-light weights. With zero
+        // lights we still upload a single dummy entry to keep the GPU
+        // binding valid (the WGSL guard on `light_count == 0` skips
+        // sampling before any read).
+        let alias_table = build_alias_table(&weights);
+        self.emissive_alias_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("pt_emissive_alias"),
+            contents: bytemuck::cast_slice(&alias_table),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         self.emissive_light_uniform_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("pt_emissive_light_uniform"),
@@ -3896,6 +4007,10 @@ impl PathTraceCompute {
                 wgpu::BindGroupEntry {
                     binding: 17,
                     resource: restir_motion.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 18,
+                    resource: self.emissive_alias_buf.as_entire_binding(),
                 },
             ],
         }));

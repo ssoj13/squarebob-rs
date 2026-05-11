@@ -166,6 +166,15 @@ struct MotionVector {
 @group(0) @binding(16) var<storage, read> prev_reservoirs: array<Reservoir>;
 @group(0) @binding(17) var<storage, read> motion_vectors: array<MotionVector>;
 
+// Vose alias table: each entry stores `(prob, alias)`. Picking a light
+// is `i = rand * N`; if `rand2 < table[i].prob` return `i`, else return
+// `table[i].alias`. Two memory loads regardless of N.
+struct AliasEntry {
+    prob: f32,
+    alias: u32,
+};
+@group(0) @binding(18) var<storage, read> emissive_alias: array<AliasEntry>;
+
 const MAX_STACK_DEPTH: u32 = 32u;
 const T_MAX: f32 = 1e30;
 const EPSILON: f32 = 1e-6;
@@ -729,20 +738,24 @@ fn load_emissive_light(idx: u32) -> EmissiveLight {
     return light;
 }
 
+fn pick_alias_index(rng: ptr<function, u32>, count: u32) -> u32 {
+    if count <= 1u {
+        return 0u;
+    }
+    let i = min(u32(rand(rng) * f32(count)), count - 1u);
+    let entry = emissive_alias[i];
+    if rand(rng) < entry.prob {
+        return i;
+    }
+    return entry.alias;
+}
+
 fn sample_emissive_light(rng: ptr<function, u32>) -> EmissiveLightSample {
     let light_count = emissive_light_params.params0.z;
-    let total_weight = max(emissive_light_params.params1.y, EPSILON);
-    var pick_weight = rand(rng) * total_weight;
-    var selected = load_emissive_light(0u);
-    for (var i = 0u; i < light_count; i++) {
-        let candidate = load_emissive_light(i);
-        let weight = max(candidate.emission_weight.w, 0.0);
-        if pick_weight <= weight || i == light_count - 1u {
-            selected = candidate;
-            break;
-        }
-        pick_weight -= weight;
-    }
+    // O(1) light selection via Vose alias table — replaces the previous
+    // O(N) linear scan that crippled scenes with thousands of emissives.
+    let idx = pick_alias_index(rng, light_count);
+    let selected = load_emissive_light(idx);
 
     let center = selected.center_area.xyz;
     let axis_x = selected.axis_x.xyz;
