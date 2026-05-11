@@ -1169,12 +1169,21 @@ impl PathTraceCompute {
         self.denoise_sigma_color = sigma_color.max(1e-3);
     }
 
-    /// Enable/disable ReSTIR (infrastructure ready, integration pending).
+    /// Enable/disable ReSTIR. Stage G.B: when `di` is true, the megakernel
+    /// reads the active flag from the next frame's emissive uniform write
+    /// (refreshed in `dispatch()`) and switches the bounce-0 NEE block to
+    /// the RIS resampling path.
     #[allow(dead_code)]
     pub fn set_restir_enabled(&mut self, device: &wgpu::Device, di: bool, gi: bool) {
         let prev_di = self.restir_config.di_enabled;
         let prev_gi = self.restir_config.gi_enabled;
         let mut needs_rebuild = prev_di != di || prev_gi != gi;
+        if prev_di != di {
+            // Toggling DI changes the integrator at bounce 0, so accumulated
+            // samples are no longer consistent. Caller is expected to reset
+            // separately, but defensively log here.
+            log::debug!("ReSTIR DI toggle {} -> {}", prev_di, di);
+        }
         // Stage G.A: when ReSTIRPipeline transitions None -> Some, the
         // megakernel @binding(15/16/17) need to be re-pointed from
         // fallback buffers onto real reservoir / motion buffers.
@@ -1432,17 +1441,22 @@ impl PathTraceCompute {
     }
 
     fn write_emissive_light_uniform(&self, queue: &wgpu::Queue) {
+        // params0.w + params1.z piggy-back ReSTIR DI control onto the
+        // existing emissive uniform so bvh_traverse.wgsl can branch on it
+        // at bounce 0 without a new uniform binding (Stage G.B).
+        let restir_di = u32::from(self.restir_config.di_enabled);
+        let restir_m = self.restir_config.initial_candidates.max(1) as f32;
         let uniform = EmissiveLightUniform {
             params0: [
                 self.emissive_sampling_enabled as u32,
                 self.emissive_samples_per_hit.max(1),
                 self.emissive_light_count,
-                0,
+                restir_di,
             ],
             params1: [
                 self.emissive_min_weight,
                 self.emissive_total_weight,
-                0.0,
+                restir_m,
                 0.0,
             ],
         };
@@ -4286,6 +4300,10 @@ impl PathTraceCompute {
             );
             return false;
         }
+
+        // Refresh emissive uniform every frame so ReSTIR-DI toggles
+        // (params0.w) propagate without a dedicated setter.
+        self.write_emissive_light_uniform(queue);
 
         let dispatch_start = std::time::Instant::now();
 

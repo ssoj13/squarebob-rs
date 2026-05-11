@@ -1087,60 +1087,178 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         // NEE: explicit emissive cube sampling. This is the main variance
         // reduction path for scenes with many small neon/emissive cubes.
+        //
+        // Stage G.B: at bounce 0, if `emissive_light_params.params0.w != 0`
+        // (host-driven ReSTIR-DI flag) we replace the multi-sample NEE
+        // estimator with RIS over M candidates. RIS draws M (= params1.z)
+        // candidate light samples from the same alias table, keeps a
+        // running weighted reservoir, then shadow-tests ONLY the selected
+        // sample. The unbiased RIS weight `W = w_sum / (m * target)` makes
+        // the surviving sample's contribution equivalent in expectation to
+        // the full NEE estimator, at much lower variance for high-M.
+        //
+        // The reservoir is also persisted to `cur_reservoirs[pixel_idx]`
+        // so Stage G.C (temporal) can resample it next frame.
         if transmission_weight < 0.5
             && emissive_light_params.params0.x != 0u
             && emissive_light_params.params0.z > 0u
         {
-            let light_spp = max(1u, emissive_light_params.params0.y);
-            for (var light_sample_idx = 0u; light_sample_idx < light_spp; light_sample_idx++) {
-                let light_sample = sample_emissive_light(&rng);
-                if light_sample.instance_idx == hit.inst_idx {
-                    continue;
+            let restir_di = bounce == 0u && emissive_light_params.params0.w != 0u;
+            if restir_di {
+                let m_cand = max(1u, u32(emissive_light_params.params1.z));
+                var r_sample: Sample;
+                r_sample.position = vec3<f32>(0.0);
+                r_sample.valid = 0u;
+                r_sample.wi = vec3<f32>(0.0);
+                r_sample.light_type = 1u; // emissive cube
+                r_sample.radiance = vec3<f32>(0.0);
+                r_sample.dist = 0.0;
+                r_sample.normal = vec3<f32>(0.0);
+                r_sample._pad = 0u;
+                var r_w_sum: f32 = 0.0;
+                var r_m: u32 = 0u;
+
+                for (var k = 0u; k < m_cand; k++) {
+                    let cand = sample_emissive_light(&rng);
+                    if cand.instance_idx == hit.inst_idx { continue; }
+                    let to_light = cand.position - p;
+                    let dist2 = dot(to_light, to_light);
+                    if dist2 <= EPSILON { continue; }
+                    let dist = sqrt(dist2);
+                    let light_dir = to_light / dist;
+                    let ndotl_c = dot(normal, light_dir);
+                    let light_cos_c = dot(cand.normal, -light_dir);
+                    if ndotl_c <= 0.0 || light_cos_c <= 0.0 { continue; }
+                    // Source pdf: alias-table picks proportional to power /
+                    // area, converted to solid angle.
+                    let pdf_solid =
+                        max(cand.pdf_area * dist2 / max(light_cos_c, EPSILON), EPSILON);
+                    // Target function: luminance(emission) * cos_theta — a
+                    // cheap proxy for the full radiance × BSDF × cos with no
+                    // visibility (visibility is checked once on the
+                    // selected sample below).
+                    let lum_emission = max(
+                        dot(cand.emission, vec3<f32>(0.2126, 0.7152, 0.0722)),
+                        0.0,
+                    );
+                    let p_target = lum_emission * ndotl_c;
+                    let w_i = p_target / pdf_solid;
+                    r_m += 1u;
+                    r_w_sum += w_i;
+                    if rand(&rng) * r_w_sum < w_i {
+                        r_sample.position = cand.position;
+                        r_sample.wi = light_dir;
+                        r_sample.radiance = cand.emission;
+                        r_sample.dist = dist;
+                        r_sample.normal = cand.normal;
+                        r_sample.valid = 1u;
+                    }
                 }
 
-                let to_light = light_sample.position - p;
-                let dist2 = dot(to_light, to_light);
-                if dist2 <= EPSILON {
-                    continue;
+                // Unbiased RIS weight for the selected sample.
+                var r_w: f32 = 0.0;
+                if r_sample.valid != 0u && r_w_sum > 0.0 && r_m > 0u {
+                    let lum_sel = max(
+                        dot(r_sample.radiance, vec3<f32>(0.2126, 0.7152, 0.0722)),
+                        0.0,
+                    );
+                    let target_sel = lum_sel * max(dot(normal, r_sample.wi), 0.0);
+                    if target_sel > 0.0 {
+                        r_w = r_w_sum / (f32(r_m) * target_sel);
+                    }
                 }
 
-                let dist = sqrt(dist2);
-                let light_dir = to_light / dist;
-                let ndotl = dot(normal, light_dir);
-                let light_cos = dot(light_sample.normal, -light_dir);
-                if ndotl <= 0.0 || light_cos <= 0.0 {
-                    continue;
+                // Shadow ray on the selected sample only — the win vs
+                // multi-sample NEE is exactly this: one shadow ray, best-M
+                // candidate.
+                if r_sample.valid != 0u && r_w > 0.0 {
+                    var shadow_ray: Ray;
+                    shadow_ray.origin = p + normal * 0.001;
+                    shadow_ray.dir = r_sample.wi;
+                    if !trace_shadow_ray(shadow_ray, max(r_sample.dist - 0.002, EPSILON)) {
+                        let ndotl = max(dot(normal, r_sample.wi), 0.0);
+                        let f_light = fresnel_schlick(ndotl, f0);
+                        let diffuse_contrib = diffuse_color * (1.0 - f_light) * ndotl / PI;
+                        let h_l = normalize(v_dir + r_sample.wi);
+                        let ndoth_l = max(dot(normal, h_l), EPSILON);
+                        let hdotv_l = max(dot(h_l, v_dir), EPSILON);
+                        let d_l = ggx_d(ndoth_l, alpha);
+                        let g_l = smith_g1(ndotv, alpha) * smith_g1(ndotl, alpha);
+                        let f_spec_l = fresnel_schlick(hdotv_l, f0);
+                        let spec_contrib =
+                            spec_weight * f_spec_l * d_l * g_l * ndotl
+                            / (4.0 * ndotv * ndotl + EPSILON);
+                        radiance += throughput
+                            * (diffuse_contrib + spec_contrib)
+                            * r_sample.radiance
+                            * r_w;
+                    } else {
+                        // Occluded — drop the sample so Stage G.C temporal
+                        // doesn't propagate a visibility lie.
+                        r_sample.valid = 0u;
+                    }
                 }
 
-                var shadow_ray: Ray;
-                shadow_ray.origin = p + normal * 0.001;
-                shadow_ray.dir = light_dir;
+                // Persist reservoir for temporal reuse next frame.
+                var out_res: Reservoir;
+                out_res.sample = r_sample;
+                out_res.w_sum = r_w_sum;
+                out_res.m = r_m;
+                out_res.w = r_w;
+                out_res._pad = 0u;
+                cur_reservoirs[pixel_idx] = out_res;
+            } else {
+                let light_spp = max(1u, emissive_light_params.params0.y);
+                for (var light_sample_idx = 0u; light_sample_idx < light_spp; light_sample_idx++) {
+                    let light_sample = sample_emissive_light(&rng);
+                    if light_sample.instance_idx == hit.inst_idx {
+                        continue;
+                    }
 
-                if !trace_shadow_ray(shadow_ray, max(dist - 0.002, EPSILON)) {
-                    let f_light = fresnel_schlick(ndotl, f0);
-                    let diffuse_contrib_light = diffuse_color * (1.0 - f_light) * ndotl / PI;
+                    let to_light = light_sample.position - p;
+                    let dist2 = dot(to_light, to_light);
+                    if dist2 <= EPSILON {
+                        continue;
+                    }
 
-                    let h_light = normalize(v_dir + light_dir);
-                    let ndoth_light = max(dot(normal, h_light), EPSILON);
-                    let hdotv_light = max(dot(h_light, v_dir), EPSILON);
-                    let d_light = ggx_d(ndoth_light, alpha);
-                    let g_light = smith_g1(ndotv, alpha) * smith_g1(ndotl, alpha);
-                    let f_spec_light = fresnel_schlick(hdotv_light, f0);
-                    let spec_contrib_light =
-                        spec_weight * f_spec_light * d_light * g_light * ndotl
-                        / (4.0 * ndotv * ndotl + EPSILON);
+                    let dist = sqrt(dist2);
+                    let light_dir = to_light / dist;
+                    let ndotl = dot(normal, light_dir);
+                    let light_cos = dot(light_sample.normal, -light_dir);
+                    if ndotl <= 0.0 || light_cos <= 0.0 {
+                        continue;
+                    }
 
-                    let pdf_light_solid =
-                        max(light_sample.pdf_area * dist2 / max(light_cos, EPSILON), EPSILON);
-                    let pdf_diffuse_light = pdf_cosine_hemisphere(ndotl);
-                    let pdf_spec_light = pdf_ggx(ndoth_light, hdotv_light, alpha);
-                    let pdf_bsdf_light = p_diff * pdf_diffuse_light + p_spec * pdf_spec_light;
-                    let mis_w = mis_power_heuristic(pdf_light_solid, pdf_bsdf_light);
+                    var shadow_ray: Ray;
+                    shadow_ray.origin = p + normal * 0.001;
+                    shadow_ray.dir = light_dir;
 
-                    radiance += throughput
-                        * (diffuse_contrib_light + spec_contrib_light)
-                        * light_sample.emission
-                        * (mis_w / (pdf_light_solid * f32(light_spp)));
+                    if !trace_shadow_ray(shadow_ray, max(dist - 0.002, EPSILON)) {
+                        let f_light = fresnel_schlick(ndotl, f0);
+                        let diffuse_contrib_light = diffuse_color * (1.0 - f_light) * ndotl / PI;
+
+                        let h_light = normalize(v_dir + light_dir);
+                        let ndoth_light = max(dot(normal, h_light), EPSILON);
+                        let hdotv_light = max(dot(h_light, v_dir), EPSILON);
+                        let d_light = ggx_d(ndoth_light, alpha);
+                        let g_light = smith_g1(ndotv, alpha) * smith_g1(ndotl, alpha);
+                        let f_spec_light = fresnel_schlick(hdotv_light, f0);
+                        let spec_contrib_light =
+                            spec_weight * f_spec_light * d_light * g_light * ndotl
+                            / (4.0 * ndotv * ndotl + EPSILON);
+
+                        let pdf_light_solid =
+                            max(light_sample.pdf_area * dist2 / max(light_cos, EPSILON), EPSILON);
+                        let pdf_diffuse_light = pdf_cosine_hemisphere(ndotl);
+                        let pdf_spec_light = pdf_ggx(ndoth_light, hdotv_light, alpha);
+                        let pdf_bsdf_light = p_diff * pdf_diffuse_light + p_spec * pdf_spec_light;
+                        let mis_w = mis_power_heuristic(pdf_light_solid, pdf_bsdf_light);
+
+                        radiance += throughput
+                            * (diffuse_contrib_light + spec_contrib_light)
+                            * light_sample.emission
+                            * (mis_w / (pdf_light_solid * f32(light_spp)));
+                    }
                 }
             }
         }
