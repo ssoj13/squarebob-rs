@@ -105,14 +105,17 @@ impl Renderer3D {
         if !node.is_dir || node.children.is_empty() || too_small {
             let base_height = Self::compute_cube_height(node, depth, opts);
 
-            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
+            // Mirror instance_collect: cube anchored at z=0 (back face),
+            // extruded toward the camera. Pick ray must use the same
+            // placement.
+            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), base_height / 2.0);
             let offset = hash_transform_offset(
                 &node.name,
                 pos,
                 world_center,
                 opts.hash_effect,
                 opts.active_hash_strength(),
-                opts.animation_time,
+                opts.active_hash_time(),
             );
             let center = pos + offset;
             let scale = Vec3::new(w.max(0.5), h.max(0.5), base_height.max(0.5));

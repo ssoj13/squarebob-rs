@@ -831,6 +831,23 @@ impl Render3DOptions {
             .get(self.hash_effect as usize)
             .strength
     }
+
+    /// Speed multiplier of the currently selected hash effect, applied
+    /// on top of `animation_speed`. Per-variant so switching effects
+    /// preserves each variant's pace.
+    pub fn active_hash_speed(&self) -> f32 {
+        self.effects
+            .hash_per_variant
+            .get(self.hash_effect as usize)
+            .speed
+    }
+
+    /// Effective animation clock for the current hash effect:
+    /// `animation_time * effect_speed`. Consumers that drive cube
+    /// transforms read this so each effect has an independent feel.
+    pub fn active_hash_time(&self) -> f32 {
+        self.animation_time * self.active_hash_speed()
+    }
 }
 
 impl Default for Render3DOptions {

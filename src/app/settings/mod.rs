@@ -8,7 +8,7 @@ mod renderer;
 mod scanner;
 mod view;
 
-pub(super) use ramp_widget::curve_rows;
+pub(super) use ramp_widget::{curve_rows, ramp_section, RampUiCtx};
 
 use super::state::SettingsTab;
 use super::App;

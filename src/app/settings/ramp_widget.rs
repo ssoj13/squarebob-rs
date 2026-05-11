@@ -14,7 +14,7 @@ use eframe::egui;
 use pt_mats::{MaterialDistribution, Palette};
 use render_shared::{CurveParams, RampParams};
 
-use super::{control_label, PT_VALUE_WIDTH};
+use super::{control_label, PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH};
 
 /// Emit Scale + Scale Exponent rows for a `CurveParams`. Returns `true`
 /// when either value changed.
@@ -169,5 +169,41 @@ pub fn ramp_rows(ui: &mut egui::Ui, params: &mut RampParams, ctx: RampUiCtx) -> 
         changed = true;
     }
 
+    changed
+}
+
+/// Collapsible ramp block. Wraps `ramp_rows` in an
+/// `egui::CollapsingHeader` so users can fold away rarely-touched
+/// distribution / curve knobs while still showing the active palette in
+/// the header. Returns `true` if any parameter changed.
+///
+/// Must be called outside a parent `Grid` — the header creates its own
+/// internal grid and would conflict with an enclosing layout.
+pub fn ramp_section(
+    ui: &mut egui::Ui,
+    title: &str,
+    params: &mut RampParams,
+    ctx: RampUiCtx,
+) -> bool {
+    let mut changed = false;
+    let palette_label = match params.palette {
+        None => "Auto".to_string(),
+        Some(p) => p.name().to_string(),
+    };
+    let header = format!("{}: {}", title, palette_label);
+    egui::CollapsingHeader::new(header)
+        .id_salt(format!("ramp_section_{}", ctx.id_salt))
+        .default_open(false)
+        .show(ui, |ui| {
+            egui::Grid::new(format!("ramp_grid_{}", ctx.id_salt))
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .min_col_width(SETTINGS_LABEL_WIDTH)
+                .show(ui, |ui| {
+                    if ramp_rows(ui, params, ctx) {
+                        changed = true;
+                    }
+                });
+        });
     changed
 }

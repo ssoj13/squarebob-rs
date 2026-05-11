@@ -157,16 +157,24 @@ where
     }
 }
 
-/// Per-effect strength + intensity. All hash effects today share this
-/// shape; future heterogeneous effects can add their own struct.
+/// Per-effect parameters. All hash effects today share this shape;
+/// future heterogeneous effects can add their own struct.
+///
+/// `speed` is a per-variant multiplier on the global animation speed so
+/// "Wave" can shimmer quickly while "Pulse" breathes slowly without
+/// the user re-tuning the global slider every time they switch.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct HashEffectParams {
     pub strength: f32,
+    pub speed: f32,
 }
 
 impl Default for HashEffectParams {
     fn default() -> Self {
-        Self { strength: 2.0 }
+        Self {
+            strength: 2.0,
+            speed: 1.0,
+        }
     }
 }
 

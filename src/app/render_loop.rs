@@ -218,16 +218,15 @@ impl App {
                 true
             };
 
-            // Accumulate object-side animation time (cube transforms,
-            // hash effects). Gated by `animate`.
+            // Master gate + global speed. Per-feature multipliers
+            // (per-effect speed, env_speed) layer on top — see the
+            // Animation settings section for the formula.
             if self.render_3d_opts.animate && !menu_open && allow_anim_tick {
-                self.render_3d_opts.animation_time += dt * self.render_3d_opts.animation_speed;
-            }
-            // Env-side timeline advances independently so the sky /
-            // daylight cycle keeps rolling even when object animation
-            // is paused. Gated by `env_animate` + its own speed.
-            if self.render_3d_opts.env_animate && !menu_open && allow_anim_tick {
-                self.render_3d_opts.env_time += dt * self.render_3d_opts.env_speed;
+                let master = dt * self.render_3d_opts.animation_speed;
+                self.render_3d_opts.animation_time += master;
+                if self.render_3d_opts.env_animate {
+                    self.render_3d_opts.env_time += master * self.render_3d_opts.env_speed;
+                }
             }
 
             // Update camera animation

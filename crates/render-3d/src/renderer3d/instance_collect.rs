@@ -127,7 +127,10 @@ impl Renderer3D {
         let camera_lod_collapse = if let Some((cam_eye, screen_h, fov, min_size)) = lod_ctx {
             if node.is_dir && !node.children.is_empty() && !too_small && depth > 0 {
                 let base_height = Self::compute_cube_height(node, depth, opts);
-                let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
+                // Cube anchored at the treemap plane (z=0) on its BACK face — height
+// grows forward toward the camera so each bar's top is visible
+// instead of all cubes sharing a flat "wall" at z=0.
+let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), base_height / 2.0);
                 let cube_size = w.max(h).max(base_height);
                 let dist = (pos - cam_eye).length().max(0.01);
                 let proj_size = (cube_size / dist) * screen_h / (2.0 * (fov / 2.0).tan());
@@ -259,14 +262,17 @@ impl Renderer3D {
             let color_f = base_color;
 
             // Treemap XY -> 3D XY (wall facing camera), depth (height) along -Z
-            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), -base_height / 2.0);
+            // Cube anchored at the treemap plane (z=0) on its BACK face — height
+// grows forward toward the camera so each bar's top is visible
+// instead of all cubes sharing a flat "wall" at z=0.
+let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), base_height / 2.0);
             let transform = hash_transform(
                 &node.name,
                 pos,
                 world_center,
                 opts.hash_effect,
                 opts.active_hash_strength(),
-                opts.animation_time,
+                opts.active_hash_time(),
             );
             let model = Mat4::from_translation(pos + transform.offset)
                 * Mat4::from_quat(transform.rotation)

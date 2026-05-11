@@ -17,7 +17,9 @@ use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 /// which was resetting saved counts to **1** on every launch before the tree existed.
 const MAX_PT_MAT_CUBE_COUNT: u32 = 5000;
 
-use super::{curve_rows, settings_grid, PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH};
+use super::{
+    curve_rows, ramp_section, settings_grid, RampUiCtx, PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH,
+};
 
 fn control_label(ui: &mut egui::Ui, label: &'static str) {
     ui.label(label)
@@ -165,6 +167,9 @@ impl App {
         // Effects settings
         self.ui_3d_effects(ui);
 
+        // Animation: master toggles + per-timeline speed for objects and env.
+        self.ui_3d_animation(ui);
+
         // Mode-specific panels
         let is_shaded = !self.render_3d_opts.show_wireframe && !self.render_3d_opts.path_tracing;
         if is_shaded {
@@ -221,96 +226,112 @@ impl App {
             });
     }
 
-    /// Geometry settings (height mode and scale)
+    /// Geometry settings (height / color / folder / LOD).
+    /// Each subsection is a collapsible group so the panel stays tidy
+    /// when several modes are configured.
     fn ui_3d_geometry(&mut self, ui: &mut egui::Ui) {
         tinted_section(ui, "Geometry", true, self.settings_tint_mix, |ui| {
-            egui::Grid::new("geometry_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
+            // --- Height -----------------------------------------------
+            let height_header = format!("Height: {}", self.render_3d_opts.height_mode.name());
+            egui::CollapsingHeader::new(height_header)
+                .id_salt("geom_height_section")
+                .default_open(true)
                 .show(ui, |ui| {
-                    // Height Mode
-                    control_label(ui, "Height");
-                    let old_mode = self.render_3d_opts.height_mode;
-                    ui.vertical(|ui| {
-                        // Row 1: size-based modes
-                        ui.horizontal(|ui| {
-                            multibutton_exclusive(
-                                ui,
-                                &mut self.render_3d_opts.height_mode,
-                                &[
-                                    (CubeHeightMode::Constant, "Const"),
-                                    (CubeHeightMode::FileSize, "Size"),
-                                    (CubeHeightMode::OwnSize, "Own"),
-                                    (CubeHeightMode::FileCount, "Files"),
-                                ],
-                                MultiButtonAxis::Horizontal,
-                            );
+                    settings_grid(ui, "geom_height_grid", |ui| {
+                        control_label(ui, "Mode");
+                        let old_mode = self.render_3d_opts.height_mode;
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                multibutton_exclusive(
+                                    ui,
+                                    &mut self.render_3d_opts.height_mode,
+                                    &[
+                                        (CubeHeightMode::Constant, "Const"),
+                                        (CubeHeightMode::FileSize, "Size"),
+                                        (CubeHeightMode::OwnSize, "Own"),
+                                        (CubeHeightMode::FileCount, "Files"),
+                                    ],
+                                    MultiButtonAxis::Horizontal,
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                multibutton_exclusive(
+                                    ui,
+                                    &mut self.render_3d_opts.height_mode,
+                                    &[
+                                        (CubeHeightMode::DirCount, "Dirs"),
+                                        (CubeHeightMode::Age, "Age"),
+                                        (CubeHeightMode::Depth, "Depth"),
+                                    ],
+                                    MultiButtonAxis::Horizontal,
+                                );
+                            });
                         });
-                        // Row 2: other modes
-                        ui.horizontal(|ui| {
-                            multibutton_exclusive(
-                                ui,
-                                &mut self.render_3d_opts.height_mode,
-                                &[
-                                    (CubeHeightMode::DirCount, "Dirs"),
-                                    (CubeHeightMode::Age, "Age"),
-                                    (CubeHeightMode::Depth, "Depth"),
-                                ],
-                                MultiButtonAxis::Horizontal,
-                            );
-                        });
+                        if self.render_3d_opts.height_mode != old_mode {
+                            self.needs_layout = true;
+                        }
+                        ui.end_row();
+
+                        // Per-mode Scale + Scale Exponent.
+                        let active = self.render_3d_opts.height_mode as usize;
+                        let curve = self.render_3d_opts.height_curves.get_mut(active);
+                        if curve_rows(ui, curve) {
+                            self.needs_layout = true;
+                        }
                     });
-                    if self.render_3d_opts.height_mode != old_mode {
-                        self.needs_layout = true;
-                    }
-                    ui.end_row();
+                });
 
-                    // Per-mode Scale + Scale Exponent. Each height mode
-                    // keeps its own values so switching from "Const" to
-                    // "Size" doesn't carry over an inappropriate scale.
-                    let active = self.render_3d_opts.height_mode as usize;
-                    let curve = self.render_3d_opts.height_curves.get_mut(active);
-                    if curve_rows(ui, curve) {
-                        self.needs_layout = true;
-                    }
+            // --- Color ------------------------------------------------
+            let color_header = format!("Color: {}", self.render_3d_opts.color_mode.name());
+            egui::CollapsingHeader::new(color_header)
+                .id_salt("geom_color_section")
+                .default_open(false)
+                .show(ui, |ui| {
+                    settings_grid(ui, "geom_color_grid", |ui| {
+                        control_label(ui, "Mode");
+                        let old = self.render_3d_opts.color_mode;
+                        if multibutton_exclusive(
+                            ui,
+                            &mut self.render_3d_opts.color_mode,
+                            &[
+                                (ColorMode::Treemap, "Treemap"),
+                                (ColorMode::FileType, "Type"),
+                                (ColorMode::FileAge, "Age"),
+                                (ColorMode::FileSize, "Size"),
+                                (ColorMode::Depth, "Depth"),
+                            ],
+                            MultiButtonAxis::Horizontal,
+                        ) {
+                            self.needs_layout = true;
+                        }
+                        if self.render_3d_opts.color_mode != old {
+                            self.needs_layout = true;
+                        }
+                        ui.end_row();
+                    });
 
-                    // Color Mode
-                    control_label(ui, "Color");
-                    let old = self.render_3d_opts.color_mode;
-                    if multibutton_exclusive(
-                        ui,
-                        &mut self.render_3d_opts.color_mode,
-                        &[
-                            (ColorMode::Treemap, "Treemap"),
-                            (ColorMode::FileType, "Type"),
-                            (ColorMode::FileAge, "Age"),
-                            (ColorMode::FileSize, "Size"),
-                            (ColorMode::Depth, "Depth"),
-                        ],
-                        MultiButtonAxis::Horizontal,
-                    ) {
-                        self.needs_layout = true;
-                    }
-                    if self.render_3d_opts.color_mode != old {
-                        self.needs_layout = true;
-                    }
-                    ui.end_row();
-
-                    // Per-color-mode ramp (palette / distribution / curve).
                     let cidx = self.render_3d_opts.color_mode as usize;
-                    let color_ramp = self.render_3d_opts.color_ramps.get_mut(cidx);
-                    if super::ramp_widget::ramp_rows(
+                    if ramp_section(
                         ui,
-                        color_ramp,
-                        super::ramp_widget::RampUiCtx::full("color"),
+                        "Ramp",
+                        self.render_3d_opts.color_ramps.get_mut(cidx),
+                        RampUiCtx::full("color"),
                     ) {
                         self.needs_layout = true;
                     }
+                });
 
-                    // Folder tint mode + amount
-                    control_label(ui, "Folder tint");
-                    ui.horizontal(|ui| {
+            // --- Folder tint -----------------------------------------
+            let folder_header = format!(
+                "Folder tint: {}",
+                self.render_3d_opts.folder_color_mode.name()
+            );
+            egui::CollapsingHeader::new(folder_header)
+                .id_salt("geom_folder_section")
+                .default_open(false)
+                .show(ui, |ui| {
+                    settings_grid(ui, "geom_folder_grid", |ui| {
+                        control_label(ui, "Strength");
                         if ui
                             .add(
                                 egui::Slider::new(&mut self.render_3d_opts.folder_tint, 0.0..=1.0)
@@ -320,6 +341,9 @@ impl App {
                         {
                             self.needs_layout = true;
                         }
+                        ui.end_row();
+
+                        control_label(ui, "Mode");
                         multibutton_exclusive(
                             ui,
                             &mut self.render_3d_opts.folder_color_mode,
@@ -330,29 +354,27 @@ impl App {
                             ],
                             MultiButtonAxis::Horizontal,
                         );
+                        ui.end_row();
                     });
-                    ui.end_row();
 
-                    // Per-folder-mode ramp.
                     let fidx = self.render_3d_opts.folder_color_mode as usize;
-                    let folder_ramp = self.render_3d_opts.folder_ramps.get_mut(fidx);
-                    if super::ramp_widget::ramp_rows(
+                    if ramp_section(
                         ui,
-                        folder_ramp,
-                        super::ramp_widget::RampUiCtx::full("folder"),
+                        "Ramp",
+                        self.render_3d_opts.folder_ramps.get_mut(fidx),
+                        RampUiCtx::full("folder"),
                     ) {
                         self.needs_layout = true;
                     }
                 });
 
-            // LOD (Level of Detail)
-            egui::Grid::new("geometry_lod_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
+            // --- LOD --------------------------------------------------
+            egui::CollapsingHeader::new("LOD")
+                .id_salt("geom_lod_section")
+                .default_open(false)
                 .show(ui, |ui| {
-                    control_label(ui, "LOD:");
-                    ui.horizontal(|ui| {
+                    settings_grid(ui, "geom_lod_grid", |ui| {
+                        control_label(ui, "Enable");
                         if ui
                             .checkbox(&mut self.render_3d_opts.lod_enabled, "")
                             .on_hover_text(
@@ -362,8 +384,10 @@ impl App {
                         {
                             self.needs_layout = true;
                         }
+                        ui.end_row();
+
                         if self.render_3d_opts.lod_enabled {
-                            control_label(ui, "Min px:");
+                            control_label(ui, "Min px");
                             if ui
                                 .add(egui::Slider::new(
                                     &mut self.render_3d_opts.lod_min_screen_size,
@@ -373,9 +397,9 @@ impl App {
                             {
                                 self.needs_layout = true;
                             }
+                            ui.end_row();
                         }
                     });
-                    ui.end_row();
                 });
         });
     }
@@ -407,18 +431,27 @@ impl App {
                     ui.end_row();
 
                     if self.render_3d_opts.hash_effect != HashTransformEffect::None {
-                        control_label(ui, "Strength:");
-                        // Per-effect strength so switching effects preserves
-                        // each variant's intensity.
+                        // Per-effect Strength + Speed: switching effects
+                        // preserves each variant's tuning so "Wave" can
+                        // shimmer fast and "Pulse" can breathe slow
+                        // without re-tuning when you swap.
                         let effect_idx = self.render_3d_opts.hash_effect as usize;
-                        let strength = &mut self
+                        let params = self
                             .render_3d_opts
                             .effects
                             .hash_per_variant
-                            .get_mut(effect_idx)
-                            .strength;
+                            .get_mut(effect_idx);
+                        control_label(ui, "Strength");
                         if ui
-                            .add(egui::Slider::new(strength, 0.0..=10.0))
+                            .add(egui::Slider::new(&mut params.strength, 0.0..=10.0))
+                            .changed()
+                        {
+                            self.needs_layout = true;
+                        }
+                        ui.end_row();
+                        control_label(ui, "Speed");
+                        if ui
+                            .add(egui::Slider::new(&mut params.speed, 0.0..=5.0))
                             .changed()
                         {
                             self.needs_layout = true;
@@ -426,28 +459,6 @@ impl App {
                         ui.end_row();
                     }
                 });
-
-            if self.render_3d_opts.hash_effect != HashTransformEffect::None {
-                egui::Grid::new("effects_anim_grid")
-                    .num_columns(2)
-                    .spacing([8.0, 4.0])
-                    .min_col_width(SETTINGS_LABEL_WIDTH)
-                    .show(ui, |ui| {
-                        control_label(ui, "Animate:");
-                        ui.horizontal(|ui| {
-                            if ui.checkbox(&mut self.render_3d_opts.animate, "").changed() {
-                                self.needs_layout = true;
-                            }
-                            if self.render_3d_opts.animate {
-                                ui.add(egui::Slider::new(
-                                    &mut self.render_3d_opts.animation_speed,
-                                    0.1..=3.0,
-                                ));
-                            }
-                        });
-                        ui.end_row();
-                    });
-            }
 
             // Slice plane controls
             ui.separator();
@@ -582,6 +593,52 @@ impl App {
                         ui.end_row();
                     });
             }
+        });
+    }
+
+    /// Animation: master gate + global speed. Per-feature multipliers
+    /// (per-effect speed, env speed) layer on top of these knobs:
+    ///
+    ///   object_time   += dt * animation_speed              (when animate)
+    ///   env_time      += dt * animation_speed * env_speed  (when animate && env_animate)
+    ///   effect_time    = object_time * effect.speed
+    ///
+    /// So `animation_speed` is the master pace and the per-feature
+    /// sliders are pure multipliers (1.0 = match master).
+    fn ui_3d_animation(&mut self, ui: &mut egui::Ui) {
+        tinted_section(ui, "Animation", false, self.settings_tint_mix, |ui| {
+            settings_grid(ui, "animation_master_grid", |ui| {
+                control_label(ui, "Animate");
+                if ui
+                    .checkbox(&mut self.render_3d_opts.animate, "")
+                    .changed()
+                {
+                    self.needs_layout = true;
+                }
+                ui.end_row();
+
+                control_label(ui, "Speed");
+                ui.add_enabled(
+                    self.render_3d_opts.animate,
+                    egui::Slider::new(&mut self.render_3d_opts.animation_speed, 0.0..=5.0)
+                        .show_value(true),
+                );
+                ui.end_row();
+
+                control_label(ui, "Env Speed");
+                ui.horizontal(|ui| {
+                    ui.add_enabled(
+                        self.render_3d_opts.animate,
+                        egui::Checkbox::new(&mut self.render_3d_opts.env_animate, ""),
+                    );
+                    ui.add_enabled(
+                        self.render_3d_opts.animate && self.render_3d_opts.env_animate,
+                        egui::Slider::new(&mut self.render_3d_opts.env_speed, 0.0..=5.0)
+                            .show_value(true),
+                    );
+                });
+                ui.end_row();
+            });
         });
     }
 
@@ -1925,20 +1982,18 @@ impl App {
                 });
 
             if self.render_3d_opts.env_map_enabled {
-                egui::Grid::new("env_anim_grid")
+                egui::Grid::new("env_visibility_grid")
                     .num_columns(2)
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        control_label(ui, "Env Anim:");
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.render_3d_opts.env_map_visible, "Visible")
-                                .on_hover_text("Show the environment background while keeping lighting enabled");
-                            ui.checkbox(&mut self.render_3d_opts.env_animate, "Animate");
-                            if self.render_3d_opts.env_animate {
-                                ui.add(egui::Slider::new(&mut self.render_3d_opts.env_speed, 0.1..=5.0));
-                            }
-                        });
+                        // Visibility only — env animation toggle + speed
+                        // live in the Animation section (master + env mult).
+                        control_label(ui, "Visible");
+                        ui.checkbox(&mut self.render_3d_opts.env_map_visible, "")
+                            .on_hover_text(
+                                "Show the env background while keeping its lighting contribution",
+                            );
                         ui.end_row();
                     });
             }
