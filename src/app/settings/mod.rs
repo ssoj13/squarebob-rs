@@ -45,12 +45,28 @@ pub(super) fn tinted_section<R>(
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> Option<R> {
     let tint = tint_for_name(ui, title, mix);
+    // Thin tinted band that spans the full settings panel width.
+    // - `inner_margin` collapsed to 1px top/bottom (was 6×6, too fat) and
+    //   3px horizontal so the chevron/title don't kiss the rounded edge.
+    // - The Frame is drawn at full available width below.
     let frame = egui::Frame::NONE
         .fill(tint)
         .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(6, 6));
+        .inner_margin(egui::Margin {
+            left: 3,
+            right: 3,
+            top: 1,
+            bottom: 1,
+        });
     frame
         .show(ui, |ui| {
+            // Tighten the click strip so the title row is one compact line
+            // and stretches to the panel edge.
+            let spacing = ui.spacing_mut();
+            spacing.interact_size.y = 14.0;
+            spacing.item_spacing.y = 1.0;
+            spacing.button_padding = egui::vec2(2.0, 1.0);
+            ui.set_min_width(ui.available_width());
             egui::CollapsingHeader::new(title)
                 .default_open(default_open)
                 .show(ui, add_contents)

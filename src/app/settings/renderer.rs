@@ -113,15 +113,31 @@ fn renderer_control_tooltip(label: &str) -> &'static str {
     }
 }
 
+/// Compact collapsing section — thinner header bar, full panel width.
+///
+/// Default egui `CollapsingHeader` sizes the click strip by
+/// `interact_size.y` (18 px) and adds `item_spacing.y` above and below,
+/// which on a tall settings panel looks fat. We scope the spacing tweak
+/// to the header line only (the body uses the parent ui style) and force
+/// the click strip to span the available width so the chevron + label
+/// align with the rest of the panel.
 fn compact_section(
     ui: &mut egui::Ui,
     title: &'static str,
     default_open: bool,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
-    egui::CollapsingHeader::new(title)
-        .default_open(default_open)
-        .show(ui, add_contents);
+    ui.scope(|ui| {
+        let spacing = ui.spacing_mut();
+        spacing.interact_size.y = 14.0;
+        spacing.item_spacing.y = 1.0;
+        spacing.button_padding = egui::vec2(2.0, 1.0);
+        // Make the click strip span the full panel width.
+        ui.set_min_width(ui.available_width());
+        egui::CollapsingHeader::new(title)
+            .default_open(default_open)
+            .show_unindented(ui, add_contents);
+    });
 }
 
 impl App {
