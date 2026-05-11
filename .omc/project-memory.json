@@ -18,8 +18,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "cargo build -p pt-megakernel -p render-3d --message-format=short 2>&1 | grep -E \"error|warning\" | head -20",
-    "testCommand": "cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -25",
+    "buildCommand": "cargo build --release --message-format=short 2>&1 | grep -E \"error|warning\" | head -10",
+    "testCommand": "cargo test -p pt-megakernel -p pt-wavefront --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -10",
     "lintCommand": "cargo clippy",
     "devCommand": "cargo run",
     "scripts": {}
@@ -111,8 +111,8 @@
   "hotPaths": [
     {
       "path": "crates\\pt-megakernel\\src\\compute.rs",
-      "accessCount": 97,
-      "lastAccessed": 1778451668307,
+      "accessCount": 132,
+      "lastAccessed": 1778461316793,
       "type": "directory"
     },
     {
@@ -123,14 +123,44 @@
     },
     {
       "path": "crates/pt-megakernel/src/compute.rs",
-      "accessCount": 12,
-      "lastAccessed": 1778451647087,
+      "accessCount": 22,
+      "lastAccessed": 1778459052196,
       "type": "directory"
     },
     {
+      "path": "crates\\pt-megakernel\\src\\restir\\initial.wgsl",
+      "accessCount": 11,
+      "lastAccessed": 1778460993183,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-megakernel\\src\\restir\\shade.wgsl",
+      "accessCount": 11,
+      "lastAccessed": 1778461078807,
+      "type": "file"
+    },
+    {
       "path": "TODO4.md",
+      "accessCount": 10,
+      "lastAccessed": 1778452987082,
+      "type": "file"
+    },
+    {
+      "path": "crates\\pt-megakernel\\src\\restir\\pipeline.rs",
+      "accessCount": 10,
+      "lastAccessed": 1778461120709,
+      "type": "file"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "accessCount": 9,
+      "lastAccessed": 1778452793444,
+      "type": "file"
+    },
+    {
+      "path": "HANDOFF.md",
       "accessCount": 7,
-      "lastAccessed": 1778451898558,
+      "lastAccessed": 1778452988250,
       "type": "file"
     },
     {
@@ -140,16 +170,16 @@
       "type": "directory"
     },
     {
-      "path": "CHANGELOG.md",
-      "accessCount": 6,
-      "lastAccessed": 1778451896245,
-      "type": "file"
-    },
-    {
       "path": "crates\\render-3d\\src\\pt\\megakernel\\render_no_readback.rs",
       "accessCount": 6,
       "lastAccessed": 1778452656574,
       "type": "directory"
+    },
+    {
+      "path": "crates\\pt-megakernel\\src\\restir\\temporal.wgsl",
+      "accessCount": 6,
+      "lastAccessed": 1778460887131,
+      "type": "file"
     },
     {
       "path": "crates\\pt-megakernel\\src",
@@ -164,21 +194,21 @@
       "type": "directory"
     },
     {
-      "path": "crates\\pt-megakernel\\src\\restir\\initial.wgsl",
+      "path": "crates\\pt-megakernel\\src\\pathguide\\pipeline.rs",
       "accessCount": 5,
-      "lastAccessed": 1778446999194,
+      "lastAccessed": 1778453096302,
       "type": "file"
     },
     {
-      "path": "crates\\pt-megakernel\\src\\restir\\shade.wgsl",
+      "path": "crates\\pt-megakernel\\src\\wavefront\\gbuffer.wgsl",
       "accessCount": 5,
-      "lastAccessed": 1778447101147,
+      "lastAccessed": 1778458959544,
       "type": "file"
     },
     {
-      "path": "HANDOFF.md",
+      "path": "crates\\pt-megakernel\\src\\restir\\spatial.wgsl",
       "accessCount": 5,
-      "lastAccessed": 1778451893338,
+      "lastAccessed": 1778460903876,
       "type": "file"
     },
     {
@@ -194,39 +224,27 @@
       "type": "file"
     },
     {
-      "path": "crates\\pt-megakernel\\src\\pathguide\\pipeline.rs",
-      "accessCount": 4,
-      "lastAccessed": 1778446692629,
-      "type": "file"
-    },
-    {
-      "path": "crates\\pt-megakernel\\src\\restir\\pipeline.rs",
-      "accessCount": 4,
-      "lastAccessed": 1778446959977,
-      "type": "file"
-    },
-    {
       "path": "crates",
-      "accessCount": 3,
-      "lastAccessed": 1778445913971,
+      "accessCount": 4,
+      "lastAccessed": 1778454235598,
       "type": "directory"
     },
     {
-      "path": "crates\\pt-megakernel\\src\\wavefront\\gbuffer.wgsl",
-      "accessCount": 3,
-      "lastAccessed": 1778445942400,
+      "path": "crates\\render-3d\\src\\pt\\megakernel\\render.rs",
+      "accessCount": 4,
+      "lastAccessed": 1778454281399,
       "type": "file"
+    },
+    {
+      "path": "crates/pt-megakernel/src",
+      "accessCount": 4,
+      "lastAccessed": 1778459025609,
+      "type": "directory"
     },
     {
       "path": "crates/pt-wavefront/src",
       "accessCount": 3,
       "lastAccessed": 1778446621225,
-      "type": "directory"
-    },
-    {
-      "path": "crates/pt-megakernel/src",
-      "accessCount": 3,
-      "lastAccessed": 1778446652814,
       "type": "directory"
     },
     {
@@ -236,16 +254,28 @@
       "type": "file"
     },
     {
-      "path": "crates\\pt-megakernel\\src\\restir\\temporal.wgsl",
+      "path": "src\\app\\settings\\renderer.rs",
       "accessCount": 3,
-      "lastAccessed": 1778447028294,
+      "lastAccessed": 1778453121425,
       "type": "file"
     },
     {
-      "path": "crates\\pt-megakernel\\src\\restir\\spatial.wgsl",
+      "path": "crates\\render-3d\\src\\lib.rs",
       "accessCount": 3,
-      "lastAccessed": 1778447054606,
+      "lastAccessed": 1778454317928,
       "type": "file"
+    },
+    {
+      "path": "src",
+      "accessCount": 3,
+      "lastAccessed": 1778454605080,
+      "type": "directory"
+    },
+    {
+      "path": "crates\\pt-wavefront\\src\\wavefront\\raygen.wgsl",
+      "accessCount": 3,
+      "lastAccessed": 1778456644076,
+      "type": "directory"
     },
     {
       "path": "src\\scanner_ntfs.rs",
@@ -266,12 +296,6 @@
       "type": "file"
     },
     {
-      "path": "crates\\pt-wavefront\\src\\wavefront\\raygen.wgsl",
-      "accessCount": 2,
-      "lastAccessed": 1778431520053,
-      "type": "directory"
-    },
-    {
       "path": "crates\\pt-wavefront\\src\\wavefront\\intersect.wgsl",
       "accessCount": 2,
       "lastAccessed": 1778431813612,
@@ -290,12 +314,6 @@
       "type": "directory"
     },
     {
-      "path": "src\\app\\settings\\renderer.rs",
-      "accessCount": 2,
-      "lastAccessed": 1778437067662,
-      "type": "file"
-    },
-    {
       "path": "crates\\pt-megakernel\\src\\pathguide\\mod.rs",
       "accessCount": 2,
       "lastAccessed": 1778446740624,
@@ -306,18 +324,6 @@
       "accessCount": 2,
       "lastAccessed": 1778446969246,
       "type": "file"
-    },
-    {
-      "path": "crates\\render-3d\\src\\pt\\megakernel\\render.rs",
-      "accessCount": 2,
-      "lastAccessed": 1778452652933,
-      "type": "file"
-    },
-    {
-      "path": "src",
-      "accessCount": 1,
-      "lastAccessed": 1778430842679,
-      "type": "directory"
     },
     {
       "path": "src\\scanner.rs",
