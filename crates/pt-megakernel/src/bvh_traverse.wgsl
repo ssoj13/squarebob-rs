@@ -176,7 +176,14 @@ struct AliasEntry {
 };
 @group(0) @binding(18) var<storage, read> emissive_alias: array<AliasEntry>;
 
-const MAX_STACK_DEPTH: u32 = 32u;
+// LBVH morton-sort can produce branches deeper than log2(N) when the AABB
+// distribution has many near-duplicates (which dirstat hits with many
+// small files in a single dir → near-identical cube centres). 32 was too
+// tight for 30K-instance scenes — a few rays per frame ran out of stack,
+// silently returned no hit, and showed the env map through entire blocks
+// of cubes that jittered frame-to-frame. 64 buys margin without hurting
+// register pressure noticeably (256 B/thread).
+const MAX_STACK_DEPTH: u32 = 64u;
 const T_MAX: f32 = 1e30;
 const EPSILON: f32 = 1e-6;
 const PI: f32 = 3.14159265359;
