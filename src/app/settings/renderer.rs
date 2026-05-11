@@ -167,9 +167,6 @@ impl App {
         // Effects settings
         self.ui_3d_effects(ui);
 
-        // Animation: master toggles + per-timeline speed for objects and env.
-        self.ui_3d_animation(ui);
-
         // Mode-specific panels
         let is_shaded = !self.render_3d_opts.show_wireframe && !self.render_3d_opts.path_tracing;
         if is_shaded {
@@ -458,6 +455,28 @@ impl App {
                         }
                         ui.end_row();
                     }
+
+                    // Master animate toggle + global pace. Lives in the
+                    // Effects section so Space-bar toggle is right next
+                    // to the effect knobs.
+                    control_label(ui, "Animate");
+                    ui.horizontal(|ui| {
+                        if ui
+                            .checkbox(&mut self.render_3d_opts.animate, "")
+                            .changed()
+                        {
+                            self.needs_layout = true;
+                        }
+                        ui.add_enabled(
+                            self.render_3d_opts.animate,
+                            egui::Slider::new(
+                                &mut self.render_3d_opts.animation_speed,
+                                0.0..=5.0,
+                            )
+                            .show_value(true),
+                        );
+                    });
+                    ui.end_row();
                 });
 
             // Slice plane controls
@@ -593,52 +612,6 @@ impl App {
                         ui.end_row();
                     });
             }
-        });
-    }
-
-    /// Animation: master gate + global speed. Per-feature multipliers
-    /// (per-effect speed, env speed) layer on top of these knobs:
-    ///
-    ///   object_time   += dt * animation_speed              (when animate)
-    ///   env_time      += dt * animation_speed * env_speed  (when animate && env_animate)
-    ///   effect_time    = object_time * effect.speed
-    ///
-    /// So `animation_speed` is the master pace and the per-feature
-    /// sliders are pure multipliers (1.0 = match master).
-    fn ui_3d_animation(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Animation", false, self.settings_tint_mix, |ui| {
-            settings_grid(ui, "animation_master_grid", |ui| {
-                control_label(ui, "Animate");
-                if ui
-                    .checkbox(&mut self.render_3d_opts.animate, "")
-                    .changed()
-                {
-                    self.needs_layout = true;
-                }
-                ui.end_row();
-
-                control_label(ui, "Speed");
-                ui.add_enabled(
-                    self.render_3d_opts.animate,
-                    egui::Slider::new(&mut self.render_3d_opts.animation_speed, 0.0..=5.0)
-                        .show_value(true),
-                );
-                ui.end_row();
-
-                control_label(ui, "Env Speed");
-                ui.horizontal(|ui| {
-                    ui.add_enabled(
-                        self.render_3d_opts.animate,
-                        egui::Checkbox::new(&mut self.render_3d_opts.env_animate, ""),
-                    );
-                    ui.add_enabled(
-                        self.render_3d_opts.animate && self.render_3d_opts.env_animate,
-                        egui::Slider::new(&mut self.render_3d_opts.env_speed, 0.0..=5.0)
-                            .show_value(true),
-                    );
-                });
-                ui.end_row();
-            });
         });
     }
 
@@ -1982,18 +1955,25 @@ impl App {
                 });
 
             if self.render_3d_opts.env_map_enabled {
-                egui::Grid::new("env_visibility_grid")
+                egui::Grid::new("env_anim_grid")
                     .num_columns(2)
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        // Visibility only — env animation toggle + speed
-                        // live in the Animation section (master + env mult).
-                        control_label(ui, "Visible");
-                        ui.checkbox(&mut self.render_3d_opts.env_map_visible, "")
-                            .on_hover_text(
-                                "Show the env background while keeping its lighting contribution",
-                            );
+                        control_label(ui, "Env Anim:");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.render_3d_opts.env_map_visible, "Visible")
+                                .on_hover_text(
+                                    "Show the env background while keeping lighting enabled",
+                                );
+                            ui.checkbox(&mut self.render_3d_opts.env_animate, "Animate");
+                            if self.render_3d_opts.env_animate {
+                                ui.add(egui::Slider::new(
+                                    &mut self.render_3d_opts.env_speed,
+                                    0.1..=5.0,
+                                ));
+                            }
+                        });
                         ui.end_row();
                     });
             }

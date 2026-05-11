@@ -218,15 +218,16 @@ impl App {
                 true
             };
 
-            // Master gate + global speed. Per-feature multipliers
-            // (per-effect speed, env_speed) layer on top — see the
-            // Animation settings section for the formula.
+            // Object animation (cube transforms, hash effects). Gated
+            // by `animate` — Space toggles this off and freezes cubes.
             if self.render_3d_opts.animate && !menu_open && allow_anim_tick {
-                let master = dt * self.render_3d_opts.animation_speed;
-                self.render_3d_opts.animation_time += master;
-                if self.render_3d_opts.env_animate {
-                    self.render_3d_opts.env_time += master * self.render_3d_opts.env_speed;
-                }
+                self.render_3d_opts.animation_time += dt * self.render_3d_opts.animation_speed;
+            }
+            // Env timeline is independent. The sky / daylight cycle
+            // keeps rolling unless `env_animate` is explicitly off, so
+            // pausing object animation doesn't freeze the world.
+            if self.render_3d_opts.env_animate && !menu_open && allow_anim_tick {
+                self.render_3d_opts.env_time += dt * self.render_3d_opts.env_speed;
             }
 
             // Update camera animation
