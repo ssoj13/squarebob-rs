@@ -273,7 +273,7 @@ impl Renderer3D {
                 pos,
                 world_center,
                 opts.hash_effect,
-                opts.hash_effect_strength,
+                opts.active_hash_strength(),
                 opts.animation_time,
             );
             let model = Mat4::from_translation(pos + transform.offset)

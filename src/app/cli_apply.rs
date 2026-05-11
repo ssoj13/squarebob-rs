@@ -68,13 +68,14 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
         opts.height_mode = mode;
     }
     if let Some(sq) = cli.height_squared {
-        opts.height_power_enabled = sq;
-        if sq {
-            opts.height_power = 2.0;
-        }
+        // CLI legacy flag → sets exponent = 2 on the active mode's curve.
+        let idx = opts.height_mode as usize;
+        let curve = opts.height_curves.get_mut(idx);
+        curve.exponent = if sq { 2.0 } else { 1.0 };
     }
     if let Some(scale) = cli.height_scale {
-        opts.height_scale = scale;
+        let idx = opts.height_mode as usize;
+        opts.height_curves.get_mut(idx).scale = scale;
     }
     if let Some(mode) = cli.color_mode {
         opts.color_mode = mode;
@@ -83,7 +84,8 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
         opts.hash_effect = effect;
     }
     if let Some(strength) = cli.hash_effect_strength {
-        opts.hash_effect_strength = strength;
+        let idx = opts.hash_effect as usize;
+        opts.effects.hash_per_variant.get_mut(idx).strength = strength;
     }
     if let Some(time) = cli.animation_time {
         opts.animation_time = time;
@@ -377,12 +379,12 @@ mod tests {
         assert!(opts.show_wireframe);
         assert!(opts.animate);
         assert!(matches!(opts.height_mode, CubeHeightMode::Depth));
-        assert!(opts.height_power_enabled);
-        assert_eq!(opts.height_power, 2.0);
-        assert_eq!(opts.height_scale, 7.5);
+        let depth_curve = opts.height_curves.get(CubeHeightMode::Depth as usize);
+        assert_eq!(depth_curve.exponent, 2.0);
+        assert_eq!(depth_curve.scale, 7.5);
         assert!(matches!(opts.color_mode, ColorMode::FileType));
         assert!(matches!(opts.hash_effect, HashTransformEffect::Wave));
-        assert_eq!(opts.hash_effect_strength, 0.42);
+        assert_eq!(opts.active_hash_strength(), 0.42);
         assert_eq!(opts.animation_time, 11.0);
         assert_eq!(opts.animation_speed, 2.5);
         assert!(matches!(opts.hover_mode, HoverMode::Outline));
@@ -449,7 +451,10 @@ mod tests {
         // Spot-check a few fields from each major group.
         assert_eq!(opts.path_tracing, baseline.path_tracing);
         assert_eq!(opts.pt_max_bounces, baseline.pt_max_bounces);
-        assert_eq!(opts.height_scale, baseline.height_scale);
+        assert_eq!(
+            opts.height_curves.get(opts.height_mode as usize).scale,
+            baseline.height_curves.get(baseline.height_mode as usize).scale
+        );
         assert_eq!(opts.background_color, baseline.background_color);
         assert_eq!(opts.env_map_path, baseline.env_map_path);
         assert_eq!(opts.slice_axis, baseline.slice_axis);

@@ -4,6 +4,12 @@ use glam::{Mat4, Vec3};
 use pt_mats::{MaterialClass, MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 use serde::{Deserialize, Serialize};
 
+pub mod viz;
+pub use viz::{
+    AnimationState, CurveParams, EffectsState, HashEffectParams, Mapping, RampParams,
+    N_COLOR_MODES, N_FOLDER_COLOR_MODES, N_HASH_EFFECTS, N_HEIGHT_MODES,
+};
+
 /// Available rendering backends
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum RenderBackend {
@@ -491,21 +497,39 @@ fn default_animation_speed() -> f32 {
 #[serde(default)]
 pub struct Render3DOptions {
     pub height_mode: CubeHeightMode,
+    /// Per-mode scale + exponent. Switching modes preserves each mode's
+    /// own values so "Size" length doesn't bleed into "Const".
     #[serde(default)]
-    pub height_power_enabled: bool,
-    #[serde(default = "default_height_power")]
-    pub height_power: f32,
-    pub height_scale: f32,
+    pub height_curves: Mapping<CurveParams, N_HEIGHT_MODES>,
     pub color_mode: ColorMode,
+    /// Per-`ColorMode` palette + distribution + curve. Drives per-cube
+    /// base color (tint), blended with material via `materialize_mix`.
+    #[serde(default)]
+    pub color_ramps: Mapping<RampParams, N_COLOR_MODES>,
     #[serde(default)]
     pub folder_color_mode: FolderColorMode,
     #[serde(default = "default_folder_tint")]
     pub folder_tint: f32,
+    /// Per-`FolderColorMode` palette + distribution + curve. Drives
+    /// folder-level tint that blends with file color.
+    #[serde(default)]
+    pub folder_ramps: Mapping<RampParams, N_FOLDER_COLOR_MODES>,
     pub hash_effect: HashTransformEffect,
-    pub hash_effect_strength: f32,
+    /// Per-`HashTransformEffect` strength. Switching effects preserves
+    /// each effect's own intensity.
+    #[serde(default)]
+    pub effects: EffectsState,
+    /// Object-side animation time (cube transforms, hash effects).
+    /// Advances by `animation_speed * dt` when `animate` is true.
     pub animation_time: f32,
     #[serde(default = "default_animation_speed")]
     pub animation_speed: f32,
+    /// Env-side animation time (sky time-of-day, daylight cycle).
+    /// Advances by `env_speed * dt` when `env_animate` is true.
+    /// Independent from `animation_time` so the user can pause object
+    /// animation without stopping the sky, or vice versa.
+    #[serde(default)]
+    pub env_time: f32,
     pub animate: bool,
     pub show_wireframe: bool,
     pub hover_mode: HoverMode,
@@ -757,9 +781,6 @@ fn default_inertia_friction() -> f32 {
 fn default_inertia_cutoff() -> f32 {
     0.001
 }
-fn default_height_power() -> f32 {
-    2.0
-}
 fn default_restir_m_max() -> u32 {
     30
 }
@@ -800,20 +821,33 @@ fn default_emissive_min_weight() -> f32 {
     0.001
 }
 
+impl Render3DOptions {
+    /// Strength of the currently selected hash effect. Reads from the
+    /// per-variant `effects` map so switching effects preserves each
+    /// variant's strength.
+    pub fn active_hash_strength(&self) -> f32 {
+        self.effects
+            .hash_per_variant
+            .get(self.hash_effect as usize)
+            .strength
+    }
+}
+
 impl Default for Render3DOptions {
     fn default() -> Self {
         Self {
             height_mode: CubeHeightMode::FileSize,
-            height_power_enabled: false,
-            height_power: 2.0,
-            height_scale: 1.0,
+            height_curves: Mapping::default(),
             color_mode: ColorMode::FileType,
+            color_ramps: Mapping::default(),
             folder_color_mode: FolderColorMode::Depth,
             folder_tint: default_folder_tint(),
+            folder_ramps: Mapping::default(),
             hash_effect: HashTransformEffect::Pulse,
-            hash_effect_strength: 2.0,
+            effects: EffectsState::default(),
             animation_time: 0.0,
             animation_speed: 3.0,
+            env_time: 0.0,
             animate: true,
             show_wireframe: false,
             hover_mode: HoverMode::Both,

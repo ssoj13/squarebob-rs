@@ -134,9 +134,14 @@ impl App {
             app.render_3d_opts.height_mode,
             renderer::CubeHeightMode::DepthSquared
         ) {
+            // DepthSquared mode is now expressed as Depth + exponent=2 on
+            // the per-mode curve; migrate any in-memory CLI state.
             app.render_3d_opts.height_mode = renderer::CubeHeightMode::Depth;
-            app.render_3d_opts.height_power_enabled = true;
-            app.render_3d_opts.height_power = 2.0;
+            let idx = renderer::CubeHeightMode::Depth as usize;
+            app.render_3d_opts
+                .height_curves
+                .get_mut(idx)
+                .exponent = 2.0;
         }
         if app.render_3d_opts.slice_use_vector
             && app.render_3d_opts.slice_position_vector == 0.0

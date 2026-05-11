@@ -413,8 +413,11 @@ pub(crate) fn render_path_traced(
     } else {
         opts.animation_time
     };
+    // Env time is accumulated independently in render_loop so the sky
+    // keeps rolling even when object animation is paused.
+    let _ = anim_time_used;
     let env_time = if opts.env_animate {
-        anim_time_used * opts.env_speed
+        opts.env_time
     } else {
         0.0
     };

@@ -383,15 +383,18 @@ impl Renderer3D {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         // Include all options that affect cube generation
         (opts.height_mode as u8).hash(&mut hasher);
-        opts.height_power_enabled.hash(&mut hasher);
-        opts.height_power.to_bits().hash(&mut hasher);
-        opts.height_scale.to_bits().hash(&mut hasher);
+        // Hash only the active mode's curve — other modes' params don't
+        // influence the current frame.
+        let hc = opts.height_curves.get(opts.height_mode as usize);
+        hc.scale.to_bits().hash(&mut hasher);
+        hc.exponent.to_bits().hash(&mut hasher);
         (opts.color_mode as u8).hash(&mut hasher);
         (opts.folder_color_mode as u8).hash(&mut hasher);
         opts.folder_tint.to_bits().hash(&mut hasher);
         (opts.hash_effect as u8).hash(&mut hasher);
-        opts.hash_effect_strength.to_bits().hash(&mut hasher);
-        // Only include animation_time if animated
+        let he = opts.effects.hash_per_variant.get(opts.hash_effect as usize);
+        he.strength.to_bits().hash(&mut hasher);
+        // Only include object time if animated
         if opts.animate {
             opts.animation_time.to_bits().hash(&mut hasher);
         }
@@ -545,27 +548,22 @@ impl Renderer3D {
             CubeHeightMode::Depth | CubeHeightMode::DepthSquared => depth as f32 + 1.0,
             CubeHeightMode::Constant => 1.0,
         };
-        let mut height_power = 1.0;
-        if opts.height_power_enabled {
-            height_power = opts.height_power.clamp(0.1, 4.0);
-        } else if matches!(opts.height_mode, CubeHeightMode::DepthSquared) {
-            height_power = 2.0;
-        }
-        if height_power != 1.0 {
-            height_value = height_value.max(0.0).powf(height_power);
-        }
-
-        match opts.height_mode {
+        // Per-mode curve: `output = (base ^ exponent) * scale * mode_const`.
+        // mode_const compensates for the natural magnitude of each input
+        // (file sizes vs depth integers) so a `scale = 1.0` default looks
+        // reasonable on every mode.
+        let curve = opts.height_curves.get(opts.height_mode as usize);
+        height_value = curve.apply(height_value);
+        let mode_const = match opts.height_mode {
             CubeHeightMode::FileSize
             | CubeHeightMode::OwnSize
             | CubeHeightMode::FileCount
             | CubeHeightMode::DirCount
-            | CubeHeightMode::Age => height_value * opts.height_scale * 2.0,
-            CubeHeightMode::Depth | CubeHeightMode::DepthSquared => {
-                height_value * opts.height_scale * 5.0
-            }
-            CubeHeightMode::Constant => height_value * opts.height_scale * 10.0,
-        }
+            | CubeHeightMode::Age => 2.0,
+            CubeHeightMode::Depth | CubeHeightMode::DepthSquared => 5.0,
+            CubeHeightMode::Constant => 10.0,
+        };
+        height_value * mode_const
     }
 
     // ========================================================================

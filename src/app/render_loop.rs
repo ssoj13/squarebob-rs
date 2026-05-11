@@ -207,9 +207,16 @@ impl App {
                 true
             };
 
-            // Accumulate animation time only when animate enabled and menu closed
+            // Accumulate object-side animation time (cube transforms,
+            // hash effects). Gated by `animate`.
             if self.render_3d_opts.animate && !menu_open && allow_anim_tick {
                 self.render_3d_opts.animation_time += dt * self.render_3d_opts.animation_speed;
+            }
+            // Env-side timeline advances independently so the sky /
+            // daylight cycle keeps rolling even when object animation
+            // is paused. Gated by `env_animate` + its own speed.
+            if self.render_3d_opts.env_animate && !menu_open && allow_anim_tick {
+                self.render_3d_opts.env_time += dt * self.render_3d_opts.env_speed;
             }
 
             // Update camera animation

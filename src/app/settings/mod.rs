@@ -3,9 +3,12 @@
 mod appearance;
 mod denoiser;
 mod exclusions;
+mod ramp_widget;
 mod renderer;
 mod scanner;
 mod view;
+
+pub(super) use ramp_widget::curve_rows;
 
 use super::state::SettingsTab;
 use super::App;
@@ -13,6 +16,26 @@ use crate::events::SettingsChangedEvent;
 use eframe::egui;
 
 pub(super) const LABEL_WIDTH: f32 = 80.0;
+pub(super) const SETTINGS_LABEL_WIDTH: f32 = 112.0;
+pub(super) const PT_VALUE_WIDTH: f32 = 58.0;
+
+/// Label cell used inside `settings_grid`. Renders the label and wires
+/// its hover tooltip to the registry.
+pub(super) fn control_label(ui: &mut egui::Ui, label: &'static str) {
+    ui.label(label);
+}
+
+pub(super) fn settings_grid(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .min_col_width(SETTINGS_LABEL_WIDTH)
+        .show(ui, add_contents);
+}
 
 pub(super) fn tinted_section<R>(
     ui: &mut egui::Ui,

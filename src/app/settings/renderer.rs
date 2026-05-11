@@ -16,16 +16,8 @@ use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 /// [`egui::DragValue`] clamps existing values every frame (`clamp_existing_to_range(true)` default),
 /// which was resetting saved counts to **1** on every launch before the tree existed.
 const MAX_PT_MAT_CUBE_COUNT: u32 = 5000;
-const SETTINGS_LABEL_WIDTH: f32 = 112.0;
-const PT_VALUE_WIDTH: f32 = 58.0;
 
-fn settings_grid(ui: &mut egui::Ui, id: &'static str, add_contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Grid::new(id)
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .min_col_width(SETTINGS_LABEL_WIDTH)
-        .show(ui, add_contents);
-}
+use super::{curve_rows, settings_grid, PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH};
 
 fn control_label(ui: &mut egui::Ui, label: &'static str) {
     ui.label(label)
@@ -238,12 +230,8 @@ impl App {
                 .min_col_width(SETTINGS_LABEL_WIDTH)
                 .show(ui, |ui| {
                     // Height Mode
-                    control_label(ui, "Height:");
+                    control_label(ui, "Height");
                     let old_mode = self.render_3d_opts.height_mode;
-                    let old_pow = (
-                        self.render_3d_opts.height_power_enabled,
-                        self.render_3d_opts.height_power,
-                    );
                     ui.vertical(|ui| {
                         // Row 1: size-based modes
                         ui.horizontal(|ui| {
@@ -272,42 +260,20 @@ impl App {
                                 MultiButtonAxis::Horizontal,
                             );
                         });
-                        // Row 3: power slider
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.render_3d_opts.height_power_enabled, "^")
-                                .on_hover_text("Power (0.1..4.0)");
-                            if self.render_3d_opts.height_power_enabled {
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut self.render_3d_opts.height_power,
-                                        0.1..=4.0,
-                                    )
-                                    .show_value(true),
-                                );
-                            }
-                        });
                     });
-                    let new_pow = (
-                        self.render_3d_opts.height_power_enabled,
-                        self.render_3d_opts.height_power,
-                    );
-                    if self.render_3d_opts.height_mode != old_mode || new_pow != old_pow {
+                    if self.render_3d_opts.height_mode != old_mode {
                         self.needs_layout = true;
                     }
                     ui.end_row();
 
-                    // Height Scale
-                    control_label(ui, "Scale:");
-                    if ui
-                        .add(egui::Slider::new(
-                            &mut self.render_3d_opts.height_scale,
-                            0.1..=5.0,
-                        ))
-                        .changed()
-                    {
+                    // Per-mode Scale + Scale Exponent. Each height mode
+                    // keeps its own values so switching from "Const" to
+                    // "Size" doesn't carry over an inappropriate scale.
+                    let active = self.render_3d_opts.height_mode as usize;
+                    let curve = self.render_3d_opts.height_curves.get_mut(active);
+                    if curve_rows(ui, curve) {
                         self.needs_layout = true;
                     }
-                    ui.end_row();
 
                     // Color Mode
                     control_label(ui, "Color:");
@@ -420,11 +386,17 @@ impl App {
 
                     if self.render_3d_opts.hash_effect != HashTransformEffect::None {
                         control_label(ui, "Strength:");
+                        // Per-effect strength so switching effects preserves
+                        // each variant's intensity.
+                        let effect_idx = self.render_3d_opts.hash_effect as usize;
+                        let strength = &mut self
+                            .render_3d_opts
+                            .effects
+                            .hash_per_variant
+                            .get_mut(effect_idx)
+                            .strength;
                         if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.hash_effect_strength,
-                                0.0..=10.0,
-                            ))
+                            .add(egui::Slider::new(strength, 0.0..=10.0))
                             .changed()
                         {
                             self.needs_layout = true;
