@@ -9,8 +9,6 @@ use crate::renderer::{RenderBackend, RenderMode};
 use treemap::GpuRenderer2D;
 
 use super::App;
-// Zero-copy callback disabled - using register_native_texture instead
-// use super::render_callback::{Render3DCallback, Render3DResources};
 use super::helpers::{find_node_by_path, fmt_size, path_to_dir};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::shell::{properties_label, shell_properties};

@@ -76,6 +76,17 @@ Rust version from scratch inspired by WinDirStat/SequoiaView...with WGPU PathTra
 cargo build --release
 ```
 
+## Testing / CI parity
+
+Locally match what `.github/workflows/ci.yml` exercises:
+
+```sh
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Currently **44** unit tests span the workspace binary and library crates (`bvh-gpu`, `pt-mats`, `pt-wavefront`, `render-3d`, `render-shared`, `treemap`, …). Roadmap/backlog lives in **`TODO4.md`**; session QA notes may land in **`plan1.md`** or **`HANDOFF.md`**.
+
 ## Usage
 
 ```sh
@@ -132,9 +143,9 @@ src/
 
 | Component | Crate |
 |-----------|-------|
-| GUI | egui + eframe 0.33 |
-| Docking | egui_dock 0.18 |
-| GPU | wgpu 24 |
+| GUI | egui + eframe 0.34 |
+| Docking | egui_dock 0.19 |
+| GPU | wgpu 29 |
 | Scanner | jwalk 0.8 |
 | NTFS | windows-rs |
 | Serialization | bincode, serde_json |

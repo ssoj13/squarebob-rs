@@ -1,17 +1,31 @@
-# TODO4 — Validated Roadmap (rev 5)
+# TODO4 — Validated Roadmap (rev 6)
 
-**Date:** 2026-05-09
-**Supersedes:** `TODO.md`, `TODO2.md`, `TODO3.md`, `plan1.md`, `task.md`
-(deleted in commit `398f566`).
+**Date:** 2026-05-12  
+**Supersedes:** `TODO.md`, `TODO2.md`, `TODO3.md`, `task.md`
+(deleted in commit `398f566`). An **earlier** root `plan1.md` was consolidated
+into TODO4 in that commit. The **current** `plan1.md` (from 2026-05-11) is a
+**bughunt / audit log**, not a superseded roadmap — keep both: TODO4 = priorities,
+plan1 = forensic notes + verification commands.
+
+**rev 6 changes (documentation + SSOT reconciliation, 2026-05-12):**
+- §0.2 NTFS: aligned with `src/app/scan_orchestration.rs::poll_scan` (not
+  `mod.rs` line ranges from pre–Stage B.3).
+- Removed stale “Bug-hunt deferrals (`plan1.md`)" rows that contradicted the
+  codebase (NTFS pref, D.1 zero-copy, CLI applicator, **B.3 extraction**).
+- Stage **D.1** treemap zero-copy marked **DONE** (already shipped sprint 3 —
+  `treemap_view.rs` callbacks + `register_native_texture`).
+- Architecture watchpoints: **`src/**/*.rs` has zero `TODO` / `FIXME` literals**
+  (`rg '\\bTODO\\b'` / `FIXME`); open work is described in this document only.
+- “Existing tests” inventory updated to **44** workspace unit tests (`plan1.md` §8).
 
 **rev 5 changes (Stage D.1 + Stage C.3 cleanup + docs refresh):**
 Sprint 3: zero-copy 2D-GPU display path implemented as
 `render_2d_callback` (mirrors the existing `render_3d_callback`).
 `GpuRenderer2D::render_to_texture` + `get_render_texture` are now
-public; render-target texture has `TEXTURE_BINDING` usage. The two
-stale `TODO` markers in `src/app/mod.rs` (the ONLY TODO markers in
-source per CONCERNS.md) replaced with accurate comments describing
-the CPU-readback fallback path.
+public; render-target texture has `TEXTURE_BINDING` usage. Sprint 3
+removed the last **literal** `TODO` markers in `src/app/mod.rs`
+(historical `CONCERNS.md` note — they are **gone** from `src/**/*.rs`
+today; use this file for backlog, not grep markers).
 
 Architectural note for deferred Stage D.2 (denoiser): the
 `register_native_texture` infrastructure used by both 3D and 2D-GPU
@@ -169,14 +183,19 @@ Confirmed by direct code read:
 upstream caller (`MaterialCache.classify_or_get`), risk LOW —
 the architectural goal of "single classify call site" is held in code.
 
-### Bug-hunt deferrals (`plan1.md`)
-- ⏳ D1 NTFS fallback — open. `src/app/mod.rs:619–623` still does
-  `self.scanner_mode = ScannerMode::Standard`. No `ntfs_last_error`.
-- ⏳ D2 `auto-allocator = "*"` — kept by design; benchmark in Stage D.4.
-- ⏳ D3 split `app/mod.rs` — open (1518 LOC).
-- ⏳ D4 single CLI applicator — open.
-- ⏳ D5 zero-copy treemap — open. Two `TODO` markers at
-  `src/app/mod.rs:1035, :1068`.
+### Roadmap hygiene — reconciled against code (2026-05-12)
+Use this instead of the obsolete “Bug-hunt deferrals (plan1.md)” stub that cited
+wrong files / line counts.
+
+| Earlier (wrong / stale) | Current reality |
+|------------------------|----------------|
+| NTFS mutation + `mod.rs` handler line ranges | ✅ `poll_scan` in `scan_orchestration.rs`; no `scanner_mode` mutation |
+| D.1/D5 TODO at `mod.rs:1035+` | ✅ Zero-copy callbacks shipped (`treemap_view.rs`); `render_treemap` = readback fallback |
+| CLI applicator still open | ✅ `cli_apply.rs` (`apply_cli_overrides`) shipped Stage B.4 |
+| `app/mod.rs` 1518 LOC monolith | ✅ Split: `scan_orchestration.rs`, `render_loop.rs`, `screenshot.rs`, … |
+
+Residual deferrals matching **these** headings still apply: Stage 0.1 UAT,
+0.3a/b tests, C.x hygiene, D.2 denoiser, D.4 allocator bench, E.3 embeddings.
 
 ### UI raw-pointer aliasing (CONCERNS top-7)
 - ✅ DONE — pattern is the fix.
@@ -198,13 +217,15 @@ the architectural goal of "single classify call site" is held in code.
 ### Visual regression (`task.md`, cube gaps)
 - ✅ Fixed (per user, 2026-05-09). No further triage.
 
-### Existing tests
-- 8 `#[test]` declarations across 3 files:
-  `crates/render-shared/src/lib.rs`,
-  `src/app/filters.rs`,
-  `crates/bvh-gpu/src/bvh_gpu/mod.rs`.
-- SSOT functions (`classify_path_filtered`, treemap layout, LoD-merge
-  producer) have **zero tests**.
+### Existing tests (workspace-wide, 2026-05-12)
+`cargo test --workspace` counts **44** unit tests (`plan1.md` §8 breakdown).
+They exercise `filters`, CLI apply, palettes, wavefront helpers, Renderer3D
+CPU pick, `render_shared`, treemap layout, `bvh-gpu` validation — **not** zero.
+
+**Still light / missing vs ambition (Stage 0.3):**
+- Table-driven tests for `pt_mats::classify_path_filtered` (single upstream
+  caller — high leverage).
+- Optional golden rects for squarified treemap layouts.
 
 ### Lazy-init unwraps in `Renderer3D` (CONCERNS)
 - 15 sites confirmed in `crates/render-3d/src/lib.rs`:
@@ -230,12 +251,24 @@ The migration is 8/9 done. Step 9 verification:
 - Commit a `MIGRATION_NOTES.md` snippet (or a section in
   `.planning/`) describing the shipped contract.
 
-### 0.2 NTFS fallback no longer rewrites user prefs
-- Add `ntfs_last_error: Option<String>` (transient, not persisted) to `App`.
-- In `ScanMsg::NtfsFallback` handler at `src/app/mod.rs:619–623`: set the
-  transient error, **do not** mutate `scanner_mode`.
-- Non-modal banner when `ntfs_last_error.is_some()`.
-- Manual QA on Windows.
+### 0.2 NTFS fallback — user preference preserved (done)
+**Handler:** `ScanMsg::NtfsFallback` in `src/app/scan_orchestration.rs` inside
+`poll_scan` (Stage B.3 moved scan glue out of `mod.rs`).
+
+**Contract (verified 2026-05-12):**
+- Handler sets `progress.scan_engine_label` (e.g. `jwalk (NTFS fallback)`)
+  and `progress.error` with the failure reason.
+- **`scanner_mode` is NOT mutated** — user's NTFS preference survives
+  `PersistState` round-trips.
+- **Thread flow:** `scanner_ntfs.rs` on MFT error sends `NtfsFallback`, then
+  calls `scanner::scan_dir_public` on the **same** worker thread; completion
+  arrives as `Done` or `Error`. See `DIAGRAMS.md` sequence diagram.
+
+**Optional polish (still open if desired):**
+- Transient `ntfs_last_error: Option<String>` on `App` + non-modal banner
+  (distinct from `progress.error` string — today the standard progress fields
+  suffice).
+- Extra Windows manual QA after large refactors.
 
 ### 0.3 Tests for SSOT functions
 **rev-3 finding:** the LoD-merge producer is in
@@ -366,11 +399,19 @@ without checking.
 
 ## Stage D — Performance & visual polish
 
-### D.1 2D treemap zero-copy upload
-- Stop allocating `ColorImage` + `load_texture` per frame
-  (`src/app/mod.rs:1035, :1068` carry the only two `TODO` markers).
-- Step 1: share eframe's `wgpu::Device` with `Renderer3D`'s context.
-- Step 2: 2-buffer texture pool for ping-pong upload.
+### D.1 2D/3D treemap display — zero-copy primary path ✅
+**Shipped sprint 3:** `src/app/treemap_view.rs` gates on `wgpu_render_state` +
+`gpu_context` (`use_callback`). `render_3d_callback` and `render_2d_callback`
+render into GPU textures and **register natively with egui** — no steady-state
+CPU `ColorImage` upload on those paths.
+
+**Still valid “D.1 follow-ups” (optional polish, not blocking):**
+- Ping-pong / double-buffer the PT output texture when temporal denoiser lands.
+- Perf tuning on resize churn.
+
+**Canonical comment for fallback:** `render_treemap()` in `src/app/mod.rs`
+documents when CPU readback + `ctx.load_texture` remain required (standalone
+GPU device, screenshots, 2D-CPU backend).
 
 ### D.2 PT denoiser (only `TODO.md` unfinished item)
 - Add normal/depth/albedo G-buffers in shared PT output.
@@ -461,9 +502,8 @@ real value.
 - **`DirEntry` is the SSOT scan tree shape.** Note:
   `DirEntry::lod_expand` is a field, not a method — test the producer
   of `LodExpandInfo`, not `lod_expand` itself.
-- **Only 2 `TODO` markers exist in source** (`src/app/mod.rs:1035,
-  :1068`). Both relate to D.1; do not add new TODO markers — file
-  unfinished work in this document.
+- **Do not litter `TODO`/`FIXME` in `src/**/*.rs`.** Track open work **here**.
+  Verified 2026-05-12: `rg '\\bTODO\\b|FIXME' src` → no hits.
 - **`unsafe { &*ptr }` is acceptable only with `// Safety:` comment
   documenting the invariant**, and only in the disciplined
   in-method-scope pattern. Do not introduce new sites without
@@ -502,7 +542,7 @@ Each wave = one atomic commit.
 
 | Wave | Area | Tasks | Commit msg seed |
 |------|------|-------|-----------------|
-| **A** | `src/scanner_ntfs.rs` + `src/app/mod.rs` (NTFS handler) + `src/app/state.rs` (App fields) | 0.2 NTFS fallback fix; C.4 SAFETY annotations on 16 unsafe FFI blocks | `fix(ntfs): preserve user scanner_mode; document FFI safety` |
+| **A** | `src/scanner_ntfs.rs` (C.4 SAFETY polish) | ~~0.2 handler~~ **done** in `scan_orchestration.rs` — remaining: FFI SAFETY audit only | `docs(ntfs): SAFETY annotations` |
 | **B** | `crates/treemap/src/lib.rs` | C.5 `debug_assert!` for disjoint rects; 0.3c squarified-layout test | `treemap: assert disjoint rects + add layout regression test` |
 | **C** | `crates/pt-mats/src/lib.rs` | 0.3a `classify_path_filtered` table-driven tests | `pt-mats: table-driven tests for classify_path_filtered` |
 | **D** | `src/app/shell.rs` + `src/app/treemap_view.rs` + `src/app/mod.rs` | C.1 surface 5 `open::that` failures via log + status bar | `ux: surface open::that failures instead of silently dropping` |
@@ -510,12 +550,12 @@ Each wave = one atomic commit.
 
 **Out of scope for this sprint** (need user input or runtime):
 - Stage 0.1 manual FPS measurement + visual diff (Stage A close-out)
-- Stage B.1–B.4 god-object decomposition (mechanical refactor, larger
-  blast radius)
+- ~~Stage B.4~~ **done** (`cli_apply.rs`); ~~Stage B.3 modularization~~ **done**
+  (scan/render/screenshot splits). Large further `mod.rs` shrinks optional.
 - Stage C.2 GPU adapter downstream investigation (read + decide)
 - Stage C.3 pathguide/adaptive feature-gate audit (decision needed)
 - Stage C.6 PT backend canonical-vs-fast-path policy (decision needed)
-- Stage D.1–D.4 performance work
+- Stage D.2–D.4 (**D.1 zero-copy shipped** sprint 3)
 - Stage E.1–E.4 process tooling
 
 After all waves land: run `cargo build --workspace` and

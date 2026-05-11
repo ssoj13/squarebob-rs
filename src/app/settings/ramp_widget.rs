@@ -1,10 +1,5 @@
 //! Shared egui controls for `RampParams` / `CurveParams`.
 //!
-//! `ramp_rows` and friends are wired up incrementally as Color / Folder
-//! migrations land. Allow dead_code until then.
-
-#![allow(dead_code)]
-//!
 //! Each helper emits rows that slot into the surrounding `settings_grid`
 //! (2-column Grid with fixed label width). Callers stay responsible for
 //! the section header and the mode picker — the helpers below only
@@ -64,6 +59,8 @@ impl RampUiCtx {
         }
     }
 
+    /// Reserved for panels that need distribution UI without curve sliders.
+    #[allow(dead_code)]
     pub fn compact(id_salt: &'static str) -> Self {
         Self {
             with_distribution: true,

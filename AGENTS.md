@@ -96,17 +96,18 @@ ui_treemap_pane(app/treemap_view.rs)        [main display dispatch]
   Stage D.3 BVH refit fast-path trace, Stage D.4 allocator benchmark,
   Stage E.3 `npx gitnexus analyze --embeddings`.
 
-(Items resolved earlier this session: zero-copy 3D + 2D-GPU via
-`register_native_texture`, the only two `TODO` markers replaced with
-explanatory comments, all four blanket `#![allow(dead_code)]` removed
-because nothing was actually dead — see CHANGELOG.md.)
+(Items resolved earlier (`CHANGELOG.md`): zero-copy 3D + 2D-GPU via
+`register_native_texture`; stray literal `TODO` markers in app sources
+removed in sprint 3; **`src/**/*.rs` today has zero `TODO`/`FIXME` tokens**
+ — use `TODO4.md` for backlog. All four blanket `#![allow(dead_code)]`
+belt removals in PT `pipeline.rs` files — see `CHANGELOG.md`.)
 
 ## Maintenance commands
 
 ```text
 cargo build --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                     # 24 unit tests, all passing
+cargo test --workspace                     # 44 unit tests workspace-wide (see plan1.md §8), all passing
 ```
 
 Local toolchain: conda-forge `gcc=13` (downgraded from 15.1 on
@@ -117,6 +118,21 @@ PATH workarounds.
 Last bughunt pass (sprint-2): clippy clean — 0 warnings with
 `-D warnings`. CI workflow at `.github/workflows/ci.yml` enforces
 this on Linux + Windows.
+
+**Bughunt 2026-05-11 (`plan1.md`); docs sync 2026-05-12:** `TODO4` **rev 6**;
+full-workspace clippy `-D warnings` + `cargo test --workspace` green; see `plan1.md`
+for SSOT notes.
+
+## ASCII — `poll_scan` message ordering (NTFS fallback)
+
+```
+poll_scan() (scan_orchestration.rs)
+  ScanMsg::Progress ──► update progress counters
+  ScanMsg::Done ─────► replace tree + cache serialize + rebuild display
+  ScanMsg::NtfsFallback ──► progress.scan_engine_label + progress.error ONLY
+                             (scanner_mode unchanged — persists for PersistState)
+  ScanMsg::Error ─────► progress.error, stop scanning bit
+```
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

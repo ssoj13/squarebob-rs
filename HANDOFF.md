@@ -5,10 +5,15 @@
 **Branch:** `main`
 **Author/operator:** ssoj13
 
-This file captures everything a fresh session needs to pick up work
-without re-reading the full conversation history. Read this first,
-then `TODO4.md` Stage G section for the technical roadmap, then
-`CHANGELOG.md` sprint-5 entry for "what shipped today."
+## Documentation map (cross-session)
+
+- **`TODO4.md`** — Canonical numbered roadmap / stages (`rev 6`, 2026-05-12).
+- **`plan1.md`** — Bughunt audit log (`cargo test --workspace`: **44** unit
+  tests; SSOT drift notes); **does not replace** TODO4 priorities.
+- **`CHANGELOG.md`** — What shipped each sprint.
+
+After reading this HANDOFF → open `TODO4.md` Stage **G.C** queueing + any
+`sprint-6` deltas in `CHANGELOG.md`.
 
 ## TL;DR for the next session
 

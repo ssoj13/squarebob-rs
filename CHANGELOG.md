@@ -8,6 +8,29 @@ adapted for a single-developer workflow that batches by sprint.
 
 ---
 
+## Unreleased — documentation sync (2026-05-12)
+
+### Documentation & SSOT
+
+- **`TODO4.md` rev 6** — Roadmap reconciled with the tree after Stage B.3:
+  NTFS fallback handler is documented under `src/app/scan_orchestration.rs`
+  (not `mod.rs`); Stage D.1 zero-copy treemap marked **done**; removed stale
+  “Bug-hunt deferrals” rows and obsolete `TODO` line references; `src/**/*.rs`
+  carries **no** `TODO` / `FIXME` literals (track work in this file only).
+- **`plan1.md` §6 (SSOT)** — Re-verified: NTFS user-facing state goes through
+  `ScanProgress` in `poll_scan`; `render_treemap` in `src/app/mod.rs` remains
+  the canonical comment for CPU readback / screenshot paths; `HANDOFF.md` is
+  session context — **numeric roadmap lives in `TODO4.md`**.
+- **`CHANGELOG.md`** — Sprint-3 verification footnote test count updated to
+  **44** workspace unit tests (current `cargo test --workspace`).
+- **`README.md`** — Added **Testing** subsection (clippy + test commands).
+- **`AGENTS.md`** — Open-items bullet: no literal `TODO` markers in `src` today.
+- **`src/app/settings/ramp_widget.rs`** — Removed module-level
+  `#![allow(dead_code)]`; `RampUiCtx::compact` keeps a single item-level allow
+  (reserved API, unused today). Workspace clippy `-D warnings` clean.
+
+---
+
 ## Unreleased — sprint-5 (2026-05-11) — palettes + viz abstraction + light perf
 
 Major day. Three orthogonal threads landed: perceptual color palettes
@@ -516,7 +539,7 @@ Per the user's "и модуляризируй большие монолиты" d
 Each modularization commit ran:
   cargo build --workspace --all-targets       — ok
   cargo clippy --workspace --all-targets -- -D warnings  — 0 warnings
-  cargo test --workspace                      — 24 unit tests pass
+  cargo test --workspace                      — 44 unit tests pass
 
 ### E.3 — gitnexus embeddings — BLOCKED by environment
 
@@ -601,7 +624,7 @@ augmented with cross-project insights.
 ### Verified locally (2026-05-10: GCC 13 in conda env, no PATH workaround needed)
 - `cargo build --workspace --all-targets` — ok in ~3-5s warm.
 - `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings.
-- `cargo test --workspace` — 24 unit tests passing.
+- `cargo test --workspace` — 44 unit tests passing (workspace-wide; see `plan1.md` §8).
 
 ### Open after sprint-3
 - Stage 0.1 manual UAT (runtime: slider toggle vs `instance_rebuild_count()`).
@@ -656,11 +679,11 @@ build/test verification.
   with a `#[allow(dead_code)]` `rects_disjoint` helper.
 
 ### Changed
-- **NTFS fallback bug fix**: `ScanMsg::NtfsFallback` handler in
-  `src/app/mod.rs` no longer mutates `self.scanner_mode = Standard`.
-  That mutation persisted into `PersistState` on next save, silently
-  stripping the user's NTFS preference. Existing UI feedback via
-  `progress.error` and `progress.scan_engine_label` retained.
+- **NTFS fallback bug fix**: `ScanMsg::NtfsFallback` handling no longer
+  mutates `self.scanner_mode = Standard` (that path would have persisted
+  into `PersistState`). UI feedback via `progress.error` and
+  `progress.scan_engine_label` retained. **Current code:** `poll_scan` in
+  `src/app/scan_orchestration.rs` (handler moved out of `mod.rs` in Stage B.3).
 - **GPU adapter failure path**: `crates/render-core/src/lib.rs::GpuContext::new()`
   now logs adapter and device failures via `log::error!` instead of
   silently propagating `None`. `log` added to `render-core/Cargo.toml`.
@@ -725,8 +748,10 @@ build/test verification.
 - Stage A.1 visual diff: animate ON × PT ON × materialize {None, On}
   FPS measurement.
 - Stage C.6 PT backend canonical-vs-fast-path policy decision.
-- Stage D.1 zero-copy treemap upload (the only two `TODO` markers in
-  source: `src/app/mod.rs:1035, :1068`).
+- ~~Stage D.1 zero-copy treemap upload~~ — **done** (sprint 3): see
+  `treemap_view.rs` `render_2d_callback` / `render_3d_callback` and
+  `register_native_texture`; CPU readback remains for screenshots / foreign
+  `GpuContext` (`render_treemap` in `mod.rs`).
 - Stage D.2 PT denoiser — **deferred per user; preserve G-buffer
   extension points when touching PT pipeline so it can land later
   without a rewrite**.

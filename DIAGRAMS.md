@@ -36,7 +36,7 @@ flowchart TB
 
 ```mermaid
 sequenceDiagram
-    participant UI as app::App poll_scan
+    participant UI as poll_scan(scan_orchestration)
     participant NT as scanner_ntfs thread
     participant JW as scanner::scan_dir_public
 
@@ -45,8 +45,9 @@ sequenceDiagram
         NT->>UI: Done(DirEntry)
     else MFT Err
         NT->>UI: NtfsFallback(reason)
-        Note over UI: Forces scanner_mode Standard + shows error banner
-        NT->>JW: jwalk rebuild (same thread)
+        Note over UI: Updates progress.scan_engine_label + progress.error only.
+        Note over UI: Does NOT mutate scanner_mode (persisted pref stays NTFS).
+        NT->>JW: jwalk scan_dir_public same thread after NtfsFallback
         alt jwalk OK
             JW->>UI: Done(DirEntry)
         else jwalk Err
@@ -94,22 +95,35 @@ classDiagram
   }
 ```
 
-## GPU / future (from TODOs)
+## Display GPU paths (actual vs fallback vs roadmap)
+
+Treemap pane chooses paths in `src/app/treemap_view.rs` (`use_callback`:
+`wgpu_render_state.is_some()` and `gpu_context.is_some()` and mode/backend).
 
 ```mermaid
 flowchart TB
-  subgraph Current["Current (stable)"]
-    GPU_PT["wgpu PT / raster"]
-    READBACK["CPU readback to RGBA"]
-    EG_UI["egui::Image display"]
+  subgraph ZeroCopy["Current: zero-copy (eframe-compatible device)"]
+    ZC3["render_3d_callback<br/>Renderer3D + register_native_texture"]
+    ZC2["render_2d_callback<br/>GpuRenderer2D + register_native_texture"]
+    EG_NAT["egui textures native wgpu sampling"]
+    ZC3 --> EG_NAT
+    ZC2 --> EG_NAT
   end
 
-  subgraph Planned["Planned / TODO"]
-    SHARED["Share eframe wgpu device"]
-    ZCOPY["Zero-copy or fewer copies"]
-    DBL["Double-buffer PT output"]
+  subgraph Fallback["Current: fallback (foreign device / CPU / screenshots)"]
+    RB["Cpu readback path render_treemap()"]
+    EGI["ctx.load_texture treemap_tex"]
+    RB --> EGI
   end
 
-  GPU_PT --> READBACK --> EG_UI
-  SHARED -.-> ZCOPY -.-> DBL -.-> EG_UI
+  subgraph Roadmap["Roadmap — Stage D.2 etc."]
+    DEN["PT denoiser output texture"]
+    TEMP["Temporal / ReSTIR polish"]
+  end
+
+  DEN -.->|"same register_native_texture hook"| EG_NAT
+  TEMP -.-> DEN
 ```
+
+Readback fallback remains required when `GpuContext` is **not**
+shareable with egui (`AGENTS.md` / `render_treemap` comment block).
