@@ -166,12 +166,13 @@ struct MotionVector {
 @group(0) @binding(16) var<storage, read> prev_reservoirs: array<Reservoir>;
 @group(0) @binding(17) var<storage, read> motion_vectors: array<MotionVector>;
 
-// Vose alias table: each entry stores `(prob, alias)`. Picking a light
-// is `i = rand * N`; if `rand2 < table[i].prob` return `i`, else return
-// `table[i].alias`. Two memory loads regardless of N.
+// Vose alias table: each entry stores `(prob, alt)`. Picking a light
+// is `i = rand * N`; if `rand2 < table[i].prob` return `i`, else
+// return `table[i].alt`. Two memory loads regardless of N.
+// (`alias` and `target` are reserved words in WGSL — field is `alt`.)
 struct AliasEntry {
     prob: f32,
-    alias: u32,
+    alt: u32,
 };
 @group(0) @binding(18) var<storage, read> emissive_alias: array<AliasEntry>;
 
@@ -747,7 +748,7 @@ fn pick_alias_index(rng: ptr<function, u32>, count: u32) -> u32 {
     if rand(rng) < entry.prob {
         return i;
     }
-    return entry.alias;
+    return entry.alt;
 }
 
 fn sample_emissive_light(rng: ptr<function, u32>) -> EmissiveLightSample {

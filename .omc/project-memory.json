@@ -111,8 +111,8 @@
   "hotPaths": [
     {
       "path": "crates\\pt-megakernel\\src\\compute.rs",
-      "accessCount": 177,
-      "lastAccessed": 1778486606004,
+      "accessCount": 183,
+      "lastAccessed": 1778486846138,
       "type": "directory"
     },
     {
@@ -123,8 +123,8 @@
     },
     {
       "path": "crates/pt-megakernel/src/compute.rs",
-      "accessCount": 39,
-      "lastAccessed": 1778486564241,
+      "accessCount": 40,
+      "lastAccessed": 1778486796065,
       "type": "directory"
     },
     {
@@ -132,6 +132,12 @@
       "accessCount": 22,
       "lastAccessed": 1778452643105,
       "type": "file"
+    },
+    {
+      "path": "crates\\pt-megakernel\\src\\bvh_traverse.wgsl",
+      "accessCount": 15,
+      "lastAccessed": 1778486837829,
+      "type": "directory"
     },
     {
       "path": "crates\\pt-megakernel\\src\\restir\\initial.wgsl",
@@ -150,12 +156,6 @@
       "accessCount": 11,
       "lastAccessed": 1778471981570,
       "type": "file"
-    },
-    {
-      "path": "crates\\pt-megakernel\\src\\bvh_traverse.wgsl",
-      "accessCount": 11,
-      "lastAccessed": 1778486589949,
-      "type": "directory"
     },
     {
       "path": "TODO4.md",

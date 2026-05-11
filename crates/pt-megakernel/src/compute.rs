@@ -67,12 +67,13 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
 /// Per-entry table for Vose's alias method. With this table light
 /// selection collapses from O(N) linear scan to two array loads + two
 /// random draws. WGSL mirrors this layout as
-/// `struct AliasEntry { prob: f32, alias: u32 }`.
+/// `struct AliasEntry { prob: f32, alt: u32 }` — `alias` and `target`
+/// are both WGSL reserved words, hence the short field name `alt`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
 struct AliasEntry {
     prob: f32,
-    alias: u32,
+    alt: u32,
 }
 
 /// Vose's alias method: build an alias table that lets each entry stand
@@ -90,7 +91,7 @@ fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
         return vec![
             AliasEntry {
                 prob: 1.0,
-                alias: 0,
+                alt: 0,
             };
             n
         ];
@@ -113,7 +114,7 @@ fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
     while let (Some(s), Some(&l)) = (small.pop(), large.last()) {
         table[s] = AliasEntry {
             prob: p[s] as f32,
-            alias: l as u32,
+            alt: l as u32,
         };
         let new_pl = p[l] + p[s] - 1.0;
         p[l] = new_pl;
@@ -125,13 +126,13 @@ fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
     while let Some(l) = large.pop() {
         table[l] = AliasEntry {
             prob: 1.0,
-            alias: l as u32,
+            alt: l as u32,
         };
     }
     while let Some(s) = small.pop() {
         table[s] = AliasEntry {
             prob: 1.0,
-            alias: s as u32,
+            alt: s as u32,
         };
     }
     table
