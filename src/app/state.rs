@@ -76,6 +76,10 @@ pub(super) struct PersistState {
     pub ext_filter_invert: bool,
     #[serde(default = "default_settings_tint_mix")]
     pub settings_tint_mix: f32,
+    #[serde(default = "default_settings_section_header_height")]
+    pub settings_section_header_height: f32,
+    #[serde(default = "default_settings_section_title_font_size")]
+    pub settings_section_title_font_size: f32,
     #[serde(default)]
     pub preset_autosave: bool,
     #[serde(default = "default_autosave_interval")]
@@ -94,6 +98,15 @@ pub(super) fn default_font_size() -> f32 {
 }
 pub(super) fn default_settings_tint_mix() -> f32 {
     0.05
+}
+
+pub(super) fn default_settings_section_header_height() -> f32 {
+    14.0
+}
+
+/// `0` = follow global Appearance font (egui Body) for tinted section titles.
+pub(super) fn default_settings_section_title_font_size() -> f32 {
+    0.0
 }
 
 pub(super) fn default_tree_width() -> f32 {
@@ -160,6 +173,10 @@ pub struct App {
     pub(super) ext_filter: Vec<String>,
     pub(super) ext_filter_invert: bool,
     pub(super) settings_tint_mix: f32,
+    /// Pixel height of the click row for tinted + compact collapsing headers in the settings panel.
+    pub(super) settings_section_header_height: f32,
+    /// Section title font size (pt). `0` = use global Appearance font size.
+    pub(super) settings_section_title_font_size: f32,
     pub(super) dock_state: DockState<DockTab>,
     pub(super) tree_panel_width: f32,
     pub(super) settings_panel_width: f32,
@@ -304,6 +321,8 @@ impl Default for App {
             ext_filter: Vec::new(),
             ext_filter_invert: false,
             settings_tint_mix: default_settings_tint_mix(),
+            settings_section_header_height: default_settings_section_header_height(),
+            settings_section_title_font_size: default_settings_section_title_font_size(),
             dock_state: crate::app::dock::default_dock_state(),
             tree_panel_width: 200.0,
             settings_panel_width: 280.0,

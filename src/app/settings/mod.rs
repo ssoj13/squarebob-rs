@@ -39,11 +39,24 @@ pub(super) fn settings_grid(
         .show(ui, add_contents);
 }
 
+/// Collapsing-header title for settings subsections (tinted / compact).
+pub(super) fn section_header_text(title: &str, title_font_pt: f32) -> egui::WidgetText {
+    if title_font_pt > 0.0 {
+        egui::RichText::new(title)
+            .font(egui::FontId::proportional(title_font_pt))
+            .into()
+    } else {
+        title.into()
+    }
+}
+
 pub(super) fn tinted_section<R>(
     ui: &mut egui::Ui,
     title: &str,
     default_open: bool,
     mix: f32,
+    header_row_height: f32,
+    title_font_pt: f32,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> Option<R> {
     let tint = tint_for_name(ui, title, mix);
@@ -60,16 +73,17 @@ pub(super) fn tinted_section<R>(
             top: 1,
             bottom: 1,
         });
+    let header_row_height = header_row_height.clamp(8.0, 40.0);
     frame
         .show(ui, |ui| {
             // Tighten the click strip so the title row is one compact line
             // and stretches to the panel edge.
             let spacing = ui.spacing_mut();
-            spacing.interact_size.y = 14.0;
+            spacing.interact_size.y = header_row_height;
             spacing.item_spacing.y = 1.0;
             spacing.button_padding = egui::vec2(2.0, 1.0);
             ui.set_min_width(ui.available_width());
-            egui::CollapsingHeader::new(title)
+            egui::CollapsingHeader::new(section_header_text(title, title_font_pt))
                 .default_open(default_open)
                 .show(ui, add_contents)
                 .body_returned
@@ -317,6 +331,8 @@ impl App {
                         self.ui_settings_view(ui, &ctx, &mut changed);
                         ui.separator();
                         self.ui_settings_appearance(ui, &mut changed);
+                        ui.separator();
+                        self.ui_settings_panel_chrome(ui, &mut changed);
                     }
                     SettingsTab::Rendering => {
                         self.ui_presets(ui);

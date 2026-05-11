@@ -63,6 +63,57 @@ impl App {
             });
     }
 
+    /// Panel chrome: collapsing header row height and title font for settings subsections.
+    pub(super) fn ui_settings_panel_chrome(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+        egui::CollapsingHeader::new("Settings")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("panel_settings_chrome_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .min_col_width(LABEL_WIDTH)
+                    .show(ui, |ui| {
+                        ui.label("Section header height:");
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut self.settings_section_header_height,
+                                    8.0..=40.0,
+                                )
+                                .suffix("px"),
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Section title font:");
+                        let title_slider = egui::Slider::new(
+                            &mut self.settings_section_title_font_size,
+                            0.0..=24.0,
+                        )
+                        .custom_formatter(|v, _| {
+                            if v <= 0.0 {
+                                "Auto".to_owned()
+                            } else {
+                                format!("{v:.0} pt")
+                            }
+                        });
+                        if ui
+                            .add(title_slider)
+                            .on_hover_text(
+                                "0 (Auto) follows the Appearance → Font Size for subsection titles.",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        ui.end_row();
+                    });
+            });
+    }
+
     /// Apply font size to egui context
     pub(crate) fn apply_font_size(&self, ctx: &egui::Context) {
         let mut style = (*ctx.global_style()).clone();
