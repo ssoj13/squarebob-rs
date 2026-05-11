@@ -1622,24 +1622,14 @@ impl App {
                             .speed(16),
                     );
                     if resp.changed() {
-                        // Snap to {0, ≥64}. Smaller non-zero values produce
-                        // pathologically many tiles (tile=2 on FullHD ≈ 520k
-                        // tiles) and would hang the GPU. Mirrors the clamp
-                        // in PathTraceCompute::set_wavefront_tile_size.
-                        //
-                        // Halfway split (< 32 → 0, 32..64 → 64) so that
-                        // dragging the value down from 64 actually reaches
-                        // "0 = full frame" instead of ratcheting back to 64
-                        // at every intermediate drag step (speed=16 produces
-                        // 64 → 48 → 32 → 16 → 0).
-                        let v = self.render_3d_opts.pt_wavefront_tile_size;
-                        if v != 0 && v < 64 {
-                            self.render_3d_opts.pt_wavefront_tile_size =
-                                if v < 32 { 0 } else { 64 };
-                        }
+                        // No snap — user has explicit control. 0 means full
+                        // frame (no tiling); any non-zero value is passed
+                        // through verbatim. Tiny values produce many tiles
+                        // and can hammer the GPU, but that's the user's
+                        // call.
                         *pt_changed = true;
                     }
-                    ui.small("0 = full frame, min 64");
+                    ui.small("0 = full frame");
                 });
                 ui.end_row();
 

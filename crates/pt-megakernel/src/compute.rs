@@ -1192,25 +1192,12 @@ impl PathTraceCompute {
     }
 
     /// Configure wavefront tile size. `0` disables tiling (one full-frame
-    /// dispatch per frame). Any non-zero value is clamped to a minimum of
-    /// 64 pixels — smaller tiles produce thousands of dispatches per frame
-    /// for typical viewports (e.g. tile=2 on 1920×1080 = ~520k tiles) which
-    /// stalls the GPU command queue and can hang the device. The clamp
-    /// also guards against transient UI input states such as the user
-    /// typing "256" one digit at a time (the intermediate "2" used to
-    /// hang the renderer before this guard).
+    /// dispatch per frame). The value is passed through verbatim — no
+    /// clamp. The MAX_TILE_CAPACITY assertion in `WavefrontPipeline::
+    /// prepare_tiles` remains as a hard hang-protection net (e.g. tile=2
+    /// on 1920×1080 would still trip that assert).
     pub fn set_wavefront_tile_size(&mut self, size: u32) {
-        const MIN_TILE_SIZE: u32 = 64;
-        let clamped = if size == 0 { 0 } else { size.max(MIN_TILE_SIZE) };
-        if clamped != size {
-            log::debug!(
-                "set_wavefront_tile_size: clamped {} -> {} (min non-zero size = {})",
-                size,
-                clamped,
-                MIN_TILE_SIZE
-            );
-        }
-        self.wavefront_config.tile_size = clamped;
+        self.wavefront_config.tile_size = size;
     }
 
     pub fn set_wavefront_rr_enabled(&mut self, enabled: bool) {
