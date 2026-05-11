@@ -39,7 +39,10 @@ const DEFAULT_SCENE_LAYOUT_SIZE: (u32, u32) = (1024, 1024);
 pub(crate) struct PtState {
     pub path_tracer: Option<pt_megakernel::PathTraceCompute>,
     pub pt_backend_kind: pt::PtBackendKind,
+    /// Full scene/BVH/material-table upload on next PT frame.
     pub pt_scene_dirty: bool,
+    /// Only reset progressive accumulation (e.g. shading slider that does not rebuild GPU buffers).
+    pub pt_accum_reset: bool,
     pub pt_env_dirty: bool,
     pub pt_samples_per_update: u32,
     pub pt_last_render_ms: f32,
@@ -59,6 +62,7 @@ impl Default for PtState {
             path_tracer: None,
             pt_backend_kind: pt::PtBackendKind::Megakernel,
             pt_scene_dirty: false,
+            pt_accum_reset: false,
             pt_env_dirty: true,
             pt_samples_per_update: 1,
             pt_last_render_ms: 0.0,
@@ -137,6 +141,9 @@ pub struct Renderer3D {
     // Per-path classification cache; invalidated only on mat-settings change.
     mat_cache: MaterialCache,
 
+    /// Cached PT material expansion (glass mix + light variants) when scan + opts fingerprint match.
+    pt_expand_cache: Option<renderer3d::material_cache::PtExpandCacheEntry>,
+
     // Instance cache (for static scenes without animation)
     cached_instances: Option<Arc<Vec<geometry::CubeInstance>>>,
     /// Total number of times `collect_cubes` ran since renderer construction.
@@ -160,7 +167,7 @@ pub struct CpuPickHit {
 }
 
 use renderer3d::helpers::{
-    apply_glass_controls, compute_slice_normal, compute_slice_position, hash_f32, mix_material,
+    compute_slice_normal, compute_slice_position,
 };
 
 impl Renderer3D {
@@ -168,6 +175,7 @@ impl Renderer3D {
     pub fn invalidate_instances(&mut self) {
         self.cached_instances = None;
         self.cached_opts_hash = 0;
+        self.pt_expand_cache = None;
     }
 
     /// Reset render targets (call when switching modes)
@@ -183,6 +191,7 @@ impl Renderer3D {
         self.cached_opts_hash = 0;
         self.cached_layout_size = (0, 0);
         self.scene_layout_size = None;
+        self.pt_expand_cache = None;
     }
 
     /// Drop PT resources and force re-init on next render.
@@ -192,10 +201,17 @@ impl Renderer3D {
         self.pt.pt_env_dirty = true;
         self.pt.pt_samples_per_update = 1;
         self.pt.pt_last_render_ms = 0.0;
+        self.pt_expand_cache = None;
     }
 
     pub fn mark_pt_scene_dirty(&mut self) {
         self.pt.pt_scene_dirty = true;
+    }
+
+    /// Request accumulation reset only (no BVH / material-table re-upload). Use when GPU scene
+    /// buffers are unchanged, e.g. `materialize_mix` in PT (product coloring; not the PBR blend uniform).
+    pub fn mark_pt_accum_reset(&mut self) {
+        self.pt.pt_accum_reset = true;
     }
 
     pub fn mark_pt_env_dirty(&mut self) {
@@ -351,6 +367,7 @@ impl Renderer3D {
             pt: PtState::default(),
             material_library,
             mat_cache: MaterialCache::default(),
+            pt_expand_cache: None,
             cached_instances: None,
             cached_instances_rebuild_count: 0,
             cached_opts_hash: 0,

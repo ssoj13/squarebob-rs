@@ -16,6 +16,15 @@ for materials and per-cube tint, a unified `viz` abstraction
 color / folder-tint / effects, and an O(1) emissive light sampler that
 unblocked thousands-of-lights scenes.
 
+### PT path tracing — material expand cache and dirty flags
+
+- Expanded PT material tables (light variants, glass mix) are cached
+  between frames when `pt_expand_cache` key matches
+  (`prepare_pt_expanded_materials` in `render-3d`).
+- `mark_pt_accum_reset` resets progressive accumulation without a full
+  GPU scene upload; PT Mix shading uses this instead of
+  `mark_pt_scene_dirty`.
+
 ### Material palette system (commit `2151d04`)
 
 Replaced the 14-bin `MaterialClass` discretisation with continuous

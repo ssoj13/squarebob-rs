@@ -1,12 +1,7 @@
 //! Megakernel PT backend implementation.
 
-use crate::{
-    apply_glass_controls, compute_slice_normal, compute_slice_position, geometry, hash_f32,
-    mix_material, Renderer3D,
-};
-use glam::Mat4;
+use crate::{compute_slice_normal, compute_slice_position, geometry, Renderer3D};
 use log::{debug, info, trace};
-use pt_mats::{MaterialClass, MaterializeMode};
 use render_core::gpu;
 use render_shared::{HashTransformEffect, OrbitCamera, Render3DOptions};
 

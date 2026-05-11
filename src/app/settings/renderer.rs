@@ -856,7 +856,9 @@ impl App {
                             .changed()
                         {
                             if path_tracing {
-                                self.mark_pt_scene_dirty();
+                                if let Some(r) = &mut self.renderer_3d {
+                                    r.mark_pt_accum_reset();
+                                }
                             } else {
                                 self.needs_layout = true;
                             }

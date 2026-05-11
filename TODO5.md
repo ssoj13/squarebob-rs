@@ -2,24 +2,17 @@
 
 Краткий обзор узких мест и идей оптимизации (код `pt-megakernel`, `render-3d` megakernel path).
 
-## 1. Host / CPU — критично
+## 1. Host / CPU — `set_adaptive_enabled`
 
-### `set_adaptive_enabled` каждый кадр
+**Было:** `render_path_traced` вызывал `set_adaptive_enabled` каждый кадр; в `pt-megakernel` при любом вызове в конце шли `fill_sample_map` (аллокация + полный `write_buffer`) и `rebuild_bind_group`.
 
-`render_path_traced` (`crates/render-3d/src/pt/megakernel/render.rs`, ~460) вызывает `set_adaptive_enabled` **на каждом кадре**. В `pt-megakernel/src/compute.rs` при **любом** вызове в конце выполняется:
-
-- `fill_sample_map(queue)` — аллокация `Vec` на весь кадр и полный `write_buffer` sample map;
-- `rebuild_bind_group(device)` — пересборка главного bind group megakernel.
-
-Даже когда adaptive уже включён и состояние не менялось, каждый кадр платим полным ребилдом BG и лишней заливкой буфера.
-
-**Направление:** ранний выход, если `enabled` и наличие пайплайна не изменились; `fill_sample_map` / `rebuild_bind_group` только на переходах (вкл/выкл, первое создание пайплайна).
+**Сейчас:** ранний выход, если adaptive уже в нужном состоянии; тяжёлая работа только на переходах (вкл/выкл, смена пайплайна). См. `pt-megakernel/src/compute.rs`.
 
 ## 2. Загрузка сцены и материалы
 
-Каждый `upload_scene` / ветка `upload_scene_smart` заново делает `create_buffer_init` для nodes / instances / materials и затем `rebuild_bind_group` + wavefront / ReSTIR / pathguide BG. Даже при удачном BVH refit итог всё равно идёт через `upload_scene` с **новыми** буферами — нет устойчивых GPU-буферов с `write_buffer` при неизменном размере; много аллокаций и ребиндинга.
+**GPU-буферы:** `upload_scene` / `upload_scene_smart` переиспользуют STORAGE для nodes / instances / materials при неизменном размере (`write_buffer`), ребилд главного bind group и спутников (ReSTIR, pathguide, wavefront при adaptive) — только когда меняются размеры или появляются новые ресурсы.
 
-**Материалы** (`render.rs`): при `materialize_mode` и источниках света раздувается `materials` (варианты огней, смешивание glass при глобальной прозрачности) — чистый CPU на каждый upload. Кэш стабильных `(key → material_id)` между кадрами при неизменном скане мог бы срезать работу.
+**CPU — расширенные PT-материалы:** ветка `materialize_mode`, варианты огней и glass-mix при глобальной прозрачности раздувает список материалов и ID на сцену. Это кэшируется между кадрами: `Renderer3D.pt_expand_cache`, ключ в `crates/render-3d/src/renderer3d/material_cache.rs` (`pt_expand_cache_key` / `prepare_pt_expanded_materials`). При промахе кэша пересчёт как раньше; при попадании — переиспользуется `Arc<Vec<GpuMaterial>>` и готовый `material_ids`.
 
 ## 3. Частые обновления (обычно оправдано)
 
@@ -33,9 +26,13 @@
 
 Wavefront: батчинг `write_buffer` для тайлов уже есть; узкие места — число тайлов, `prepare_tiles`, редкие `rebuild_wavefront_bind_groups` при смене размеров.
 
-## 5. Политика `pt_scene_dirty`
+## 5. Политика `pt_scene_dirty` vs сброс накопления
 
-Флаг помечается очень широко из UI (`renderer.rs` и др.) — любое касание рычага может триггерить полный upload. Имеет смысл различать: что требует перезаливки инстансов / BVH vs что достаточно пробросить uniform-ами.
+**`pt_scene_dirty`** по-прежнему означает полную перезаливку сцены (инстансы, BVH, таблица материалов на GPU), когда это необходимо.
+
+**`pt_accum_reset`:** для изменений, которые не требуют нового upload (например, слайдер Mix в режиме path tracing — PT не использует PBR `materialize_mix`, достаточно обнулить progressive accumulation), UI вызывает `Renderer3D::mark_pt_accum_reset()` вместо `mark_pt_scene_dirty()`. Перед dispatch megakernel вызывается `reset_accumulation()` без принудительного `upload_scene`.
+
+Дальнейшее разграничение остальных рычагов (что именно требует upload vs uniform) — по мере профилирования.
 
 ---
 
@@ -43,3 +40,5 @@ Wavefront: батчинг `write_buffer` для тайлов уже есть; у
 
 - [x] `set_adaptive_enabled`: не ребилдить BG / не заливать sample map без изменения состояния; не вызывать `rebuild_wavefront_bind_groups` каждый кадр при выключенном adaptive (`compute.rs`).
 - [x] `upload_scene` / `upload_scene_smart`: рост и переиспользование `nodes` / `instances` / `materials` STORAGE с `write_buffer`, ребилд главного BG + ReSTIR + pathguide только при смене GPU-ресурсов; эмиссив — `write_texture` / `write_buffer` при достаточной ёмкости текстуры и alias-буфера; uniform эмиссии больше не пересоздаётся в `rebuild_emissive_lights` (через `write_emissive_light_uniform`, в т.ч. ReSTIR-DI поля); полный путь `upload_scene_smart` вызывает `upload_scene`.
+- [x] Кэш расширенных PT-материалов (`pt_expand_cache` + `prepare_pt_expanded_materials`) — срез CPU на повторяющихся кадрах с тем же ключом.
+- [x] `pt_accum_reset` / `mark_pt_accum_reset` — отдельный путь сброса накопления без полного scene dirty (в т.ч. Mix в PT из `settings/renderer.rs`).

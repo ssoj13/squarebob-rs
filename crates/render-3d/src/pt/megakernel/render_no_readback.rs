@@ -14,7 +14,6 @@ pub(crate) fn render_path_traced_no_readback(
     use pt_core::gpu_data::{
         build_gpu_data_from_nodes, build_instance_gpu_data, GpuInstanceSceneData,
     };
-    use pt_core::Instance;
     use pt_megakernel::{PathTraceCompute, PtCameraUniform};
 
     let surface_format = wgpu::TextureFormat::Rgba8Unorm;
@@ -57,6 +56,10 @@ pub(crate) fn render_path_traced_no_readback(
         opts.pt_emissive_min_weight,
     );
     pt.set_bvh_config(opts.pt_gpu_bvh, opts.pt_bvh_refit);
+    if renderer.pt.pt_accum_reset {
+        pt.reset_accumulation();
+        renderer.pt.pt_accum_reset = false;
+    }
 
     // Auto-SPP/camera snap throttling (freeze camera/scene between target frames)
     let snap_enabled = opts.pt_auto_spp || opts.pt_camera_snap;
@@ -89,115 +92,16 @@ pub(crate) fn render_path_traced_no_readback(
     let mut reset_by_slice = false;
     let mut reset_by_anim = false;
     if allow_update && (renderer.pt.pt_scene_dirty || animated) && !instances.is_empty() {
-        let mut materials = renderer.material_library.materials().to_vec();
-        let light_intensity = opts.mat_light_intensity.clamp(0.0, 10.0);
-        let light_color_rand = opts.mat_light_color_randomness.clamp(0.0, 1.0);
-        let light_variants = if light_color_rand > 0.0 { 16u32 } else { 1u32 };
-        let mut light_variant_ids: std::collections::HashMap<u64, u32> =
-            std::collections::HashMap::new();
-        let transparency = opts.pt_global_transparency.clamp(0.0, 1.0);
-        if transparency > 0.0 {
-            let glass_class = opts.pt_global_glass.to_material_class();
-            let glass_id = renderer.material_library.material_id(glass_class) as usize;
-            let glass = materials.get(glass_id).copied().unwrap_or(materials[0]);
-            let glass = apply_glass_controls(glass, opts);
-            for mat in &mut materials {
-                *mat = mix_material(*mat, glass, transparency);
-            }
-        }
-        let default_id = renderer
-            .material_library
-            .material_id(MaterialClass::Default);
-
-        renderer.mat_cache.ensure(opts);
-
-        let pt_instances: Vec<Instance> = instances
-            .iter()
-            .map(|inst| {
-                let model = Mat4::from_cols_array_2d(&inst.model);
-                let material_id = if opts.materialize_mode != MaterializeMode::None {
-                    // 2021 disjoint-capture lets &renderer.picking and &mut renderer.mat_cache
-                    // coexist in this closure since they touch different fields.
-                    let path_opt = renderer.picking.path_for_id(inst.object_id);
-                    let is_dir = renderer
-                        .picking
-                        .is_dir_for_id(inst.object_id)
-                        .unwrap_or(false);
-                    let size = renderer.picking.size_for_id(inst.object_id).unwrap_or(0);
-                    if let Some(path) = path_opt {
-                        if is_dir && !opts.mat_include_dirs {
-                            default_id
-                        } else {
-                            let hash = render_shared::name_hash(&path.to_string_lossy());
-                            // depth=0 is harmless: cache was warmed by
-                            // instance_collect with the real depth and we
-                            // only look up by path_hash here.
-                            let base_id = renderer
-                                .mat_cache
-                                .classify_or_get(path, size, 0, opts, true);
-                            // Palette-sample ids land outside the legacy slot
-                            // range; `from_id` returns None for them, so the
-                            // per-instance light tweak path is skipped.
-                            let class_opt = MaterialClass::from_id(base_id);
-                            let is_light = class_opt.map(|c| c.is_light()).unwrap_or(false);
-                            if is_light
-                                && (light_intensity != 1.0 || light_color_rand > 0.0)
-                            {
-                                let class = class_opt.expect("is_light implies class_opt is Some");
-                                let bucket = if light_variants > 1 {
-                                    hash % light_variants
-                                } else {
-                                    0
-                                };
-                                let key = ((class as u64) << 32) | bucket as u64;
-                                if let Some(&id) = light_variant_ids.get(&key) {
-                                    id
-                                } else {
-                                    let mut m = materials[base_id as usize];
-                                    m.emission_color_weight[3] *= light_intensity;
-                                    if light_color_rand > 0.0 {
-                                        let r = 1.0
-                                            + (hash_f32(hash, 0xA1u32) - 0.5)
-                                                * 2.0
-                                                * (0.3 * light_color_rand);
-                                        let g = 1.0
-                                            + (hash_f32(hash, 0xB2u32) - 0.5)
-                                                * 2.0
-                                                * (0.3 * light_color_rand);
-                                        let b = 1.0
-                                            + (hash_f32(hash, 0xC3u32) - 0.5)
-                                                * 2.0
-                                                * (0.3 * light_color_rand);
-                                        m.emission_color_weight[0] =
-                                            (m.emission_color_weight[0] * r).max(0.0);
-                                        m.emission_color_weight[1] =
-                                            (m.emission_color_weight[1] * g).max(0.0);
-                                        m.emission_color_weight[2] =
-                                            (m.emission_color_weight[2] * b).max(0.0);
-                                    }
-                                    materials.push(m);
-                                    let new_id = (materials.len() - 1) as u32;
-                                    light_variant_ids.insert(key, new_id);
-                                    new_id
-                                }
-                            } else if is_light && light_intensity != 1.0 {
-                                let mut m = materials[base_id as usize];
-                                m.emission_color_weight[3] *= light_intensity;
-                                materials.push(m);
-                                (materials.len() - 1) as u32
-                            } else {
-                                base_id
-                            }
-                        }
-                    } else {
-                        default_id
-                    }
-                } else {
-                    default_id
-                };
-                Instance::from_cube(model, inst.color, inst.object_id, material_id)
-            })
-            .collect();
+        let (materials_arc, pt_instances) =
+            crate::renderer3d::material_cache::prepare_pt_expanded_materials(
+                &renderer.material_library,
+                &mut renderer.mat_cache,
+                &renderer.picking,
+                &mut renderer.pt_expand_cache,
+                instances,
+                opts,
+            );
+        let materials = materials_arc.as_ref();
 
         if opts.pt_gpu_bvh && opts.pt_bvh_refit {
             let data = GpuInstanceSceneData {
@@ -218,10 +122,10 @@ pub(crate) fn render_path_traced_no_readback(
             let gpu_data = if opts.pt_gpu_bvh {
                 let (nodes, sorted_indices) =
                     pt.build_bvh(&renderer.ctx.device, &renderer.ctx.queue, &pt_instances);
-                build_gpu_data_from_nodes(nodes, &sorted_indices, &pt_instances, &materials)
+                build_gpu_data_from_nodes(nodes, &sorted_indices, &pt_instances, materials)
             } else {
                 let bvh = build_instance_bvh(&pt_instances);
-                build_instance_gpu_data(&bvh, &pt_instances, &materials)
+                build_instance_gpu_data(&bvh, &pt_instances, materials)
             };
 
             pt.upload_scene(

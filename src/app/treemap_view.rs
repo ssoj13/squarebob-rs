@@ -384,7 +384,7 @@ impl App {
         // quantized camera changes and will rebuild instances on its own when
         // LOD is enabled. Previously this set `needs_layout = true` which
         // unconditionally invalidated the instance cache AND marked the PT
-        // scene dirty, triggering `upload_scene` (3 buffer recreations + 4
+        // scene dirty, triggering a full PT `upload_scene` (buffer churn and
         // bind-group chain rebuilds) every drag frame — the dominant cost
         // when rotating with PT on.
         if resp.dragged_by(egui::PointerButton::Primary) && !ctrl_held && !shift_held {
