@@ -48,6 +48,12 @@ impl Renderer3D {
         }
         // Drop mat-class cache once per frame if mat-settings changed.
         self.mat_cache.ensure(opts);
+        // Pre-walk: compute scene normalisation bounds so `Depth`/`Size`
+        // sources produce meaningful values (otherwise both collapse to a
+        // single point and any distribute on top is a no-op).
+        let (scene_max_depth, scene_max_size) = scan_scene_bounds(root, 0);
+        self.mat_cache
+            .set_scene_meta(scene_max_depth, scene_max_size);
         let mut instances = Vec::new();
         let lod_ctx = if opts.lod_enabled {
             Some((camera_eye, screen_height, fov, opts.lod_min_screen_size))
@@ -253,7 +259,7 @@ impl Renderer3D {
             // slider itself just rewrites the small UBO.
             let material_id = if opts.materialize_mode != MaterializeMode::None && allow_dirs {
                 self.mat_cache
-                    .classify_or_get(&node.path, node.size, opts, false)
+                    .classify_or_get(&node.path, node.size, depth, opts, false)
             } else {
                 self.material_library.material_id(MaterialClass::Default)
             };
@@ -298,4 +304,24 @@ impl Renderer3D {
             }
         }
     }
+}
+
+/// Recursively scan the directory tree to find the deepest depth and the
+/// largest file size. Used by `collect_cubes` to set the normalisation
+/// denominators for `Depth` / `Size` material sources before
+/// classification kicks in. Cheap pre-walk: visits every node exactly
+/// once with no allocations.
+fn scan_scene_bounds(node: &DirEntry, depth: u32) -> (u32, u64) {
+    let mut max_depth = depth;
+    let mut max_size = node.size;
+    for child in &node.children {
+        let (cd, cs) = scan_scene_bounds(child, depth + 1);
+        if cd > max_depth {
+            max_depth = cd;
+        }
+        if cs > max_size {
+            max_size = cs;
+        }
+    }
+    (max_depth, max_size)
 }

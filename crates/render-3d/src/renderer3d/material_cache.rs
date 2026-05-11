@@ -3,7 +3,9 @@
 //! Extracted from `lib.rs` (Stage B.1 of TODO4 roadmap). Pure mechanical
 //! move — no behaviour change.
 
-use pt_mats::{classify_path_filtered_id, MaterializeMode, MaterializeSettings};
+use pt_mats::{
+    classify_to_id, hierarchical_path_value, MaterialInput, MaterializeMode, MaterializeSettings,
+};
 use render_shared::{name_hash, Render3DOptions};
 
 /// Global material params shared across all cubes in the PBR shader. Currently holds
@@ -29,11 +31,31 @@ impl Default for MatGlobalUniform {
 /// `MaterialLibrary` index (u32), so legacy `MaterialClass` slots and
 /// palette samples share a single lookup table. Invalidated only when
 /// material settings change; survives layout/animation/camera updates.
-#[derive(Default)]
+///
+/// Scene-level metadata (`scene_max_depth`, `scene_max_size`) is
+/// recomputed every frame by `instance_collect::collect_cubes` via
+/// `set_scene_meta` before classification starts. Without this, the
+/// `Depth` source would normalise against `max_depth=1` (collapsing to
+/// 0) and the `Size` source would normalise against `max_size=size`
+/// (collapsing to 1).
 pub(crate) struct MaterialCache {
     pub(crate) settings_hash: u64,
     pub(crate) ids_pbr: std::collections::HashMap<u32, u32>,
     pub(crate) ids_pt: std::collections::HashMap<u32, u32>,
+    scene_max_depth: u32,
+    scene_max_size: u64,
+}
+
+impl Default for MaterialCache {
+    fn default() -> Self {
+        Self {
+            settings_hash: 0,
+            ids_pbr: std::collections::HashMap::new(),
+            ids_pt: std::collections::HashMap::new(),
+            scene_max_depth: 1,
+            scene_max_size: 1,
+        }
+    }
 }
 
 impl MaterialCache {
@@ -48,14 +70,31 @@ impl MaterialCache {
         }
     }
 
-    /// Look up the cached material id for `path` or compute it. `is_pt` selects
-    /// the PT-specific path (light overrides depend on `is_pt`). Returns a
-    /// final `MaterialLibrary` index — either a legacy `MaterialClass`
-    /// slot (for light/glass overrides) or a palette sample.
+    /// Update scene-level normalisation bounds. Called once per frame by
+    /// `collect_cubes` after pre-walking the tree. Clears caches when
+    /// bounds change so `Depth`/`Size` sources stay consistent.
+    pub(crate) fn set_scene_meta(&mut self, max_depth: u32, max_size: u64) {
+        let max_depth = max_depth.max(1);
+        let max_size = max_size.max(1);
+        if max_depth != self.scene_max_depth || max_size != self.scene_max_size {
+            self.scene_max_depth = max_depth;
+            self.scene_max_size = max_size;
+            self.ids_pbr.clear();
+            self.ids_pt.clear();
+        }
+    }
+
+    /// Look up the cached material id for `path` or compute it. `is_pt`
+    /// selects the PT-specific path (light overrides depend on `is_pt`).
+    /// `depth` is the node's position in the directory tree — required
+    /// for the `Depth` source to produce meaningful values. PT callers
+    /// that only need cached lookups can pass `0`; lookups by `path_hash`
+    /// hit cache regardless of depth.
     pub(crate) fn classify_or_get(
         &mut self,
         path: &std::path::Path,
         size: u64,
+        depth: u32,
         opts: &Render3DOptions,
         is_pt: bool,
     ) -> u32 {
@@ -64,23 +103,35 @@ impl MaterialCache {
             return 0;
         }
         let path_str = path.to_string_lossy();
-        let path_hash = name_hash(&path_str);
+        let key = name_hash(&path_str);
         let bucket = if is_pt {
             &mut self.ids_pt
         } else {
             &mut self.ids_pbr
         };
-        if let Some(&id) = bucket.get(&path_hash) {
+        if let Some(&id) = bucket.get(&key) {
             return id;
         }
-        let id = classify_path_filtered_id(
-            path,
+        let mut settings = settings_from_opts(opts, is_pt);
+        // Sync legacy `materialize_mode` → `source` so classify_to_id sees
+        // the right source even if callers updated only the legacy field.
+        settings.source = opts.materialize_mode.to_source();
+        let input = MaterialInput {
+            name_hash: key,
+            path_hash: key,
             size,
-            path_hash,
-            opts.materialize_mode,
-            settings_from_opts(opts, is_pt),
-        );
-        bucket.insert(path_hash, id);
+            max_size: self.scene_max_size,
+            depth,
+            max_depth: self.scene_max_depth,
+            // No file mtime is plumbed through the pipeline yet, so Age
+            // falls back to a deterministic hash-based proxy. Real mtime
+            // wiring is a follow-up.
+            age_normalized: (key as f32) / (u32::MAX as f32),
+            position: [0.0, 0.0, 0.0],
+            path_hierarchical_value: hierarchical_path_value(path),
+        };
+        let id = classify_to_id(&input, &settings);
+        bucket.insert(key, id);
         id
     }
 }

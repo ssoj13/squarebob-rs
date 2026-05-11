@@ -129,7 +129,12 @@ pub(crate) fn render_path_traced_no_readback(
                             default_id
                         } else {
                             let hash = render_shared::name_hash(&path.to_string_lossy());
-                            let base_id = renderer.mat_cache.classify_or_get(path, size, opts, true);
+                            // depth=0 is harmless: cache was warmed by
+                            // instance_collect with the real depth and we
+                            // only look up by path_hash here.
+                            let base_id = renderer
+                                .mat_cache
+                                .classify_or_get(path, size, 0, opts, true);
                             // Palette-sample ids land outside the legacy slot
                             // range; `from_id` returns None for them, so the
                             // per-instance light tweak path is skipped.
