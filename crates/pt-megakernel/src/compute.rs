@@ -64,6 +64,25 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// Stage G.A: dummy storage buffers for megakernel ReSTIR bindings 15/16/17
+/// when ReSTIR is disabled. Sized to one element each so wgpu validation
+/// passes even though the WGSL shader never reads them.
+fn create_restir_fallbacks(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer) {
+    let res = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("pt_restir_fb_reservoir"),
+        size: crate::restir::Reservoir::SIZE as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mv = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("pt_restir_fb_motion"),
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    (res, mv)
+}
+
 /// WGSL source embedded at compile time.
 const BVH_TRAVERSE_WGSL: &str = include_str!("bvh_traverse.wgsl");
 const BLIT_WGSL: &str = include_str!("blit.wgsl");
@@ -385,6 +404,13 @@ pub struct PathTraceCompute {
     adaptive_bind_groups: Option<AdaptiveBindGroups>,
     sample_map_fallback: wgpu::Buffer,
 
+    /// Stage G.A: dummy buffers bound to megakernel @binding(15/16/17)
+    /// when ReSTIR is disabled, so the bind group is always valid even
+    /// before `restir` is allocated. Sized to one Reservoir / MotionVector
+    /// — content never read.
+    restir_fb_reservoir: wgpu::Buffer,
+    restir_fb_motion: wgpu::Buffer,
+
     // Path guiding (optional)
     pathguide: Option<PathGuidePipeline>,
     pathguide_config: PathGuideConfig,
@@ -645,6 +671,41 @@ impl PathTraceCompute {
                     },
                     count: None,
                 },
+                // @binding(15) ReSTIR current reservoirs (megakernel writes)
+                // Stage G.A: declared but unused — falls back to dummy buffer
+                // when ReSTIR is disabled.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // @binding(16) ReSTIR previous reservoirs (megakernel reads)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 16,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // @binding(17) ReSTIR motion vectors (megakernel reads)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 17,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -833,6 +894,8 @@ impl PathTraceCompute {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        let (restir_fb_reservoir, restir_fb_motion) = create_restir_fallbacks(device);
+
         let guide_buffer = Self::create_guide_buffer(device, width, height);
 
         let blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -952,6 +1015,8 @@ impl PathTraceCompute {
             adaptive_config: AdaptiveConfig::default(),
             adaptive_bind_groups: None,
             sample_map_fallback,
+            restir_fb_reservoir,
+            restir_fb_motion,
             pathguide: None,
             pathguide_config: PathGuideConfig::default(),
             pathguide_bind_groups: None,
@@ -996,16 +1061,24 @@ impl PathTraceCompute {
         let prev_di = self.restir_config.di_enabled;
         let prev_gi = self.restir_config.gi_enabled;
         let mut needs_rebuild = prev_di != di || prev_gi != gi;
+        // Stage G.A: when ReSTIRPipeline transitions None -> Some, the
+        // megakernel @binding(15/16/17) need to be re-pointed from
+        // fallback buffers onto real reservoir / motion buffers.
+        let mut megakernel_needs_rebind = false;
         if (di || gi) && self.restir.is_none() {
             log::info!("ReSTIR: create pipeline (di={}, gi={})", di, gi);
             self.restir = Some(ReSTIRPipeline::new(device, self.width, self.height));
             needs_rebuild = true;
+            megakernel_needs_rebind = true;
         }
         self.restir_config.di_enabled = di;
         self.restir_config.gi_enabled = gi;
         log::debug!("ReSTIR: enabled di={}, gi={}", di, gi);
         if needs_rebuild {
             self.rebuild_restir_bind_groups(device);
+        }
+        if megakernel_needs_rebind {
+            self.rebuild_bind_group(device);
         }
     }
 
@@ -3719,6 +3792,20 @@ impl PathTraceCompute {
         } else {
             &self.sample_map_fallback
         };
+        // Stage G.A: bindings 15/16/17 point at real ReSTIR buffers when the
+        // pipeline is live, otherwise at single-element fallbacks. The
+        // megakernel WGSL declares the bindings but currently never reads /
+        // writes them — wired here so the bind group always validates.
+        let (restir_cur, restir_prev, restir_motion) = if let Some(rs) = &self.restir {
+            let (cur, prev) = rs.reservoirs();
+            (cur, prev, rs.motion_buffer())
+        } else {
+            (
+                &self.restir_fb_reservoir,
+                &self.restir_fb_reservoir,
+                &self.restir_fb_motion,
+            )
+        };
         self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pt_bind_group"),
             layout: &self.bind_group_layout,
@@ -3782,6 +3869,18 @@ impl PathTraceCompute {
                 wgpu::BindGroupEntry {
                     binding: 14,
                     resource: self.emissive_light_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: restir_cur.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: restir_prev.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 17,
+                    resource: restir_motion.as_entire_binding(),
                 },
             ],
         }));

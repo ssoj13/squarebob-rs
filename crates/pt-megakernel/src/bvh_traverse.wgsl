@@ -116,6 +116,34 @@ struct VarianceData {
     count: u32,
 };
 
+// Stage G.A: ReSTIR-DI types. Layout must match the host-side `Sample`,
+// `Reservoir`, `MotionVector` in `restir/reservoir.rs`. Declared here so
+// Stage G.B can RIS-sample bounce 0 lights inside the megakernel.
+struct Sample {
+    position: vec3<f32>,
+    valid: u32,
+    wi: vec3<f32>,
+    light_type: u32,
+    radiance: vec3<f32>,
+    dist: f32,
+    normal: vec3<f32>,
+    _pad: u32,
+};
+
+struct Reservoir {
+    sample: Sample,
+    w_sum: f32,
+    m: u32,
+    w: f32,
+    _pad: u32,
+};
+
+struct MotionVector {
+    motion: vec2<f32>,
+    depth: f32,
+    valid: u32,
+};
+
 @group(0) @binding(0) var<storage, read> nodes: array<BVHNode>;
 @group(0) @binding(1) var<storage, read> instances: array<Instance>;
 @group(0) @binding(2) var<uniform> camera: Camera;
@@ -131,6 +159,12 @@ struct VarianceData {
 @group(0) @binding(12) var<storage, read_write> variance: array<VarianceData>;
 @group(0) @binding(13) var emissive_lights: texture_2d<f32>;
 @group(0) @binding(14) var<uniform> emissive_light_params: EmissiveLightParams;
+// Stage G.A plumbing. Bindings 15-17 will be exercised by Stage G.B
+// (RIS) / G.C (temporal). For now they're declared so the megakernel BGL
+// has slots ready and the host can already bind real ReSTIR buffers.
+@group(0) @binding(15) var<storage, read_write> cur_reservoirs: array<Reservoir>;
+@group(0) @binding(16) var<storage, read> prev_reservoirs: array<Reservoir>;
+@group(0) @binding(17) var<storage, read> motion_vectors: array<MotionVector>;
 
 const MAX_STACK_DEPTH: u32 = 32u;
 const T_MAX: f32 = 1e30;
@@ -157,6 +191,57 @@ fn rand(state: ptr<function, u32>) -> f32 {
 
 fn hash01(input: u32) -> f32 {
     return f32(pcg_hash(input)) / 4294967296.0;
+}
+
+// ---- ReSTIR-DI stubs (Stage G.A plumbing) ----
+// Bodies fill in during Stage G.B (RIS) and G.C (temporal combine).
+// Kept as standalone fns here so they appear in the module symbol
+// table without altering bounce-0 NEE behaviour.
+
+fn init_reservoir() -> Reservoir {
+    var r: Reservoir;
+    r.sample.valid = 0u;
+    r.sample.position = vec3<f32>(0.0);
+    r.sample.wi = vec3<f32>(0.0);
+    r.sample.light_type = 0u;
+    r.sample.radiance = vec3<f32>(0.0);
+    r.sample.dist = 0.0;
+    r.sample.normal = vec3<f32>(0.0);
+    r.sample._pad = 0u;
+    r.w_sum = 0.0;
+    r.m = 0u;
+    r.w = 0.0;
+    r._pad = 0u;
+    return r;
+}
+
+fn update_reservoir(
+    r: ptr<function, Reservoir>,
+    s: Sample,
+    weight: f32,
+    rng: ptr<function, u32>,
+) -> bool {
+    // Stage G.B will perform: w_sum += weight; m += 1; reservoir-pick s
+    // with probability weight / w_sum. Left as a no-op for G.A.
+    let _ = r;
+    let _ = s;
+    let _ = weight;
+    let _ = rng;
+    return false;
+}
+
+fn combine_reservoirs(
+    dst: ptr<function, Reservoir>,
+    src: Reservoir,
+    target_pdf: f32,
+    rng: ptr<function, u32>,
+) {
+    // Stage G.C will combine `src` into `dst` using `target_pdf * src.w *
+    // f32(src.m)`. No-op for G.A.
+    let _ = dst;
+    let _ = src;
+    let _ = target_pdf;
+    let _ = rng;
 }
 
 fn sample_pixel_jitter(pixel_idx: u32, frame_count: u32, rng: ptr<function, u32>) -> vec2<f32> {
