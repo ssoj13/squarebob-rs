@@ -2918,8 +2918,10 @@ impl PathTraceCompute {
                 (&self.restir, &self.restir_bind_groups)
             {
                 let (_, _, spatial_pl, shade_pl) = rs.pipelines();
-                let intersect_pl = wf.pipelines().1;
                 let raygen_pl = wf.pipelines().0;
+                let intersect_pl = wf.pipelines().1;
+                let wf_shade_pl = wf.pipelines().2;
+                let count_swap_pl = wf.count_swap_pipeline();
 
                 // Spatial pass (full image) — one slot at offset 0 of
                 // spatial_params_buf was written with full-image params before
@@ -3014,6 +3016,128 @@ impl PathTraceCompute {
                             let wg_x = tile_w.div_ceil(8);
                             let wg_y = tile_h.div_ceil(8);
                             spass.dispatch_workgroups(wg_x, wg_y, 1);
+                        }
+
+                        // Hybrid ReSTIR-DI + path-traced indirect: restir_shade
+                        // above contributed direct illumination at the primary
+                        // hit (one sampled light per pixel). Now run the
+                        // wavefront bounce loop to gather BSDF-sampled indirect
+                        // contribution AND handle transmission (glass), which
+                        // restir_shade can't do on its own. wavefront/shade.wgsl
+                        // does NOT do NEE, so there's no double-count with
+                        // restir's direct light — wavefront only adds emission
+                        // when the BSDF-sampled path lands on an emissive
+                        // surface (rare for small lights).
+                        let mut use_set_a = cur_set == 0;
+                        for _bounce in 0..max_bounces {
+                            let current_set =
+                                if use_set_a { &bgs.set_a } else { &bgs.set_b };
+
+                            // Intersect (bounce 0 re-uses raygen rays; bounce N
+                            // reads the rays written by the previous shade).
+                            {
+                                let mut pass = encoder.begin_compute_pass(
+                                    &wgpu::ComputePassDescriptor {
+                                        label: Some("wf_intersect_pass_hybrid"),
+                                        timestamp_writes: None,
+                                    },
+                                );
+                                pass.set_pipeline(intersect_pl);
+                                pass.set_bind_group(
+                                    0,
+                                    &current_set.intersect_bg,
+                                    &[tile_off],
+                                );
+                                let wg = tile_pixels.div_ceil(64);
+                                pass.dispatch_workgroups(wg, 1, 1);
+                            }
+
+                            // Wavefront shade: BSDF + transmission + emission +
+                            // sky-miss. Writes next-bounce rays into the other
+                            // ping-pong slot.
+                            {
+                                let mut pass = encoder.begin_compute_pass(
+                                    &wgpu::ComputePassDescriptor {
+                                        label: Some("wf_shade_pass_hybrid"),
+                                        timestamp_writes: None,
+                                    },
+                                );
+                                pass.set_pipeline(wf_shade_pl);
+                                pass.set_bind_group(
+                                    0,
+                                    &current_set.shade_bg,
+                                    &[tile_off],
+                                );
+                                let wg = tile_pixels.div_ceil(64);
+                                pass.dispatch_workgroups(wg, 1, 1);
+                            }
+
+                            // Swap count_in/count_out via encoder copy.
+                            {
+                                let mut pass = encoder.begin_compute_pass(
+                                    &wgpu::ComputePassDescriptor {
+                                        label: Some("wf_count_swap_pass_hybrid"),
+                                        timestamp_writes: None,
+                                    },
+                                );
+                                pass.set_pipeline(count_swap_pl);
+                                pass.set_bind_group(
+                                    0,
+                                    &bgs.count_swap_bg,
+                                    &[tile_off],
+                                );
+                                pass.dispatch_workgroups(1, 1, 1);
+                            }
+
+                            use_set_a = !use_set_a;
+                        }
+
+                        // Path-guide SVO update (mirrors the non-restir branch).
+                        if pathguide_enabled {
+                            if let (Some(pg), Some(pg_bgs)) = (
+                                &self.pathguide,
+                                &self.pathguide_bind_groups,
+                            ) {
+                                let update_params = PathGuideUpdateParams {
+                                    scene_min: {
+                                        let v = self
+                                            .scene_bounds
+                                            .map(|b| b.0)
+                                            .unwrap_or([0.0; 3]);
+                                        [v[0], v[1], v[2], 0.0]
+                                    },
+                                    scene_max: {
+                                        let v = self
+                                            .scene_bounds
+                                            .map(|b| b.1)
+                                            .unwrap_or([1.0; 3]);
+                                        [v[0], v[1], v[2], 0.0]
+                                    },
+                                    params0: [
+                                        self.pathguide_config.svo_resolution,
+                                        tile_pixels.max(1),
+                                        0,
+                                        0,
+                                    ],
+                                    params1: [0.95, 0.0, 0.0, 0.0],
+                                };
+                                queue.write_buffer(
+                                    &pg_bgs.update_params_buf,
+                                    0,
+                                    bytemuck::bytes_of(&update_params),
+                                );
+                                let (update_pl, _) = pg.pipelines();
+                                let wg = tile_pixels.max(1).div_ceil(64);
+                                let mut pass = encoder.begin_compute_pass(
+                                    &wgpu::ComputePassDescriptor {
+                                        label: Some("pathguide_update_pass_hybrid"),
+                                        timestamp_writes: None,
+                                    },
+                                );
+                                pass.set_pipeline(update_pl);
+                                pass.set_bind_group(0, &pg_bgs.update_bg, &[]);
+                                pass.dispatch_workgroups(wg, 1, 1);
+                            }
                         }
 
                         tile_idx += 1;
