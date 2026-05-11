@@ -1,8 +1,77 @@
 # HANDOFF — dirstat-rs cross-machine resume
 
-**Date:** 2026-05-10 (rev 2)
+**Date:** 2026-05-11 (rev 3)
 **Last commit:** see `git log -1`
 **Branch:** main
+
+## 2026-05-11 follow-up — Stage G: port ReSTIR into megakernel
+
+User observation after F.4 + Phase 1 hybrid wavefront landed: megakernel
+is materially faster than wavefront on this scene (simple cubes, low
+divergence) and produces visibly better results. Wavefront's only
+remaining "killer feature" is ReSTIR-DI, but the wavefront overhead
+(many dispatches per frame, buffer round-trips) outweighs ReSTIR's
+quality gain at low SPP on this workload. Decision: port ReSTIR into
+the megakernel pipeline so the project gets megakernel's single-
+dispatch speed AND ReSTIR's quality.
+
+### Architecture target
+
+Megakernel currently has all bounces inline + NEE at every surface. The
+ReSTIR-DI port replaces the bounce-0 NEE with a ResTIR-resampled light
+sample:
+
+  bounce 0: RIS over M emissive candidates → reservoir → temporal
+            reproject + RIS combine → apply DI contribution → write
+            reservoir to cur_reservoirs[pixel_id]
+  bounce 1+: standard NEE (unchanged)
+  end of frame: swap_bufs (cur ↔ prev for next frame)
+
+Spatial reuse is the trickier part — it needs all pixels' reservoirs to
+be already written before any pixel reads its neighbours, which can't
+happen mid-kernel. Solution: run spatial as a SEPARATE compute pass
+AFTER the megakernel dispatch. Reservoirs from spatial then feed the
+NEXT frame's temporal step. Slight one-frame lag for spatial reuse but
+keeps megakernel as one big shader.
+
+### Phased plan
+
+- **Phase G.A — Plumbing (~150 LOC):** Add `cur_reservoirs`,
+  `prev_reservoirs`, `motion_vectors` bindings to the megakernel BGL
+  (bindings 15-17). Bind the existing `ReSTIRPipeline` buffers
+  (`reservoir_a/_b`, `motion_buf`). Add WGSL `Reservoir` / `Sample`
+  struct declarations to `bvh_traverse.wgsl`. Add helper functions
+  (empty stubs) for `init_reservoir`, `update_reservoir`,
+  `combine_reservoirs`. No behaviour change in this commit.
+- **Phase G.B — RIS sampling (~250 LOC):** In `bvh_traverse.wgsl` at
+  the bounce-0 hit, sample M candidates from emissive lights + env,
+  build the initial reservoir via RIS, USE the reservoir's sample for
+  direct contribution (gated by a `restir_enabled` config flag — when
+  off, fall through to the existing NEE path). Write the reservoir to
+  `cur_reservoirs[pixel_id]`.
+- **Phase G.C — Temporal reuse (~150 LOC):** Add `motion_vectors`
+  computation at the primary hit (reproject world position via
+  `prev_view_proj`). Read `prev_reservoirs[prev_pixel]` and combine
+  with the new reservoir via RIS. Add a `prev_depth_buf` (full image)
+  written at end of frame from the gbuffer for next-frame motion
+  validity testing.
+- **Phase G.D — Optional spatial pass (~100 LOC):** Run the existing
+  `restir/spatial.wgsl` once after the megakernel dispatch, reading
+  the just-written `cur_reservoirs` and writing back. Spatial output
+  feeds NEXT frame's temporal step.
+- **Phase G.E — Cleanup (~50 LOC):** Make megakernel the default
+  backend in the UI. Keep the wavefront opt-in but rename for clarity.
+  Document the ReSTIR-DI quality vs cost trade-off in the rendering
+  panel.
+
+### Status
+
+- Phase 1 hybrid wavefront + ReSTIR (commit `22da6d5`) is committed and
+  works: ReSTIR DI gives sampled direct light, wavefront bounce loop
+  handles indirect + glass transmission. Slower than megakernel but
+  correct.
+- Stage G is the next milestone. Start with Phase G.A — the plumbing
+  commit. Each phase ships independently with build/test/clippy green.
 
 ## 2026-05-10 update — Wavefront race + spectral fixes
 
