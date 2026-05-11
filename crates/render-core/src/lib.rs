@@ -107,11 +107,20 @@ pub mod gpu {
                 }
             };
 
+            // Stage G.A: bump storage-buffer count limit to fit megakernel's
+            // ReSTIR bindings (default 8 → request 16, clamped to adapter).
+            let adapter_limits = adapter.limits();
+            let mut required_limits = wgpu::Limits::default();
+            required_limits.max_storage_buffers_per_shader_stage = adapter_limits
+                .max_storage_buffers_per_shader_stage
+                .min(16)
+                .max(required_limits.max_storage_buffers_per_shader_stage);
+
             let (device, queue) = match pollster::block_on(adapter.request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("DirStat GPU Device"),
                     required_features: wgpu::Features::POLYGON_MODE_LINE,
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     memory_hints: Default::default(),
                     trace: Default::default(),
                     experimental_features: Default::default(),

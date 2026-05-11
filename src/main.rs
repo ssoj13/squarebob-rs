@@ -128,15 +128,27 @@ fn main() -> eframe::Result<()> {
         );
     }
 
-    // Configure wgpu to request POLYGON_MODE_LINE for wireframe rendering
+    // Configure wgpu to request POLYGON_MODE_LINE for wireframe rendering.
+    // Stage G.A bumped `max_storage_buffers_per_shader_stage` because the
+    // megakernel BGL now binds 11 storage buffers (8 original + 3 new
+    // ReSTIR-DI slots at @binding(15/16/17)). Default wgpu downlevel limit
+    // is 8 — request 16 (clamped to adapter capability).
     let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    wgpu_setup.device_descriptor = std::sync::Arc::new(|_adapter| wgpu::DeviceDescriptor {
-        label: Some("dirstat-rs device"),
-        required_features: wgpu::Features::POLYGON_MODE_LINE,
-        required_limits: wgpu::Limits::default(),
-        memory_hints: Default::default(),
-        trace: Default::default(),
-        experimental_features: Default::default(),
+    wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
+        let adapter_limits = adapter.limits();
+        let mut required_limits = wgpu::Limits::default();
+        required_limits.max_storage_buffers_per_shader_stage = adapter_limits
+            .max_storage_buffers_per_shader_stage
+            .min(16)
+            .max(required_limits.max_storage_buffers_per_shader_stage);
+        wgpu::DeviceDescriptor {
+            label: Some("dirstat-rs device"),
+            required_features: wgpu::Features::POLYGON_MODE_LINE,
+            required_limits,
+            memory_hints: Default::default(),
+            trace: Default::default(),
+            experimental_features: Default::default(),
+        }
     });
 
     let options = eframe::NativeOptions {

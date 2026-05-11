@@ -8,7 +8,7 @@ use crate::renderer::{
     HoverMode, PtSamplerMode, RenderMode, SpectralMode,
 };
 use eframe::egui;
-use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode};
+use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 
 /// Maximum absolute PT light/glass cube count in the UI and when persisting settings.
 ///
@@ -637,6 +637,67 @@ impl App {
                     ui.end_row();
 
                     if self.render_3d_opts.mat_source != MaterialSource::None {
+                        // Palette: smooth gradient ramp. `None` lets pt-mats
+                        // auto-pick a palette appropriate for the source
+                        // (Viridis for Size, Sunset for Age, etc.).
+                        control_label(ui, "Palette:");
+                        let mut palette_changed = false;
+                        let cur_label = match self.render_3d_opts.mat_palette {
+                            None => "Auto".to_string(),
+                            Some(p) => p.name().to_string(),
+                        };
+                        egui::ComboBox::from_id_salt("mat_palette")
+                            .selected_text(cur_label)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.render_3d_opts.mat_palette,
+                                        None,
+                                        "Auto",
+                                    )
+                                    .changed()
+                                {
+                                    palette_changed = true;
+                                }
+                                for &p in Palette::all() {
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.render_3d_opts.mat_palette,
+                                            Some(p),
+                                            p.name(),
+                                        )
+                                        .changed()
+                                    {
+                                        palette_changed = true;
+                                    }
+                                }
+                            });
+                        if palette_changed {
+                            if let Some(r) = &mut self.renderer_3d {
+                                r.mark_pt_scene_dirty();
+                            }
+                        }
+                        ui.end_row();
+
+                        // Path-hierarchical: only meaningful for Source=Path.
+                        // Siblings cluster into nearby palette colours when
+                        // enabled, scatter randomly when disabled.
+                        if self.render_3d_opts.mat_source == MaterialSource::Path {
+                            control_label(ui, "Cluster siblings:");
+                            if ui
+                                .checkbox(
+                                    &mut self.render_3d_opts.mat_path_hierarchical,
+                                    "Hierarchical",
+                                )
+                                .changed()
+                            {
+                                if let Some(r) = &mut self.renderer_3d {
+                                    r.mark_pt_scene_dirty();
+                                }
+                            }
+                            ui.end_row();
+                        }
+
                         // Distribution: how values map to materials
                         control_label(ui, "Distribute:");
                         let old_dist = self.render_3d_opts.mat_distribution;

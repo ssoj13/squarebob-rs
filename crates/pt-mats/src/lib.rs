@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use pt_core::bvh::GpuMaterial;
 
+mod palette;
+pub use palette::{
+    auto_palette_for_source, hierarchical_path_value, sample_palette, Palette,
+    BASE_LIBRARY_SIZE, PALETTE_BINS,
+};
+
 // ============================================================================
 // Material Source - what data determines the material
 // ============================================================================
@@ -214,6 +220,14 @@ impl MaterialClass {
         self as u32
     }
 
+    /// Inverse of [`Self::id`]. Returns `Some(class)` when `id` falls
+    /// inside the legacy `[0..BASE_LIBRARY_SIZE)` prefix of
+    /// `MaterialLibrary`. Palette-sample ids (>= BASE_LIBRARY_SIZE) yield
+    /// `None`, since they have no `MaterialClass` analog.
+    pub fn from_id(id: u32) -> Option<MaterialClass> {
+        Self::ALL.get(id as usize).copied()
+    }
+
     pub fn is_emissive(self) -> bool {
         matches!(
             self,
@@ -329,10 +343,25 @@ impl Default for MaterialLibrary {
 
 impl MaterialLibrary {
     pub fn new() -> Self {
-        let mut materials = Vec::with_capacity(MaterialClass::ALL.len());
+        let palette_count = Palette::count();
+        let total = BASE_LIBRARY_SIZE + palette_count * PALETTE_BINS;
+        let mut materials = Vec::with_capacity(total as usize);
+        // [0..BASE_LIBRARY_SIZE): legacy MaterialClass slots (lights /
+        // glass / metal / etc. carrying their special PT params).
         for class in MaterialClass::ALL {
             materials.push(material_for_class(class));
         }
+        // [BASE_LIBRARY_SIZE..total): palette samples. Each palette gets
+        // PALETTE_BINS consecutive plastic-like materials with base_color
+        // sampled along the ramp. Order MUST match `Palette::idx()`.
+        for &p in Palette::all() {
+            for bin in 0..PALETTE_BINS {
+                let t = bin as f32 / (PALETTE_BINS - 1) as f32;
+                let color = sample_palette(p, t);
+                materials.push(material_for_palette_sample(color));
+            }
+        }
+        debug_assert_eq!(materials.len() as u32, total);
         Self { materials }
     }
 
@@ -340,11 +369,34 @@ impl MaterialLibrary {
         &self.materials
     }
 
+    /// Legacy `MaterialClass` → library index. Always points inside the
+    /// `[0..BASE_LIBRARY_SIZE)` prefix.
     pub fn material_id(&self, class: MaterialClass) -> u32 {
         class
             .id()
             .min(self.materials.len().saturating_sub(1) as u32)
     }
+
+    /// Palette sample → library index. Bin is clamped to
+    /// `[0..PALETTE_BINS)` so the result is always valid.
+    pub fn palette_material_id(&self, palette: Palette, t: f32) -> u32 {
+        let t = t.clamp(0.0, 1.0);
+        let bin = ((t * PALETTE_BINS as f32) as u32).min(PALETTE_BINS - 1);
+        BASE_LIBRARY_SIZE + palette.idx() * PALETTE_BINS + bin
+    }
+
+    /// Total entries (legacy + palette samples). Useful for sanity-checking
+    /// GPU buffer sizes and for clamping caller-supplied material ids.
+    pub fn total_count(&self) -> u32 {
+        self.materials.len() as u32
+    }
+}
+
+/// Generic plastic-ish material with the palette colour baked in.
+/// Roughness is mid (0.35) so colour reads without specular blowout;
+/// metalness 0 so PT keeps energy in the diffuse lobe.
+fn material_for_palette_sample(color: [f32; 3]) -> GpuMaterial {
+    make_plastic(color, 0.35)
 }
 
 impl MaterialClass {
@@ -402,6 +454,15 @@ pub struct MaterializeSettings {
     pub quant_levels: u32,  // For Quantized distribution
     pub band_count: u32,    // For Bands distribution
     pub spatial_scale: f32, // For Spatial distribution
+    /// `Some(p)` pins the palette; `None` means auto-pick from `source`.
+    /// Light/glass overrides bypass the palette and fall back to legacy
+    /// `MaterialClass` materials in slots 0..BASE_LIBRARY_SIZE.
+    pub palette: Option<Palette>,
+    /// When true, the `Path` source uses `hierarchical_path_value` so
+    /// sibling files cluster into nearby palette colors. When false (the
+    /// legacy behaviour), `Path` uses a flat FNV hash and adjacent files
+    /// scatter randomly.
+    pub path_hierarchical: bool,
 }
 
 impl Default for MaterializeSettings {
@@ -420,6 +481,8 @@ impl Default for MaterializeSettings {
             quant_levels: 5,
             band_count: 8,
             spatial_scale: 0.01,
+            palette: None,
+            path_hierarchical: true,
         }
     }
 }
@@ -435,6 +498,11 @@ pub struct MaterialInput {
     pub max_depth: u32,
     pub age_normalized: f32, // 0.0 = newest, 1.0 = oldest
     pub position: [f32; 3],  // Cube center position
+    /// Hierarchical accumulation of the path components (0..1). Set by
+    /// `classify_path_filtered` so the inner classifier does not have to
+    /// own the `&Path`. Falls back to `hash_to_float(path_hash)` when zero
+    /// (i.e. caller did not compute it).
+    pub path_hierarchical_value: f32,
 }
 
 impl Default for MaterialInput {
@@ -448,6 +516,7 @@ impl Default for MaterialInput {
             max_depth: 1,
             age_normalized: 0.5,
             position: [0.0, 0.0, 0.0],
+            path_hierarchical_value: 0.0,
         }
     }
 }
@@ -480,7 +549,14 @@ fn get_source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f3
     match settings.source {
         MaterialSource::None => 0.5, // Constant middle value
         MaterialSource::Extension => hash_to_float(input.name_hash),
-        MaterialSource::Path => hash_to_float(input.path_hash),
+        MaterialSource::Path => {
+            // Hierarchical (siblings cluster) vs flat hash (random scatter).
+            if settings.path_hierarchical && input.path_hierarchical_value > 0.0 {
+                input.path_hierarchical_value.clamp(0.0, 1.0)
+            } else {
+                hash_to_float(input.path_hash)
+            }
+        }
         MaterialSource::Size => {
             if input.max_size == 0 {
                 0.5
@@ -639,9 +715,75 @@ pub fn classify_path_filtered(
         max_depth: 1,
         age_normalized: hash_to_float(name_hash), // Legacy: use hash as age proxy
         position: [0.0, 0.0, 0.0],
+        path_hierarchical_value: hierarchical_path_value(path),
     };
 
     classify_material(&input, &new_settings)
+}
+
+/// Classify a path directly to a final `MaterialLibrary` index. Used by
+/// the production PBR/PT pipeline. Light/glass overrides return ids in
+/// `0..BASE_LIBRARY_SIZE` (legacy `MaterialClass` slots); palette samples
+/// occupy `BASE_LIBRARY_SIZE..total`.
+pub fn classify_path_filtered_id(
+    path: &Path,
+    size: u64,
+    name_hash: u32,
+    mode: MaterializeMode,
+    settings: MaterializeSettings,
+) -> u32 {
+    let mut new_settings = settings;
+    new_settings.source = mode.to_source();
+    let input = MaterialInput {
+        name_hash,
+        path_hash: path_hash(path),
+        size,
+        max_size: size.max(1),
+        depth: 0,
+        max_depth: 1,
+        age_normalized: hash_to_float(name_hash),
+        position: [0.0, 0.0, 0.0],
+        path_hierarchical_value: hierarchical_path_value(path),
+    };
+    classify_to_id(&input, &new_settings)
+}
+
+/// Classify rich `MaterialInput` to a final library index. Same routing
+/// as [`classify_path_filtered_id`] but lets callers feed real
+/// per-cube data (size_max, depth, age, position).
+pub fn classify_to_id(input: &MaterialInput, settings: &MaterializeSettings) -> u32 {
+    // None source short-circuits to a single library slot — keeps the
+    // "no materialize" case visually flat regardless of palette config.
+    if settings.source == MaterialSource::None {
+        return MaterialClass::Default.id();
+    }
+
+    let raw = get_source_value(input, settings);
+    let seeded = apply_seed(raw, input.name_hash, settings.seed);
+    let distributed = apply_distribution(seeded, input, settings);
+    let final_hash = float_to_hash(seeded);
+
+    // Light/glass overrides bypass the palette and resolve into the
+    // legacy `MaterialClass` slot range so the special PT/PBR shading
+    // (emission, IOR, transmission) still kicks in.
+    if settings.is_pt
+        && settings.allow_lights
+        && passes_prob(final_hash, 0x1234_5678, settings.light_prob)
+    {
+        return select_light_variant(final_hash, *settings).id();
+    }
+    if settings.allow_glass && passes_prob(final_hash, 0x8765_4321, settings.glass_prob) {
+        return select_glass_variant(final_hash).id();
+    }
+
+    // Palette-driven base colour. Auto-route source → palette when the
+    // user hasn't pinned one explicitly.
+    let palette = settings
+        .palette
+        .unwrap_or_else(|| auto_palette_for_source(settings.source));
+    let t = distributed.clamp(0.0, 1.0);
+    let bin = ((t * PALETTE_BINS as f32) as u32).min(PALETTE_BINS - 1);
+    BASE_LIBRARY_SIZE + palette.idx() * PALETTE_BINS + bin
 }
 
 fn apply_filters(

@@ -129,10 +129,16 @@ pub(crate) fn render_path_traced_no_readback(
                             default_id
                         } else {
                             let hash = render_shared::name_hash(&path.to_string_lossy());
-                            let class = renderer.mat_cache.classify_or_get(path, size, opts, true);
-                            if class.is_light()
+                            let base_id = renderer.mat_cache.classify_or_get(path, size, opts, true);
+                            // Palette-sample ids land outside the legacy slot
+                            // range; `from_id` returns None for them, so the
+                            // per-instance light tweak path is skipped.
+                            let class_opt = MaterialClass::from_id(base_id);
+                            let is_light = class_opt.map(|c| c.is_light()).unwrap_or(false);
+                            if is_light
                                 && (light_intensity != 1.0 || light_color_rand > 0.0)
                             {
+                                let class = class_opt.expect("is_light implies class_opt is Some");
                                 let bucket = if light_variants > 1 {
                                     hash % light_variants
                                 } else {
@@ -142,9 +148,7 @@ pub(crate) fn render_path_traced_no_readback(
                                 if let Some(&id) = light_variant_ids.get(&key) {
                                     id
                                 } else {
-                                    let base_id =
-                                        renderer.material_library.material_id(class) as usize;
-                                    let mut m = materials[base_id];
+                                    let mut m = materials[base_id as usize];
                                     m.emission_color_weight[3] *= light_intensity;
                                     if light_color_rand > 0.0 {
                                         let r = 1.0
@@ -171,17 +175,13 @@ pub(crate) fn render_path_traced_no_readback(
                                     light_variant_ids.insert(key, new_id);
                                     new_id
                                 }
+                            } else if is_light && light_intensity != 1.0 {
+                                let mut m = materials[base_id as usize];
+                                m.emission_color_weight[3] *= light_intensity;
+                                materials.push(m);
+                                (materials.len() - 1) as u32
                             } else {
-                                let base_id = renderer.material_library.material_id(class) as usize;
-                                let base_id_u32 = base_id as u32;
-                                if class.is_light() && light_intensity != 1.0 {
-                                    let mut m = materials[base_id];
-                                    m.emission_color_weight[3] *= light_intensity;
-                                    materials.push(m);
-                                    (materials.len() - 1) as u32
-                                } else {
-                                    base_id_u32
-                                }
+                                base_id
                             }
                         }
                     } else {

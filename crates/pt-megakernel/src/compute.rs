@@ -66,21 +66,31 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
 
 /// Stage G.A: dummy storage buffers for megakernel ReSTIR bindings 15/16/17
 /// when ReSTIR is disabled. Sized to one element each so wgpu validation
-/// passes even though the WGSL shader never reads them.
-fn create_restir_fallbacks(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer) {
-    let res = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("pt_restir_fb_reservoir"),
-        size: crate::restir::Reservoir::SIZE as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+/// passes even though the WGSL shader never reads them. Two reservoir
+/// buffers are needed (one RW for @15, one RO for @16) because wgpu's
+/// exclusive-RW rule forbids the same buffer in both slots within one
+/// dispatch.
+fn create_restir_fallbacks(
+    device: &wgpu::Device,
+) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
+    let res_size = crate::restir::Reservoir::SIZE as u64;
+    let make_res = |label: &str| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: res_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    let cur = make_res("pt_restir_fb_reservoir_cur");
+    let prev = make_res("pt_restir_fb_reservoir_prev");
     let mv = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("pt_restir_fb_motion"),
         size: 16,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    (res, mv)
+    (cur, prev, mv)
 }
 
 /// WGSL source embedded at compile time.
@@ -407,8 +417,11 @@ pub struct PathTraceCompute {
     /// Stage G.A: dummy buffers bound to megakernel @binding(15/16/17)
     /// when ReSTIR is disabled, so the bind group is always valid even
     /// before `restir` is allocated. Sized to one Reservoir / MotionVector
-    /// — content never read.
-    restir_fb_reservoir: wgpu::Buffer,
+    /// — content never read. Two separate reservoir fallbacks because the
+    /// dispatch binds @15 as RW and @16 as RO; wgpu rejects the same
+    /// buffer in both slots within one dispatch (exclusive RW usage).
+    restir_fb_reservoir_cur: wgpu::Buffer,
+    restir_fb_reservoir_prev: wgpu::Buffer,
     restir_fb_motion: wgpu::Buffer,
 
     // Path guiding (optional)
@@ -894,7 +907,8 @@ impl PathTraceCompute {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let (restir_fb_reservoir, restir_fb_motion) = create_restir_fallbacks(device);
+        let (restir_fb_reservoir_cur, restir_fb_reservoir_prev, restir_fb_motion) =
+            create_restir_fallbacks(device);
 
         let guide_buffer = Self::create_guide_buffer(device, width, height);
 
@@ -1015,7 +1029,8 @@ impl PathTraceCompute {
             adaptive_config: AdaptiveConfig::default(),
             adaptive_bind_groups: None,
             sample_map_fallback,
-            restir_fb_reservoir,
+            restir_fb_reservoir_cur,
+            restir_fb_reservoir_prev,
             restir_fb_motion,
             pathguide: None,
             pathguide_config: PathGuideConfig::default(),
@@ -3801,8 +3816,8 @@ impl PathTraceCompute {
             (cur, prev, rs.motion_buffer())
         } else {
             (
-                &self.restir_fb_reservoir,
-                &self.restir_fb_reservoir,
+                &self.restir_fb_reservoir_cur,
+                &self.restir_fb_reservoir_prev,
                 &self.restir_fb_motion,
             )
         };

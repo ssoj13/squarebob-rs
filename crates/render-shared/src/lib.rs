@@ -1,7 +1,7 @@
 /// Renderer abstraction: CPU (rayon) or GPU (wgpu) backends.
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
-use pt_mats::{MaterialClass, MaterialDistribution, MaterialSource, MaterializeMode};
+use pt_mats::{MaterialClass, MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 use serde::{Deserialize, Serialize};
 
 /// Available rendering backends
@@ -528,6 +528,14 @@ pub struct Render3DOptions {
     pub mat_band_count: u32,
     #[serde(default = "default_spatial_scale")]
     pub mat_spatial_scale: f32,
+    /// `Some(p)` pins the palette; `None` lets `pt-mats` auto-route from
+    /// the active `mat_source`.
+    #[serde(default)]
+    pub mat_palette: Option<Palette>,
+    /// When true, the `Path` source uses hierarchical hashing so siblings
+    /// cluster into nearby colors. When false, flat hash → scatter.
+    #[serde(default = "default_true")]
+    pub mat_path_hierarchical: bool,
     #[serde(default = "default_materialize_mix")]
     pub materialize_mix: f32, // 0=use color_mode, 1=use materialize color
     #[serde(default = "default_true")]
@@ -823,6 +831,8 @@ impl Default for Render3DOptions {
             mat_quant_levels: default_quant_levels(),
             mat_band_count: default_band_count(),
             mat_spatial_scale: default_spatial_scale(),
+            mat_palette: None,
+            mat_path_hierarchical: true,
             materialize_mix: 1.0,
             mat_allow_lights: true,
             mat_light_prob: 0.15,

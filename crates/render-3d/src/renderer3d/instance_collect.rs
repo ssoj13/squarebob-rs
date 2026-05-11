@@ -246,16 +246,17 @@ impl Renderer3D {
 
             let allow_dirs = opts.mat_include_dirs || !node.is_dir;
             // Material classification is cached, so this is O(1) on warm cache.
-            // The shader handles albedo blending via `mat_global.materialize_mix`,
-            // so we do NOT lerp on the CPU anymore — instances stay stable across
-            // slider changes, the slider itself just rewrites the small UBO.
-            let mat_class = if opts.materialize_mode != MaterializeMode::None && allow_dirs {
+            // Returns the final library index (legacy class slots or palette
+            // sample). Shader handles albedo blending via
+            // `mat_global.materialize_mix`, so we do NOT lerp on the CPU
+            // anymore — instances stay stable across slider changes, the
+            // slider itself just rewrites the small UBO.
+            let material_id = if opts.materialize_mode != MaterializeMode::None && allow_dirs {
                 self.mat_cache
                     .classify_or_get(&node.path, node.size, opts, false)
             } else {
-                MaterialClass::Default
+                self.material_library.material_id(MaterialClass::Default)
             };
-            let material_id = self.material_library.material_id(mat_class);
             // color_f is the pure color_mode result (per-instance tint).
             let color_f = base_color;
 

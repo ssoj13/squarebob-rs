@@ -3,7 +3,7 @@
 //! Extracted from `lib.rs` (Stage B.1 of TODO4 roadmap). Pure mechanical
 //! move — no behaviour change.
 
-use pt_mats::{classify_path_filtered, MaterialClass, MaterializeMode, MaterializeSettings};
+use pt_mats::{classify_path_filtered_id, MaterializeMode, MaterializeSettings};
 use render_shared::{name_hash, Render3DOptions};
 
 /// Global material params shared across all cubes in the PBR shader. Currently holds
@@ -25,13 +25,15 @@ impl Default for MatGlobalUniform {
     }
 }
 
-/// Per-path material classification cache. Invalidated only when material settings
-/// change; survives layout/animation/camera updates.
+/// Per-path material classification cache. Caches the final
+/// `MaterialLibrary` index (u32), so legacy `MaterialClass` slots and
+/// palette samples share a single lookup table. Invalidated only when
+/// material settings change; survives layout/animation/camera updates.
 #[derive(Default)]
 pub(crate) struct MaterialCache {
     pub(crate) settings_hash: u64,
-    pub(crate) classes_pbr: std::collections::HashMap<u32, MaterialClass>,
-    pub(crate) classes_pt: std::collections::HashMap<u32, MaterialClass>,
+    pub(crate) ids_pbr: std::collections::HashMap<u32, u32>,
+    pub(crate) ids_pt: std::collections::HashMap<u32, u32>,
 }
 
 impl MaterialCache {
@@ -40,43 +42,46 @@ impl MaterialCache {
     pub(crate) fn ensure(&mut self, opts: &Render3DOptions) {
         let h = mat_settings_hash(opts);
         if h != self.settings_hash {
-            self.classes_pbr.clear();
-            self.classes_pt.clear();
+            self.ids_pbr.clear();
+            self.ids_pt.clear();
             self.settings_hash = h;
         }
     }
 
-    /// Look up the cached class for `path` or compute it. `is_pt` selects the PT-specific
-    /// classification path (light overrides depend on `is_pt`).
+    /// Look up the cached material id for `path` or compute it. `is_pt` selects
+    /// the PT-specific path (light overrides depend on `is_pt`). Returns a
+    /// final `MaterialLibrary` index — either a legacy `MaterialClass`
+    /// slot (for light/glass overrides) or a palette sample.
     pub(crate) fn classify_or_get(
         &mut self,
         path: &std::path::Path,
         size: u64,
         opts: &Render3DOptions,
         is_pt: bool,
-    ) -> MaterialClass {
+    ) -> u32 {
         if opts.materialize_mode == MaterializeMode::None {
-            return MaterialClass::Default;
+            // Library slot 0 == MaterialClass::Default (Pure grey plastic).
+            return 0;
         }
         let path_str = path.to_string_lossy();
         let path_hash = name_hash(&path_str);
         let bucket = if is_pt {
-            &mut self.classes_pt
+            &mut self.ids_pt
         } else {
-            &mut self.classes_pbr
+            &mut self.ids_pbr
         };
-        if let Some(&c) = bucket.get(&path_hash) {
-            return c;
+        if let Some(&id) = bucket.get(&path_hash) {
+            return id;
         }
-        let class = classify_path_filtered(
+        let id = classify_path_filtered_id(
             path,
             size,
             path_hash,
             opts.materialize_mode,
             settings_from_opts(opts, is_pt),
         );
-        bucket.insert(path_hash, class);
-        class
+        bucket.insert(path_hash, id);
+        id
     }
 }
 
@@ -99,6 +104,8 @@ pub(crate) fn mat_settings_hash(opts: &Render3DOptions) -> u64 {
     opts.mat_band_count.hash(&mut h);
     opts.mat_spatial_scale.to_bits().hash(&mut h);
     opts.mat_include_dirs.hash(&mut h);
+    opts.mat_palette.hash(&mut h);
+    opts.mat_path_hierarchical.hash(&mut h);
     h.finish()
 }
 
@@ -119,5 +126,7 @@ pub(crate) fn settings_from_opts(opts: &Render3DOptions, is_pt: bool) -> Materia
         quant_levels: opts.mat_quant_levels,
         band_count: opts.mat_band_count,
         spatial_scale: opts.mat_spatial_scale,
+        palette: opts.mat_palette,
+        path_hierarchical: opts.mat_path_hierarchical,
     }
 }

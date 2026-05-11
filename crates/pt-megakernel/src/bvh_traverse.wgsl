@@ -223,10 +223,12 @@ fn update_reservoir(
 ) -> bool {
     // Stage G.B will perform: w_sum += weight; m += 1; reservoir-pick s
     // with probability weight / w_sum. Left as a no-op for G.A.
-    let _ = r;
-    let _ = s;
-    let _ = weight;
-    let _ = rng;
+    // WGSL phony assignments silence unused-param warnings without using
+    // `let _ =` (reserved-identifier).
+    _ = r;
+    _ = s;
+    _ = weight;
+    _ = rng;
     return false;
 }
 
@@ -238,10 +240,10 @@ fn combine_reservoirs(
 ) {
     // Stage G.C will combine `src` into `dst` using `target_pdf * src.w *
     // f32(src.m)`. No-op for G.A.
-    let _ = dst;
-    let _ = src;
-    let _ = target_pdf;
-    let _ = rng;
+    _ = dst;
+    _ = src;
+    _ = target_pdf;
+    _ = rng;
 }
 
 fn sample_pixel_jitter(pixel_idx: u32, frame_count: u32, rng: ptr<function, u32>) -> vec2<f32> {

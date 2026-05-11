@@ -18,8 +18,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "cargo build --workspace --all-targets --message-format=short 2>&1 | grep -E \"error|warning:\" | head -40",
-    "testCommand": "cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED|error\\[\" | head -30",
+    "buildCommand": "cargo build --workspace --all-targets --message-format=short 2>&1 | grep -E \"error|warning:\" | head -20 && cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | grep -E \"error|warning:\" | head -10 && cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -25",
+    "testCommand": "cargo build --workspace --all-targets --message-format=short 2>&1 | grep -E \"error|warning:\" | head -20 && cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | grep -E \"error|warning:\" | head -10 && cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -25",
     "lintCommand": "cargo clippy",
     "devCommand": "cargo run",
     "scripts": {}
@@ -111,8 +111,8 @@
   "hotPaths": [
     {
       "path": "crates\\pt-megakernel\\src\\compute.rs",
-      "accessCount": 160,
-      "lastAccessed": 1778472199776,
+      "accessCount": 165,
+      "lastAccessed": 1778473922553,
       "type": "directory"
     },
     {
@@ -146,6 +146,12 @@
       "type": "file"
     },
     {
+      "path": "src\\app\\settings\\renderer.rs",
+      "accessCount": 11,
+      "lastAccessed": 1778479092691,
+      "type": "file"
+    },
+    {
       "path": "TODO4.md",
       "accessCount": 10,
       "lastAccessed": 1778452987082,
@@ -164,10 +170,16 @@
       "type": "file"
     },
     {
-      "path": "src\\app\\settings\\renderer.rs",
+      "path": "crates\\pt-megakernel\\src\\bvh_traverse.wgsl",
       "accessCount": 8,
-      "lastAccessed": 1778470521851,
-      "type": "file"
+      "lastAccessed": 1778472685153,
+      "type": "directory"
+    },
+    {
+      "path": "crates\\render-3d\\src\\pt\\megakernel\\render_no_readback.rs",
+      "accessCount": 8,
+      "lastAccessed": 1778478966948,
+      "type": "directory"
     },
     {
       "path": "crates\\pt-wavefront\\src\\wavefront\\shade.wgsl",
@@ -176,21 +188,15 @@
       "type": "directory"
     },
     {
-      "path": "crates\\pt-megakernel\\src\\bvh_traverse.wgsl",
-      "accessCount": 7,
-      "lastAccessed": 1778472261364,
-      "type": "directory"
-    },
-    {
-      "path": "crates\\render-3d\\src\\pt\\megakernel\\render_no_readback.rs",
-      "accessCount": 6,
-      "lastAccessed": 1778452656574,
-      "type": "directory"
-    },
-    {
       "path": "crates\\pt-megakernel\\src\\restir\\temporal.wgsl",
       "accessCount": 6,
       "lastAccessed": 1778460887131,
+      "type": "file"
+    },
+    {
+      "path": "crates\\render-3d\\src\\pt\\megakernel\\render.rs",
+      "accessCount": 6,
+      "lastAccessed": 1778478944248,
       "type": "file"
     },
     {
@@ -230,6 +236,12 @@
       "type": "directory"
     },
     {
+      "path": "src",
+      "accessCount": 5,
+      "lastAccessed": 1778474721976,
+      "type": "directory"
+    },
+    {
       "path": "crates\\render-3d\\src\\pt\\spectral.rs",
       "accessCount": 4,
       "lastAccessed": 1778435156747,
@@ -248,12 +260,6 @@
       "type": "directory"
     },
     {
-      "path": "crates\\render-3d\\src\\pt\\megakernel\\render.rs",
-      "accessCount": 4,
-      "lastAccessed": 1778454281399,
-      "type": "file"
-    },
-    {
       "path": "crates/pt-wavefront/src",
       "accessCount": 4,
       "lastAccessed": 1778469978804,
@@ -270,12 +276,6 @@
       "accessCount": 3,
       "lastAccessed": 1778454317928,
       "type": "file"
-    },
-    {
-      "path": "src",
-      "accessCount": 3,
-      "lastAccessed": 1778454605080,
-      "type": "directory"
     },
     {
       "path": "crates\\pt-wavefront\\src\\wavefront\\raygen.wgsl",
