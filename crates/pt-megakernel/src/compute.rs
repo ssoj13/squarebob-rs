@@ -2433,26 +2433,11 @@ impl PathTraceCompute {
                 let cam_pos = self.last_camera_pos.unwrap_or([0.0, 0.0, 0.0]);
                 let num_candidates = self.restir_config.initial_candidates;
                 let m_max = self.restir_config.m_max;
-                // ReSTIR spatial reuse reads cur_reservoirs[neighbor_id], which
-                // in tiled mode may fall inside a tile that hasn't been
-                // processed yet this frame — that neighbor slot still holds
-                // pre-swap (frame N-2 ish) data and corrupts the resampled
-                // reservoir. The proper fix is a two-pass tile loop (initial +
-                // temporal for all tiles, then spatial pass on the full image,
-                // then shade per-tile). Until that lands, force the neighbor
-                // count to zero in tile mode so the spatial pass becomes a
-                // straight copy `reservoirs_out = reservoirs_in` (temporal's
-                // result), which `shade` then reads correctly.
-                let num_neighbors = if use_tiling {
-                    if self.restir_config.spatial_neighbors > 0 {
-                        log::debug!(
-                            "ReSTIR spatial reuse disabled in tile mode (cross-tile reservoir aliasing); set WF Tile=0 for full spatial reuse"
-                        );
-                    }
-                    0
-                } else {
-                    self.restir_config.spatial_neighbors
-                };
+                // ReSTIR spatial reuse runs ONCE on the full image (between
+                // the two per-tile loops below), not per-tile, so it sees a
+                // fully populated `cur_reservoirs` buffer and no longer
+                // aliases across un-processed tiles.
+                let num_neighbors = self.restir_config.spatial_neighbors;
                 let spatial_radius = self.restir_config.spatial_radius;
 
                 let initial_params: Vec<RestirInitialParams> = tiles_meta
@@ -2495,27 +2480,28 @@ impl PathTraceCompute {
                     &pack_tile_slots(&temporal_params),
                 );
 
-                let spatial_params: Vec<RestirSpatialParams> = tiles_meta
-                    .iter()
-                    .map(|d| RestirSpatialParams {
-                        width: d.full_width,
-                        height: d.full_height,
-                        frame_count: frame,
-                        num_neighbors,
-                        radius: spatial_radius,
-                        normal_threshold: 0.5,
-                        depth_threshold: 0.1,
-                        _pad: 0.0,
-                        tile_x: d.tile_x,
-                        tile_y: d.tile_y,
-                        tile_w: d.tile_width,
-                        tile_h: d.tile_height,
-                    })
-                    .collect();
+                // Spatial pass is dispatched ONCE on the full image (not per
+                // tile), so we only need one slot at offset 0 describing the
+                // full image. tile_x/y = 0 and tile_w/h == full_w/full_h
+                // unify the dispatch coords with the full-image extents.
+                let spatial_full_params = RestirSpatialParams {
+                    width: full_w,
+                    height: full_h,
+                    frame_count: frame,
+                    num_neighbors,
+                    radius: spatial_radius,
+                    normal_threshold: 0.5,
+                    depth_threshold: 0.1,
+                    _pad: 0.0,
+                    tile_x: 0,
+                    tile_y: 0,
+                    tile_w: full_w,
+                    tile_h: full_h,
+                };
                 queue.write_buffer(
                     &restir_bgs.spatial_params_buf,
                     0,
-                    &pack_tile_slots(&spatial_params),
+                    &pack_tile_slots(&[spatial_full_params]),
                 );
 
                 let shade_params: Vec<RestirShadeParams> = tiles_meta
@@ -2756,7 +2742,9 @@ impl PathTraceCompute {
                         log::trace!("WF gbuffer: wg=({}, {})", wg_x, wg_y);
                     }
 
-                    let (initial_pl, temporal_pl, spatial_pl, shade_pl) = rs.pipelines();
+                    // spatial_pl + shade_pl now run AFTER the tile loop on the
+                    // full image / in a second tile loop respectively.
+                    let (initial_pl, temporal_pl, _, _) = rs.pipelines();
                     let wg_x = tile_w.div_ceil(8);
                     let wg_y = tile_h.div_ceil(8);
 
@@ -2789,52 +2777,14 @@ impl PathTraceCompute {
                         log::trace!("ReSTIR temporal: wg=({}, {})", wg_x, wg_y);
                     }
 
-                    // Pass 6: Spatial reuse
-                    if self.restir_config.spatial {
-                        let mut spass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("restir_spatial_pass"),
-                            timestamp_writes: None,
-                        });
-                        spass.set_pipeline(spatial_pl);
-                        spass.set_bind_group(0, &restir_bgs.spatial_bg, &[tile_off]);
-                        spass.dispatch_workgroups(wg_x, wg_y, 1);
-                        log::trace!("ReSTIR spatial: wg=({}, {})", wg_x, wg_y);
-                    }
-
-                    // Pass 7: Final shading
-                    {
-                        let shade_bg = match (self.restir_config.spatial, cur_set) {
-                            (true, 0) => &restir_bgs.shade_bg_prev_a,
-                            (true, _) => &restir_bgs.shade_bg_prev_b,
-                            (false, 0) => &restir_bgs.shade_bg_cur_a,
-                            (false, _) => &restir_bgs.shade_bg_cur_b,
-                        };
-                        let mut spass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("restir_shade_pass"),
-                            timestamp_writes: None,
-                        });
-                        spass.set_pipeline(shade_pl);
-                        spass.set_bind_group(0, shade_bg, &[tile_off]);
-                        spass.dispatch_workgroups(wg_x, wg_y, 1);
-                        log::trace!("ReSTIR shade: wg=({}, {})", wg_x, wg_y);
-                    }
-
-                    // If spatial is disabled, keep temporal history by copying current to prev
-                    if self.restir_config.temporal && !self.restir_config.spatial {
-                        let (cur_res, prev_res) = rs.reservoirs();
-                        let res_size = (tile_w * tile_h).max(1) as u64 * Reservoir::SIZE as u64;
-                        encoder.copy_buffer_to_buffer(cur_res, 0, prev_res, 0, res_size);
-                    }
-
-                    // Update previous depth for temporal reprojection
-                    let depth_size = (tile_w * tile_h).max(1) as u64 * 4;
-                    encoder.copy_buffer_to_buffer(
-                        rs.depth_buffer(),
-                        0,
-                        &restir_bgs.prev_depth_buf,
-                        0,
-                        depth_size,
-                    );
+                    // Spatial reuse, restir_shade, and the cur->prev /
+                    // depth-history copies all move OUT of the per-tile loop
+                    // (see the post-loop block below). At this point in the
+                    // tile loop, the reservoirs for THIS tile's pixels are
+                    // initial+temporal-resampled; spatial then runs once on
+                    // the full image after all tiles complete their loop-1
+                    // work, and a second tile loop drives the restir_shade
+                    // pass that reads spatial's full-image output.
                 } else {
                     // Bounce loop with ping-pong
                     let mut use_set_a = cur_set == 0;
@@ -2939,6 +2889,154 @@ impl PathTraceCompute {
                 break;
             }
             tile_y = tile_y.saturating_add(step_y);
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // Stage F.4 Phase 1 — two-pass tile loop for tile-safe ReSTIR.
+        //
+        // Loop 1 above filled `reservoirs` for every tile's pixels (initial +
+        // temporal). Now:
+        //  - run spatial reuse ONCE on the full image so it sees a complete
+        //    reservoir buffer (no cross-tile aliasing)
+        //  - run a second per-tile loop that redoes raygen + intersect b0
+        //    (cheap; the wavefront ray/hit buffers are tile-sized so only the
+        //    last loop-1 tile's data is in memory) and dispatches restir_shade
+        //  - after both loops, do the cur→prev / depth history copies on the
+        //    full image (the previous in-loop copies used tile_pixels offsets
+        //    that were tile-incorrect in tiled mode).
+        if restir_enabled {
+            if let (Some(rs), Some(restir_bgs)) =
+                (&self.restir, &self.restir_bind_groups)
+            {
+                let (_, _, spatial_pl, shade_pl) = rs.pipelines();
+                let intersect_pl = wf.pipelines().1;
+                let raygen_pl = wf.pipelines().0;
+
+                // Spatial pass (full image) — one slot at offset 0 of
+                // spatial_params_buf was written with full-image params before
+                // the tile loop.
+                if self.restir_config.spatial {
+                    let mut spass =
+                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("restir_spatial_full_pass"),
+                            timestamp_writes: None,
+                        });
+                    spass.set_pipeline(spatial_pl);
+                    spass.set_bind_group(0, &restir_bgs.spatial_bg, &[0]);
+                    let wg_x = full_w.div_ceil(8);
+                    let wg_y = full_h.div_ceil(8);
+                    spass.dispatch_workgroups(wg_x, wg_y, 1);
+                    log::trace!(
+                        "ReSTIR spatial (full image): wg=({}, {})",
+                        wg_x,
+                        wg_y
+                    );
+                }
+
+                // Loop 2: per-tile restir_shade with redone primary rays.
+                // raygen+intersect are cheap and ensure rays/hits[local_id]
+                // contain THIS tile's data when shade reads them.
+                let mut tile_idx = 0u32;
+                let mut tile_y2 = 0u32;
+                while tile_y2 < full_h {
+                    let mut tile_x = 0u32;
+                    let tile_h = (full_h - tile_y2).min(wf_h);
+                    while tile_x < full_w {
+                        let tile_w = (full_w - tile_x).min(wf_w);
+                        let tile_pixels = tile_w * tile_h;
+                        let tile_off = wf.tile_offset(tile_idx);
+
+                        wf.reset_tile_count(encoder, tile_idx);
+
+                        // Redo raygen for this tile.
+                        {
+                            let mut pass = encoder
+                                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                    label: Some("wf_raygen_pass_loop2"),
+                                    timestamp_writes: None,
+                                });
+                            pass.set_pipeline(raygen_pl);
+                            pass.set_bind_group(
+                                0,
+                                &start_set.raygen_bg,
+                                &[tile_off, tile_off],
+                            );
+                            let wg_x = tile_w.div_ceil(8);
+                            let wg_y = tile_h.div_ceil(8);
+                            pass.dispatch_workgroups(wg_x, wg_y, 1);
+                        }
+
+                        // Redo primary intersect.
+                        {
+                            let mut pass = encoder
+                                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                    label: Some("wf_intersect_pass_loop2"),
+                                    timestamp_writes: None,
+                                });
+                            pass.set_pipeline(intersect_pl);
+                            pass.set_bind_group(
+                                0,
+                                &start_set.intersect_bg,
+                                &[tile_off],
+                            );
+                            let wg = tile_pixels.div_ceil(64);
+                            pass.dispatch_workgroups(wg, 1, 1);
+                        }
+
+                        // ReSTIR shade — reads global reservoirs (now spatial-
+                        // resampled) + tile-local rays/hits + materials, writes
+                        // output[global_pixel].
+                        {
+                            let shade_bg =
+                                match (self.restir_config.spatial, cur_set) {
+                                    (true, 0) => &restir_bgs.shade_bg_prev_a,
+                                    (true, _) => &restir_bgs.shade_bg_prev_b,
+                                    (false, 0) => &restir_bgs.shade_bg_cur_a,
+                                    (false, _) => &restir_bgs.shade_bg_cur_b,
+                                };
+                            let mut spass = encoder.begin_compute_pass(
+                                &wgpu::ComputePassDescriptor {
+                                    label: Some("restir_shade_pass"),
+                                    timestamp_writes: None,
+                                },
+                            );
+                            spass.set_pipeline(shade_pl);
+                            spass.set_bind_group(0, shade_bg, &[tile_off]);
+                            let wg_x = tile_w.div_ceil(8);
+                            let wg_y = tile_h.div_ceil(8);
+                            spass.dispatch_workgroups(wg_x, wg_y, 1);
+                        }
+
+                        tile_idx += 1;
+                        if !use_tiling {
+                            break;
+                        }
+                        tile_x = tile_x.saturating_add(step_x);
+                    }
+                    if !use_tiling {
+                        break;
+                    }
+                    tile_y2 = tile_y2.saturating_add(step_y);
+                }
+
+                // History copies (full image, once per frame). These used to
+                // run per-tile with tile_pixels offsets which was tile-broken
+                // in tiled mode (last tile's slice wrote to offset 0).
+                if self.restir_config.temporal && !self.restir_config.spatial {
+                    let (cur_res, prev_res) = rs.reservoirs();
+                    let res_size =
+                        (full_w * full_h).max(1) as u64 * Reservoir::SIZE as u64;
+                    encoder.copy_buffer_to_buffer(cur_res, 0, prev_res, 0, res_size);
+                }
+                let depth_size = (full_w * full_h).max(1) as u64 * 4;
+                encoder.copy_buffer_to_buffer(
+                    rs.depth_buffer(),
+                    0,
+                    &restir_bgs.prev_depth_buf,
+                    0,
+                    depth_size,
+                );
+            }
         }
 
         // Pass 4: Finalize - copy accum to output texture
