@@ -8,8 +8,11 @@ use glam::{Mat4, Vec3};
 use log::debug;
 
 use dirstat_core::DirEntry;
-use pt_mats::{MaterialClass, MaterializeMode};
-use render_shared::{hash_transform, name_hash, HoverMode, Render3DOptions};
+use pt_mats::{
+    hierarchical_path_value, sample_palette, MaterialClass, MaterialDistribution, MaterializeMode,
+    Palette,
+};
+use render_shared::{hash_transform, name_hash, ColorMode, FolderColorMode, HoverMode, RampParams, Render3DOptions};
 use treemap::{self, TreeMapOptions};
 
 use crate::geometry::CubeInstance;
@@ -140,19 +143,16 @@ impl Renderer3D {
             // Leaf or consolidated node -> emit cube
             let base_height = Self::compute_cube_height(node, depth, opts);
 
-            // Determine base color based on color_mode
-            use render_shared::{
-                color_for_age, color_for_depth, color_for_extension, color_for_hash,
-                color_for_size, ColorMode, FolderColorMode,
-            };
-            let mut base_color = match opts.color_mode {
-                ColorMode::FileType => {
-                    // Color by file extension
-                    color_for_extension(&node.ext)
-                }
+            // Palette-driven per-cube tint. Each ColorMode emits a scalar
+            // t∈[0,1] from the relevant property (path / ext / size / age
+            // / depth); the active ramp's palette + distribution + curve
+            // turns that into an RGB tint. Auto-routes palette by source
+            // if the user hasn't pinned one.
+            let (scene_max_depth, scene_max_size) = self.mat_cache.scene_meta();
+            let t = match opts.color_mode {
+                ColorMode::FileType => name_hash(&node.ext) as f32 / u32::MAX as f32,
                 ColorMode::FileAge => {
-                    // Color by modification time (normalized to 0-1 over 1 year)
-                    let age_norm = if let Some(mtime) = node.modified_time {
+                    if let Some(mtime) = node.modified_time {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
@@ -161,40 +161,29 @@ impl Renderer3D {
                         let year_secs = 365 * 24 * 60 * 60;
                         (age_secs as f32 / year_secs as f32).clamp(0.0, 1.0)
                     } else {
-                        // Fallback to hash if no timestamp
                         (name_hash(&node.path.to_string_lossy()) % 1000) as f32 / 1000.0
-                    };
-                    color_for_age(age_norm)
+                    }
                 }
                 ColorMode::FileSize => {
-                    // Color by file size (log scale normalized)
-                    let size_norm = if node.size > 0 {
-                        ((node.size as f64).log10() / 12.0).clamp(0.0, 1.0) as f32
-                    // 0-1TB range
+                    let max_log = ((scene_max_size as f64).max(1.0).log10()).max(1.0);
+                    if node.size > 0 {
+                        (((node.size as f64).log10()) / max_log).clamp(0.0, 1.0) as f32
                     } else {
                         0.0
-                    };
-                    color_for_size(size_norm)
+                    }
                 }
-                ColorMode::Treemap => {
-                    // Original treemap-based coloring
-                    let color = if node.is_dir && !node.children.is_empty() {
-                        treemap::compute_avg_color(node, dir_hash)
-                    } else {
-                        treemap::dir_tinted_color(&node.ext, dir_hash)
-                    };
-                    [
-                        color[0] as f32 / 255.0,
-                        color[1] as f32 / 255.0,
-                        color[2] as f32 / 255.0,
-                        1.0,
-                    ]
-                }
+                ColorMode::Treemap => hierarchical_path_value(&node.path),
                 ColorMode::Depth => {
-                    // Color by depth (rainbow gradient)
-                    color_for_depth(depth, 10) // max_depth = 10 levels for full rainbow
+                    (depth as f32 / scene_max_depth.max(1) as f32).clamp(0.0, 1.0)
                 }
             };
+            let mode_default_palette = default_palette_for_color_mode(opts.color_mode);
+            let mut base_color = sample_color_ramp(
+                t,
+                opts.color_ramps.get(opts.color_mode as usize),
+                mode_default_palette,
+                &node.path,
+            );
 
             // Folder tint: directories get a folder color, files are tinted by parent folder color
             let folder_tint = opts.folder_tint.clamp(0.0, 1.0);
@@ -204,32 +193,35 @@ impl Renderer3D {
                 } else {
                     depth.saturating_sub(1)
                 };
-                let parent_name_hash = node
-                    .path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .map(|n| name_hash(&n.to_string_lossy()))
-                    .unwrap_or(dir_hash);
-                let parent_path_hash = node
-                    .path
-                    .parent()
-                    .map(|p| name_hash(&p.to_string_lossy()))
-                    .unwrap_or(dir_hash);
-                let dir_name_hash = name_hash(&node.name);
-                let dir_path_hash = name_hash(&node.path.to_string_lossy());
-                let mut folder_color = match opts.folder_color_mode {
-                    FolderColorMode::Depth => color_for_depth(folder_depth, 10),
-                    FolderColorMode::NameHash => color_for_hash(if node.is_dir {
-                        dir_name_hash
-                    } else {
-                        parent_name_hash
-                    }),
-                    FolderColorMode::PathHash => color_for_hash(if node.is_dir {
-                        dir_path_hash
-                    } else {
-                        parent_path_hash
-                    }),
+                let parent_path = node.path.parent();
+                let folder_path = if node.is_dir {
+                    node.path.as_path()
+                } else {
+                    parent_path.unwrap_or(node.path.as_path())
                 };
+                let folder_t = match opts.folder_color_mode {
+                    FolderColorMode::Depth => {
+                        (folder_depth as f32 / scene_max_depth.max(1) as f32).clamp(0.0, 1.0)
+                    }
+                    FolderColorMode::NameHash => {
+                        let h = folder_path
+                            .file_name()
+                            .map(|n| name_hash(&n.to_string_lossy()))
+                            .unwrap_or(dir_hash);
+                        h as f32 / u32::MAX as f32
+                    }
+                    FolderColorMode::PathHash => {
+                        hierarchical_path_value(folder_path)
+                    }
+                };
+                let folder_default = default_palette_for_folder_mode(opts.folder_color_mode);
+                let mut folder_color = sample_color_ramp(
+                    folder_t,
+                    opts.folder_ramps.get(opts.folder_color_mode as usize),
+                    folder_default,
+                    folder_path,
+                );
+                // Depth attenuation: deeper folders → darker tint.
                 let depth_factor = (1.0 - folder_depth as f32 * 0.04).clamp(0.35, 1.0);
                 folder_color[0] *= depth_factor;
                 folder_color[1] *= depth_factor;
@@ -304,6 +296,62 @@ impl Renderer3D {
             }
         }
     }
+}
+
+/// Auto-routed palette per `ColorMode`. Mirrors
+/// `auto_palette_for_source` from pt-mats but uses the ColorMode enum.
+fn default_palette_for_color_mode(m: ColorMode) -> Palette {
+    match m {
+        ColorMode::FileSize => Palette::Viridis,
+        ColorMode::FileAge => Palette::Sunset,
+        ColorMode::Depth => Palette::Cubehelix,
+        ColorMode::FileType => Palette::Plasma,
+        ColorMode::Treemap => Palette::Turbo,
+    }
+}
+
+/// Auto-routed palette per `FolderColorMode`.
+fn default_palette_for_folder_mode(m: FolderColorMode) -> Palette {
+    match m {
+        FolderColorMode::Depth => Palette::Cubehelix,
+        FolderColorMode::NameHash => Palette::Plasma,
+        FolderColorMode::PathHash => Palette::Turbo,
+    }
+}
+
+/// Sample a color ramp: apply curve to `t`, apply distribution, then
+/// look up the chosen palette. Position-dependent distributions
+/// (Spatial) fall back to Direct for the cached cube path; they'd need
+/// per-cube position which the cache key doesn't carry.
+fn sample_color_ramp(
+    t: f32,
+    ramp: RampParams,
+    default_palette: Palette,
+    path: &std::path::Path,
+) -> [f32; 4] {
+    let mut tt = ramp.curve.apply(t).clamp(0.0, 1.0);
+    tt = match ramp.distribution {
+        MaterialDistribution::Direct => tt,
+        MaterialDistribution::Quantized => {
+            let n = ramp.quant_levels.max(1) as f32;
+            (tt * n).floor() / (n - 1.0).max(1.0)
+        }
+        MaterialDistribution::Gradient => tt * tt * (3.0 - 2.0 * tt),
+        MaterialDistribution::Bands => {
+            let n = ramp.band_count.max(1) as f32;
+            (tt * n).floor() / (n - 1.0).max(1.0)
+        }
+        MaterialDistribution::Spatial => {
+            // Mix in a deterministic path-based wobble — closest cheap
+            // proxy for "spatial coherence" that survives the path-keyed
+            // cube cache.
+            let n = hierarchical_path_value(path);
+            (tt * 0.3 + n * 0.7).clamp(0.0, 1.0)
+        }
+    };
+    let palette = ramp.palette.unwrap_or(default_palette);
+    let rgb = sample_palette(palette, tt);
+    [rgb[0], rgb[1], rgb[2], 1.0]
 }
 
 /// Recursively scan the directory tree to find the deepest depth and the

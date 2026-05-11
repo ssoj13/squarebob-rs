@@ -191,7 +191,9 @@ impl App {
         // Animation time for 3D
         if self.render_mode == RenderMode::Mode3D {
             let menu_open = self.ctx_menu_path.is_some();
-            let dt = ctx.input(|i| i.stable_dt);
+            // Clamp dt to ~33ms so a slow / paused frame doesn't make
+            // animation timelines lurch when redraws resume.
+            let dt = ctx.input(|i| i.stable_dt).min(0.033);
             let auto_spp_freeze = self.render_3d_opts.path_tracing
                 && (self.render_3d_opts.pt_auto_spp || self.render_3d_opts.pt_camera_snap);
             let allow_anim_tick = if auto_spp_freeze {

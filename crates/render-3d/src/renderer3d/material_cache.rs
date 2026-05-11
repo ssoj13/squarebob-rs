@@ -70,6 +70,12 @@ impl MaterialCache {
         }
     }
 
+    /// Read the most recent scene-level bounds (max_depth, max_size).
+    /// Returns `(1, 1)` before `set_scene_meta` has been called.
+    pub(crate) fn scene_meta(&self) -> (u32, u64) {
+        (self.scene_max_depth, self.scene_max_size)
+    }
+
     /// Update scene-level normalisation bounds. Called once per frame by
     /// `collect_cubes` after pre-walking the tree. Clears caches when
     /// bounds change so `Depth`/`Size` sources stay consistent.

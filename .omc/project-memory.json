@@ -18,8 +18,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "cargo build --workspace --message-format=short 2>&1 | grep -E \"^(src|crates).*error\" | head -30",
-    "testCommand": "cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | grep -E \"error|warning:\" | head -20 && cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -20",
+    "buildCommand": "cargo build --workspace --message-format=short 2>&1 | grep -E \"^(src|crates).*error\" | head -20",
+    "testCommand": "cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | grep -E \"error|warning:\" | head -10 && cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -20",
     "lintCommand": "cargo clippy",
     "devCommand": "cargo run",
     "scripts": {}
@@ -129,8 +129,8 @@
     },
     {
       "path": "src\\app\\settings\\renderer.rs",
-      "accessCount": 19,
-      "lastAccessed": 1778481898581,
+      "accessCount": 21,
+      "lastAccessed": 1778482791515,
       "type": "file"
     },
     {

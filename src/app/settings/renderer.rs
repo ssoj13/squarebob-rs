@@ -276,7 +276,7 @@ impl App {
                     }
 
                     // Color Mode
-                    control_label(ui, "Color:");
+                    control_label(ui, "Color");
                     let old = self.render_3d_opts.color_mode;
                     if multibutton_exclusive(
                         ui,
@@ -297,8 +297,19 @@ impl App {
                     }
                     ui.end_row();
 
-                    // Folder tint
-                    control_label(ui, "Folder tint:");
+                    // Per-color-mode ramp (palette / distribution / curve).
+                    let cidx = self.render_3d_opts.color_mode as usize;
+                    let color_ramp = self.render_3d_opts.color_ramps.get_mut(cidx);
+                    if super::ramp_widget::ramp_rows(
+                        ui,
+                        color_ramp,
+                        super::ramp_widget::RampUiCtx::full("color"),
+                    ) {
+                        self.needs_layout = true;
+                    }
+
+                    // Folder tint mode + amount
+                    control_label(ui, "Folder tint");
                     ui.horizontal(|ui| {
                         if ui
                             .add(
@@ -321,6 +332,17 @@ impl App {
                         );
                     });
                     ui.end_row();
+
+                    // Per-folder-mode ramp.
+                    let fidx = self.render_3d_opts.folder_color_mode as usize;
+                    let folder_ramp = self.render_3d_opts.folder_ramps.get_mut(fidx);
+                    if super::ramp_widget::ramp_rows(
+                        ui,
+                        folder_ramp,
+                        super::ramp_widget::RampUiCtx::full("folder"),
+                    ) {
+                        self.needs_layout = true;
+                    }
                 });
 
             // LOD (Level of Detail)
