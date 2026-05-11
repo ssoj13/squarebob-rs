@@ -753,6 +753,7 @@ fn pick_alias_index(rng: ptr<function, u32>, count: u32) -> u32 {
 
 fn sample_emissive_light(rng: ptr<function, u32>) -> EmissiveLightSample {
     let light_count = emissive_light_params.params0.z;
+    let total_weight = max(emissive_light_params.params1.y, EPSILON);
     // O(1) light selection via Vose alias table — replaces the previous
     // O(N) linear scan that crippled scenes with thousands of emissives.
     let idx = pick_alias_index(rng, light_count);
