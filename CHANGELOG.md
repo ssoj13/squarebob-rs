@@ -202,18 +202,20 @@ shifted which rays hit the cap each frame so the holes danced
 around. New cap of 64 buys ample margin (256 B/thread of register-
 mapped private storage at 8×8 workgroups, negligible).
 
-The same fix removes the camera-rotation case of the dropout but
-NOT the animation case — when Effects=Ocean shifts cubes by ±30
-units along Z per frame, the GPU BVH refit appears to lag behind
-the instance upload and rays use stale AABBs. Tracked as a separate
-follow-up.
+**Animation case (2026-05-11 follow-up):** `upload_scene_smart` never
+actually used the GPU refit pass — it always full-rebuilt while logging
+that linearized traversal buffers were “incompatible” with refit.
+`GpuBvhBuilder` now keeps a persistent `output_nodes` storage buffer in
+the LBVH slot layout, runs `refit_leaves` on animation frames when
+`pt_bvh_refit` is on, readbacks, and re-linearizes for PT. This keeps
+leaf AABBs aligned with the current instance transforms without a full
+radix/LBVH rebuild every frame.
 
 ### Known follow-ups
 
-- Animation block-flicker: Ocean / Echo effects displace cubes by
-  large per-frame amounts; LBVH refit doesn't catch up before the
-  PT dispatch reads bounds. Repro: WF Tile=0, Animation=on,
-  Effects=Ocean, Strength≥1. Investigation TBD.
+- If animation flicker persists after refit (e.g. extreme motion),
+  consider a full rebuild when displacement exceeds a threshold, or
+  Stage G.C temporal reuse for stability.
 - Spatial distribution for Color uses a deterministic path-hash
   wobble because the cube cache key has no per-instance position.
   Real spatial coherence (Perlin / blue-noise position field) needs

@@ -470,6 +470,8 @@ pub struct PathTraceCompute {
     // GPU BVH builder with refit support for animation
     bvh_builder: GpuBvhBuilder,
     bvh_config: GpuBvhConfig,
+    /// Mirrors UI `pt_bvh_refit`: when false, skip GPU refit fast path.
+    bvh_refit_preferred: bool,
     sorted_indices: Vec<u32>,
 
     // Wavefront path tracing (optional)
@@ -1114,6 +1116,7 @@ impl PathTraceCompute {
             blit_sampler,
             bvh_builder: GpuBvhBuilder::new(device),
             bvh_config: GpuBvhConfig::default(),
+            bvh_refit_preferred: true,
             sorted_indices: Vec::new(),
             wavefront: None,
             wavefront_config: WavefrontConfig::default(),
@@ -3800,13 +3803,11 @@ impl PathTraceCompute {
     /// Update BVH configuration from UI options.
     pub fn set_bvh_config(&mut self, gpu_enabled: bool, refit_enabled: bool) {
         self.bvh_config.enabled = gpu_enabled;
-        // refit is handled automatically based on can_refit()
-        let _ = refit_enabled; // reserved for future use
+        self.bvh_refit_preferred = refit_enabled;
     }
 
     /// Upload scene with smart BVH build (GPU or CPU based on config).
     /// For animation: tries refit first if structure unchanged.
-    #[allow(dead_code)]
     pub fn upload_scene_smart(
         &mut self,
         device: &wgpu::Device,
@@ -3816,16 +3817,28 @@ impl PathTraceCompute {
         is_animating: bool,
     ) {
         self.update_scene_bounds(instances);
-        // Check if we can refit (same instance count, valid structure)
-        let can_refit = is_animating && self.bvh_builder.can_refit(instances.len());
-        if can_refit && self.sorted_indices.is_empty() {
-            // No valid ordering; force rebuild
-        } else if can_refit {
-            // NOTE: output nodes are linearized for traversal, but refit expects LBVH layout.
-            // Until we have a linearized-refit path, skip refit and rebuild to avoid corrupt AABBs.
-            log::warn!(
-                "PT refit skipped: linearized node layout incompatible with LBVH refit, rebuilding"
-            );
+        let can_try_refit = is_animating
+            && self.bvh_refit_preferred
+            && self.bvh_builder.can_refit(instances.len())
+            && self.sorted_indices.len() == instances.len();
+
+        if can_try_refit {
+            if let Some(nodes) = self.bvh_builder.try_refit_linearized(
+                device,
+                queue,
+                instances,
+                &self.sorted_indices,
+            ) {
+                let gpu_data = pt_core::gpu_data::build_gpu_data_from_nodes(
+                    nodes,
+                    &self.sorted_indices,
+                    instances,
+                    &data.materials,
+                );
+                self.upload_scene(device, queue, &gpu_data, Some(instances));
+                return;
+            }
+            log::debug!("PT BVH: refit fast path failed validation, full GPU rebuild");
         }
 
         // Full rebuild path

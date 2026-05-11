@@ -116,6 +116,9 @@ pub struct GpuBvhBuilder {
     lbvh_nodes: Option<wgpu::Buffer>,
     leaf_parents: Option<wgpu::Buffer>,
     sorted_in_a: bool,
+    /// LBVH scratch output (`output_nodes` in `aabb_compute.wgsl`); persists
+    /// between frames so `refit_leaves` can update AABBs before CPU linearize.
+    output_nodes_buf: Option<wgpu::Buffer>,
 
     // Uniforms
     bounds_buffer: wgpu::Buffer,
@@ -315,6 +318,7 @@ impl GpuBvhBuilder {
             lbvh_nodes: None,
             leaf_parents: None,
             sorted_in_a: true,
+            output_nodes_buf: None,
             bounds_buffer,
             build_params_buffer,
             radix_params_buffer,
@@ -328,6 +332,127 @@ impl GpuBvhBuilder {
     #[allow(dead_code)]
     pub fn can_refit(&self, instance_count: usize) -> bool {
         self.has_valid_structure && instance_count == self.last_build_count
+    }
+
+    fn ensure_output_nodes_buffer(&mut self, device: &wgpu::Device, leaf_count: usize) {
+        let node_count = (2 * leaf_count).saturating_sub(1).max(1);
+        let size = (node_count * std::mem::size_of::<BvhNode>()) as u64;
+        let need_new = self
+            .output_nodes_buf
+            .as_ref()
+            .map(|b| b.size() < size)
+            .unwrap_or(true);
+        if need_new {
+            self.output_nodes_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("bvh_output_nodes"),
+                size: size.max(std::mem::size_of::<BvhNode>() as u64),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+    }
+
+    /// Animation fast path: refit internal LBVH output, read back, linearize for PT.
+    /// `sorted_leaf_indices` must match the last GPU full build (leaf instance order).
+    pub fn try_refit_linearized(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        instances: &[Instance],
+        sorted_leaf_indices: &[u32],
+    ) -> Option<Vec<BvhNode>> {
+        if !self.can_refit(instances.len())
+            || sorted_leaf_indices.len() != instances.len()
+            || self.output_nodes_buf.is_none()
+        {
+            return None;
+        }
+        let n = instances.len();
+        self.update_aabbs(device, queue, instances);
+        self.update_bounds(queue, instances);
+
+        let n32 = n as u32;
+        queue.write_buffer(
+            &self.build_params_buffer,
+            0,
+            bytemuck::bytes_of(&BuildParams {
+                count: n32,
+                is_refit: 1,
+                _pad: [0; 2],
+            }),
+        );
+
+        let aabb_buf = self.aabb_buffer.as_ref()?;
+        let sorted_buf = if self.sorted_in_a {
+            self.morton_a.as_ref()?
+        } else {
+            self.morton_b.as_ref()?
+        };
+        let lbvh_buf = self.lbvh_nodes.as_ref()?;
+        let leaf_parents = self.leaf_parents.as_ref()?;
+        let out_buf = self.output_nodes_buf.as_ref()?;
+
+        let aabb_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bvh_aabb_refit_linearized_bg"),
+            layout: &self.aabb_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: aabb_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sorted_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: lbvh_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: out_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.build_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: leaf_parents.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("bvh_refit_linearized_encoder"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("bvh_refit_leaves_linearized"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.aabb_refit_pipeline);
+            pass.set_bind_group(0, &aabb_bg, &[]);
+            let wg = n32.div_ceil(256);
+            pass.dispatch_workgroups(wg, 1, 1);
+        }
+        queue.submit(Some(encoder.finish()));
+
+        let node_count = (2 * n).saturating_sub(1);
+        let output_nodes: Vec<BvhNode> = read_buffer_vec(device, queue, out_buf, node_count);
+        let lbvh_cpu: Vec<GpuLbvhNode> = read_buffer_vec(device, queue, lbvh_buf, n.saturating_sub(1));
+        let leaf_parents_cpu: Vec<u32> = read_buffer_vec(device, queue, leaf_parents, n);
+
+        validate_lbvh(&lbvh_cpu, n)
+            .and_then(|_| validate_root_aabb(&output_nodes, instances, &lbvh_cpu))
+            .and_then(|_| validate_leaf_parents(&lbvh_cpu, &leaf_parents_cpu, n))
+            .ok()?;
+
+        let nodes = linearize_lbvh(&lbvh_cpu, &output_nodes, n, sorted_leaf_indices);
+        trace!("GpuBvhBuilder::try_refit_linearized OK (n={})", n);
+        Some(nodes)
     }
 
     /// Full BVH build (first frame or structure change).
@@ -469,6 +594,7 @@ impl GpuBvhBuilder {
         self.ensure_capacity(device, n);
         self.update_aabbs(device, queue, instances);
         self.update_bounds(queue, instances);
+        self.ensure_output_nodes_buffer(device, n);
 
         let aabb_buf = self.aabb_buffer.as_ref().unwrap();
         let morton_a = self.morton_a.as_ref().unwrap();
@@ -617,16 +743,9 @@ impl GpuBvhBuilder {
         let sorted = input;
         self.sorted_in_a = std::ptr::eq(sorted, self.morton_a.as_ref().unwrap());
 
-        let output_nodes_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_output_nodes"),
-            size: ((2 * n).max(1) * std::mem::size_of::<BvhNode>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let output_nodes_buf = self.output_nodes_buf.as_ref().unwrap();
 
-        let run_lbvh = |sorted_buf: &wgpu::Buffer| {
+        let run_lbvh = |sorted_buf: &wgpu::Buffer, output_buf: &wgpu::Buffer| {
             let lbvh_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("bvh_lbvh_bg"),
                 layout: &self.lbvh_bgl,
@@ -668,7 +787,7 @@ impl GpuBvhBuilder {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: output_nodes_buf.as_entire_binding(),
+                        resource: output_buf.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
@@ -728,14 +847,14 @@ impl GpuBvhBuilder {
             queue.write_buffer(cpu_sorted_buf, 0, bytemuck::cast_slice(&sorted_morton));
             self.sorted_in_a = true;
             used_cpu_sort = true;
-            run_lbvh(cpu_sorted_buf);
+            run_lbvh(cpu_sorted_buf, output_nodes_buf);
         } else {
-            run_lbvh(sorted);
+            run_lbvh(sorted, output_nodes_buf);
         }
 
         let node_count = (2 * n).saturating_sub(1);
         let mut output_nodes: Vec<BvhNode> =
-            read_buffer_vec(device, queue, &output_nodes_buf, node_count);
+            read_buffer_vec(device, queue, output_nodes_buf, node_count);
         let mut lbvh_cpu: Vec<GpuLbvhNode> =
             read_buffer_vec(device, queue, lbvh_nodes, n.saturating_sub(1));
         let mut leaf_parents_cpu: Vec<u32> = read_buffer_vec(device, queue, leaf_parents, n);
@@ -759,9 +878,9 @@ impl GpuBvhBuilder {
             let cpu_sorted_buf = self.morton_a.as_ref().unwrap();
             queue.write_buffer(cpu_sorted_buf, 0, bytemuck::cast_slice(&sorted_morton));
             self.sorted_in_a = true;
-            run_lbvh(cpu_sorted_buf);
+            run_lbvh(cpu_sorted_buf, output_nodes_buf);
 
-            output_nodes = read_buffer_vec(device, queue, &output_nodes_buf, node_count);
+            output_nodes = read_buffer_vec(device, queue, output_nodes_buf, node_count);
             lbvh_cpu = read_buffer_vec(device, queue, lbvh_nodes, n.saturating_sub(1));
             leaf_parents_cpu = read_buffer_vec(device, queue, leaf_parents, n);
 

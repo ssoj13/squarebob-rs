@@ -23,11 +23,11 @@ then `TODO4.md` Stage G section for the technical roadmap, then
    flicker (cubes disappearing with env map peeking through). 
    `crates/pt-megakernel/src/bvh_traverse.wgsl:179`.
 
-3. **Open: animation block-flicker.** With `Effects=Ocean,
-   Strength≥1, Animation=on`, cubes shift ±30 units along Z per
-   frame; the GPU BVH refit appears to lag behind the instance
-   upload so rays use stale AABBs. NOT a stack-depth issue. Refit-
-   sequencing investigation needed in `bvh_gpu` crate.
+3. **~~Open: animation block-flicker.~~** Addressed 2026-05-11: the
+   refit WGSL pass was never wired for megakernel `upload_scene_smart`
+   (only full LBVH rebuild). Persistent `output_nodes` buffer +
+   `try_refit_linearized` + re-linearize ships in this session. Re-test
+   Ocean animation; if holes remain, try thresholded full rebuild.
 
 4. **Open: Stage G.C — temporal reuse.** ~150 LOC. Plan in TODO4.md.
    Bindings (cur_reservoirs / prev_reservoirs / motion_vectors) are

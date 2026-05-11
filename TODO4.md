@@ -628,12 +628,11 @@ geometry. RNG jitter shifted which rays hit the cap each frame so
 the holes danced around. New cap of 64 buys margin (256 B/thread of
 register-mapped private storage at 8×8 workgroups, negligible).
 
-**Still open — animation case.** With `Effects = Ocean`,
-`Strength ≥ 1`, `Animation = on`, Ocean displaces cubes by ±30 units
-along Z per frame. The GPU BVH refit appears to lag behind the
-instance upload so the PT dispatch reads stale AABBs and rays miss.
-Stack-depth fix does NOT help this — it's a refit-sequencing
-problem, not a stack-depth problem. Investigation TBD next sprint.
+**Animation case (fixed 2026-05-11):** `upload_scene_smart` never called
+the GPU `refit_leaves` pass — it always did a full LBVH rebuild. The
+code now keeps a persistent LBVH-layout `output_nodes` buffer, runs
+refit on animation frames when `pt_bvh_refit` is on, readbacks, and
+re-linearizes for PT so leaf AABBs match current transforms.
 
 ### Stage G.C — temporal reuse (next sprint)
 
