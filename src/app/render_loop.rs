@@ -218,16 +218,16 @@ impl App {
                 true
             };
 
-            // Object animation (cube transforms, hash effects). Gated
-            // by `animate` — Space toggles this off and freezes cubes.
+            // Both timelines are gated by the master `animate` toggle —
+            // pressing Space freezes EVERYTHING (cubes + sky). When
+            // animate is on, `env_animate` further gates just the env
+            // and `env_speed` is its multiplier.
             if self.render_3d_opts.animate && !menu_open && allow_anim_tick {
                 self.render_3d_opts.animation_time += dt * self.render_3d_opts.animation_speed;
-            }
-            // Env timeline is independent. The sky / daylight cycle
-            // keeps rolling unless `env_animate` is explicitly off, so
-            // pausing object animation doesn't freeze the world.
-            if self.render_3d_opts.env_animate && !menu_open && allow_anim_tick {
-                self.render_3d_opts.env_time += dt * self.render_3d_opts.env_speed;
+                if self.render_3d_opts.env_animate {
+                    self.render_3d_opts.env_time +=
+                        dt * self.render_3d_opts.animation_speed * self.render_3d_opts.env_speed;
+                }
             }
 
             // Update camera animation
