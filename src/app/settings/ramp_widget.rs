@@ -14,7 +14,7 @@ use eframe::egui;
 use pt_mats::{MaterialDistribution, Palette};
 use render_shared::{CurveParams, RampParams};
 
-use super::{control_label, PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH};
+use super::{control_label, section_header_text, PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH};
 
 /// Emit Scale + Scale Exponent rows for a `CurveParams`. Returns `true`
 /// when either value changed.
@@ -184,6 +184,7 @@ pub fn ramp_section(
     title: &str,
     params: &mut RampParams,
     ctx: RampUiCtx,
+    header_font_pt: f32,
 ) -> bool {
     let mut changed = false;
     let palette_label = match params.palette {
@@ -191,7 +192,7 @@ pub fn ramp_section(
         Some(p) => p.name().to_string(),
     };
     let header = format!("{}: {}", title, palette_label);
-    egui::CollapsingHeader::new(header)
+    egui::CollapsingHeader::new(section_header_text(&header, header_font_pt))
         .id_salt(format!("ramp_section_{}", ctx.id_salt))
         .default_open(false)
         .show(ui, |ui| {

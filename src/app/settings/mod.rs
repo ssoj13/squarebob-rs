@@ -39,15 +39,12 @@ pub(super) fn settings_grid(
         .show(ui, add_contents);
 }
 
-/// Collapsing-header title for settings subsections (tinted / compact).
+/// Collapsing-header title for nested subsections (explicit pt, not `TextStyle`).
 pub(super) fn section_header_text(title: &str, title_font_pt: f32) -> egui::WidgetText {
-    if title_font_pt > 0.0 {
-        egui::RichText::new(title)
-            .font(egui::FontId::proportional(title_font_pt))
-            .into()
-    } else {
-        title.into()
-    }
+    let pt = title_font_pt.clamp(6.0, 48.0);
+    egui::RichText::new(title)
+        .font(egui::FontId::proportional(pt))
+        .into()
 }
 
 pub(super) fn tinted_section<R>(
@@ -56,7 +53,6 @@ pub(super) fn tinted_section<R>(
     default_open: bool,
     mix: f32,
     header_row_height: f32,
-    title_font_pt: f32,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> Option<R> {
     let tint = tint_for_name(ui, title, mix);
@@ -83,7 +79,7 @@ pub(super) fn tinted_section<R>(
             spacing.item_spacing.y = 1.0;
             spacing.button_padding = egui::vec2(2.0, 1.0);
             ui.set_min_width(ui.available_width());
-            egui::CollapsingHeader::new(section_header_text(title, title_font_pt))
+            egui::CollapsingHeader::new(egui::RichText::new(title).heading())
                 .default_open(default_open)
                 .show(ui, add_contents)
                 .body_returned
@@ -237,7 +233,10 @@ impl App {
     /// Save current render settings as preset
     pub(super) fn save_current_preset(&mut self) {
         if super::presets::is_builtin_default_preset(self.preset_name.trim()) {
-            log::warn!("Cannot save under reserved name \"{}\"", super::presets::DEFAULT_PRESET_NAME);
+            log::info!(
+                "Preset {:?} is built-in (shipped defaults); it is not saved over — use another name for a custom preset.",
+                super::presets::DEFAULT_PRESET_NAME
+            );
             return;
         }
         let preset = super::presets::create_preset(&self.preset_name, &self.render_3d_opts);
@@ -288,71 +287,74 @@ impl App {
     /// Render the settings panel contents
     pub(super) fn ui_settings(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        ui.scope(|ui| {
+            self.apply_settings_panel_text_styles(ui);
 
-        let tab_labels = [
-            (SettingsTab::General, "General"),
-            (SettingsTab::Rendering, "Rendering"),
-            (SettingsTab::Denoiser, "Denoise"),
-            (SettingsTab::Exclusions, "Exclusions"),
-            (SettingsTab::Extensions, "Extensions"),
-        ];
-        let tab_spacing = ui.spacing().item_spacing.x;
-        let tab_count = tab_labels.len().max(1) as f32;
-        let tab_width =
-            ((ui.available_width() - tab_spacing * (tab_count - 1.0)) / tab_count).max(60.0);
-        ui.horizontal(|ui| {
-            for (tab, label) in tab_labels {
-                let selected = self.settings_tab == tab;
-                if ui
-                    .add_sized(
-                        [tab_width, 22.0],
-                        egui::Button::new(label).selected(selected),
-                    )
-                    .clicked()
-                {
-                    self.settings_tab = tab;
-                }
-            }
-        });
-        ui.separator();
-
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let w = ui.available_width();
-                ui.set_width(w);
-
-                let mut changed = false;
-
-                match self.settings_tab {
-                    SettingsTab::General => {
-                        self.ui_settings_scanner(ui);
-                        ui.separator();
-                        self.ui_settings_view(ui, &ctx, &mut changed);
-                        ui.separator();
-                        self.ui_settings_appearance(ui, &mut changed);
-                        ui.separator();
-                        self.ui_settings_panel_chrome(ui, &mut changed);
+            let tab_labels = [
+                (SettingsTab::General, "General"),
+                (SettingsTab::Rendering, "Rendering"),
+                (SettingsTab::Denoiser, "Denoise"),
+                (SettingsTab::Exclusions, "Exclusions"),
+                (SettingsTab::Extensions, "Extensions"),
+            ];
+            let tab_spacing = ui.spacing().item_spacing.x;
+            let tab_count = tab_labels.len().max(1) as f32;
+            let tab_width =
+                ((ui.available_width() - tab_spacing * (tab_count - 1.0)) / tab_count).max(60.0);
+            ui.horizontal(|ui| {
+                for (tab, label) in tab_labels {
+                    let selected = self.settings_tab == tab;
+                    if ui
+                        .add_sized(
+                            [tab_width, 22.0],
+                            egui::Button::new(label).selected(selected),
+                        )
+                        .clicked()
+                    {
+                        self.settings_tab = tab;
                     }
-                    SettingsTab::Rendering => {
-                        self.ui_presets(ui);
-                        ui.add_space(4.0);
-                        self.ui_settings_renderer(ui);
-                    }
-                    SettingsTab::Denoiser => {
-                        self.ui_settings_denoiser(ui, &mut changed);
-                    }
-                    SettingsTab::Exclusions => {
-                        self.ui_settings_exclusions(ui, &mut changed);
-                    }
-                    SettingsTab::Extensions => {
-                        self.ui_ext_stats(ui);
-                    }
-                }
-
-                if changed {
-                    self.events.emit(SettingsChangedEvent);
                 }
             });
+            ui.separator();
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let w = ui.available_width();
+                    ui.set_width(w);
+
+                    let mut changed = false;
+
+                    match self.settings_tab {
+                        SettingsTab::General => {
+                            self.ui_settings_scanner(ui);
+                            ui.separator();
+                            self.ui_settings_view(ui, &ctx, &mut changed);
+                            ui.separator();
+                            self.ui_settings_appearance(ui, &mut changed);
+                            ui.separator();
+                            self.ui_settings_panel_chrome(ui, &mut changed);
+                        }
+                        SettingsTab::Rendering => {
+                            self.ui_presets(ui);
+                            ui.add_space(4.0);
+                            self.ui_settings_renderer(ui);
+                        }
+                        SettingsTab::Denoiser => {
+                            self.ui_settings_denoiser(ui, &mut changed);
+                        }
+                        SettingsTab::Exclusions => {
+                            self.ui_settings_exclusions(ui, &mut changed);
+                        }
+                        SettingsTab::Extensions => {
+                            self.ui_ext_stats(ui);
+                        }
+                    }
+
+                    if changed {
+                        self.events.emit(SettingsChangedEvent);
+                    }
+                });
+        });
     }
 }

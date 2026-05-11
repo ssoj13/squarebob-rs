@@ -15,7 +15,7 @@ use eframe::egui;
 impl App {
     /// Render the Denoiser settings tab.
     pub(super) fn ui_settings_denoiser(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
-        egui::CollapsingHeader::new("Denoiser (À-trous)")
+        egui::CollapsingHeader::new(egui::RichText::new("Denoiser (À-trous)").heading())
             .default_open(true)
             .show(ui, |ui| {
                 egui::Grid::new("denoiser_grid")

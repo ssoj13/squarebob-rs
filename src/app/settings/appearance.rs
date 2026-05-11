@@ -5,9 +5,34 @@ use crate::app::App;
 use eframe::egui;
 
 impl App {
+    /// Per-widget `TextStyle` sizes for the settings sidebar only (see `ui_settings` scope).
+    pub(super) fn apply_settings_panel_text_styles(&self, ui: &mut egui::Ui) {
+        let style = ui.style_mut();
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::proportional(self.settings_panel_font_body),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::proportional(self.settings_panel_font_heading),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::proportional(self.settings_panel_font_small),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::proportional(self.settings_panel_font_button),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::monospace(self.settings_panel_font_monospace),
+        );
+    }
+
     /// Appearance section (2D treemap visual settings)
     pub(super) fn ui_settings_appearance(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
-        egui::CollapsingHeader::new("Appearance")
+        egui::CollapsingHeader::new(egui::RichText::new("Appearance").heading())
             .default_open(true)
             .show(ui, |ui| {
                 egui::Grid::new("appearance_grid")
@@ -63,9 +88,9 @@ impl App {
             });
     }
 
-    /// Panel chrome: collapsing header row height and title font for settings subsections.
+    /// Typography / chrome for this settings sidebar (General → Settings).
     pub(super) fn ui_settings_panel_chrome(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
-        egui::CollapsingHeader::new("Settings")
+        egui::CollapsingHeader::new(egui::RichText::new("Settings").heading())
             .default_open(false)
             .show(ui, |ui| {
                 egui::Grid::new("panel_settings_chrome_grid")
@@ -73,7 +98,7 @@ impl App {
                     .spacing([8.0, 4.0])
                     .min_col_width(LABEL_WIDTH)
                     .show(ui, |ui| {
-                        ui.label("Section header height:");
+                        ui.label("Header row height:");
                         if ui
                             .add(
                                 egui::Slider::new(
@@ -82,28 +107,101 @@ impl App {
                                 )
                                 .suffix("px"),
                             )
+                            .on_hover_text(
+                                "Click row height for tinted Path Tracer blocks and compact PT sub-panels.",
+                            )
                             .changed()
                         {
                             *changed = true;
                         }
                         ui.end_row();
 
-                        ui.label("Section title font:");
-                        let title_slider = egui::Slider::new(
-                            &mut self.settings_section_title_font_size,
-                            0.0..=24.0,
-                        )
-                        .custom_formatter(|v, _| {
-                            if v <= 0.0 {
-                                "Auto".to_owned()
-                            } else {
-                                format!("{v:.0} pt")
-                            }
-                        });
+                        ui.label("Body (labels):");
                         if ui
-                            .add(title_slider)
+                            .add(
+                                egui::Slider::new(&mut self.settings_panel_font_body, 8.0..=22.0)
+                                    .suffix("pt"),
+                            )
+                            .on_hover_text("Default text and control labels in this sidebar.")
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Heading:");
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut self.settings_panel_font_heading,
+                                    10.0..=26.0,
+                                )
+                                .suffix("pt"),
+                            )
                             .on_hover_text(
-                                "0 (Auto) follows the Appearance → Font Size for subsection titles.",
+                                "Top-level section titles (Scanner, Geometry, Path Tracer, …).",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Subheading:");
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut self.settings_panel_font_subheading,
+                                    9.0..=22.0,
+                                )
+                                .suffix("pt"),
+                            )
+                            .on_hover_text(
+                                "Nested groups inside Geometry (Height, Color, …) and palette ramps.",
+                            )
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Small:");
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.settings_panel_font_small, 7.0..=16.0)
+                                    .suffix("pt"),
+                            )
+                            .on_hover_text("Widgets that use TextStyle::Small (hints, captions).")
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Button / tabs:");
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut self.settings_panel_font_button,
+                                    8.0..=22.0,
+                                )
+                                .suffix("pt"),
+                            )
+                            .on_hover_text("Tab strip and button labels in this sidebar.")
+                            .changed()
+                        {
+                            *changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Monospace:");
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut self.settings_panel_font_monospace,
+                                    8.0..=22.0,
+                                )
+                                .suffix("pt"),
                             )
                             .changed()
                         {
@@ -111,6 +209,30 @@ impl App {
                         }
                         ui.end_row();
                     });
+                ui.add_space(6.0);
+                if ui
+                    .button("Defaults")
+                    .on_hover_text(
+                        "Reset header row height and all sidebar font sizes to application defaults.",
+                    )
+                    .clicked()
+                {
+                    self.settings_section_header_height =
+                        crate::app::state::default_settings_section_header_height();
+                    self.settings_panel_font_body =
+                        crate::app::state::default_settings_panel_font_body();
+                    self.settings_panel_font_heading =
+                        crate::app::state::default_settings_panel_font_heading();
+                    self.settings_panel_font_subheading =
+                        crate::app::state::default_settings_panel_font_subheading();
+                    self.settings_panel_font_small =
+                        crate::app::state::default_settings_panel_font_small();
+                    self.settings_panel_font_button =
+                        crate::app::state::default_settings_panel_font_button();
+                    self.settings_panel_font_monospace =
+                        crate::app::state::default_settings_panel_font_monospace();
+                    *changed = true;
+                }
             });
     }
 

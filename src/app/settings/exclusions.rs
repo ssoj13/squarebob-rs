@@ -9,7 +9,7 @@ use std::path::PathBuf;
 impl App {
     /// Exclusions section
     pub(super) fn ui_settings_exclusions(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
-        egui::CollapsingHeader::new("Exclusions")
+        egui::CollapsingHeader::new(egui::RichText::new("Exclusions").heading())
             .default_open(false)
             .show(ui, |ui| {
                 egui::Grid::new("exclusions_grid")

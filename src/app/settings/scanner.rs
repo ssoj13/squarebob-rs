@@ -10,7 +10,9 @@ use eframe::egui;
 impl App {
     /// Scanner section
     pub(super) fn ui_settings_scanner(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Scanner").default_open(true).show(ui, |ui| {
+        egui::CollapsingHeader::new(egui::RichText::new("Scanner").heading())
+            .default_open(true)
+            .show(ui, |ui| {
             egui::Grid::new("scanner_grid")
                 .num_columns(2)
                 .spacing([8.0, 4.0])

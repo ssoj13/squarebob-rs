@@ -25,6 +25,13 @@ use std::num::NonZeroU64;
 /// WGSL `Params` struct size for wavefront gbuffer (mirrors `GBufferParams`).
 const GBUFFER_PARAMS_SIZE: u64 = 160;
 
+/// Padded byte size for PT scene STORAGE buffers (256-byte aligned, min one block).
+#[inline]
+fn pt_scene_storage_capacity(logical_len: usize) -> u64 {
+    let len = logical_len.max(1) as u64;
+    len.div_ceil(256) * 256
+}
+
 fn bgl_uniform_dyn(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -1254,18 +1261,32 @@ impl PathTraceCompute {
         queue: &wgpu::Queue,
         enabled: bool,
     ) {
-        if enabled && self.adaptive.is_none() {
-            log::info!("Adaptive: create pipeline");
-            self.adaptive = Some(AdaptivePipeline::new(device, self.width, self.height));
-            self.adaptive_config.enabled = true;
-            self.rebuild_adaptive_bind_groups(device);
-            self.rebuild_wavefront_bind_groups(device);
-        } else if !enabled {
+        // Callers (render loop) invoke this every frame — only react to real
+        // transitions. Previously we rebuilt the megakernel bind group and
+        // re-uploaded the full sample map every frame (~expensive no-op).
+        if enabled {
+            if self.adaptive.is_none() {
+                log::info!("Adaptive: create pipeline");
+                self.adaptive = Some(AdaptivePipeline::new(device, self.width, self.height));
+                self.adaptive_config.enabled = true;
+                self.rebuild_adaptive_bind_groups(device);
+                self.rebuild_wavefront_bind_groups(device);
+                self.fill_sample_map(queue);
+                self.rebuild_bind_group(device);
+            } else if !self.adaptive_config.enabled {
+                // Pipeline already exists (user toggled off then on again).
+                self.adaptive_config.enabled = true;
+                self.rebuild_adaptive_bind_groups(device);
+                self.rebuild_wavefront_bind_groups(device);
+                self.fill_sample_map(queue);
+                self.rebuild_bind_group(device);
+            }
+        } else if self.adaptive_config.enabled {
             self.adaptive_config.enabled = false;
             self.rebuild_wavefront_bind_groups(device);
+            self.fill_sample_map(queue);
+            self.rebuild_bind_group(device);
         }
-        self.fill_sample_map(queue);
-        self.rebuild_bind_group(device);
         log::debug!("Adaptive: enabled={}", enabled);
     }
 
@@ -1475,7 +1496,7 @@ impl PathTraceCompute {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         data: &GpuInstanceSceneData,
-    ) {
+    ) -> bool {
         let mut rows = Vec::<[f32; 4]>::new();
         let mut weights = Vec::<f32>::new();
         let mut total_weight = 0.0f32;
@@ -1530,44 +1551,40 @@ impl PathTraceCompute {
             self.emissive_total_weight = total_weight;
         }
 
-        let (texture, view) = Self::create_emissive_light_texture(
-            device,
-            queue,
-            &rows,
-            self.emissive_light_count.max(1),
-        );
-        self.emissive_light_texture = texture;
-        self.emissive_light_view = view;
+        let need_width = self.emissive_light_count.max(1);
+        let mut resources_changed = false;
+        let height_ok = self.emissive_light_texture.height() == 6;
+        let width_ok = self.emissive_light_texture.width() >= need_width;
+        if height_ok && width_ok {
+            Self::write_emissive_light_texture_data(queue, &self.emissive_light_texture, &rows, self.emissive_light_count);
+        } else {
+            let (texture, view) =
+                Self::create_emissive_light_texture(device, queue, &rows, need_width);
+            self.emissive_light_texture = texture;
+            self.emissive_light_view = view;
+            resources_changed = true;
+        }
+
         // Build alias table from collected per-light weights. With zero
         // lights we still upload a single dummy entry to keep the GPU
         // binding valid (the WGSL guard on `light_count == 0` skips
         // sampling before any read).
         let alias_table = build_alias_table(&weights);
-        self.emissive_alias_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_emissive_alias"),
-            contents: bytemuck::cast_slice(&alias_table),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        self.emissive_light_uniform_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("pt_emissive_light_uniform"),
-                contents: bytemuck::bytes_of(&EmissiveLightUniform {
-                    params0: [
-                        self.emissive_sampling_enabled as u32,
-                        self.emissive_samples_per_hit.max(1),
-                        self.emissive_light_count,
-                        0,
-                    ],
-                    params1: [
-                        self.emissive_min_weight,
-                        self.emissive_total_weight,
-                        0.0,
-                        0.0,
-                    ],
-                }),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        let alias_contents = bytemuck::cast_slice(&alias_table);
+        let alias_need = alias_contents.len() as u64;
+        if self.emissive_alias_buf.size() < alias_need {
+            self.emissive_alias_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("pt_emissive_alias"),
+                contents: alias_contents,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
+            resources_changed = true;
+        } else {
+            queue.write_buffer(&self.emissive_alias_buf, 0, alias_contents);
+        }
+
+        self.write_emissive_light_uniform(queue);
+        resources_changed
     }
 
     /// Check if wavefront PT is enabled.
@@ -3566,16 +3583,18 @@ impl PathTraceCompute {
         (tex, view)
     }
 
-    fn create_emissive_light_texture(
-        device: &wgpu::Device,
+    fn write_emissive_light_texture_data(
         queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
         rows: &[[f32; 4]],
         light_count: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let width = light_count.max(1);
-        let height = 6;
+    ) {
+        let width = texture.width();
+        let height = texture.height();
+        debug_assert_eq!(height, 6);
         let mut pixels = vec![[0.0f32; 4]; (width * height) as usize];
-        for light_idx in 0..width as usize {
+        let active_cols = light_count.max(1).min(width);
+        for light_idx in 0..active_cols as usize {
             for row in 0..height as usize {
                 let src_idx = light_idx * height as usize + row;
                 if let Some(value) = rows.get(src_idx) {
@@ -3584,23 +3603,9 @@ impl PathTraceCompute {
             }
         }
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("pt_emissive_lights"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -3617,6 +3622,31 @@ impl PathTraceCompute {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    fn create_emissive_light_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        rows: &[[f32; 4]],
+        light_count: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let width = light_count.max(1);
+        let height = 6;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("pt_emissive_lights"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        Self::write_emissive_light_texture_data(queue, &texture, rows, light_count);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         (texture, view)
     }
@@ -3730,6 +3760,35 @@ impl PathTraceCompute {
         self.rebuild_pathguide_bind_groups(device);
     }
 
+    /// Grow-only scene STORAGE buffer: [`wgpu::Queue::write_buffer`] on each upload; recreate only
+    /// when padded capacity (see [`pt_scene_storage_capacity`]) is insufficient.
+    fn ensure_pt_scene_storage(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        slot: &mut Option<wgpu::Buffer>,
+        label: &'static str,
+        bytes: &[u8],
+        empty_min: usize,
+    ) -> bool {
+        let logical_len = bytes.len().max(empty_min);
+        let cap = pt_scene_storage_capacity(logical_len);
+        let too_small = match slot {
+            None => true,
+            Some(b) => b.size() < cap,
+        };
+        if too_small {
+            *slot = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: cap,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let buf = slot.as_ref().expect("buffer just ensured");
+        queue.write_buffer(buf, 0, bytes);
+        too_small
+    }
+
     /// Upload instance scene data to GPU.
     pub fn upload_scene(
         &mut self,
@@ -3743,60 +3802,70 @@ impl PathTraceCompute {
         let inst_bytes = data.instances_bytes();
         let mat_bytes = data.materials_bytes();
 
-        let nodes_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_nodes"),
-            contents: if nodes_bytes.is_empty() {
-                &[0u8; 32]
-            } else {
-                nodes_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let nodes_slice: &[u8] = if nodes_bytes.is_empty() {
+            &[0u8; 32]
+        } else {
+            nodes_bytes
+        };
+        let inst_slice: &[u8] = if inst_bytes.is_empty() {
+            &[0u8; 96]
+        } else {
+            inst_bytes
+        };
+        let mat_slice: &[u8] = if mat_bytes.is_empty() {
+            &[0u8; 144]
+        } else {
+            mat_bytes
+        };
 
-        let instances_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_instances"),
-            contents: if inst_bytes.is_empty() {
-                &[0u8; 96]
-            } else {
-                inst_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let mut scene_buffers_changed = false;
+        scene_buffers_changed |= Self::ensure_pt_scene_storage(
+            device,
+            queue,
+            &mut self.nodes_buffer,
+            "pt_nodes",
+            nodes_slice,
+            32,
+        );
+        scene_buffers_changed |= Self::ensure_pt_scene_storage(
+            device,
+            queue,
+            &mut self.instances_buffer,
+            "pt_instances",
+            inst_slice,
+            96,
+        );
+        scene_buffers_changed |= Self::ensure_pt_scene_storage(
+            device,
+            queue,
+            &mut self.materials_buffer,
+            "pt_materials",
+            mat_slice,
+            144,
+        );
 
-        let materials_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_materials"),
-            contents: if mat_bytes.is_empty() {
-                &[0u8; 144]
-            } else {
-                mat_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        self.nodes_buffer = Some(nodes_buffer);
-        self.instances_buffer = Some(instances_buffer);
-        self.materials_buffer = Some(materials_buffer);
-        self.rebuild_emissive_lights(device, queue, data);
+        let emissive_changed = self.rebuild_emissive_lights(device, queue, data);
         self.scene_ready = true;
         self.frame_count = 0;
         if let Some(instances) = instances {
             self.update_scene_bounds(instances);
         }
-        self.rebuild_bind_group(device);
-        // Also rebuild wavefront bind groups if wavefront is enabled
-        if self.wavefront.is_some() {
-            self.rebuild_wavefront_bind_groups(device);
+
+        let bind_dirty = scene_buffers_changed || emissive_changed;
+        if bind_dirty {
+            // Includes wavefront + adaptive bind groups when applicable.
+            self.rebuild_bind_group(device);
+            self.rebuild_restir_bind_groups(device);
+            self.rebuild_pathguide_bind_groups(device);
         }
-        self.rebuild_restir_bind_groups(device);
-        self.rebuild_pathguide_bind_groups(device);
         let scene_ms = scene_start.elapsed().as_secs_f64() * 1000.0;
         log::info!(
-            "upload_scene: {:.1}ms (nodes={}B, inst={}B, mats={}B, wf_bgs={}, restir+pg_bgs=yes)",
+            "upload_scene: {:.1}ms (nodes={}B, inst={}B, mats={}B, bg_rebuild={})",
             scene_ms,
             nodes_bytes.len(),
             inst_bytes.len(),
             mat_bytes.len(),
-            self.wavefront.is_some(),
+            bind_dirty,
         );
     }
 
@@ -3856,54 +3925,7 @@ impl PathTraceCompute {
         // Store sorted_indices after use (avoids clone)
         self.sorted_indices = sorted_indices;
 
-        // Upload nodes
-        let nodes_bytes = gpu_data.nodes_bytes();
-        let nodes_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_nodes"),
-            contents: if nodes_bytes.is_empty() {
-                &[0u8; 32]
-            } else {
-                nodes_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        // Upload instances (sorted by BVH order)
-        let inst_bytes = gpu_data.instances_bytes();
-        let instances_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_instances"),
-            contents: if inst_bytes.is_empty() {
-                &[0u8; 96]
-            } else {
-                inst_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        // Upload materials
-        let mat_bytes = gpu_data.materials_bytes();
-        let materials_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_materials"),
-            contents: if mat_bytes.is_empty() {
-                &[0u8; 144]
-            } else {
-                mat_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        self.nodes_buffer = Some(nodes_buffer);
-        self.instances_buffer = Some(instances_buffer);
-        self.materials_buffer = Some(materials_buffer);
-        self.rebuild_emissive_lights(device, queue, &gpu_data);
-        self.scene_ready = true;
-        self.frame_count = 0;
-        self.rebuild_bind_group(device);
-        if self.wavefront.is_some() {
-            self.rebuild_wavefront_bind_groups(device);
-        }
-        self.rebuild_restir_bind_groups(device);
-        self.rebuild_pathguide_bind_groups(device);
+        self.upload_scene(device, queue, &gpu_data, None);
     }
 
     /// Invalidate BVH structure (forces full rebuild on next upload).

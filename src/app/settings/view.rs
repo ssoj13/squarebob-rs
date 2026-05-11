@@ -15,7 +15,7 @@ impl App {
         ctx: &egui::Context,
         changed: &mut bool,
     ) {
-        egui::CollapsingHeader::new("View")
+        egui::CollapsingHeader::new(egui::RichText::new("View").heading())
             .default_open(true)
             .show(ui, |ui| {
                 egui::Grid::new("view_grid")
@@ -63,7 +63,7 @@ impl App {
 
         ui.separator();
 
-        egui::CollapsingHeader::new("LoD")
+        egui::CollapsingHeader::new(egui::RichText::new("LoD").heading())
             .default_open(true)
             .show(ui, |ui| {
                 self.ui_lod_settings(ui, ctx);

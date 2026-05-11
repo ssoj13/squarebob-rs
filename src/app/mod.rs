@@ -89,7 +89,12 @@ impl App {
                     app.ext_filter_invert = s.ext_filter_invert;
                     app.settings_tint_mix = s.settings_tint_mix;
                     app.settings_section_header_height = s.settings_section_header_height;
-                    app.settings_section_title_font_size = s.settings_section_title_font_size;
+                    app.settings_panel_font_body = s.settings_panel_font_body;
+                    app.settings_panel_font_heading = s.settings_panel_font_heading;
+                    app.settings_panel_font_subheading = s.settings_panel_font_subheading;
+                    app.settings_panel_font_small = s.settings_panel_font_small;
+                    app.settings_panel_font_button = s.settings_panel_font_button;
+                    app.settings_panel_font_monospace = s.settings_panel_font_monospace;
                     app.preset_autosave = s.preset_autosave;
                     app.autosave_interval_secs = s.autosave_interval_secs;
                     app.filter_merge_outside = s.filter_merge_outside;
@@ -719,7 +724,12 @@ impl eframe::App for App {
             ext_filter_invert: self.ext_filter_invert,
             settings_tint_mix: self.settings_tint_mix,
             settings_section_header_height: self.settings_section_header_height,
-            settings_section_title_font_size: self.settings_section_title_font_size,
+            settings_panel_font_body: self.settings_panel_font_body,
+            settings_panel_font_heading: self.settings_panel_font_heading,
+            settings_panel_font_subheading: self.settings_panel_font_subheading,
+            settings_panel_font_small: self.settings_panel_font_small,
+            settings_panel_font_button: self.settings_panel_font_button,
+            settings_panel_font_monospace: self.settings_panel_font_monospace,
             preset_autosave: self.preset_autosave,
             autosave_interval_secs: self.autosave_interval_secs,
             filter_merge_outside: self.filter_merge_outside,

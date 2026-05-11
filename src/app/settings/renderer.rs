@@ -2,7 +2,7 @@
 
 use super::section_header_text;
 use super::tinted_section;
-use crate::app::helpers::{multibutton_exclusive, MultiButtonAxis};
+use crate::app::helpers::{multibutton_exclusive, rfd_env_map_pick_start_dir, MultiButtonAxis};
 use crate::app::App;
 use crate::renderer::{
     AdaptivePreset, ColorMode, CubeHeightMode, FolderColorMode, GlassPreset, HashTransformEffect,
@@ -127,7 +127,6 @@ fn compact_section(
     title: &'static str,
     default_open: bool,
     header_row_height: f32,
-    title_font_pt: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let header_row_height = header_row_height.clamp(8.0, 40.0);
@@ -138,7 +137,7 @@ fn compact_section(
         spacing.button_padding = egui::vec2(2.0, 1.0);
         // Make the click strip span the full panel width.
         ui.set_min_width(ui.available_width());
-        egui::CollapsingHeader::new(section_header_text(title, title_font_pt))
+        egui::CollapsingHeader::new(egui::RichText::new(title).heading())
             .default_open(default_open)
             .show_unindented(ui, add_contents);
     });
@@ -147,7 +146,7 @@ fn compact_section(
 impl App {
     /// Renderer section (2D/3D mode-specific settings)
     pub(super) fn ui_settings_renderer(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Renderer")
+        egui::CollapsingHeader::new(egui::RichText::new("Renderer").heading())
             .default_open(true)
             .show(ui, |ui| {
                 // Mode-specific settings
@@ -250,10 +249,13 @@ impl App {
     /// Each subsection is a collapsible group so the panel stays tidy
     /// when several modes are configured.
     fn ui_3d_geometry(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Geometry", true, self.settings_tint_mix, self.settings_section_header_height, self.settings_section_title_font_size, |ui| {
+        tinted_section(ui, "Geometry", true, self.settings_tint_mix, self.settings_section_header_height, |ui| {
             // --- Height -----------------------------------------------
             let height_header = format!("Height: {}", self.render_3d_opts.height_mode.name());
-            egui::CollapsingHeader::new(height_header)
+            egui::CollapsingHeader::new(section_header_text(
+                &height_header,
+                self.settings_panel_font_subheading,
+            ))
                 .id_salt("geom_height_section")
                 .default_open(true)
                 .show(ui, |ui| {
@@ -303,7 +305,10 @@ impl App {
 
             // --- Color ------------------------------------------------
             let color_header = format!("Color: {}", self.render_3d_opts.color_mode.name());
-            egui::CollapsingHeader::new(color_header)
+            egui::CollapsingHeader::new(section_header_text(
+                &color_header,
+                self.settings_panel_font_subheading,
+            ))
                 .id_salt("geom_color_section")
                 .default_open(false)
                 .show(ui, |ui| {
@@ -336,6 +341,7 @@ impl App {
                         "Ramp",
                         self.render_3d_opts.color_ramps.get_mut(cidx),
                         RampUiCtx::full("color"),
+                        self.settings_panel_font_subheading,
                     ) {
                         self.needs_layout = true;
                     }
@@ -346,7 +352,10 @@ impl App {
                 "Folder tint: {}",
                 self.render_3d_opts.folder_color_mode.name()
             );
-            egui::CollapsingHeader::new(folder_header)
+            egui::CollapsingHeader::new(section_header_text(
+                &folder_header,
+                self.settings_panel_font_subheading,
+            ))
                 .id_salt("geom_folder_section")
                 .default_open(false)
                 .show(ui, |ui| {
@@ -383,13 +392,17 @@ impl App {
                         "Ramp",
                         self.render_3d_opts.folder_ramps.get_mut(fidx),
                         RampUiCtx::full("folder"),
+                        self.settings_panel_font_subheading,
                     ) {
                         self.needs_layout = true;
                     }
                 });
 
             // --- LOD --------------------------------------------------
-            egui::CollapsingHeader::new("LOD")
+            egui::CollapsingHeader::new(section_header_text(
+                "LOD",
+                self.settings_panel_font_subheading,
+            ))
                 .id_salt("geom_lod_section")
                 .default_open(false)
                 .show(ui, |ui| {
@@ -426,7 +439,7 @@ impl App {
 
     /// Effects settings (hash transforms, animation)
     fn ui_3d_effects(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Effects", false, self.settings_tint_mix, self.settings_section_header_height, self.settings_section_title_font_size, |ui| {
+        tinted_section(ui, "Effects", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
             egui::Grid::new("effects_grid")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
@@ -622,7 +635,7 @@ impl App {
     /// independently (own gate) so the sky can keep rolling when cubes
     /// are paused with Space.
     fn ui_3d_animation(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Animation", false, self.settings_tint_mix, self.settings_section_header_height, self.settings_section_title_font_size, |ui| {
+        tinted_section(ui, "Animation", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
             settings_grid(ui, "animation_grid", |ui| {
                 control_label(ui, "Animate");
                 ui.horizontal(|ui| {
@@ -665,7 +678,7 @@ impl App {
             self.backfill_pt_material_counts(total_cubes);
         }
 
-        tinted_section(ui, "Materials", false, self.settings_tint_mix, self.settings_section_header_height, self.settings_section_title_font_size, |ui| {
+        tinted_section(ui, "Materials", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
             egui::Grid::new("materials_unified_grid")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
@@ -923,7 +936,7 @@ impl App {
 
     /// Path tracer settings
     fn ui_3d_pathtracer(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Path Tracer", true, self.settings_tint_mix, self.settings_section_header_height, self.settings_section_title_font_size, |ui| {
+        tinted_section(ui, "Path Tracer", true, self.settings_tint_mix, self.settings_section_header_height, |ui| {
             let mut pt_changed = false;
 
             compact_section(
@@ -931,60 +944,54 @@ impl App {
                 "Lighting",
                 true,
                 self.settings_section_header_height,
-                self.settings_section_title_font_size,
                 |ui| {
-                self.ui_pt_lighting(ui, &mut pt_changed)
-            },
+                    self.ui_pt_lighting(ui, &mut pt_changed)
+                },
             );
             compact_section(
                 ui,
                 "Sampling",
                 true,
                 self.settings_section_header_height,
-                self.settings_section_title_font_size,
                 |ui| {
-                self.ui_pt_sampling(ui, &mut pt_changed)
-            },
+                    self.ui_pt_sampling(ui, &mut pt_changed)
+                },
             );
             compact_section(
                 ui,
                 "Paths",
                 false,
                 self.settings_section_header_height,
-                self.settings_section_title_font_size,
                 |ui| {
-                self.ui_pt_paths(ui, &mut pt_changed)
-            },
+                    self.ui_pt_paths(ui, &mut pt_changed)
+                },
             );
             compact_section(
                 ui,
                 "Glass",
                 false,
                 self.settings_section_header_height,
-                self.settings_section_title_font_size,
                 |ui| {
-                self.ui_pt_glass(ui, &mut pt_changed)
-            },
+                    self.ui_pt_glass(ui, &mut pt_changed)
+                },
             );
             compact_section(
                 ui,
                 "Camera",
                 false,
                 self.settings_section_header_height,
-                self.settings_section_title_font_size,
                 |ui| {
-                self.ui_pt_camera(ui, &mut pt_changed)
-            },
+                    self.ui_pt_camera(ui, &mut pt_changed)
+                },
             );
             compact_section(
                 ui,
                 "Advanced",
                 false,
                 self.settings_section_header_height,
-                self.settings_section_title_font_size,
                 |ui| {
-                self.ui_pt_advanced(ui, &mut pt_changed)
-            },
+                    self.ui_pt_advanced(ui, &mut pt_changed)
+                },
             );
 
             if pt_changed {
@@ -1809,7 +1816,7 @@ impl App {
 
     /// Environment settings (env map, lighting)
     fn ui_3d_environment(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Environment", false, self.settings_tint_mix, self.settings_section_header_height, self.settings_section_title_font_size, |ui| {
+        tinted_section(ui, "Environment", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
             egui::Grid::new("env_grid")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
@@ -1858,10 +1865,14 @@ impl App {
                         if self.render_3d_opts.env_map_enabled
                             && ui.small_button("Load...").clicked()
                         {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Images", &["png", "jpg", "jpeg", "hdr", "exr"])
-                                .pick_file()
+                            let mut dlg = rfd::FileDialog::new()
+                                .add_filter("Images", &["png", "jpg", "jpeg", "hdr", "exr"]);
+                            if let Some(dir) =
+                                rfd_env_map_pick_start_dir(self.render_3d_opts.env_map_path.as_ref())
                             {
+                                dlg = dlg.set_directory(dir);
+                            }
+                            if let Some(path) = dlg.pick_file() {
                                 if let Some(r) = &mut self.renderer_3d {
                                     if let Err(e) = r.load_env_map(&path) {
                                         log::error!("Env map: {e}");
@@ -1921,7 +1932,7 @@ impl App {
 
     /// Interaction settings (hover highlight)
     fn ui_3d_interaction(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Interaction", false, self.settings_tint_mix, self.settings_section_header_height, self.settings_section_title_font_size, |ui| {
+        tinted_section(ui, "Interaction", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
             egui::Grid::new("interaction_grid")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
@@ -1975,7 +1986,7 @@ impl App {
 
     /// Camera controls
     fn ui_3d_camera(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Camera", false, self.settings_tint_mix, self.settings_section_header_height, self.settings_section_title_font_size, |ui| {
+        tinted_section(ui, "Camera", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
             egui::Grid::new("camera_grid")
                 .num_columns(2)
                 .spacing([8.0, 4.0])

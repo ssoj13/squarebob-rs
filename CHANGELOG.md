@@ -211,6 +211,29 @@ the LBVH slot layout, runs `refit_leaves` on animation frames when
 leaf AABBs aligned with the current instance transforms without a full
 radix/LBVH rebuild every frame.
 
+### Megakernel scene upload — persistent buffers + emissive reuse (2026-05-11)
+
+Host-side only; GPU path-tracing output should be unchanged.
+
+- **`upload_scene` (`pt-megakernel::compute`)** — `nodes` / `instances` /
+  `materials` STORAGE buffers are grow-only: each upload uses
+  `queue.write_buffer`; a buffer is recreated only when the 256-byte-
+  aligned capacity (`pt_scene_storage_capacity`) is too small for the
+  new payload.
+- **`rebuild_emissive_lights`** — reuses the existing `Rgba32Float`
+  emissive texture (same view) when `width ≥ light_count.max(1)` and
+  `height == 6`, otherwise recreates; alias table updates use
+  `write_buffer` when the existing buffer is large enough. Stops
+  recreating **`emissive_light_uniform_buffer`** every upload — always
+  **`write_emissive_light_uniform`**, so ReSTIR-DI fields stay correct
+  (the previous init path zeroed `params0.w` / `params1.z`).
+- **Bind group churn** — megakernel bind group plus ReSTIR and pathguide
+  bind groups are rebuilt only when a scene buffer handle, emissive
+  texture/view, or emissive alias buffer actually changes.
+- **`upload_scene_smart`** — full BVH rebuild path calls **`upload_scene`**
+  instead of duplicating buffer creation and rebuild calls.
+- Log line **`upload_scene`** now includes `bg_rebuild={true|false}`.
+
 ### Known follow-ups
 
 - If animation flicker persists after refit (e.g. extreme motion),
