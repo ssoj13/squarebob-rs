@@ -191,9 +191,18 @@ impl App {
         // Animation time for 3D
         if self.render_mode == RenderMode::Mode3D {
             let menu_open = self.ctx_menu_path.is_some();
-            // Clamp dt to ~33ms so a slow / paused frame doesn't make
-            // animation timelines lurch when redraws resume.
-            let dt = ctx.input(|i| i.stable_dt).min(0.033);
+            // Wall-clock-based dt for animation accumulation. Using
+            // `stable_dt` from egui lets long idles between frames (e.g.
+            // user paused on a settings panel) accumulate as a visible
+            // jump when redraws resume. With a wall-clock anchor we
+            // clamp `(now - last).min(33ms)` so each active frame ticks
+            // at most one 30 fps step regardless of real elapsed time.
+            let now = std::time::Instant::now();
+            let dt = match self.last_anim_tick {
+                Some(prev) => (now - prev).as_secs_f32().min(0.033),
+                None => 0.0,
+            };
+            self.last_anim_tick = Some(now);
             let auto_spp_freeze = self.render_3d_opts.path_tracing
                 && (self.render_3d_opts.pt_auto_spp || self.render_3d_opts.pt_camera_snap);
             let allow_anim_tick = if auto_spp_freeze {

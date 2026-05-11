@@ -233,6 +233,11 @@ pub struct App {
     pub(super) sys: sysinfo::System,
     pub(super) wgpu_error_flag: Arc<AtomicBool>,
     pub(super) pt_auto_spp_tick: std::time::Instant,
+    /// Wall-clock anchor for advancing `animation_time` / `env_time`.
+    /// Set to `None` after a long idle (or first launch) so the next
+    /// frame produces `dt = 0` instead of catching up on lost time. Each
+    /// active frame clamps `(now - last).min(33ms)` before accumulating.
+    pub(super) last_anim_tick: Option<std::time::Instant>,
 }
 
 #[derive(Default)]
@@ -360,6 +365,7 @@ impl Default for App {
             sys: sysinfo::System::new(),
             wgpu_error_flag: Arc::new(AtomicBool::new(false)),
             pt_auto_spp_tick: std::time::Instant::now(),
+            last_anim_tick: None,
         }
     }
 }
