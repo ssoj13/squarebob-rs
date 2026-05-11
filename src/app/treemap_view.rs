@@ -309,11 +309,15 @@ impl App {
                             log::warn!("Picked id={} but path_for_id returned None!", id);
                         }
                     }
-                    self.needs_layout = true;
+                    // Selection is a pure overlay (selected_ids_buf is a
+                    // separate GPU buffer written each frame). A redraw
+                    // is enough — full layout rebuild would reset the PT
+                    // accumulation buffer for no reason.
+                    self.needs_render_3d = true;
                 } else if !shift_held {
                     // Click on empty space clears selection (but not with shift)
                     self.selected_3d_ids.clear();
-                    self.needs_layout = true;
+                    self.needs_render_3d = true;
                 }
             }
         }
