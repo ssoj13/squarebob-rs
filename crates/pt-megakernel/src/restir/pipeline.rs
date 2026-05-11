@@ -41,6 +41,10 @@ pub struct ReSTIRPipeline {
     // G-buffer for visibility checks
     gbuf_depth: Option<wgpu::Buffer>,
     gbuf_normal: Option<wgpu::Buffer>,
+    /// Per-pixel hit instance id (0xFFFFFFFF for miss). Lets ReSTIR shaders
+    /// look up materials and identify hit geometry without reading the
+    /// wavefront's tile-local rays/hits buffers.
+    gbuf_instance_id: Option<wgpu::Buffer>,
 
     // Dimensions
     width: u32,
@@ -131,6 +135,7 @@ impl ReSTIRPipeline {
             motion_buf: None,
             gbuf_depth: None,
             gbuf_normal: None,
+            gbuf_instance_id: None,
             width: 0,
             height: 0,
             cur_buf: 0,
@@ -156,6 +161,7 @@ impl ReSTIRPipeline {
         self.motion_buf = Some(create_buf(device, "restir_motion", n * mv_sz));
         self.gbuf_depth = Some(create_buf(device, "restir_depth", n * 4));
         self.gbuf_normal = Some(create_buf(device, "restir_normal", n * 16));
+        self.gbuf_instance_id = Some(create_buf(device, "restir_instance_id", n * 4));
         self.cur_buf = 0;
     }
 
@@ -219,6 +225,10 @@ impl ReSTIRPipeline {
 
     pub fn normal_buffer(&self) -> &wgpu::Buffer {
         self.gbuf_normal.as_ref().unwrap()
+    }
+
+    pub fn instance_id_buffer(&self) -> &wgpu::Buffer {
+        self.gbuf_instance_id.as_ref().unwrap()
     }
 }
 

@@ -1781,6 +1781,7 @@ impl PathTraceCompute {
                     bgl_storage_rw(3),                            // normal
                     bgl_storage_rw(4),                            // motion
                     bgl_uniform_dyn(5, GBUFFER_PARAMS_SIZE),      // params (per-tile)
+                    bgl_storage_rw(6),                            // instance_id (NEW)
                 ],
             });
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1842,6 +1843,10 @@ impl PathTraceCompute {
                         size: NonZeroU64::new(GBUFFER_PARAMS_SIZE),
                     }),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: rs.instance_id_buffer().as_entire_binding(),
+                },
             ],
         });
         let gbuffer_bg_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1875,6 +1880,10 @@ impl PathTraceCompute {
                         offset: 0,
                         size: NonZeroU64::new(GBUFFER_PARAMS_SIZE),
                     }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: rs.instance_id_buffer().as_entire_binding(),
                 },
             ],
         });

@@ -45,6 +45,7 @@ struct Params {
 @group(0) @binding(3) var<storage, read_write> normal_buf: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> motion_buf: array<MotionVector>;
 @group(0) @binding(5) var<uniform> params: Params;
+@group(0) @binding(6) var<storage, read_write> instance_id_buf: array<u32>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -63,8 +64,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         depth_buf[global_id] = 0.0;
         normal_buf[global_id] = vec4<f32>(0.0);
         motion_buf[global_id] = MotionVector(vec2<f32>(0.0), 0.0, 0u);
+        // 0xFFFFFFFF == miss sentinel for ReSTIR shaders that read from
+        // this buffer in lieu of the tile-local hits[] array.
+        instance_id_buf[global_id] = 0xFFFFFFFFu;
         return;
     }
+    instance_id_buf[global_id] = hit.instance_id;
 
     let ray = rays[local_id];
     let world_pos = ray.origin + ray.dir * hit.t;
