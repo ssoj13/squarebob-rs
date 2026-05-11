@@ -168,8 +168,52 @@ change yet — bindings declared, structs in place, stubs not called.
   creation sites (`src/main.rs`, `crates/render-core/src/lib.rs`) —
   megakernel BGL now hits 11 storage buffers.
 
+### Stage G.B — ReSTIR-DI live in megakernel (commits `3e2088b`, `2bdd9fe`)
+
+The megakernel now runs RIS-resampled direct illumination at bounce 0
+when the ReSTIR-DI checkbox is on, no wavefront round-trip required.
+
+- `bvh_traverse.wgsl`: at bounce 0 with `emissive_light_params.params0.w
+  != 0`, the NEE block branches to a RIS path that draws M candidates
+  (= `params1.z`, default 32) from the existing Vose alias table,
+  builds a reservoir with target `luminance(emission) · cos_theta`,
+  selects one via the standard `rand · w_sum < w_i` stream sampler,
+  and shadow-tests only the survivor. Contribution applied with the
+  unbiased RIS weight `W = w_sum / (m · target_selected)`.
+- The final reservoir is written to `cur_reservoirs[pixel_idx]` so
+  Stage G.C can resample it next frame.
+- Bounce 1+ keeps the existing MIS-NEE estimator, so glass
+  transmission and indirect bounces render unchanged.
+- Host: `EmissiveLightUniform.params0.w` carries `di_enabled` and
+  `params1.z` carries `initial_candidates` as f32. The uniform is
+  refreshed every frame from `dispatch()` so toggles propagate
+  without a dedicated setter.
+
+### BVH traversal stack 32 → 64 (commit `2bdd9fe`)
+
+Fixes the "blocks of cubes flicker on/off, env map peeks through"
+artifact the user reported during camera rotation. The GPU LBVH can
+build branches deeper than `log2(N)` when many sibling instances
+share near-identical centroids (dirstat hits this with many small
+files in one directory). At 30k instances a handful of rays per
+frame ran out of the 32-deep stack inside `trace_ray`, silently
+returned no hit, and showed the sky behind real geometry. RNG jitter
+shifted which rays hit the cap each frame so the holes danced
+around. New cap of 64 buys ample margin (256 B/thread of register-
+mapped private storage at 8×8 workgroups, negligible).
+
+The same fix removes the camera-rotation case of the dropout but
+NOT the animation case — when Effects=Ocean shifts cubes by ±30
+units along Z per frame, the GPU BVH refit appears to lag behind
+the instance upload and rays use stale AABBs. Tracked as a separate
+follow-up.
+
 ### Known follow-ups
 
+- Animation block-flicker: Ocean / Echo effects displace cubes by
+  large per-frame amounts; LBVH refit doesn't catch up before the
+  PT dispatch reads bounds. Repro: WF Tile=0, Animation=on,
+  Effects=Ocean, Strength≥1. Investigation TBD.
 - Spatial distribution for Color uses a deterministic path-hash
   wobble because the cube cache key has no per-instance position.
   Real spatial coherence (Perlin / blue-noise position field) needs
@@ -177,9 +221,10 @@ change yet — bindings declared, structs in place, stubs not called.
 - Age source falls back to `name_hash` as a deterministic mtime
   proxy — real `mtime` plumbing through `DirEntry` and the scanner
   is the proper fix.
-- Light optimisation queue: stochastic tile-based culling and
-  ReSTIR-DI in the megakernel main loop (Stage G.B from HANDOFF.md)
-  still pending.
+- Stage G.C — temporal reuse: read `prev_reservoirs[prev_pixel]` via
+  motion vector reprojection, RIS-combine with the new reservoir,
+  apply m_max clamp. Stage G.D (optional spatial post-pass) and
+  G.E (megakernel-default UI cleanup) still pending.
 
 ---
 
