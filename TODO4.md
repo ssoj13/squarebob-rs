@@ -578,6 +578,134 @@ reprojects against the real previous-frame projection.
 
 ---
 
+## Stage G — ReSTIR-DI into the megakernel (sprint-5, 2026-05-11)
+
+User observed wavefront's hybrid ReSTIR (commit `22da6d5`, see CHANGELOG
+sprint-4) was materially slower than megakernel and didn't pay back the
+quality. Decision: port ReSTIR-DI inside the megakernel so the project
+keeps megakernel's single-dispatch speed AND gets ReSTIR's quality.
+
+Plus an unrelated dropout bug that finally got diagnosed.
+
+| Stage | Status |
+|-------|--------|
+| G.A ReSTIR plumbing (BGL + WGSL structs) | ✅ shipped (commit `2151d04`) — bindings 15-17 + fallback buffers + Reservoir/Sample/MotionVector structs in `bvh_traverse.wgsl`; max_storage_buffers bumped 8→16 |
+| G.B ReSTIR-DI RIS at bounce 0 | ✅ shipped (commits `3e2088b`, `2bdd9fe`) — see Stage G.B notes below |
+| G.C ReSTIR temporal reuse | ⏳ next sprint |
+| G.D ReSTIR optional spatial post-pass | ⏳ later |
+| G.E megakernel = UI default, wavefront opt-in | ⏳ later |
+| G.X BVH stack depth 32 → 64 | ✅ shipped (commit `2bdd9fe`) — fixes camera-rotation block-flicker; animation case still open |
+
+### G.B notes — what shipped
+
+`bvh_traverse.wgsl` at bounce 0, when `emissive_light_params.params0.w
+!= 0`, replaces the multi-sample MIS-NEE block with RIS over M (=
+`params1.z`, default 32) candidates drawn from the existing Vose alias
+table. Target function: `luminance(emission) · cos_theta` (cheap
+proxy, no visibility). Reservoir update via stream sampler; final
+unbiased weight `W = w_sum / (m · target_selected)` applied with ONE
+shadow ray on the surviving candidate. Reservoir is written to
+`cur_reservoirs[pixel_idx]` so Stage G.C can resample it next frame.
+
+Host: `EmissiveLightUniform.params0.w` carries `di_enabled` and
+`params1.z` carries `initial_candidates` as `f32`. The uniform is
+refreshed every frame from `dispatch()` so the UI toggle propagates
+without a dedicated setter.
+
+Bounce 1+ keeps the existing MIS-NEE estimator unchanged, so glass
+transmission and indirect bounces render exactly as before.
+
+### G.X notes — BVH traversal stack overflow
+
+User reported entire blocks of cubes flickering on/off frame to
+frame, with the env map visible through the holes during camera
+rotation. The GPU LBVH can build branches deeper than `log2(N)` when
+many sibling instances share near-identical centroids (dirstat hits
+this with many small files in one directory). At 30k instances a
+handful of rays per frame ran out of the 32-deep stack inside
+`trace_ray`, silently returned no hit, and showed the sky behind real
+geometry. RNG jitter shifted which rays hit the cap each frame so
+the holes danced around. New cap of 64 buys margin (256 B/thread of
+register-mapped private storage at 8×8 workgroups, negligible).
+
+**Still open — animation case.** With `Effects = Ocean`,
+`Strength ≥ 1`, `Animation = on`, Ocean displaces cubes by ±30 units
+along Z per frame. The GPU BVH refit appears to lag behind the
+instance upload so the PT dispatch reads stale AABBs and rays miss.
+Stack-depth fix does NOT help this — it's a refit-sequencing
+problem, not a stack-depth problem. Investigation TBD next sprint.
+
+### Stage G.C — temporal reuse (next sprint)
+
+Plan:
+
+1. Read `prev_reservoirs[prev_pixel]` reprojected via `motion_vectors
+   [pixel_idx]`. We already have full-image motion vectors written by
+   wavefront's gbuffer; for megakernel we need to write them inline at
+   the primary hit. Reproject world position via `prev_view_proj` (we
+   added it back in sprint-4, commit `2767548`).
+2. Disocclusion check: depth difference between current hit and
+   `prev_depth_buf[prev_pixel]` > `depth_threshold * curr_z` → reject
+   prev reservoir. Same logic as `restir/temporal.wgsl`.
+3. RIS-combine current reservoir with prev (clamp prev m to `m_max`
+   to avoid bias).
+4. Write the combined reservoir back to `cur_reservoirs[pixel_idx]`.
+5. End-of-frame: copy `cur_depth` → `prev_depth_buf`, swap
+   `reservoir_a` / `reservoir_b` ping-pong via `rs.swap_bufs()`.
+
+Bindings already in place (G.A). Estimated ~150 LOC: extend
+`bvh_traverse.wgsl` bounce-0 RIS path with the temporal combine + add
+a `gbuf_depth` / `gbuf_motion` write at primary hit, plus host glue
+for the end-of-frame copies.
+
+### Stage G.D — optional spatial post-pass (later)
+
+After the megakernel dispatch, run `restir/spatial.wgsl` once on the
+full image, reading the just-written `cur_reservoirs` and writing to a
+spatial output. The spatial output feeds NEXT frame's temporal step
+(one-frame lag is acceptable). This keeps the megakernel single
+dispatch and gets full ReSTIR quality.
+
+### Stage G.E — megakernel = UI default (later)
+
+Once G.C is in and G.B is verified to look better than non-ReSTIR
+megakernel, flip the UI default backend to megakernel and rename the
+wavefront option to clarify it's the legacy path. The wavefront
+hybrid ReSTIR (commits `edf8154`, `22da6d5` from sprint-4) stays as
+an opt-in but is no longer the recommended path.
+
+---
+
+## Sprint-5 — other work that shipped (commits between `5675b48` and
+`f03707c`)
+
+These are orthogonal to Stage G and already documented in detail in
+CHANGELOG.md; listing here as a roadmap snapshot:
+
+- **Material palette system** (commit `2151d04`) — continuous
+  perceptual ramps (Viridis / Magma / Plasma / Turbo / Sunset /
+  Cubehelix) replace the 14-bin `MaterialClass` discretisation.
+- **`viz` abstraction** (commit `a51906d`) — `CurveParams` /
+  `RampParams` / `Mapping<P, N>` unify height / color / folder /
+  effects.
+- **Per-mode height curves + per-effect strength** (commit `a51906d`)
+  — independent shaping for each height source and effect.
+- **Color + Folder palette** (commit `5ca7d45`) — palettes also drive
+  per-instance color tint, not just material lookup.
+- **Animation timeline correctness** (commits `1b9070f`, `99135a3`)
+  — wall-clock dt anchor (no catch-up jumps on resume) and env
+  timeline gated by master Animate.
+- **UI grouping** (commits `4966713`, `d2e3216`) — collapsible
+  Geometry subsections and Animation hierarchy.
+- **O(1) emissive light sampling** (commits `9d1654a`, `e952a9f`,
+  `420651a`) — Vose alias table replaces the O(N) linear scan;
+  unblocks thousands-of-lights scenes.
+- **UI polish** (commits `008aac3`, `0ac371e`, `a6fcaca`, `2ea86d7`)
+  — thinner Effects/Animation/Path Tracer headers (full-width strip),
+  WF Tile clamp to {0} ∪ [64, 8192] with halfway drag-to-0 snap.
+
+---
+
 ## Index of references
 
 - `.planning/codebase/CONCERNS.md` — top-concerns list and per-area
