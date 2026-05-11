@@ -13,7 +13,9 @@ pub(super) use ramp_widget::{curve_rows, ramp_section, RampUiCtx};
 use super::state::SettingsTab;
 use super::App;
 use crate::events::SettingsChangedEvent;
+use crate::renderer::OrbitCamera;
 use eframe::egui;
+use treemap::TreeMapOptions;
 
 pub(super) const LABEL_WIDTH: f32 = 80.0;
 pub(super) const SETTINGS_LABEL_WIDTH: f32 = 112.0;
@@ -90,6 +92,24 @@ fn tint_for_name(ui: &egui::Ui, name: &str, mix: f32) -> egui::Color32 {
 }
 
 impl App {
+    /// Reset 3D options, treemap layout options, 2D pan/zoom, and orbit camera to
+    /// application defaults. Does not change 2D/3D mode or CPU/GPU backend.
+    pub(super) fn apply_factory_render_defaults(&mut self) {
+        self.render_3d_opts = super::presets::factory_render_3d_options();
+        self.opts = TreeMapOptions::default();
+        self.viewport.reset();
+        self.orbit_camera = OrbitCamera::default();
+        self.needs_layout = true;
+        self.needs_render_3d = true;
+        if let Some(r) = &mut self.renderer_3d {
+            r.mark_pt_scene_dirty();
+            r.reset_pt_accumulation();
+        }
+        self.preset_name = super::presets::DEFAULT_PRESET_NAME.to_string();
+        self.preset_dirty = false;
+        log::info!("Applied default render settings");
+    }
+
     /// Render presets UI (save/load render presets)
     fn ui_presets(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -136,6 +156,18 @@ impl App {
                 self.delete_current_preset();
             }
 
+            if ui
+                .small_button("Reset")
+                .on_hover_text(
+                    "Restore defaults: all 3D/render options, treemap layout options, \
+                     2D pan/zoom, and orbit camera. Does not switch 2D/3D or CPU/GPU.",
+                )
+                .clicked()
+            {
+                self.apply_factory_render_defaults();
+                self.preset_dropdown_open = false;
+            }
+
             // Autosave checkbox
             ui.checkbox(&mut self.preset_autosave, "Auto")
                 .on_hover_text(format!(
@@ -144,23 +176,38 @@ impl App {
                 ));
         });
 
-        // Dropdown popup with preset list
-        if self.preset_dropdown_open && !self.presets.is_empty() {
+        // Dropdown popup: built-in defaults + saved presets
+        if self.preset_dropdown_open {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let mut selected = None;
+                let mut selected: Option<&'static str> = None;
+                let mut selected_user: Option<String> = None;
+
+                let builtin = super::presets::DEFAULT_PRESET_NAME;
+                if ui
+                    .selectable_label(self.preset_name == builtin, builtin)
+                    .clicked()
+                {
+                    selected = Some(builtin);
+                }
+
                 let mut names: Vec<_> = self.presets.keys().cloned().collect();
                 names.sort();
-
                 for name in &names {
+                    if super::presets::is_builtin_default_preset(name) {
+                        continue;
+                    }
                     if ui
                         .selectable_label(self.preset_name == *name, name)
                         .clicked()
                     {
-                        selected = Some(name.clone());
+                        selected_user = Some(name.clone());
                     }
                 }
 
-                if let Some(name) = selected {
+                if selected.is_some() {
+                    self.apply_factory_render_defaults();
+                    self.preset_dropdown_open = false;
+                } else if let Some(name) = selected_user {
                     self.load_preset(&name);
                     self.preset_dropdown_open = false;
                 }
@@ -175,6 +222,10 @@ impl App {
 
     /// Save current render settings as preset
     pub(super) fn save_current_preset(&mut self) {
+        if super::presets::is_builtin_default_preset(self.preset_name.trim()) {
+            log::warn!("Cannot save under reserved name \"{}\"", super::presets::DEFAULT_PRESET_NAME);
+            return;
+        }
         let preset = super::presets::create_preset(&self.preset_name, &self.render_3d_opts);
         match super::presets::save_preset(&preset) {
             Ok(_) => {
@@ -191,6 +242,10 @@ impl App {
 
     /// Load a preset by name
     fn load_preset(&mut self, name: &str) {
+        if super::presets::is_builtin_default_preset(name) {
+            self.apply_factory_render_defaults();
+            return;
+        }
         if let Some(preset) = self.presets.get(name).cloned() {
             self.render_3d_opts = preset.render_3d;
             self.preset_name = name.to_string();
@@ -203,6 +258,10 @@ impl App {
 
     /// Delete current preset
     fn delete_current_preset(&mut self) {
+        if super::presets::is_builtin_default_preset(self.preset_name.trim()) {
+            log::warn!("Cannot delete built-in \"{}\"", super::presets::DEFAULT_PRESET_NAME);
+            return;
+        }
         if let Err(e) = super::presets::delete_preset(&self.preset_name) {
             log::error!("Failed to delete preset: {}", e);
         } else {

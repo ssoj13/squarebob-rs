@@ -1,0 +1,313 @@
+{
+  "height_mode": "Depth",
+  "height_curves": [
+    {
+      "scale": 1.0,
+      "exponent": 1.0
+    },
+    {
+      "scale": 1.0,
+      "exponent": 1.0
+    },
+    {
+      "scale": 1.0,
+      "exponent": 1.0
+    },
+    {
+      "scale": 1.0,
+      "exponent": 1.0
+    },
+    {
+      "scale": 1.0,
+      "exponent": 1.0
+    },
+    {
+      "scale": 3.9,
+      "exponent": 1.3
+    },
+    {
+      "scale": 1.0,
+      "exponent": 1.0
+    },
+    {
+      "scale": 1.0,
+      "exponent": 1.0
+    }
+  ],
+  "color_mode": "Treemap",
+  "color_ramps": [
+    {
+      "palette": null,
+      "distribution": "Direct",
+      "quant_levels": 5,
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "curve": {
+        "scale": 1.0,
+        "exponent": 1.0
+      }
+    },
+    {
+      "palette": null,
+      "distribution": "Direct",
+      "quant_levels": 5,
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "curve": {
+        "scale": 1.0,
+        "exponent": 1.0
+      }
+    },
+    {
+      "palette": null,
+      "distribution": "Direct",
+      "quant_levels": 5,
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "curve": {
+        "scale": 1.0,
+        "exponent": 1.0
+      }
+    },
+    {
+      "palette": null,
+      "distribution": "Direct",
+      "quant_levels": 5,
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "curve": {
+        "scale": 1.0,
+        "exponent": 1.0
+      }
+    },
+    {
+      "palette": null,
+      "distribution": "Direct",
+      "quant_levels": 5,
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "curve": {
+        "scale": 1.0,
+        "exponent": 1.0
+      }
+    }
+  ],
+  "folder_color_mode": "NameHash",
+  "folder_tint": 0.0,
+  "folder_ramps": [
+    {
+      "palette": null,
+      "distribution": "Direct",
+      "quant_levels": 5,
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "curve": {
+        "scale": 1.0,
+        "exponent": 1.0
+      }
+    },
+    {
+      "palette": null,
+      "distribution": "Direct",
+      "quant_levels": 5,
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "curve": {
+        "scale": 1.0,
+        "exponent": 1.0
+      }
+    },
+    {
+      "palette": null,
+      "distribution": "Quantized",
+      "quant_levels": 5,
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "curve": {
+        "scale": 1.0,
+        "exponent": 1.0
+      }
+    }
+  ],
+  "hash_effect": "Ocean",
+  "effects": {
+    "hash_per_variant": [
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      },
+      {
+        "strength": 2.0,
+        "speed": 1.0
+      }
+    ]
+  },
+  "animation_time": 0.0,
+  "animation_speed": 3.6,
+  "env_time": 0.0,
+  "animate": false,
+  "show_wireframe": false,
+  "hover_mode": "Both",
+  "hover_outline_width": 2.0,
+  "hover_outline_alpha": 0.73,
+  "roughness": 0.5,
+  "metalness": 0.0,
+  "specular_ior": 1.5,
+  "xray_alpha": 1.0,
+  "flat_shading": false,
+  "double_sided": false,
+  "materialize_mode": "ByAge",
+  "mat_source": "Depth",
+  "mat_distribution": "Gradient",
+  "mat_quant_levels": 2,
+  "mat_band_count": 8,
+  "mat_spatial_scale": 0.025,
+  "mat_palette": null,
+  "mat_path_hierarchical": true,
+  "materialize_mix": 0.0,
+  "mat_allow_lights": true,
+  "mat_light_prob": 0.016921047,
+  "mat_light_count": 500,
+  "mat_light_warm": 0.0,
+  "mat_light_cool": 0.0,
+  "mat_light_intensity": 0.5,
+  "mat_light_color_randomness": 0.0,
+  "mat_allow_glass": true,
+  "mat_glass_prob": 0.06768419,
+  "mat_glass_count": 2000,
+  "mat_include_dirs": false,
+  "mat_seed": 15000,
+  "pt_global_transparency": 0.0,
+  "pt_global_glass": "Blue",
+  "pt_glass_specular": 0.26,
+  "pt_glass_base": 0.1,
+  "pt_glass_roughness": 0.05,
+  "pt_glass_ior": 1.2,
+  "pt_glass_dispersion": 1.0,
+  "pt_glass_temp": 5000.0,
+  "pt_glass_thin": false,
+  "env_map_intensity": 1.0,
+  "env_map_rotation": 0.0,
+  "env_map_enabled": true,
+  "env_map_visible": true,
+  "env_map_path": "data/uffizi-large.hdr",
+  "env_animate": false,
+  "env_speed": 2.2,
+  "background_color": [
+    0.1,
+    0.1,
+    0.1
+  ],
+  "path_tracing": true,
+  "pt_max_bounces": 20,
+  "pt_max_samples": 4096,
+  "pt_samples_per_update": 1,
+  "pt_max_transmission_depth": 20,
+  "pt_dof_enabled": false,
+  "pt_aperture": 2.0,
+  "pt_focus_distance": 500.0,
+  "pt_env_importance_sampling": true,
+  "pt_sampler_mode": "Pcg",
+  "pt_emissive_sampling": true,
+  "pt_emissive_samples": 1,
+  "pt_emissive_min_weight": 0.001,
+  "pt_target_fps": 5.0,
+  "pt_auto_spp": false,
+  "pt_camera_snap": false,
+  "pt_spectral_mode": "Off",
+  "pt_spectral_samples": 5,
+  "pt_spectral_dispersion": true,
+  "pt_gpu_bvh": true,
+  "pt_bvh_refit": true,
+  "pt_wavefront": false,
+  "pt_wavefront_tile_size": 1024,
+  "pt_russian_roulette": true,
+  "pt_adaptive_sampling": true,
+  "pt_adaptive_preset": "Custom",
+  "pt_adaptive_min_spp": 128,
+  "pt_adaptive_max_spp": 4096,
+  "pt_adaptive_variance": 2.5e-05,
+  "pt_adaptive_interval": 4,
+  "pt_restir_di": true,
+  "pt_restir_gi": true,
+  "pt_restir_temporal": true,
+  "pt_restir_spatial": true,
+  "pt_restir_m_max": 30,
+  "pt_path_guiding": true,
+  "pt_svo_resolution": 64,
+  "slice_enabled": false,
+  "slice_axis": 1,
+  "slice_position": -400.0,
+  "slice_position_vector": -300.0,
+  "slice_invert": false,
+  "slice_use_vector": false,
+  "slice_normal": [
+    0.0,
+    1.0,
+    0.0
+  ],
+  "lod_enabled": false,
+  "lod_min_screen_size": 5.5,
+  "inertia_enabled": true,
+  "inertia_friction": 4.0,
+  "inertia_cutoff": 0.025,
+  "pt_denoise_enabled": false,
+  "pt_denoise_iterations": 4,
+  "pt_denoise_sigma_color": 0.065
+}

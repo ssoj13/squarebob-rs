@@ -180,17 +180,17 @@ impl App {
         // Geometry settings
         self.ui_3d_geometry(ui);
 
+        // Material assignment and raster/PTR-specific knobs (not wireframe).
+        if !self.render_3d_opts.show_wireframe {
+            self.ui_3d_materials(ui);
+        }
+
         // Effects settings
         self.ui_3d_effects(ui);
 
         // Animation: master + per-timeline knobs in one place.
         self.ui_3d_animation(ui);
 
-        // Mode-specific panels
-        let is_shaded = !self.render_3d_opts.show_wireframe && !self.render_3d_opts.path_tracing;
-        if is_shaded {
-            self.ui_3d_material(ui);
-        }
         if self.render_3d_opts.path_tracing {
             self.ui_3d_pathtracer(ui);
         }
@@ -653,10 +653,16 @@ impl App {
         });
     }
 
-    /// Material settings (PBR properties)
-    fn ui_3d_material(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Material", false, self.settings_tint_mix, |ui| {
-            egui::Grid::new("material_grid")
+    /// Materials: shared assignment (PBR + path tracing), PT light/glass counts, raster BRDF knobs.
+    fn ui_3d_materials(&mut self, ui: &mut egui::Ui) {
+        let path_tracing = self.render_3d_opts.path_tracing;
+        let total_cubes = self.pt_total_cubes();
+        if path_tracing {
+            self.backfill_pt_material_counts(total_cubes);
+        }
+
+        tinted_section(ui, "Materials", false, self.settings_tint_mix, |ui| {
+            egui::Grid::new("materials_unified_grid")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
                 .min_col_width(SETTINGS_LABEL_WIDTH)
@@ -677,9 +683,7 @@ impl App {
                         ],
                         MultiButtonAxis::Horizontal,
                     ) {
-                        // Sync legacy mode
-                        self.render_3d_opts.materialize_mode = match self.render_3d_opts.mat_source
-                        {
+                        self.render_3d_opts.materialize_mode = match self.render_3d_opts.mat_source {
                             MaterialSource::None => MaterializeMode::None,
                             MaterialSource::Extension => MaterializeMode::ByExtension,
                             MaterialSource::Path => MaterializeMode::ByPath,
@@ -687,21 +691,15 @@ impl App {
                             MaterialSource::Age | MaterialSource::Depth => MaterializeMode::ByAge,
                             MaterialSource::Random => MaterializeMode::Random,
                         };
-                        if let Some(r) = &mut self.renderer_3d {
-                            r.mark_pt_scene_dirty();
-                        }
+                        self.mark_pt_scene_dirty();
                     }
                     if self.render_3d_opts.mat_source != old_source {
-                        if let Some(r) = &mut self.renderer_3d {
-                            r.mark_pt_scene_dirty();
-                        }
+                        self.mark_pt_scene_dirty();
                     }
                     ui.end_row();
 
                     if self.render_3d_opts.mat_source != MaterialSource::None {
-                        // Palette: smooth gradient ramp. `None` lets pt-mats
-                        // auto-pick a palette appropriate for the source
-                        // (Viridis for Size, Sunset for Age, etc.).
+                        // Palette: `None` lets pt-mats auto-pick for the active source.
                         control_label(ui, "Palette:");
                         let mut palette_changed = false;
                         let cur_label = match self.render_3d_opts.mat_palette {
@@ -735,15 +733,10 @@ impl App {
                                 }
                             });
                         if palette_changed {
-                            if let Some(r) = &mut self.renderer_3d {
-                                r.mark_pt_scene_dirty();
-                            }
+                            self.mark_pt_scene_dirty();
                         }
                         ui.end_row();
 
-                        // Path-hierarchical: only meaningful for Source=Path.
-                        // Siblings cluster into nearby palette colours when
-                        // enabled, scatter randomly when disabled.
                         if self.render_3d_opts.mat_source == MaterialSource::Path {
                             control_label(ui, "Cluster siblings:");
                             if ui
@@ -753,14 +746,11 @@ impl App {
                                 )
                                 .changed()
                             {
-                                if let Some(r) = &mut self.renderer_3d {
-                                    r.mark_pt_scene_dirty();
-                                }
+                                self.mark_pt_scene_dirty();
                             }
                             ui.end_row();
                         }
 
-                        // Distribution: how values map to materials
                         control_label(ui, "Distribute:");
                         let old_dist = self.render_3d_opts.mat_distribution;
                         if multibutton_exclusive(
@@ -775,18 +765,13 @@ impl App {
                             ],
                             MultiButtonAxis::Horizontal,
                         ) {
-                            if let Some(r) = &mut self.renderer_3d {
-                                r.mark_pt_scene_dirty();
-                            }
+                            self.mark_pt_scene_dirty();
                         }
                         if self.render_3d_opts.mat_distribution != old_dist {
-                            if let Some(r) = &mut self.renderer_3d {
-                                r.mark_pt_scene_dirty();
-                            }
+                            self.mark_pt_scene_dirty();
                         }
                         ui.end_row();
 
-                        // Distribution-specific parameters
                         match self.render_3d_opts.mat_distribution {
                             MaterialDistribution::Quantized => {
                                 control_label(ui, "Levels:");
@@ -797,9 +782,7 @@ impl App {
                                     ))
                                     .changed()
                                 {
-                                    if let Some(r) = &mut self.renderer_3d {
-                                        r.mark_pt_scene_dirty();
-                                    }
+                                    self.mark_pt_scene_dirty();
                                 }
                                 ui.end_row();
                             }
@@ -812,9 +795,7 @@ impl App {
                                     ))
                                     .changed()
                                 {
-                                    if let Some(r) = &mut self.renderer_3d {
-                                        r.mark_pt_scene_dirty();
-                                    }
+                                    self.mark_pt_scene_dirty();
                                 }
                                 ui.end_row();
                             }
@@ -830,16 +811,13 @@ impl App {
                                     )
                                     .changed()
                                 {
-                                    if let Some(r) = &mut self.renderer_3d {
-                                        r.mark_pt_scene_dirty();
-                                    }
+                                    self.mark_pt_scene_dirty();
                                 }
                                 ui.end_row();
                             }
                             _ => {}
                         }
 
-                        // Seed
                         control_label(ui, "Seed:");
                         if ui
                             .add(
@@ -848,17 +826,48 @@ impl App {
                             )
                             .changed()
                         {
-                            if let Some(r) = &mut self.renderer_3d {
-                                r.mark_pt_scene_dirty();
-                            }
+                            self.mark_pt_scene_dirty();
                         }
                         ui.end_row();
 
-                        // Mix
                         control_label(ui, "Mix:");
                         if ui
                             .add(egui::Slider::new(
                                 &mut self.render_3d_opts.materialize_mix,
+                                0.0..=1.0,
+                            ).show_value(true))
+                            .changed()
+                        {
+                            if path_tracing {
+                                self.mark_pt_scene_dirty();
+                            } else {
+                                self.needs_layout = true;
+                            }
+                        }
+                        ui.end_row();
+
+                        if path_tracing {
+                            self.ui_pt_material_counts(ui, total_cubes);
+                        }
+                    }
+
+                    if !path_tracing {
+                        control_label(ui, "Roughness:");
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.render_3d_opts.roughness,
+                                0.04..=1.0,
+                            ))
+                            .changed()
+                        {
+                            self.needs_layout = true;
+                        }
+                        ui.end_row();
+
+                        control_label(ui, "Metalness:");
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.render_3d_opts.metalness,
                                 0.0..=1.0,
                             ))
                             .changed()
@@ -866,57 +875,45 @@ impl App {
                             self.needs_layout = true;
                         }
                         ui.end_row();
-                    }
 
-                    control_label(ui, "Roughness:");
-                    if ui
-                        .add(egui::Slider::new(
-                            &mut self.render_3d_opts.roughness,
-                            0.04..=1.0,
-                        ))
-                        .changed()
-                    {
-                        self.needs_layout = true;
+                        control_label(ui, "Specular IOR:");
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.render_3d_opts.specular_ior,
+                                1.0..=3.0,
+                            ))
+                            .changed()
+                        {
+                            self.needs_layout = true;
+                        }
+                        ui.end_row();
                     }
-                    ui.end_row();
-
-                    control_label(ui, "Metalness:");
-                    if ui
-                        .add(egui::Slider::new(
-                            &mut self.render_3d_opts.metalness,
-                            0.0..=1.0,
-                        ))
-                        .changed()
-                    {
-                        self.needs_layout = true;
-                    }
-                    ui.end_row();
-
-                    control_label(ui, "Specular IOR:");
-                    if ui
-                        .add(egui::Slider::new(
-                            &mut self.render_3d_opts.specular_ior,
-                            1.0..=3.0,
-                        ))
-                        .changed()
-                    {
-                        self.needs_layout = true;
-                    }
-                    ui.end_row();
                 });
 
-            egui::Grid::new("material_flags_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
-                .show(ui, |ui| {
-                    control_label(ui, "Shading:");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.render_3d_opts.flat_shading, "Flat");
-                        ui.checkbox(&mut self.render_3d_opts.double_sided, "Double Sided");
+            if !path_tracing {
+                egui::Grid::new("material_flags_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .min_col_width(SETTINGS_LABEL_WIDTH)
+                    .show(ui, |ui| {
+                        control_label(ui, "Shading:");
+                        ui.horizontal(|ui| {
+                            if ui
+                                .checkbox(&mut self.render_3d_opts.flat_shading, "Flat")
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            if ui
+                                .checkbox(&mut self.render_3d_opts.double_sided, "Double Sided")
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                        });
+                        ui.end_row();
                     });
-                    ui.end_row();
-                });
+            }
         });
     }
 
@@ -925,7 +922,6 @@ impl App {
         tinted_section(ui, "Path Tracer", true, self.settings_tint_mix, |ui| {
             let mut pt_changed = false;
 
-            compact_section(ui, "Materials", true, |ui| self.ui_pt_materials(ui));
             compact_section(ui, "Lighting", true, |ui| {
                 self.ui_pt_lighting(ui, &mut pt_changed)
             });
@@ -965,140 +961,6 @@ impl App {
             .or(self.tree.as_ref())
             .map(|t| t.file_count as u32)
             .unwrap_or(0)
-    }
-
-    fn ui_pt_materials(&mut self, ui: &mut egui::Ui) {
-        let total_cubes = self.pt_total_cubes();
-        self.backfill_pt_material_counts(total_cubes);
-
-        settings_grid(ui, "pt_materials_grid", |ui| {
-            control_label(ui, "Source:");
-            let old_source = self.render_3d_opts.mat_source;
-            if multibutton_exclusive(
-                ui,
-                &mut self.render_3d_opts.mat_source,
-                &[
-                    (MaterialSource::None, "None"),
-                    (MaterialSource::Extension, "Ext"),
-                    (MaterialSource::Path, "Path"),
-                    (MaterialSource::Size, "Size"),
-                    (MaterialSource::Depth, "Depth"),
-                    (MaterialSource::Random, "Rand"),
-                ],
-                MultiButtonAxis::Horizontal,
-            ) {
-                self.render_3d_opts.materialize_mode = match self.render_3d_opts.mat_source {
-                    MaterialSource::None => MaterializeMode::None,
-                    MaterialSource::Extension => MaterializeMode::ByExtension,
-                    MaterialSource::Path => MaterializeMode::ByPath,
-                    MaterialSource::Size => MaterializeMode::BySize,
-                    MaterialSource::Age | MaterialSource::Depth => MaterializeMode::ByAge,
-                    MaterialSource::Random => MaterializeMode::Random,
-                };
-                self.mark_pt_scene_dirty();
-            }
-            if self.render_3d_opts.mat_source != old_source {
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            if self.render_3d_opts.mat_source == MaterialSource::None {
-                return;
-            }
-
-            control_label(ui, "Distribute:");
-            let old_dist = self.render_3d_opts.mat_distribution;
-            if multibutton_exclusive(
-                ui,
-                &mut self.render_3d_opts.mat_distribution,
-                &[
-                    (MaterialDistribution::Direct, "Direct"),
-                    (MaterialDistribution::Quantized, "Quant"),
-                    (MaterialDistribution::Gradient, "Grad"),
-                    (MaterialDistribution::Spatial, "Spatial"),
-                    (MaterialDistribution::Bands, "Bands"),
-                ],
-                MultiButtonAxis::Horizontal,
-            ) {
-                self.mark_pt_scene_dirty();
-            }
-            if self.render_3d_opts.mat_distribution != old_dist {
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            match self.render_3d_opts.mat_distribution {
-                MaterialDistribution::Quantized => {
-                    control_label(ui, "Levels:");
-                    if ui
-                        .add(egui::Slider::new(
-                            &mut self.render_3d_opts.mat_quant_levels,
-                            2..=14,
-                        ))
-                        .changed()
-                    {
-                        self.mark_pt_scene_dirty();
-                    }
-                    ui.end_row();
-                }
-                MaterialDistribution::Bands => {
-                    control_label(ui, "Bands:");
-                    if ui
-                        .add(egui::Slider::new(
-                            &mut self.render_3d_opts.mat_band_count,
-                            2..=20,
-                        ))
-                        .changed()
-                    {
-                        self.mark_pt_scene_dirty();
-                    }
-                    ui.end_row();
-                }
-                MaterialDistribution::Spatial => {
-                    control_label(ui, "Scale:");
-                    if ui
-                        .add(
-                            egui::Slider::new(
-                                &mut self.render_3d_opts.mat_spatial_scale,
-                                0.001..=0.1,
-                            )
-                            .logarithmic(true),
-                        )
-                        .changed()
-                    {
-                        self.mark_pt_scene_dirty();
-                    }
-                    ui.end_row();
-                }
-                _ => {}
-            }
-
-            control_label(ui, "Seed:");
-            if ui
-                .add(
-                    egui::Slider::new(&mut self.render_3d_opts.mat_seed, 1..=u32::MAX)
-                        .logarithmic(true),
-                )
-                .changed()
-            {
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Mix:");
-            if ui
-                .add(
-                    egui::Slider::new(&mut self.render_3d_opts.materialize_mix, 0.0..=1.0)
-                        .show_value(true),
-                )
-                .changed()
-            {
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            self.ui_pt_material_counts(ui, total_cubes);
-        });
     }
 
     fn backfill_pt_material_counts(&mut self, total_cubes: u32) {

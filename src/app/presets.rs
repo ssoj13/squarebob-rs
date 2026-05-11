@@ -7,6 +7,31 @@ use render_shared::Render3DOptions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// Built-in preset name for bundled defaults (`data/factory_render3d_options.json`) plus related UI state.
+/// Not persisted as a JSON file under `presets/`.
+pub const DEFAULT_PRESET_NAME: &str = "defaults";
+
+/// Frozen 3D/render defaults shipped with the app (`data/factory_render3d_options.json`).
+///
+/// Animation clocks are zero and emissive motion is off so large light-cube counts stay cheaper
+/// until the user enables animation explicitly.
+#[inline]
+pub fn factory_render_3d_options() -> Render3DOptions {
+    static PARSED: OnceLock<Render3DOptions> = OnceLock::new();
+    PARSED
+        .get_or_init(|| {
+            serde_json::from_str(include_str!("../../data/factory_render3d_options.json"))
+                .expect("factory_render3d_options.json must match Render3DOptions schema")
+        })
+        .clone()
+}
+
+#[inline]
+pub fn is_builtin_default_preset(name: &str) -> bool {
+    name == DEFAULT_PRESET_NAME
+}
 
 /// A render preset containing all render settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +80,14 @@ pub fn load_all_presets() -> HashMap<String, RenderPreset> {
         if path.extension().is_some_and(|e| e == "json") {
             match load_preset_from_file(&path) {
                 Ok(preset) => {
+                    if is_builtin_default_preset(&preset.name) {
+                        log::warn!(
+                            "Ignoring preset file with reserved name {} — use built-in \"{}\" in the UI",
+                            path.display(),
+                            DEFAULT_PRESET_NAME
+                        );
+                        continue;
+                    }
                     log::debug!("Loaded preset: {}", preset.name);
                     presets.insert(preset.name.clone(), preset);
                 }
@@ -126,5 +159,22 @@ pub fn create_preset(name: &str, render_3d: &Render3DOptions) -> RenderPreset {
     RenderPreset {
         name: name.to_string(),
         render_3d: render_3d.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn factory_render_json_parses_and_matches_motion_flags() {
+        let o = factory_render_3d_options();
+        assert!(!o.animate, "bundled factory preset keeps cube motion off by default");
+        assert!(
+            !o.env_animate,
+            "bundled factory preset keeps env rotation off by default"
+        );
+        assert_eq!(o.animation_time, 0.0);
+        assert_eq!(o.env_time, 0.0);
     }
 }
