@@ -1192,12 +1192,25 @@ impl PathTraceCompute {
     }
 
     /// Configure wavefront tile size. `0` disables tiling (one full-frame
-    /// dispatch per frame). The value is passed through verbatim — no
-    /// clamp. The MAX_TILE_CAPACITY assertion in `WavefrontPipeline::
-    /// prepare_tiles` remains as a hard hang-protection net (e.g. tile=2
-    /// on 1920×1080 would still trip that assert).
+    /// dispatch per frame). Non-zero values are clamped to `[64, 8192]` to
+    /// keep tile count below `MAX_TILE_CAPACITY = 4096` on common
+    /// viewports — anything smaller than ~16 panics in `prepare_tiles`
+    /// when the tile grid exceeds the per-tile-slot buffer capacity.
     pub fn set_wavefront_tile_size(&mut self, size: u32) {
-        self.wavefront_config.tile_size = size;
+        const MIN_TILE_SIZE: u32 = 64;
+        const MAX_TILE_SIZE: u32 = 8192;
+        let clamped = if size == 0 {
+            0
+        } else {
+            size.clamp(MIN_TILE_SIZE, MAX_TILE_SIZE)
+        };
+        if clamped != size {
+            log::debug!(
+                "set_wavefront_tile_size: clamped {} -> {} (allowed: 0 or [{}, {}])",
+                size, clamped, MIN_TILE_SIZE, MAX_TILE_SIZE
+            );
+        }
+        self.wavefront_config.tile_size = clamped;
     }
 
     pub fn set_wavefront_rr_enabled(&mut self, enabled: bool) {

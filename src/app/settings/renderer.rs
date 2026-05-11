@@ -1622,14 +1622,22 @@ impl App {
                             .speed(16),
                     );
                     if resp.changed() {
-                        // No snap — user has explicit control. 0 means full
-                        // frame (no tiling); any non-zero value is passed
-                        // through verbatim. Tiny values produce many tiles
-                        // and can hammer the GPU, but that's the user's
-                        // call.
+                        // Clamp to {0} ∪ [64, 8192]. 0 = full frame (no
+                        // tiling). Non-zero values below 64 produce so many
+                        // tiles that prepare_tiles trips its MAX_TILE_CAPACITY
+                        // (4096) assertion and panics — type 0 directly to
+                        // disable tiling. Drag-down halfway split (< 32 → 0,
+                        // 32..64 → 64) so 0 stays reachable via drag.
+                        let v = self.render_3d_opts.pt_wavefront_tile_size;
+                        if v != 0 && v < 64 {
+                            self.render_3d_opts.pt_wavefront_tile_size =
+                                if v < 32 { 0 } else { 64 };
+                        } else if v > 8192 {
+                            self.render_3d_opts.pt_wavefront_tile_size = 8192;
+                        }
                         *pt_changed = true;
                     }
-                    ui.small("0 = full frame");
+                    ui.small("0 = full frame, else 64..8192");
                 });
                 ui.end_row();
 
