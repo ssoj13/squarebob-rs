@@ -18,7 +18,7 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "cargo build --release --message-format=short 2>&1 | grep -E \"error|warning:\" | head -20",
+    "buildCommand": "cargo build --release --message-format=short 2>&1 | grep -E \"error|warning:\" | head -10",
     "testCommand": "cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -10",
     "lintCommand": "cargo clippy",
     "devCommand": "cargo run",
@@ -111,8 +111,8 @@
   "hotPaths": [
     {
       "path": "crates\\pt-megakernel\\src\\compute.rs",
-      "accessCount": 193,
-      "lastAccessed": 1778510821999,
+      "accessCount": 194,
+      "lastAccessed": 1778511255613,
       "type": "directory"
     },
     {
@@ -123,8 +123,14 @@
     },
     {
       "path": "crates/pt-megakernel/src/compute.rs",
-      "accessCount": 44,
-      "lastAccessed": 1778510765024,
+      "accessCount": 45,
+      "lastAccessed": 1778511246374,
+      "type": "directory"
+    },
+    {
+      "path": "crates\\pt-megakernel\\src\\bvh_traverse.wgsl",
+      "accessCount": 24,
+      "lastAccessed": 1778511322763,
       "type": "directory"
     },
     {
@@ -132,12 +138,6 @@
       "accessCount": 22,
       "lastAccessed": 1778452643105,
       "type": "file"
-    },
-    {
-      "path": "crates\\pt-megakernel\\src\\bvh_traverse.wgsl",
-      "accessCount": 22,
-      "lastAccessed": 1778510939675,
-      "type": "directory"
     },
     {
       "path": "crates\\pt-megakernel\\src\\restir\\initial.wgsl",
