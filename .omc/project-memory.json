@@ -111,8 +111,14 @@
   "hotPaths": [
     {
       "path": "crates\\pt-megakernel\\src\\compute.rs",
-      "accessCount": 132,
-      "lastAccessed": 1778461316793,
+      "accessCount": 137,
+      "lastAccessed": 1778470544836,
+      "type": "directory"
+    },
+    {
+      "path": "crates/pt-megakernel/src/compute.rs",
+      "accessCount": 24,
+      "lastAccessed": 1778469957028,
       "type": "directory"
     },
     {
@@ -120,12 +126,6 @@
       "accessCount": 22,
       "lastAccessed": 1778452643105,
       "type": "file"
-    },
-    {
-      "path": "crates/pt-megakernel/src/compute.rs",
-      "accessCount": 22,
-      "lastAccessed": 1778459052196,
-      "type": "directory"
     },
     {
       "path": "crates\\pt-megakernel\\src\\restir\\initial.wgsl",
@@ -155,6 +155,12 @@
       "path": "CHANGELOG.md",
       "accessCount": 9,
       "lastAccessed": 1778452793444,
+      "type": "file"
+    },
+    {
+      "path": "src\\app\\settings\\renderer.rs",
+      "accessCount": 8,
+      "lastAccessed": 1778470521851,
       "type": "file"
     },
     {
@@ -243,20 +249,14 @@
     },
     {
       "path": "crates/pt-wavefront/src",
-      "accessCount": 3,
-      "lastAccessed": 1778446621225,
+      "accessCount": 4,
+      "lastAccessed": 1778469978804,
       "type": "directory"
     },
     {
       "path": "crates\\pt-megakernel\\src\\pathguide\\sample.wgsl",
       "accessCount": 3,
       "lastAccessed": 1778446678789,
-      "type": "file"
-    },
-    {
-      "path": "src\\app\\settings\\renderer.rs",
-      "accessCount": 3,
-      "lastAccessed": 1778453121425,
       "type": "file"
     },
     {
