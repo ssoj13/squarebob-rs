@@ -8,6 +8,181 @@ adapted for a single-developer workflow that batches by sprint.
 
 ---
 
+## Unreleased — sprint-5 (2026-05-11) — palettes + viz abstraction + light perf
+
+Major day. Three orthogonal threads landed: perceptual color palettes
+for materials and per-cube tint, a unified `viz` abstraction
+(`CurveParams` / `RampParams` / `Mapping<P, N>`) reused across height /
+color / folder-tint / effects, and an O(1) emissive light sampler that
+unblocked thousands-of-lights scenes.
+
+### Material palette system (commit `2151d04`)
+
+Replaced the 14-bin `MaterialClass` discretisation with continuous
+palette ramps so ordered sources (Size, Age, Depth) produce smooth
+gradients instead of a hash-binned mosaic.
+
+- New `crates/pt-mats/src/palette.rs`: `Palette` enum (`Viridis`,
+  `Magma`, `Plasma`, `Turbo`, `Sunset`, `Cubehelix`) backed by
+  Inigo-Quilez polynomial approximations / Green-2011 cubehelix /
+  hand-picked diverging stops. `auto_palette_for_source` routes each
+  `MaterialSource` to a sensible default.
+- `MaterialLibrary` now bakes `34 + 6×256 = 1570` materials (legacy
+  slots + 256-bin palette samples) and exposes `palette_material_id`.
+- `classify_to_id` / `classify_path_filtered_id` return the final
+  library index — light/glass overrides still resolve into the legacy
+  slot range so emissive / IOR semantics survive.
+- `hierarchical_path_value` accumulates per-segment hashes with 0.4
+  decay so sibling files cluster into nearby palette colors.
+- Scene-aware normalisation for `Depth` / `Size`: `MaterialCache`
+  holds `scene_max_depth` + `scene_max_size`, set once per frame from
+  a single `scan_scene_bounds` pre-walk in `collect_cubes`. Without
+  this, both sources collapsed to a single bin regardless of distribute
+  mode.
+- New `set_scene_meta()` clears the per-path cache when bounds change
+  so renders stay consistent.
+
+### viz abstraction (commit `a51906d`)
+
+`render-shared::viz` lifts the repeated "per-mode persistent params"
+pattern into reusable primitives.
+
+- `CurveParams { scale, exponent }` — scalar curve for Height.
+- `RampParams { palette, distribution, quant_levels, band_count,
+  spatial_scale, curve }` — color ramp for Color / Folder / Materials.
+- `Mapping<P, const N: usize>` — indexed-by-mode persistent storage
+  with custom serde impl that pads short configs and truncates long
+  ones (config drift across refactors stays non-fatal).
+- `EffectsState { hash_per_variant: Mapping<HashEffectParams, N> }` —
+  per-`HashTransformEffect` strength + speed survives mode switches.
+- Const sizes (`N_HEIGHT_MODES`, `N_COLOR_MODES`, …) compile-checked.
+
+Egui widgets in `src/app/settings/ramp_widget.rs`:
+
+- `curve_rows(ui, &mut CurveParams)` emits Scale + Scale Exponent rows.
+- `ramp_rows(ui, &mut RampParams, RampUiCtx)` emits Palette +
+  Distribute + conditional sub-params + optional curve rows.
+- `ramp_section(ui, title, params, ctx)` wraps the rows in a
+  collapsible `egui::CollapsingHeader` so palettes can be folded
+  away once tuned.
+
+### Height per-mode (commits `a51906d`, `4966713`, …)
+
+- `Render3DOptions.height_scale` / `height_power` / `height_power_enabled`
+  removed — switching modes used to bleed an inappropriate scale
+  across (e.g. "Const" length carrying into "Size").
+- New `height_curves: Mapping<CurveParams, N_HEIGHT_MODES>` indexed by
+  the active `CubeHeightMode`. Compute formula:
+  `(base ^ exponent) * scale * mode_const`.
+- UI: mode multibutton followed by `curve_rows`. Old `^` checkbox
+  replaced with explicit "Scale" / "Scale Exponent" labels aligned
+  inside the standard grid.
+
+### Color + Folder palette (commit `5ca7d45`)
+
+- `color_ramps: Mapping<RampParams, N_COLOR_MODES>` +
+  `folder_ramps: Mapping<RampParams, N_FOLDER_COLOR_MODES>`. Each
+  variant stores its own palette / distribution / curve.
+- `renderer3d::instance_collect` emits a scalar `t∈[0,1]` per mode
+  (FileType: ext hash, FileSize: log size / log scene_max, FileAge:
+  age-normalised, Treemap: `hierarchical_path_value`, Depth:
+  depth / scene_max_depth) and feeds it through a shared
+  `sample_color_ramp` helper: curve → distribute (Direct / Quantized
+  / Gradient / Bands; Spatial falls back to path-hash wobble) →
+  palette sample. Auto-routed palettes: Size→Viridis, Age→Sunset,
+  Depth→Cubehelix, FileType→Plasma, Treemap→Turbo.
+- Folder modes follow the same path; the legacy folder-color hash
+  map is replaced.
+
+### UI grouping (commit `4966713`, partial revert `d2e3216`)
+
+- Geometry section split into collapsible subsections: "Height: <mode>"
+  (default open), "Color: <mode>" (collapsed), "Folder tint: <mode>"
+  (collapsed), "LOD" (collapsed). Each header shows the active mode.
+- Color / Folder ramps nest a "Ramp" collapsing header inside their
+  parent section.
+- Cube placement: centered on the treemap plane (`pos.z = 0`) so the
+  user can see height instead of a flat front-facing wall.
+  Earlier-pass: extruding **toward** the camera put it inside tall
+  cubes for big files and produced ~100× slowdown — fixed by
+  centring instead of full-forward extrude.
+- Animation panel restructured: dedicated `Animation` section
+  (between Effects and mode-specific panels) holds the master
+  `Animate` checkbox + `Speed` slider, plus an `Env` (Animate + Speed)
+  row. Removed duplicates from Effects and Environment.
+- Per-effect `Speed` added to `HashEffectParams` next to `Strength`,
+  acts as a multiplier on `animation_speed`.
+
+### Animation timeline correctness
+
+- `fix(3d) cube click no longer resets PT accumulation` (`35d6773`) —
+  selection only flips `selected_ids_buf`; `needs_layout = true` on
+  click destroyed in-flight samples for no reason. Switched to
+  `needs_render_3d = true`.
+- `fix(anim) wall-clock dt anchor` (`1b9070f`) — `stable_dt` from egui
+  ballooned during idle and produced visible jumps on resume.
+  Replaced with a wall-clock anchor `last_anim_tick: Option<Instant>`
+  on `App`; first frame after `None` produces `dt = 0`, the rest
+  clamp `(now - last).min(33ms)`.
+- `fix(anim) env timeline gated by master Animate` (`99135a3`) —
+  Space now freezes EVERYTHING (cubes + sky). Final formula:
+  ```
+  if animate {
+      animation_time += dt * animation_speed;
+      if env_animate {
+          env_time += dt * animation_speed * env_speed;
+      }
+  }
+  ```
+
+### Emissive light perf — O(1) sampling (commits `9d1654a`,
+`e952a9f`, `420651a`)
+
+`sample_emissive_light` scanned every light linearly to pick by
+weight. With ~4500 light cubes this dragged path-tracing to a crawl.
+
+- CPU side (`pt-megakernel::compute::build_alias_table`) constructs
+  Vose's alias table at scene-upload time from per-light weights.
+- New `@binding(18)` on the megakernel BGL bound to
+  `emissive_alias_buf`, sized to `max(1, light_count)`.
+- WGSL `pick_alias_index` does two random draws + two memory loads
+  regardless of light count. Same PDF (`weight / total_weight`), so
+  NEE and MIS math unchanged.
+- Bumped into two WGSL reserved-word collisions during implementation
+  (`alias` and `target` are both reserved); final struct field is
+  named `alt`.
+
+### Stage G.A — ReSTIR plumbing in megakernel (commit `2151d04`)
+
+Wiring for the upcoming megakernel-side ReSTIR DI port. No behaviour
+change yet — bindings declared, structs in place, stubs not called.
+
+- BGL gained `@binding(15)` cur_reservoirs (RW), `@binding(16)`
+  prev_reservoirs (RO), `@binding(17)` motion_vectors (RO).
+- Two separate fallback reservoir buffers (cur + prev) so wgpu's
+  exclusive-RW rule doesn't reject the dispatch when ReSTIR is off.
+- `bvh_traverse.wgsl` declares `Sample` / `Reservoir` / `MotionVector`
+  structs (layout mirrors `restir/reservoir.rs`) plus
+  `init_reservoir` / `update_reservoir` / `combine_reservoirs` stubs.
+- `max_storage_buffers_per_shader_stage` bumped 8 → 16 on both device
+  creation sites (`src/main.rs`, `crates/render-core/src/lib.rs`) —
+  megakernel BGL now hits 11 storage buffers.
+
+### Known follow-ups
+
+- Spatial distribution for Color uses a deterministic path-hash
+  wobble because the cube cache key has no per-instance position.
+  Real spatial coherence (Perlin / blue-noise position field) needs
+  position-keyed caching.
+- Age source falls back to `name_hash` as a deterministic mtime
+  proxy — real `mtime` plumbing through `DirEntry` and the scanner
+  is the proper fix.
+- Light optimisation queue: stochastic tile-based culling and
+  ReSTIR-DI in the megakernel main loop (Stage G.B from HANDOFF.md)
+  still pending.
+
+---
+
 ## Unreleased — sprint-4 (2026-05-10) — wavefront race fix + spectral parity
 
 End-of-day fix sprint targeting the visible wavefront tile-rendering bug
