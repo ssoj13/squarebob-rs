@@ -41,3 +41,60 @@ This project is indexed by GitNexus as **dirstat-rs** (2651 symbols, 6575 relati
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+
+# HANDOFF — dirstat-rs cross-session resume
+
+**Branch:** `main`
+**Author/operator:** ssoj13
+
+## Documentation map (cross-session)
+
+- **`CHANGELOG.md`** — What shipped each sprint.
+
+## Build / test commands
+
+```powershell
+# Release build (the user runs this; can't build while .exe is running)
+cargo build --release --message-format=short 2>&1 | grep -E "error|warning:" | head -10
+
+# Clippy on the path tracer crate
+cargo clippy -p pt-megakernel --all-targets --message-format=short 2>&1 | grep -E "error|warning:" | head -10
+
+# Tests
+cargo test -p pt-megakernel -p pt-wavefront --message-format=short 2>&1 | grep -E "test result|FAILED" | head -10
+
+# Profile-style run with PT logging
+.\target\release\dirstat-rs.exe --log-modules pt 2>&1 | Tee-Object profile.log | Select-String "upload_scene|WF dispatch|cache MISS|scene_upload|bvh_build"
+```
+
+## User context / collaboration patterns
+
+- **Language:** RU in chat, EN in code/comments/commits. Operator
+  prefers terse responses, no fluff.
+- **Decision-making:** prefers honest pushback over agreeable
+  half-solutions. If a refactor is too large for one session, SAY
+  SO and commit a checkpoint rather than risk broken state.
+- **Frustration triggers:** flapping behaviour (commit clamp, revert
+  clamp, re-add clamp — operator called this "снапить блять"); long
+  speculative responses without concrete progress.
+- **Verification style:** operator runs the release exe themselves,
+  shows screenshots, points at visual artifacts. They diagnose the
+  USER side; we diagnose the CODE side.
+- **Snapping/UI:** WF Tile is clamped {0} ∪ [64, 8192] in the UI AND
+  host. 0 = full frame (no tiling). Drag-down uses halfway split
+  (<32 → 0, 32..63 → 64) so the user can drag to "off" via mouse.
+
+## Things to NOT do
+
+- Don't add new features speculatively. Operator wants concrete
+  progress on known bugs / Stage G plan.
+- Don't blindly re-run `npx gitnexus analyze` — last session it
+  segfaulted. The "GitNexus index stale" warning from hooks can be
+  ignored unless explicitly asked.
+- Don't auto-rebuild release while operator might be running the
+  exe — it'll fail to write the .exe. Wait for explicit "rebuild"
+  signal or just cargo check first.
+- Don't undo / partially-undo recently shipped commits. Operator
+  asked twice in a row "don't snap" then "add clamp back" — go with
+  the LATER instruction.
