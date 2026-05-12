@@ -64,7 +64,9 @@ jobs:
             pkg-config
 
       - name: Install Rust toolchain and Clippy
-        run: rustup toolchain install --profile minimal --component clippy
+        run: |
+          rustup toolchain install --profile minimal
+          rustup component add clippy
 
       - name: Cache Cargo
         uses: actions/cache@v5
