@@ -180,15 +180,14 @@ jobs:
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
           : "${APPLE_CERTIFICATE_P12:?APPLE_CERTIFICATE_P12 secret is required for macOS release signing}"
           : "${APPLE_CERTIFICATE_PASSWORD:?APPLE_CERTIFICATE_PASSWORD secret is required for macOS release signing}"
-          : "${KEYCHAIN_PASSWORD:?KEYCHAIN_PASSWORD secret is required for macOS release signing}"
 
           CERTIFICATE_PATH="$RUNNER_TEMP/developer_id_application.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
 
           if ! printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$CERTIFICATE_PATH" 2>/dev/null; then
             printf '%s' "$APPLE_CERTIFICATE_P12" | base64 -D > "$CERTIFICATE_PATH"
