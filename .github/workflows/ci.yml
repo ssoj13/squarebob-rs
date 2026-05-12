@@ -1,0 +1,360 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_BUNDLE_ID: io.github.dirstatrs.dirstatrs
+  APP_NAME: Dirstat
+  BINARY_NAME: dirstat-rs
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  verify:
+    name: verify / ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-latest
+          - platform: windows
+            runner: windows-latest
+          - platform: macos
+            runner: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libgtk-3-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxrandr-dev \
+            pkg-config
+
+      - name: Install Rust toolchain and Clippy
+        run: rustup toolchain install --profile minimal --component clippy
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          cargo clippy --version
+
+      - name: Build workspace
+        run: cargo build --workspace --all-targets
+
+      - name: Clippy workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --workspace
+
+  package:
+    name: package / ${{ matrix.platform }}
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - platform: windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - platform: macos
+            runner: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libgtk-3-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxrandr-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --profile minimal
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-ci-
+
+      - name: Build release binary
+        run: cargo build --workspace --release
+
+      - name: Package Linux artifact
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/stage
+          cp "target/release/${BINARY_NAME}" dist/stage/
+          cp -R data dist/stage/data
+          tar -C dist/stage -czf "dist/${BINARY_NAME}-${{ matrix.target }}.tar.gz" .
+          (cd dist && sha256sum "${BINARY_NAME}-${{ matrix.target }}.tar.gz" > "${BINARY_NAME}-${{ matrix.target }}.tar.gz.sha256")
+
+      - name: Package Windows artifact
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist, dist/stage | Out-Null
+          Copy-Item "target/release/${env:BINARY_NAME}.exe" -Destination "dist/stage/"
+          Copy-Item "data" -Destination "dist/stage/data" -Recurse
+          $archive = "dist/${env:BINARY_NAME}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "dist/stage/*" -DestinationPath $archive -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  ${env:BINARY_NAME}-${{ matrix.target }}.zip" | Set-Content "$archive.sha256" -Encoding ascii
+
+      - name: Import Apple Developer ID certificate
+        if: matrix.platform == 'macos' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_CERTIFICATE_P12:?APPLE_CERTIFICATE_P12 secret is required for macOS release signing}"
+          : "${APPLE_CERTIFICATE_PASSWORD:?APPLE_CERTIFICATE_PASSWORD secret is required for macOS release signing}"
+          : "${KEYCHAIN_PASSWORD:?KEYCHAIN_PASSWORD secret is required for macOS release signing}"
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer_id_application.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          if ! printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$CERTIFICATE_PATH" 2>/dev/null; then
+            printf '%s' "$APPLE_CERTIFICATE_P12" | base64 -D > "$CERTIFICATE_PATH"
+          fi
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -n 1 | sed 's/.*"\(.*\)"/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "No Developer ID Application identity found in imported keychain" >&2
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "APPLE_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Package macOS app
+        if: matrix.platform == 'macos'
+        shell: bash
+        env:
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          APP_BUNDLE="dist/${APP_NAME}.app"
+          CONTENTS="$APP_BUNDLE/Contents"
+          MACOS_DIR="$CONTENTS/MacOS"
+          RESOURCES_DIR="$CONTENTS/Resources"
+          ZIP_PATH="dist/${BINARY_NAME}-${{ matrix.target }}.zip"
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          fi
+
+          rm -rf "$APP_BUNDLE"
+          mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+          cp "target/release/${BINARY_NAME}" "$MACOS_DIR/${BINARY_NAME}"
+          cp -R data "$RESOURCES_DIR/data"
+          chmod +x "$MACOS_DIR/${BINARY_NAME}"
+
+          cat > "$CONTENTS/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleExecutable</key>
+            <string>${BINARY_NAME}</string>
+            <key>CFBundleIdentifier</key>
+            <string>${APP_BUNDLE_ID}</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>${APP_NAME}</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${VERSION}</string>
+            <key>CFBundleVersion</key>
+            <string>${GITHUB_RUN_NUMBER}</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>13.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          if [ "${GITHUB_REF#refs/tags/v}" != "$GITHUB_REF" ]; then
+            : "${APPLE_SIGNING_IDENTITY:?macOS release signing identity was not imported}"
+            codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_BUNDLE"
+            codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
+            : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID secret is required for notarization}"
+            : "${APPLE_API_ISSUER_ID:?APPLE_API_ISSUER_ID secret is required for notarization}"
+            : "${APPLE_API_KEY_P8:?APPLE_API_KEY_P8 secret is required for notarization}"
+            : "${APPLE_TEAM_ID:?APPLE_TEAM_ID secret is required for notarization}"
+
+            API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+            if ! printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$API_KEY_PATH" 2>/dev/null; then
+              printf '%s' "$APPLE_API_KEY_P8" | base64 -D > "$API_KEY_PATH"
+            fi
+            chmod 600 "$API_KEY_PATH"
+
+            ditto -c -k --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+            xcrun notarytool submit "$ZIP_PATH" \
+              --key "$API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" \
+              --wait
+            xcrun stapler staple "$APP_BUNDLE"
+            xcrun stapler validate "$APP_BUNDLE"
+            spctl -a -vvv -t exec "$APP_BUNDLE"
+            rm -f "$ZIP_PATH"
+          else
+            codesign --force --deep --sign - "$APP_BUNDLE"
+          fi
+
+          ditto -c -k --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+          shasum -a 256 "$ZIP_PATH" | sed "s#  dist/#  #" > "$ZIP_PATH.sha256"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attest package provenance
+        uses: actions/attest@v4
+        continue-on-error: true
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      - name: Delete Apple signing keychain
+        if: always() && matrix.platform == 'macos' && env.APPLE_KEYCHAIN_PATH != ''
+        shell: bash
+        run: security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
+
+  release:
+    name: github release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          pattern: package-*
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          find release-assets -maxdepth 1 -type f -print | sort
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-assets/* --clobber
+          else
+            gh release create "$TAG_NAME" release-assets/* --verify-tag --generate-notes --title "$TAG_NAME"
+          fi
