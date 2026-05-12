@@ -35,6 +35,7 @@ impl App {
                 }
                 #[cfg(not(windows))]
                 {
+                    let _ = path;
                     "jwalk".to_string()
                 }
             }

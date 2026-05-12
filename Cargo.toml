@@ -72,3 +72,31 @@ windows = { version = "0.62", features = [
 
 [profile.release]
 opt-level = 3
+
+[package.metadata.packager]
+product-name = "Dirstat"
+identifier = "io.github.dirstatrs.dirstatrs"
+description = "Cross-platform disk usage visualizer with 2D and 3D treemap rendering."
+homepage = "https://github.com/ssoj13/dirstat-rs"
+out-dir = "dist"
+binaries-dir = "target/release"
+resources = [{ src = "data", target = "data" }]
+
+[package.metadata.packager.deb]
+depends = [
+    "libasound2",
+    "libgtk-3-0",
+    "libx11-6",
+    "libxcb-render0",
+    "libxcb-shape0",
+    "libxcb-xfixes0",
+    "libxkbcommon0",
+]
+section = "utils"
+priority = "optional"
+
+[package.metadata.packager.macos]
+minimum-system-version = "13.0"
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
