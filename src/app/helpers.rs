@@ -269,9 +269,13 @@ pub(super) fn disk_free_total(path: &str) -> Option<(u64, u64)> {
         let result = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
         if result == 0 {
             let stat = unsafe { stat.assume_init() };
-            let block_size = stat.f_frsize as u64;
-            let total = (stat.f_blocks as u64).saturating_mul(block_size);
-            let free = (stat.f_bavail as u64).saturating_mul(block_size);
+            fn statvfs_field_to_u64<T: Into<u64>>(value: T) -> u64 {
+                value.into()
+            }
+
+            let block_size = statvfs_field_to_u64(stat.f_frsize);
+            let total = statvfs_field_to_u64(stat.f_blocks).saturating_mul(block_size);
+            let free = statvfs_field_to_u64(stat.f_bavail).saturating_mul(block_size);
             Some((free, total))
         } else {
             None
