@@ -5,4 +5,4 @@
 .planning
 .omc
 .claude
-
+.env*
