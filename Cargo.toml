@@ -109,3 +109,4 @@ minimum-system-version = "13.0"
 
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
+
