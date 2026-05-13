@@ -290,6 +290,8 @@ impl App {
             self.dock_state = dock_state;
         });
 
+        self.ui_encode_dialog_window(&ctx);
+
         // Screenshot handling
         self.handle_screenshot(&ctx);
         self.handle_image_sequence(&ctx);

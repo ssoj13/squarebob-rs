@@ -98,7 +98,8 @@ impl App {
                     app.settings_panel_font_monospace = s.settings_panel_font_monospace;
                     app.preset_autosave = s.preset_autosave;
                     app.autosave_interval_secs = s.autosave_interval_secs;
-                    app.image_sequence_dialog = s.image_sequence_dialog;
+                    app.encode_dialog =
+                        media_encoder::EncodeDialog::load_from_settings(&s.encode_dialog_settings);
                     app.filter_merge_outside = s.filter_merge_outside;
                     app.opts.grid = s.opts.grid;
                     app.opts.brightness = s.opts.brightness;
@@ -730,7 +731,7 @@ impl eframe::App for App {
             settings_panel_font_monospace: self.settings_panel_font_monospace,
             preset_autosave: self.preset_autosave,
             autosave_interval_secs: self.autosave_interval_secs,
-            image_sequence_dialog: self.image_sequence_dialog.clone(),
+            encode_dialog_settings: self.encode_dialog.save_to_settings(),
             filter_merge_outside: self.filter_merge_outside,
         };
         if let Ok(json) = serde_json::to_string(&state) {

@@ -95,7 +95,7 @@ pub(super) struct PersistState {
     #[serde(default = "default_autosave_interval")]
     pub autosave_interval_secs: f32,
     #[serde(default)]
-    pub image_sequence_dialog: media_encoder::EncodeDialogState,
+    pub encode_dialog_settings: media_encoder::EncodeDialogSettings,
     /// Merge files outside size range into LoD buckets (see View → Size filter).
     #[serde(default)]
     pub filter_merge_outside: bool,
@@ -292,16 +292,7 @@ pub struct App {
     pub(super) wgpu_error_flag: Arc<AtomicBool>,
     pub(super) pt_auto_spp_tick: std::time::Instant,
     pub(super) show_encode_panel: bool,
-    pub(super) image_sequence_dialog: media_encoder::EncodeDialogState,
-    pub(super) image_sequence_progress: Option<media_encoder::SequenceProgress>,
-    pub(super) image_sequence_settings: Option<media_encoder::SequenceSettings>,
-    pub(super) image_sequence_base_animation_time: f32,
-    pub(super) image_sequence_base_env_time: f32,
-    pub(super) image_sequence_restore_animate: bool,
-    pub(super) image_sequence_restore_env_animate: bool,
-    pub(super) image_sequence_restore_path_tracing: bool,
-    pub(super) image_sequence_restore_pt_max_samples: u32,
-    pub(super) image_sequence_error: Option<String>,
+    pub(super) encode_dialog: media_encoder::EncodeDialog,
     /// Wall-clock anchor for advancing `animation_time` / `env_time`.
     /// Set to `None` after a long idle (or first launch) so the next
     /// frame produces `dt = 0` instead of catching up on lost time. Each
@@ -442,16 +433,9 @@ impl Default for App {
             wgpu_error_flag: Arc::new(AtomicBool::new(false)),
             pt_auto_spp_tick: std::time::Instant::now(),
             show_encode_panel: false,
-            image_sequence_dialog: media_encoder::EncodeDialogState::default(),
-            image_sequence_progress: None,
-            image_sequence_settings: None,
-            image_sequence_base_animation_time: 0.0,
-            image_sequence_base_env_time: 0.0,
-            image_sequence_restore_animate: false,
-            image_sequence_restore_env_animate: false,
-            image_sequence_restore_path_tracing: false,
-            image_sequence_restore_pt_max_samples: 0,
-            image_sequence_error: None,
+            encode_dialog: media_encoder::EncodeDialog::load_from_settings(
+                &media_encoder::EncodeDialogSettings::default(),
+            ),
             last_anim_tick: None,
         }
     }

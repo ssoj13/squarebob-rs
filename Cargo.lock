@@ -2286,12 +2286,14 @@ name = "media-encoder"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "eframe",
  "egui",
  "egui_dock",
  "half",
  "image",
  "log",
  "playa-ffmpeg",
+ "rfd",
  "serde",
  "thiserror 2.0.18",
  "vfx-core",
