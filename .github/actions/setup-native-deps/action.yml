@@ -1,0 +1,171 @@
+name: Setup native dependencies
+description: Install system packages, configure vcpkg, restore vcpkg cache, and install manifest deps.
+
+inputs:
+  platform:
+    description: linux, windows, or macos
+    required: true
+  triplet:
+    description: vcpkg triplet
+    required: true
+  packaging:
+    description: Install packaging tools in addition to build dependencies
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Linux system dependencies
+      if: ${{ inputs.platform == 'linux' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          libasound2-dev \
+          libgl1-mesa-dev \
+          libgtk-3-dev \
+          libwayland-dev \
+          libx11-dev \
+          libxcb-render0-dev \
+          libxcb-shape0-dev \
+          libxcb-xfixes0-dev \
+          libxcursor-dev \
+          libxi-dev \
+          libxkbcommon-dev \
+          libxkbcommon-x11-dev \
+          libxrandr-dev \
+          autoconf \
+          automake \
+          libtool \
+          nasm \
+          yasm \
+          pkg-config
+        if [ "${{ inputs.packaging }}" = "true" ]; then
+          sudo apt-get install -y dpkg-dev fakeroot
+        fi
+
+    - name: Install macOS vcpkg build tools
+      if: ${{ inputs.platform == 'macos' }}
+      shell: bash
+      run: brew install autoconf automake libtool nasm pkg-config yasm
+
+    - name: Install Windows packaging dependencies
+      if: ${{ inputs.platform == 'windows' && inputs.packaging == 'true' }}
+      shell: pwsh
+      run: choco install nsis -y --no-progress
+
+    - name: Setup vcpkg (Unix)
+      if: ${{ inputs.platform != 'windows' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        VCPKG_ROOT="/usr/local/share/vcpkg"
+        if [ ! -x "$VCPKG_ROOT/vcpkg" ]; then
+          sudo git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          sudo "$VCPKG_ROOT/bootstrap-vcpkg.sh"
+        fi
+        sudo chown -R "$USER" "$VCPKG_ROOT"
+        mkdir -p "$HOME/.cache/vcpkg"
+        echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
+        echo "VCPKG_DEFAULT_BINARY_CACHE=$HOME/.cache/vcpkg" >> "$GITHUB_ENV"
+        echo "VCPKG_BINARY_SOURCES=clear;files,$HOME/.cache/vcpkg,readwrite" >> "$GITHUB_ENV"
+        echo "$VCPKG_ROOT" >> "$GITHUB_PATH"
+
+    - name: Setup vcpkg (Windows)
+      if: ${{ inputs.platform == 'windows' }}
+      shell: pwsh
+      run: |
+        $vcpkgRoot = 'C:\vcpkg'
+        $cacheRoot = "$env:LOCALAPPDATA\vcpkg\archives"
+        if (!(Test-Path "$vcpkgRoot\vcpkg.exe")) {
+          git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+          & "$vcpkgRoot\bootstrap-vcpkg.bat"
+        }
+        New-Item -Path $cacheRoot -ItemType Directory -Force | Out-Null
+        "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "VCPKG_DEFAULT_BINARY_CACHE=$cacheRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "VCPKG_BINARY_SOURCES=clear;files,$cacheRoot,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Append
+        $vcpkgRoot | Out-File -FilePath $env:GITHUB_PATH -Append
+
+    - name: Create vcpkg release triplet (Unix)
+      if: ${{ inputs.platform != 'windows' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo mkdir -p "$VCPKG_ROOT/triplets/community"
+        if [ "${{ inputs.platform }}" = "macos" ]; then
+          sudo tee "$VCPKG_ROOT/triplets/community/${{ inputs.triplet }}.cmake" > /dev/null <<'EOF'
+        set(VCPKG_TARGET_ARCHITECTURE arm64)
+        set(VCPKG_CRT_LINKAGE dynamic)
+        set(VCPKG_LIBRARY_LINKAGE static)
+        set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
+        set(VCPKG_BUILD_TYPE release)
+        EOF
+        else
+          sudo tee "$VCPKG_ROOT/triplets/community/${{ inputs.triplet }}.cmake" > /dev/null <<'EOF'
+        set(VCPKG_TARGET_ARCHITECTURE x64)
+        set(VCPKG_CRT_LINKAGE dynamic)
+        set(VCPKG_LIBRARY_LINKAGE static)
+        set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+        set(VCPKG_BUILD_TYPE release)
+        EOF
+        fi
+
+    - name: Create vcpkg release triplet (Windows)
+      if: ${{ inputs.platform == 'windows' }}
+      shell: pwsh
+      run: |
+        New-Item -Path "$env:VCPKG_ROOT\triplets\community" -ItemType Directory -Force | Out-Null
+        @"
+        set(VCPKG_TARGET_ARCHITECTURE x64)
+        set(VCPKG_CRT_LINKAGE dynamic)
+        set(VCPKG_LIBRARY_LINKAGE static)
+        set(VCPKG_BUILD_TYPE release)
+        "@ | Set-Content -Path "$env:VCPKG_ROOT\triplets\community\${{ inputs.triplet }}.cmake"
+
+    - name: Cache vcpkg (Unix)
+      if: ${{ inputs.platform != 'windows' }}
+      uses: actions/cache@v5
+      with:
+        path: |
+          /usr/local/share/vcpkg/installed
+          /usr/local/share/vcpkg/downloads
+          ~/.cache/vcpkg
+        key: ${{ runner.os }}-vcpkg-${{ inputs.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', '.github/actions/setup-native-deps/action.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-vcpkg-${{ inputs.triplet }}-
+
+    - name: Cache vcpkg (Windows)
+      if: ${{ inputs.platform == 'windows' }}
+      uses: actions/cache@v5
+      with:
+        path: |
+          C:\vcpkg\installed
+          C:\vcpkg\downloads
+          ~\AppData\Local\vcpkg\archives
+        key: ${{ runner.os }}-vcpkg-${{ inputs.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', '.github/actions/setup-native-deps/action.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-vcpkg-${{ inputs.triplet }}-
+
+    - name: Install vcpkg manifest dependencies (Unix)
+      if: ${{ inputs.platform != 'windows' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        vcpkg install \
+          --x-manifest-root . \
+          --x-install-root "$VCPKG_ROOT/installed" \
+          --triplet "${{ inputs.triplet }}"
+        echo "VCPKGRS_TRIPLET=${{ inputs.triplet }}" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$VCPKG_ROOT/installed/${{ inputs.triplet }}/lib/pkgconfig" >> "$GITHUB_ENV"
+
+    - name: Install vcpkg manifest dependencies (Windows)
+      if: ${{ inputs.platform == 'windows' }}
+      shell: pwsh
+      run: |
+        vcpkg install --x-manifest-root . --x-install-root "$env:VCPKG_ROOT\installed" --triplet "${{ inputs.triplet }}"
+        "VCPKGRS_TRIPLET=${{ inputs.triplet }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "PKG_CONFIG_PATH=$env:VCPKG_ROOT\installed\${{ inputs.triplet }}\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append

@@ -8,6 +8,22 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      package:
+        description: Build installable packages after verification
+        required: false
+        default: false
+        type: boolean
+      package_platform:
+        description: Platform to package when package=true
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+          - macos
 
 permissions:
   contents: read
@@ -45,145 +61,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install Linux system dependencies
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake \
-            libasound2-dev \
-            libgl1-mesa-dev \
-            libgtk-3-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libxrandr-dev \
-            autoconf \
-            automake \
-            libtool \
-            nasm \
-            yasm \
-            pkg-config
-
-      - name: Install macOS vcpkg build tools
-        if: matrix.platform == 'macos'
-        run: brew install autoconf automake libtool nasm pkg-config yasm
-
-      - name: Setup vcpkg (Unix)
-        if: matrix.platform != 'windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          VCPKG_ROOT="/usr/local/share/vcpkg"
-          if [ ! -x "$VCPKG_ROOT/vcpkg" ]; then
-            sudo git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
-            sudo "$VCPKG_ROOT/bootstrap-vcpkg.sh"
-          fi
-          sudo chown -R "$USER" "$VCPKG_ROOT"
-          echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
-          echo "$VCPKG_ROOT" >> "$GITHUB_PATH"
-
-      - name: Setup vcpkg (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $vcpkgRoot = 'C:\vcpkg'
-          if (!(Test-Path "$vcpkgRoot\vcpkg.exe")) {
-            git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
-            & "$vcpkgRoot\bootstrap-vcpkg.bat"
-          }
-          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $vcpkgRoot | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      - name: Create vcpkg release triplet (Unix)
-        if: matrix.platform != 'windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo mkdir -p "$VCPKG_ROOT/triplets/community"
-          if [ "${{ matrix.platform }}" = "macos" ]; then
-            sudo tee "$VCPKG_ROOT/triplets/community/${{ matrix.triplet }}.cmake" > /dev/null <<'EOF'
-          set(VCPKG_TARGET_ARCHITECTURE arm64)
-          set(VCPKG_CRT_LINKAGE dynamic)
-          set(VCPKG_LIBRARY_LINKAGE static)
-          set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
-          set(VCPKG_BUILD_TYPE release)
-          EOF
-          else
-            sudo tee "$VCPKG_ROOT/triplets/community/${{ matrix.triplet }}.cmake" > /dev/null <<'EOF'
-          set(VCPKG_TARGET_ARCHITECTURE x64)
-          set(VCPKG_CRT_LINKAGE dynamic)
-          set(VCPKG_LIBRARY_LINKAGE static)
-          set(VCPKG_CMAKE_SYSTEM_NAME Linux)
-          set(VCPKG_BUILD_TYPE release)
-          EOF
-          fi
-
-      - name: Create vcpkg release triplet (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          New-Item -Path "$env:VCPKG_ROOT\triplets\community" -ItemType Directory -Force | Out-Null
-          @"
-          set(VCPKG_TARGET_ARCHITECTURE x64)
-          set(VCPKG_CRT_LINKAGE dynamic)
-          set(VCPKG_LIBRARY_LINKAGE static)
-          set(VCPKG_BUILD_TYPE release)
-          "@ | Set-Content -Path "$env:VCPKG_ROOT\triplets\community\${{ matrix.triplet }}.cmake"
-
-      - name: Cache vcpkg (Unix)
-        if: matrix.platform != 'windows'
-        uses: actions/cache@v5
+      - name: Setup native dependencies
+        uses: ./.github/actions/setup-native-deps
         with:
-          path: |
-            /usr/local/share/vcpkg/installed
-            /usr/local/share/vcpkg/buildtrees
-            /usr/local/share/vcpkg/downloads
-            /usr/local/share/vcpkg/packages
-            ~/.cache/vcpkg
-          key: ${{ runner.os }}-vcpkg-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-${{ matrix.triplet }}-
-
-      - name: Cache vcpkg (Windows)
-        if: matrix.platform == 'windows'
-        uses: actions/cache@v5
-        with:
-          path: |
-            C:\vcpkg\installed
-            C:\vcpkg\buildtrees
-            C:\vcpkg\downloads
-            C:\vcpkg\packages
-            ~\AppData\Local\vcpkg\archives
-          key: ${{ runner.os }}-vcpkg-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-${{ matrix.triplet }}-
-
-      - name: Install vcpkg manifest dependencies (Unix)
-        if: matrix.platform != 'windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          vcpkg install \
-            --x-manifest-root . \
-            --x-install-root "$VCPKG_ROOT/installed" \
-            --triplet "${{ matrix.triplet }}"
-          echo "VCPKGRS_TRIPLET=${{ matrix.triplet }}" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib/pkgconfig" >> "$GITHUB_ENV"
-
-      - name: Install vcpkg manifest dependencies (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          vcpkg install --x-manifest-root . --x-install-root "$env:VCPKG_ROOT\installed" --triplet "${{ matrix.triplet }}"
-          "VCPKGRS_TRIPLET=${{ matrix.triplet }}" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PKG_CONFIG_PATH=$env:VCPKG_ROOT\installed\${{ matrix.triplet }}\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          platform: ${{ matrix.platform }}
+          triplet: ${{ matrix.triplet }}
 
       - name: Install Rust toolchain and Clippy
         run: |
@@ -191,15 +73,10 @@ jobs:
           rustup component add clippy
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/git
-            ~/.cargo/registry
-            target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-
+          prefix-key: ${{ runner.os }}-cargo
+          cache-all-crates: true
 
       - name: Show toolchain
         run: |
@@ -207,19 +84,59 @@ jobs:
           cargo --version
           cargo clippy --version
 
-      - name: Check workspace
-        run: cargo run -p xtask -- check
-
       - name: Clippy workspace
         run: cargo run -p xtask -- clippy --workspace --all-targets -- -D warnings
 
       - name: Test workspace
         run: cargo run -p xtask -- test --debug
 
+  package-plan:
+    name: package plan
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.plan.outputs.enabled }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Choose package matrix
+        id: plan
+        shell: bash
+        env:
+          PACKAGE_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.package || 'false' }}
+          PLATFORM_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.package_platform || 'all' }}
+        run: |
+          set -euo pipefail
+
+          enabled=false
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            enabled=true
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$PACKAGE_INPUT" == "true" ]]; then
+            enabled=true
+          fi
+
+          case "$PLATFORM_INPUT" in
+            linux)
+              matrix='{"include":[{"platform":"linux","runner":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","formats":"deb","triplet":"x64-linux-release"}]}'
+              ;;
+            windows)
+              matrix='{"include":[{"platform":"windows","runner":"windows-latest","target":"x86_64-pc-windows-msvc","formats":"nsis","triplet":"x64-windows-static-md-release"}]}'
+              ;;
+            macos)
+              matrix='{"include":[{"platform":"macos","runner":"macos-latest","target":"aarch64-apple-darwin","formats":"app","triplet":"arm64-osx-release"}]}'
+              ;;
+            *)
+              matrix='{"include":[{"platform":"linux","runner":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","formats":"deb","triplet":"x64-linux-release"},{"platform":"windows","runner":"windows-latest","target":"x86_64-pc-windows-msvc","formats":"nsis","triplet":"x64-windows-static-md-release"},{"platform":"macos","runner":"macos-latest","target":"aarch64-apple-darwin","formats":"app","triplet":"arm64-osx-release"}]}'
+              ;;
+          esac
+
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   package:
     name: package / ${{ matrix.platform }}
-    needs: verify
-    if: github.event_name != 'pull_request'
+    needs:
+      - verify
+      - package-plan
+    if: needs.package-plan.outputs.enabled == 'true'
     runs-on: ${{ matrix.runner }}
     permissions:
       attestations: write
@@ -228,189 +145,27 @@ jobs:
       id-token: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            formats: deb
-            triplet: x64-linux-release
-          - platform: windows
-            runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            formats: nsis
-            triplet: x64-windows-static-md-release
-          - platform: macos
-            runner: macos-latest
-            target: aarch64-apple-darwin
-            formats: app
-            triplet: arm64-osx-release
+      matrix: ${{ fromJSON(needs.package-plan.outputs.matrix) }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install Linux system dependencies
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake \
-            libasound2-dev \
-            libgl1-mesa-dev \
-            libgtk-3-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libxrandr-dev \
-            dpkg-dev \
-            fakeroot \
-            autoconf \
-            automake \
-            libtool \
-            nasm \
-            yasm \
-            pkg-config
-
-      - name: Install macOS vcpkg build tools
-        if: matrix.platform == 'macos'
-        run: brew install autoconf automake libtool nasm pkg-config yasm
-
-      - name: Install Windows packaging dependencies
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: choco install nsis -y --no-progress
-
-      - name: Setup vcpkg (Unix)
-        if: matrix.platform != 'windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          VCPKG_ROOT="/usr/local/share/vcpkg"
-          if [ ! -x "$VCPKG_ROOT/vcpkg" ]; then
-            sudo git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
-            sudo "$VCPKG_ROOT/bootstrap-vcpkg.sh"
-          fi
-          sudo chown -R "$USER" "$VCPKG_ROOT"
-          echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
-          echo "$VCPKG_ROOT" >> "$GITHUB_PATH"
-
-      - name: Setup vcpkg (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $vcpkgRoot = 'C:\vcpkg'
-          if (!(Test-Path "$vcpkgRoot\vcpkg.exe")) {
-            git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
-            & "$vcpkgRoot\bootstrap-vcpkg.bat"
-          }
-          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $vcpkgRoot | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      - name: Create vcpkg release triplet (Unix)
-        if: matrix.platform != 'windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo mkdir -p "$VCPKG_ROOT/triplets/community"
-          if [ "${{ matrix.platform }}" = "macos" ]; then
-            sudo tee "$VCPKG_ROOT/triplets/community/${{ matrix.triplet }}.cmake" > /dev/null <<'EOF'
-          set(VCPKG_TARGET_ARCHITECTURE arm64)
-          set(VCPKG_CRT_LINKAGE dynamic)
-          set(VCPKG_LIBRARY_LINKAGE static)
-          set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
-          set(VCPKG_BUILD_TYPE release)
-          EOF
-          else
-            sudo tee "$VCPKG_ROOT/triplets/community/${{ matrix.triplet }}.cmake" > /dev/null <<'EOF'
-          set(VCPKG_TARGET_ARCHITECTURE x64)
-          set(VCPKG_CRT_LINKAGE dynamic)
-          set(VCPKG_LIBRARY_LINKAGE static)
-          set(VCPKG_CMAKE_SYSTEM_NAME Linux)
-          set(VCPKG_BUILD_TYPE release)
-          EOF
-          fi
-
-      - name: Create vcpkg release triplet (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          New-Item -Path "$env:VCPKG_ROOT\triplets\community" -ItemType Directory -Force | Out-Null
-          @"
-          set(VCPKG_TARGET_ARCHITECTURE x64)
-          set(VCPKG_CRT_LINKAGE dynamic)
-          set(VCPKG_LIBRARY_LINKAGE static)
-          set(VCPKG_BUILD_TYPE release)
-          "@ | Set-Content -Path "$env:VCPKG_ROOT\triplets\community\${{ matrix.triplet }}.cmake"
-
-      - name: Cache vcpkg (Unix)
-        if: matrix.platform != 'windows'
-        uses: actions/cache@v5
+      - name: Setup native dependencies
+        uses: ./.github/actions/setup-native-deps
         with:
-          path: |
-            /usr/local/share/vcpkg/installed
-            /usr/local/share/vcpkg/buildtrees
-            /usr/local/share/vcpkg/downloads
-            /usr/local/share/vcpkg/packages
-            ~/.cache/vcpkg
-          key: ${{ runner.os }}-vcpkg-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-${{ matrix.triplet }}-
-
-      - name: Cache vcpkg (Windows)
-        if: matrix.platform == 'windows'
-        uses: actions/cache@v5
-        with:
-          path: |
-            C:\vcpkg\installed
-            C:\vcpkg\buildtrees
-            C:\vcpkg\downloads
-            C:\vcpkg\packages
-            ~\AppData\Local\vcpkg\archives
-          key: ${{ runner.os }}-vcpkg-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-${{ matrix.triplet }}-
-
-      - name: Install vcpkg manifest dependencies (Unix)
-        if: matrix.platform != 'windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          vcpkg install \
-            --x-manifest-root . \
-            --x-install-root "$VCPKG_ROOT/installed" \
-            --triplet "${{ matrix.triplet }}"
-          echo "VCPKGRS_TRIPLET=${{ matrix.triplet }}" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$VCPKG_ROOT/installed/${{ matrix.triplet }}/lib/pkgconfig" >> "$GITHUB_ENV"
-
-      - name: Install vcpkg manifest dependencies (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          vcpkg install --x-manifest-root . --x-install-root "$env:VCPKG_ROOT\installed" --triplet "${{ matrix.triplet }}"
-          "VCPKGRS_TRIPLET=${{ matrix.triplet }}" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PKG_CONFIG_PATH=$env:VCPKG_ROOT\installed\${{ matrix.triplet }}\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          platform: ${{ matrix.platform }}
+          triplet: ${{ matrix.triplet }}
+          packaging: "true"
 
       - name: Install Rust toolchain
         run: rustup toolchain install --profile minimal
 
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/git
-            ~/.cargo/registry
-            target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-
-            ${{ runner.os }}-cargo-ci-
+          prefix-key: ${{ runner.os }}-cargo
+          cache-all-crates: true
 
       - name: Build release binary
         run: cargo run -p xtask -- build --release
