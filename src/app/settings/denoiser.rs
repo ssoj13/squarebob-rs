@@ -97,26 +97,34 @@ impl App {
                 // Quick-apply preset buttons.
                 ui.horizontal(|ui| {
                     ui.label("Presets:");
-                    if ui.button("Conservative").on_hover_text(
-                        "Light smoothing — preserves detail but leaves some noise.",
-                    ).clicked() {
+                    if ui
+                        .button("Conservative")
+                        .on_hover_text("Light smoothing — preserves detail but leaves some noise.")
+                        .clicked()
+                    {
                         self.render_3d_opts.pt_denoise_enabled = true;
                         self.render_3d_opts.pt_denoise_iterations = 2;
                         self.render_3d_opts.pt_denoise_sigma_color = 0.6;
                         *changed = true;
                     }
-                    if ui.button("Balanced").on_hover_text(
-                        "Default — good visual quality at low spp.",
-                    ).clicked() {
+                    if ui
+                        .button("Balanced")
+                        .on_hover_text("Default — good visual quality at low spp.")
+                        .clicked()
+                    {
                         self.render_3d_opts.pt_denoise_enabled = true;
                         self.render_3d_opts.pt_denoise_iterations = 3;
                         self.render_3d_opts.pt_denoise_sigma_color = 0.3;
                         *changed = true;
                     }
-                    if ui.button("Aggressive").on_hover_text(
-                        "Maximum smoothing — for very-low-spp interactive previews. \
+                    if ui
+                        .button("Aggressive")
+                        .on_hover_text(
+                            "Maximum smoothing — for very-low-spp interactive previews. \
                          Loses fine detail.",
-                    ).clicked() {
+                        )
+                        .clicked()
+                    {
                         self.render_3d_opts.pt_denoise_enabled = true;
                         self.render_3d_opts.pt_denoise_iterations = 5;
                         self.render_3d_opts.pt_denoise_sigma_color = 0.15;

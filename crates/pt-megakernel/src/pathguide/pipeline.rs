@@ -49,9 +49,9 @@ impl PathGuidePipeline {
             SAMPLE_WGSL,
             "sample",
             &[
-                bgl_storage_ro(0),                              // SVO nodes
-                bgl_storage_rw(1),                              // guide buffer
-                bgl_uniform_dyn(2, PG_SAMPLE_PARAMS_SIZE),      // params (per-tile)
+                bgl_storage_ro(0),                         // SVO nodes
+                bgl_storage_rw(1),                         // guide buffer
+                bgl_uniform_dyn(2, PG_SAMPLE_PARAMS_SIZE), // params (per-tile)
             ],
         );
 

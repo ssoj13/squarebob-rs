@@ -6,14 +6,21 @@ use directories::ProjectDirs;
 use render_shared::Render3DOptions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Built-in preset name for bundled defaults (`data/factory_render3d_options.json`) plus related UI state.
+const BUNDLED_FACTORY_RENDER_3D_OPTIONS: &str =
+    include_str!("../../data/factory_render3d_options.json");
+const ADJACENT_DEFAULT_PRESET_FILENAME: &str = "default.json";
+
+/// Built-in preset name for default render options plus related UI state.
 /// Not persisted as a JSON file under `presets/`.
 pub const DEFAULT_PRESET_NAME: &str = "defaults";
 
-/// Frozen 3D/render defaults shipped with the app (`data/factory_render3d_options.json`).
+/// Default 3D/render options.
+///
+/// If `default.json` exists beside the executable it is used as the default preset. Otherwise the
+/// app uses the factory options compiled into the binary from `data/factory_render3d_options.json`.
 ///
 /// Animation clocks are zero and emissive motion is off so large light-cube counts stay cheaper
 /// until the user enables animation explicitly.
@@ -22,10 +29,57 @@ pub fn factory_render_3d_options() -> Render3DOptions {
     static PARSED: OnceLock<Render3DOptions> = OnceLock::new();
     PARSED
         .get_or_init(|| {
-            serde_json::from_str(include_str!("../../data/factory_render3d_options.json"))
-                .expect("factory_render3d_options.json must match Render3DOptions schema")
+            load_adjacent_default_render_3d_options()
+                .unwrap_or_else(bundled_factory_render_3d_options)
         })
         .clone()
+}
+
+fn bundled_factory_render_3d_options() -> Render3DOptions {
+    serde_json::from_str(BUNDLED_FACTORY_RENDER_3D_OPTIONS)
+        .expect("factory_render3d_options.json must match Render3DOptions schema")
+}
+
+fn load_adjacent_default_render_3d_options() -> Option<Render3DOptions> {
+    let path = adjacent_default_preset_path()?;
+    if !path.is_file() {
+        return None;
+    }
+
+    match std::fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(options) => {
+                log::info!("Loaded default render preset from {}", path.display());
+                Some(options)
+            }
+            Err(e) => {
+                log::error!(
+                    "Failed to parse default render preset at {}: {}; using built-in defaults",
+                    path.display(),
+                    e
+                );
+                None
+            }
+        },
+        Err(e) => {
+            log::error!(
+                "Failed to read default render preset at {}: {}; using built-in defaults",
+                path.display(),
+                e
+            );
+            None
+        }
+    }
+}
+
+fn adjacent_default_preset_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    default_preset_path_for_exe(&exe)
+}
+
+fn default_preset_path_for_exe(exe: &Path) -> Option<PathBuf> {
+    exe.parent()
+        .map(|dir| dir.join(ADJACENT_DEFAULT_PRESET_FILENAME))
 }
 
 #[inline]
@@ -169,12 +223,24 @@ mod tests {
     #[test]
     fn factory_render_json_parses_and_matches_motion_flags() {
         let o = factory_render_3d_options();
-        assert!(!o.animate, "bundled factory preset keeps cube motion off by default");
+        assert!(
+            !o.animate,
+            "bundled factory preset keeps cube motion off by default"
+        );
         assert!(
             !o.env_animate,
             "bundled factory preset keeps env rotation off by default"
         );
         assert_eq!(o.animation_time, 0.0);
         assert_eq!(o.env_time, 0.0);
+    }
+
+    #[test]
+    fn adjacent_default_preset_path_uses_executable_directory() {
+        let exe = Path::new("bin").join("dirstat-rs");
+        assert_eq!(
+            default_preset_path_for_exe(&exe),
+            Some(Path::new("bin").join("default.json"))
+        );
     }
 }

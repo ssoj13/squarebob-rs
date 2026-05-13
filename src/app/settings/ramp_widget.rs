@@ -149,8 +149,7 @@ pub fn ramp_rows(ui: &mut egui::Ui, params: &mut RampParams, ctx: RampUiCtx) -> 
                 control_label(ui, "Noise Scale");
                 if ui
                     .add(
-                        egui::Slider::new(&mut params.spatial_scale, 0.001..=0.1)
-                            .logarithmic(true),
+                        egui::Slider::new(&mut params.spatial_scale, 0.001..=0.1).logarithmic(true),
                     )
                     .changed()
                 {

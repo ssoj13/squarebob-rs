@@ -8,8 +8,8 @@ use pt_core::bvh::GpuMaterial;
 
 mod palette;
 pub use palette::{
-    auto_palette_for_source, hierarchical_path_value, sample_palette, Palette,
-    BASE_LIBRARY_SIZE, PALETTE_BINS,
+    auto_palette_for_source, hierarchical_path_value, sample_palette, Palette, BASE_LIBRARY_SIZE,
+    PALETTE_BINS,
 };
 
 // ============================================================================
@@ -1149,11 +1149,7 @@ mod tests {
         s.light_prob = 1.0;
         for h in hash_set(500) {
             let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            assert!(
-                !c.is_light(),
-                "PBR mode produced light {:?} (hash {h})",
-                c
-            );
+            assert!(!c.is_light(), "PBR mode produced light {:?} (hash {h})", c);
         }
     }
 
@@ -1226,11 +1222,40 @@ mod tests {
         // Sanity: a class is never both light and glass.
         use MaterialClass::*;
         for c in [
-            Default, Rubber, GlassClear, GlassBlue, GlassGreen, GlassAmber, GlassPink,
-            Metal, Plastic, Water, Emissive, LightWarm2700, LightWarm3500, LightNeutral4500,
-            LightCool6500, LightCool10000, Paint, Chalk, Ceramic, Concrete, Gold, Copper,
-            Silver, Ruby, Jade, Diamond, Velvet, Wood, Marble, Neon, NeonPink, NeonPurple,
-            NeonOrange, NeonBlue,
+            Default,
+            Rubber,
+            GlassClear,
+            GlassBlue,
+            GlassGreen,
+            GlassAmber,
+            GlassPink,
+            Metal,
+            Plastic,
+            Water,
+            Emissive,
+            LightWarm2700,
+            LightWarm3500,
+            LightNeutral4500,
+            LightCool6500,
+            LightCool10000,
+            Paint,
+            Chalk,
+            Ceramic,
+            Concrete,
+            Gold,
+            Copper,
+            Silver,
+            Ruby,
+            Jade,
+            Diamond,
+            Velvet,
+            Wood,
+            Marble,
+            Neon,
+            NeonPink,
+            NeonPurple,
+            NeonOrange,
+            NeonBlue,
         ] {
             assert!(
                 !(c.is_light() && c.is_glass()),

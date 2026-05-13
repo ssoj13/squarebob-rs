@@ -442,7 +442,8 @@ impl GpuBvhBuilder {
 
         let node_count = (2 * n).saturating_sub(1);
         let output_nodes: Vec<BvhNode> = read_buffer_vec(device, queue, out_buf, node_count);
-        let lbvh_cpu: Vec<GpuLbvhNode> = read_buffer_vec(device, queue, lbvh_buf, n.saturating_sub(1));
+        let lbvh_cpu: Vec<GpuLbvhNode> =
+            read_buffer_vec(device, queue, lbvh_buf, n.saturating_sub(1));
         let leaf_parents_cpu: Vec<u32> = read_buffer_vec(device, queue, leaf_parents, n);
 
         validate_lbvh(&lbvh_cpu, n)

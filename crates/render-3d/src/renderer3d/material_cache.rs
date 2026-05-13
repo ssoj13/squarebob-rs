@@ -358,7 +358,10 @@ pub(crate) fn expand_pt_materials_and_ids(
     (materials, material_ids)
 }
 
-pub(crate) fn build_pt_instances(instances: &[CubeInstance], material_ids: &[u32]) -> Vec<Instance> {
+pub(crate) fn build_pt_instances(
+    instances: &[CubeInstance],
+    material_ids: &[u32],
+) -> Vec<Instance> {
     instances
         .iter()
         .zip(material_ids.iter())

@@ -1,4 +1,4 @@
-//! Render export adapter for the reusable `imageseq-rs` crate.
+//! Render export adapter for the reusable `media-encoder` crate.
 
 use eframe::egui;
 
@@ -19,7 +19,7 @@ impl App {
                 let snapshot = self
                     .image_sequence_progress
                     .as_ref()
-                    .map(imageseq_rs::SequenceProgress::snapshot);
+                    .map(media_encoder::SequenceProgress::snapshot);
                 let response = self.image_sequence_dialog.ui(
                     ui,
                     running,
@@ -82,7 +82,20 @@ impl App {
             return;
         }
 
-        if let Err(err) = imageseq_rs::save_rgba_png(&path, width, height, &pixels) {
+        let frame = match media_encoder::MediaFrame::rgba8(width, height, pixels) {
+            Ok(frame) => frame,
+            Err(err) => {
+                self.stop_image_sequence_export(format!("Renderer returned an invalid frame: {err}"));
+                return;
+            }
+        };
+        let settings = self
+            .image_sequence_settings
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(media_encoder::SequenceSettings::default);
+
+        if let Err(err) = media_encoder::save_media_frame(&path, &frame, &settings) {
             self.stop_image_sequence_export(format!("Failed to write {}: {err}", path.display()));
             return;
         }
@@ -110,8 +123,11 @@ impl App {
     fn browse_image_sequence_output(&mut self) {
         let selected = rfd::FileDialog::new()
             .set_title("Choose render output")
-            .add_filter("PNG sequence", &["png"])
-            .set_file_name("frame_####.png")
+            .add_filter("Render sequence", &["exr", "png", "jpg", "jpeg", "tiff", "tga"])
+            .set_file_name(format!(
+                "frame_####.{}",
+                self.image_sequence_dialog.sequence.format.extension()
+            ))
             .save_file();
 
         if let Some(path) = selected {
@@ -120,10 +136,10 @@ impl App {
         }
     }
 
-    fn start_image_sequence_export(&mut self, request: imageseq_rs::EncodeRequest) {
+    fn start_image_sequence_export(&mut self, request: media_encoder::EncodeRequest) {
         self.image_sequence_error = None;
 
-        if request.export_mode != imageseq_rs::ExportMode::ImageSequence {
+        if request.export_mode != media_encoder::ExportMode::ImageSequence {
             self.image_sequence_error =
                 Some("Video export is configured, but FFmpeg sink is not enabled yet".to_string());
             return;
@@ -157,7 +173,8 @@ impl App {
         self.render_3d_opts.pt_max_samples = job.max_samples;
         self.render_3d_opts.animate = false;
         self.render_3d_opts.env_animate = false;
-        self.image_sequence_progress = Some(imageseq_rs::SequenceProgress::new(job));
+        self.image_sequence_settings = Some(request.sequence.clone());
+        self.image_sequence_progress = Some(media_encoder::SequenceProgress::new(job));
         self.apply_image_sequence_time(0.0);
 
         if let Some(renderer) = &mut self.renderer_3d {
@@ -168,12 +185,14 @@ impl App {
     fn stop_image_sequence_export(&mut self, message: impl Into<String>) {
         self.restore_image_sequence_render_state();
         self.image_sequence_progress = None;
+        self.image_sequence_settings = None;
         self.image_sequence_error = Some(message.into());
     }
 
     fn finish_image_sequence_export(&mut self) {
         self.restore_image_sequence_render_state();
         self.image_sequence_progress = None;
+        self.image_sequence_settings = None;
         self.image_sequence_error = Some("Complete".to_string());
     }
 

@@ -342,8 +342,10 @@ impl App {
                             self.ui_presets(ui);
                             ui.add_space(4.0);
                             self.ui_settings_renderer(ui);
-                            ui.add_space(4.0);
-                            self.ui_image_sequence_panel(ui);
+                            if self.show_encode_panel {
+                                ui.add_space(4.0);
+                                self.ui_image_sequence_panel(ui);
+                            }
                         }
                         SettingsTab::Denoiser => {
                             self.ui_settings_denoiser(ui, &mut changed);

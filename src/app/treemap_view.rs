@@ -8,12 +8,14 @@ use crate::events::{NavigateUpEvent, SelectPathEvent};
 use crate::renderer::{RenderBackend, RenderMode};
 use treemap::GpuRenderer2D;
 
-use super::App;
 use super::helpers::{find_node_by_path, fmt_size, path_to_dir};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::shell::{properties_label, shell_properties};
-use super::shell::{reveal_label, shell_open, shell_open_terminal, shell_reveal, shell_trash, trash_label};
+use super::shell::{
+    reveal_label, shell_open, shell_open_terminal, shell_reveal, shell_trash, trash_label,
+};
 use super::state::HoverInfo;
+use super::App;
 
 impl App {
     /// Render the central treemap/3D panel
@@ -1159,8 +1161,7 @@ impl App {
         }
 
         let size_changed = self.last_render_size != (w, h);
-        let need_render =
-            self.needs_layout || size_changed || self.render_texture_id.is_none();
+        let need_render = self.needs_layout || size_changed || self.render_texture_id.is_none();
 
         if need_render {
             self.viewport.width = w;
@@ -1195,12 +1196,11 @@ impl App {
                                 );
                             }
                         } else {
-                            self.render_texture_id =
-                                Some(egui_renderer.register_native_texture(
-                                    &render_state.device,
-                                    &view,
-                                    wgpu::FilterMode::Linear,
-                                ));
+                            self.render_texture_id = Some(egui_renderer.register_native_texture(
+                                &render_state.device,
+                                &view,
+                                wgpu::FilterMode::Linear,
+                            ));
                         }
                     }
                 }

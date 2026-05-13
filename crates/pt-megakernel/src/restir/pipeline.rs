@@ -59,19 +59,19 @@ impl ReSTIRPipeline {
             INITIAL_WGSL,
             "initial",
             &[
-                bgl_storage_ro(0),                                // hits
-                bgl_storage_rw(1),                                // reservoirs
-                bgl_uniform_dyn(2, RESTIR_INITIAL_PARAMS_SIZE),   // params (per-tile)
-                bgl_texture_2d(3),                                // env map
-                bgl_sampler(4),                                   // env sampler
-                bgl_uniform(5),                                   // env params
-                bgl_storage_ro(6),                                // env marginal cdf
-                bgl_storage_ro(7),                                // env conditional cdf
-                bgl_storage_ro(8),                                // rays
-                bgl_storage_ro(9),                                // bvh nodes
-                bgl_storage_ro(10),                               // instances
-                bgl_texture_2d_unfilterable(11),                  // emissive light texture
-                bgl_uniform(12),                                  // emissive light params
+                bgl_storage_ro(0),                              // hits
+                bgl_storage_rw(1),                              // reservoirs
+                bgl_uniform_dyn(2, RESTIR_INITIAL_PARAMS_SIZE), // params (per-tile)
+                bgl_texture_2d(3),                              // env map
+                bgl_sampler(4),                                 // env sampler
+                bgl_uniform(5),                                 // env params
+                bgl_storage_ro(6),                              // env marginal cdf
+                bgl_storage_ro(7),                              // env conditional cdf
+                bgl_storage_ro(8),                              // rays
+                bgl_storage_ro(9),                              // bvh nodes
+                bgl_storage_ro(10),                             // instances
+                bgl_texture_2d_unfilterable(11),                // emissive light texture
+                bgl_uniform(12),                                // emissive light params
             ],
         );
 
@@ -80,12 +80,12 @@ impl ReSTIRPipeline {
             TEMPORAL_WGSL,
             "temporal",
             &[
-                bgl_storage_ro(0),                                 // prev reservoirs
-                bgl_storage_rw(1),                                 // curr reservoirs
-                bgl_storage_ro(2),                                 // motion vectors
-                bgl_storage_ro(3),                                 // prev depth
-                bgl_storage_ro(4),                                 // curr depth
-                bgl_uniform_dyn(5, RESTIR_TEMPORAL_PARAMS_SIZE),   // params (per-tile)
+                bgl_storage_ro(0),                               // prev reservoirs
+                bgl_storage_rw(1),                               // curr reservoirs
+                bgl_storage_ro(2),                               // motion vectors
+                bgl_storage_ro(3),                               // prev depth
+                bgl_storage_ro(4),                               // curr depth
+                bgl_uniform_dyn(5, RESTIR_TEMPORAL_PARAMS_SIZE), // params (per-tile)
             ],
         );
 
@@ -94,11 +94,11 @@ impl ReSTIRPipeline {
             SPATIAL_WGSL,
             "spatial",
             &[
-                bgl_storage_ro(0),                                // reservoirs input
-                bgl_storage_rw(1),                                // reservoirs output
-                bgl_storage_ro(2),                                // depth
-                bgl_storage_ro(3),                                // normal
-                bgl_uniform_dyn(4, RESTIR_SPATIAL_PARAMS_SIZE),   // params (per-tile)
+                bgl_storage_ro(0),                              // reservoirs input
+                bgl_storage_rw(1),                              // reservoirs output
+                bgl_storage_ro(2),                              // depth
+                bgl_storage_ro(3),                              // normal
+                bgl_uniform_dyn(4, RESTIR_SPATIAL_PARAMS_SIZE), // params (per-tile)
             ],
         );
 
@@ -107,17 +107,17 @@ impl ReSTIRPipeline {
             SHADE_WGSL,
             "shade",
             &[
-                bgl_storage_ro(0),                              // reservoirs
-                bgl_storage_ro(1),                              // hits
-                bgl_storage_rw(2),                              // output
-                bgl_uniform_dyn(3, RESTIR_SHADE_PARAMS_SIZE),   // params (per-tile)
-                bgl_storage_ro(4),                              // instances
-                bgl_storage_ro(5),                              // materials
-                bgl_storage_ro(6),                              // sample_map
-                bgl_storage_ro(7),                              // rays
-                bgl_texture_2d(8),                              // env map
-                bgl_sampler(9),                                 // env sampler
-                bgl_uniform(10),                                // env params
+                bgl_storage_ro(0),                            // reservoirs
+                bgl_storage_ro(1),                            // hits
+                bgl_storage_rw(2),                            // output
+                bgl_uniform_dyn(3, RESTIR_SHADE_PARAMS_SIZE), // params (per-tile)
+                bgl_storage_ro(4),                            // instances
+                bgl_storage_ro(5),                            // materials
+                bgl_storage_ro(6),                            // sample_map
+                bgl_storage_ro(7),                            // rays
+                bgl_texture_2d(8),                            // env map
+                bgl_sampler(9),                               // env sampler
+                bgl_uniform(10),                              // env params
             ],
         );
 

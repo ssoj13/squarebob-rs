@@ -5,9 +5,8 @@ use log::{debug, info, trace};
 use render_core::gpu;
 use render_shared::{HashTransformEffect, OrbitCamera, Render3DOptions};
 
-
-mod render_no_readback;
 mod render;
+mod render_no_readback;
 
 pub(crate) use render::render_path_traced;
 pub(crate) use render_no_readback::render_path_traced_no_readback;

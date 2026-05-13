@@ -12,7 +12,9 @@ use pt_mats::{
     hierarchical_path_value, sample_palette, MaterialClass, MaterialDistribution, MaterializeMode,
     Palette,
 };
-use render_shared::{hash_transform, name_hash, ColorMode, FolderColorMode, HoverMode, RampParams, Render3DOptions};
+use render_shared::{
+    hash_transform, name_hash, ColorMode, FolderColorMode, HoverMode, RampParams, Render3DOptions,
+};
 use treemap::{self, TreeMapOptions};
 
 use crate::geometry::CubeInstance;
@@ -39,8 +41,7 @@ impl Renderer3D {
         // function is a full instance rebuild. Used to confirm that
         // shader-side uniforms (e.g. materialize_mix) do not invalidate
         // the cache. Read via `instance_rebuild_count`.
-        self.cached_instances_rebuild_count =
-            self.cached_instances_rebuild_count.wrapping_add(1);
+        self.cached_instances_rebuild_count = self.cached_instances_rebuild_count.wrapping_add(1);
         debug!(
             "collect_cubes rebuild #{}",
             self.cached_instances_rebuild_count
@@ -128,11 +129,11 @@ impl Renderer3D {
             if node.is_dir && !node.children.is_empty() && !too_small && depth > 0 {
                 let base_height = Self::compute_cube_height(node, depth, opts);
                 // Cube centred on the treemap plane (z=0): extends half forward
-// toward the camera, half behind. This keeps the camera *outside*
-// every cube as long as `base_height / 2` stays under the camera
-// distance — works for typical scenes. Outliers (huge files) can
-// still poke into the camera; pending a global height clamp.
-let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
+                // toward the camera, half behind. This keeps the camera *outside*
+                // every cube as long as `base_height / 2` stays under the camera
+                // distance — works for typical scenes. Outliers (huge files) can
+                // still poke into the camera; pending a global height clamp.
+                let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
                 let cube_size = w.max(h).max(base_height);
                 let dist = (pos - cam_eye).length().max(0.01);
                 let proj_size = (cube_size / dist) * screen_h / (2.0 * (fov / 2.0).tan());
@@ -178,9 +179,7 @@ let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
                     }
                 }
                 ColorMode::Treemap => hierarchical_path_value(&node.path),
-                ColorMode::Depth => {
-                    (depth as f32 / scene_max_depth.max(1) as f32).clamp(0.0, 1.0)
-                }
+                ColorMode::Depth => (depth as f32 / scene_max_depth.max(1) as f32).clamp(0.0, 1.0),
             };
             let mode_default_palette = default_palette_for_color_mode(opts.color_mode);
             let mut base_color = sample_color_ramp(
@@ -215,9 +214,7 @@ let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
                             .unwrap_or(dir_hash);
                         h as f32 / u32::MAX as f32
                     }
-                    FolderColorMode::PathHash => {
-                        hierarchical_path_value(folder_path)
-                    }
+                    FolderColorMode::PathHash => hierarchical_path_value(folder_path),
                 };
                 let folder_default = default_palette_for_folder_mode(opts.folder_color_mode);
                 let mut folder_color = sample_color_ramp(
@@ -265,11 +262,11 @@ let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
 
             // Treemap XY -> 3D XY (wall facing camera), depth (height) along -Z
             // Cube centred on the treemap plane (z=0): extends half forward
-// toward the camera, half behind. This keeps the camera *outside*
-// every cube as long as `base_height / 2` stays under the camera
-// distance — works for typical scenes. Outliers (huge files) can
-// still poke into the camera; pending a global height clamp.
-let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
+            // toward the camera, half behind. This keeps the camera *outside*
+            // every cube as long as `base_height / 2` stays under the camera
+            // distance — works for typical scenes. Outliers (huge files) can
+            // still poke into the camera; pending a global height clamp.
+            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
             let transform = hash_transform(
                 &node.name,
                 pos,

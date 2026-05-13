@@ -9,8 +9,8 @@ use wgpu::util::DeviceExt;
 use crate::adaptive::{AdaptiveConfig, AdaptivePipeline};
 use crate::pathguide::{PathGuideConfig, PathGuidePipeline, PG_SAMPLE_PARAMS_SIZE};
 use crate::restir::{
-    ReSTIRConfig, ReSTIRPipeline, Reservoir, RESTIR_INITIAL_PARAMS_SIZE,
-    RESTIR_SHADE_PARAMS_SIZE, RESTIR_SPATIAL_PARAMS_SIZE, RESTIR_TEMPORAL_PARAMS_SIZE,
+    ReSTIRConfig, ReSTIRPipeline, Reservoir, RESTIR_INITIAL_PARAMS_SIZE, RESTIR_SHADE_PARAMS_SIZE,
+    RESTIR_SPATIAL_PARAMS_SIZE, RESTIR_TEMPORAL_PARAMS_SIZE,
 };
 use bvh_gpu::{GpuBvhBuilder, GpuBvhConfig};
 use glam::{Mat4, Vec3};
@@ -95,19 +95,10 @@ fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
     }
     let total: f64 = weights.iter().map(|&w| w.max(0.0) as f64).sum();
     if !total.is_finite() || total <= 0.0 {
-        return vec![
-            AliasEntry {
-                prob: 1.0,
-                alt: 0,
-            };
-            n
-        ];
+        return vec![AliasEntry { prob: 1.0, alt: 0 }; n];
     }
     let avg = total / n as f64;
-    let mut p: Vec<f64> = weights
-        .iter()
-        .map(|&w| (w.max(0.0) as f64) / avg)
-        .collect();
+    let mut p: Vec<f64> = weights.iter().map(|&w| (w.max(0.0) as f64) / avg).collect();
     let mut small: Vec<usize> = Vec::with_capacity(n);
     let mut large: Vec<usize> = Vec::with_capacity(n);
     for (i, &pi) in p.iter().enumerate() {
@@ -151,9 +142,7 @@ fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
 /// buffers are needed (one RW for @15, one RO for @16) because wgpu's
 /// exclusive-RW rule forbids the same buffer in both slots within one
 /// dispatch.
-fn create_restir_fallbacks(
-    device: &wgpu::Device,
-) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
+fn create_restir_fallbacks(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
     let res_size = crate::restir::Reservoir::SIZE as u64;
     let make_res = |label: &str| {
         device.create_buffer(&wgpu::BufferDescriptor {
@@ -370,8 +359,8 @@ struct PathGuideUpdateParams {
 struct PathGuideSampleParams {
     scene_min: [f32; 4],
     scene_max: [f32; 4],
-    params0: [u32; 4], // x=resolution, y=frame_count, z=tile_w, w=tile_h
-    params1: [f32; 4], // x=guide_weight
+    params0: [u32; 4],  // x=resolution, y=frame_count, z=tile_w, w=tile_h
+    params1: [f32; 4],  // x=guide_weight
     tile_pos: [u32; 4], // x=tile_x, y=tile_y, z=full_w, w=full_h
 }
 
@@ -1167,7 +1156,9 @@ impl PathTraceCompute {
         self.denoise_enabled = enabled;
         if enabled && self.denoiser.is_none() {
             self.denoiser = Some(crate::denoiser::DenoiserPipeline::new(
-                device, self.width, self.height,
+                device,
+                self.width,
+                self.height,
             ));
         }
     }
@@ -1427,7 +1418,10 @@ impl PathTraceCompute {
         if clamped != size {
             log::debug!(
                 "set_wavefront_tile_size: clamped {} -> {} (allowed: 0 or [{}, {}])",
-                size, clamped, MIN_TILE_SIZE, MAX_TILE_SIZE
+                size,
+                clamped,
+                MIN_TILE_SIZE,
+                MAX_TILE_SIZE
             );
         }
         self.wavefront_config.tile_size = clamped;
@@ -1556,7 +1550,12 @@ impl PathTraceCompute {
         let height_ok = self.emissive_light_texture.height() == 6;
         let width_ok = self.emissive_light_texture.width() >= need_width;
         if height_ok && width_ok {
-            Self::write_emissive_light_texture_data(queue, &self.emissive_light_texture, &rows, self.emissive_light_count);
+            Self::write_emissive_light_texture_data(
+                queue,
+                &self.emissive_light_texture,
+                &rows,
+                self.emissive_light_count,
+            );
         } else {
             let (texture, view) =
                 Self::create_emissive_light_texture(device, queue, &rows, need_width);
@@ -1573,11 +1572,12 @@ impl PathTraceCompute {
         let alias_contents = bytemuck::cast_slice(&alias_table);
         let alias_need = alias_contents.len() as u64;
         if self.emissive_alias_buf.size() < alias_need {
-            self.emissive_alias_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("pt_emissive_alias"),
-                contents: alias_contents,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
+            self.emissive_alias_buf =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("pt_emissive_alias"),
+                    contents: alias_contents,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                });
             resources_changed = true;
         } else {
             queue.write_buffer(&self.emissive_alias_buf, 0, alias_contents);
@@ -1621,16 +1621,20 @@ impl PathTraceCompute {
         let tile_dims_buf = wf.tile_dims_buf();
         // Per-tile uniform/storage views: dynamic offset selects the active slot,
         // static size = single struct size so the shader sees one Dims/counts block.
-        let dims_slot_resource = || wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer: tile_dims_buf,
-            offset: 0,
-            size: NonZeroU64::new(WF_DIMS_SIZE),
-        });
-        let counts_slot_resource = || wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer: tile_counts_buf,
-            offset: 0,
-            size: NonZeroU64::new(WF_COUNTS_SIZE),
-        });
+        let dims_slot_resource = || {
+            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: tile_dims_buf,
+                offset: 0,
+                size: NonZeroU64::new(WF_DIMS_SIZE),
+            })
+        };
+        let counts_slot_resource = || {
+            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: tile_counts_buf,
+                offset: 0,
+                size: NonZeroU64::new(WF_COUNTS_SIZE),
+            })
+        };
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -2009,13 +2013,13 @@ impl PathTraceCompute {
             let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("wf_gbuffer_bgl"),
                 entries: &[
-                    bgl_storage_ro(0),                            // rays
-                    bgl_storage_ro(1),                            // hits
-                    bgl_storage_rw(2),                            // depth
-                    bgl_storage_rw(3),                            // normal
-                    bgl_storage_rw(4),                            // motion
-                    bgl_uniform_dyn(5, GBUFFER_PARAMS_SIZE),      // params (per-tile)
-                    bgl_storage_rw(6),                            // instance_id (NEW)
+                    bgl_storage_ro(0),                       // rays
+                    bgl_storage_ro(1),                       // hits
+                    bgl_storage_rw(2),                       // depth
+                    bgl_storage_rw(3),                       // normal
+                    bgl_storage_rw(4),                       // motion
+                    bgl_uniform_dyn(5, GBUFFER_PARAMS_SIZE), // params (per-tile)
+                    bgl_storage_rw(6),                       // instance_id (NEW)
                 ],
             });
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2588,8 +2592,16 @@ impl PathTraceCompute {
         // the encoder) to drive each tile. Per-tile `queue.write_buffer` to
         // shared dims/count buffers would lose all but the last tile's data
         // because wgpu flushes queue writes BEFORE encoder commands at submit.
-        let step_y_pre = if use_tiling { wf_h.min(tile_capacity_h) } else { full_h };
-        let step_x_pre = if use_tiling { wf_w.min(tile_capacity_w) } else { full_w };
+        let step_y_pre = if use_tiling {
+            wf_h.min(tile_capacity_h)
+        } else {
+            full_h
+        };
+        let step_x_pre = if use_tiling {
+            wf_w.min(tile_capacity_w)
+        } else {
+            full_w
+        };
         let mut tiles_meta: Vec<WfDims> = Vec::new();
         let mut tile_count_inits: Vec<[u32; 4]> = Vec::new();
         {
@@ -2622,11 +2634,12 @@ impl PathTraceCompute {
         }
 
         // One bulk upload of all tile params (mutable borrow scope).
-        let realloc = self
-            .wavefront
-            .as_mut()
-            .unwrap()
-            .prepare_tiles(device, queue, &tiles_meta, &tile_count_inits);
+        let realloc = self.wavefront.as_mut().unwrap().prepare_tiles(
+            device,
+            queue,
+            &tiles_meta,
+            &tile_count_inits,
+        );
         if realloc {
             self.rebuild_wavefront_bind_groups(device);
         }
@@ -3148,9 +3161,7 @@ impl PathTraceCompute {
         //    full image (the previous in-loop copies used tile_pixels offsets
         //    that were tile-incorrect in tiled mode).
         if restir_enabled {
-            if let (Some(rs), Some(restir_bgs)) =
-                (&self.restir, &self.restir_bind_groups)
-            {
+            if let (Some(rs), Some(restir_bgs)) = (&self.restir, &self.restir_bind_groups) {
                 let (_, _, spatial_pl, shade_pl) = rs.pipelines();
                 let raygen_pl = wf.pipelines().0;
                 let intersect_pl = wf.pipelines().1;
@@ -3161,21 +3172,16 @@ impl PathTraceCompute {
                 // spatial_params_buf was written with full-image params before
                 // the tile loop.
                 if self.restir_config.spatial {
-                    let mut spass =
-                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("restir_spatial_full_pass"),
-                            timestamp_writes: None,
-                        });
+                    let mut spass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("restir_spatial_full_pass"),
+                        timestamp_writes: None,
+                    });
                     spass.set_pipeline(spatial_pl);
                     spass.set_bind_group(0, &restir_bgs.spatial_bg, &[0]);
                     let wg_x = full_w.div_ceil(8);
                     let wg_y = full_h.div_ceil(8);
                     spass.dispatch_workgroups(wg_x, wg_y, 1);
-                    log::trace!(
-                        "ReSTIR spatial (full image): wg=({}, {})",
-                        wg_x,
-                        wg_y
-                    );
+                    log::trace!("ReSTIR spatial (full image): wg=({}, {})", wg_x, wg_y);
                 }
 
                 // Loop 2: per-tile restir_shade with redone primary rays.
@@ -3195,17 +3201,13 @@ impl PathTraceCompute {
 
                         // Redo raygen for this tile.
                         {
-                            let mut pass = encoder
-                                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            let mut pass =
+                                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                     label: Some("wf_raygen_pass_loop2"),
                                     timestamp_writes: None,
                                 });
                             pass.set_pipeline(raygen_pl);
-                            pass.set_bind_group(
-                                0,
-                                &start_set.raygen_bg,
-                                &[tile_off, tile_off],
-                            );
+                            pass.set_bind_group(0, &start_set.raygen_bg, &[tile_off, tile_off]);
                             let wg_x = tile_w.div_ceil(8);
                             let wg_y = tile_h.div_ceil(8);
                             pass.dispatch_workgroups(wg_x, wg_y, 1);
@@ -3213,17 +3215,13 @@ impl PathTraceCompute {
 
                         // Redo primary intersect.
                         {
-                            let mut pass = encoder
-                                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            let mut pass =
+                                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                     label: Some("wf_intersect_pass_loop2"),
                                     timestamp_writes: None,
                                 });
                             pass.set_pipeline(intersect_pl);
-                            pass.set_bind_group(
-                                0,
-                                &start_set.intersect_bg,
-                                &[tile_off],
-                            );
+                            pass.set_bind_group(0, &start_set.intersect_bg, &[tile_off]);
                             let wg = tile_pixels.div_ceil(64);
                             pass.dispatch_workgroups(wg, 1, 1);
                         }
@@ -3232,19 +3230,17 @@ impl PathTraceCompute {
                         // resampled) + tile-local rays/hits + materials, writes
                         // output[global_pixel].
                         {
-                            let shade_bg =
-                                match (self.restir_config.spatial, cur_set) {
-                                    (true, 0) => &restir_bgs.shade_bg_prev_a,
-                                    (true, _) => &restir_bgs.shade_bg_prev_b,
-                                    (false, 0) => &restir_bgs.shade_bg_cur_a,
-                                    (false, _) => &restir_bgs.shade_bg_cur_b,
-                                };
-                            let mut spass = encoder.begin_compute_pass(
-                                &wgpu::ComputePassDescriptor {
+                            let shade_bg = match (self.restir_config.spatial, cur_set) {
+                                (true, 0) => &restir_bgs.shade_bg_prev_a,
+                                (true, _) => &restir_bgs.shade_bg_prev_b,
+                                (false, 0) => &restir_bgs.shade_bg_cur_a,
+                                (false, _) => &restir_bgs.shade_bg_cur_b,
+                            };
+                            let mut spass =
+                                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                     label: Some("restir_shade_pass"),
                                     timestamp_writes: None,
-                                },
-                            );
+                                });
                             spass.set_pipeline(shade_pl);
                             spass.set_bind_group(0, shade_bg, &[tile_off]);
                             let wg_x = tile_w.div_ceil(8);
@@ -3264,24 +3260,18 @@ impl PathTraceCompute {
                         // surface (rare for small lights).
                         let mut use_set_a = cur_set == 0;
                         for _bounce in 0..max_bounces {
-                            let current_set =
-                                if use_set_a { &bgs.set_a } else { &bgs.set_b };
+                            let current_set = if use_set_a { &bgs.set_a } else { &bgs.set_b };
 
                             // Intersect (bounce 0 re-uses raygen rays; bounce N
                             // reads the rays written by the previous shade).
                             {
-                                let mut pass = encoder.begin_compute_pass(
-                                    &wgpu::ComputePassDescriptor {
+                                let mut pass =
+                                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                         label: Some("wf_intersect_pass_hybrid"),
                                         timestamp_writes: None,
-                                    },
-                                );
+                                    });
                                 pass.set_pipeline(intersect_pl);
-                                pass.set_bind_group(
-                                    0,
-                                    &current_set.intersect_bg,
-                                    &[tile_off],
-                                );
+                                pass.set_bind_group(0, &current_set.intersect_bg, &[tile_off]);
                                 let wg = tile_pixels.div_ceil(64);
                                 pass.dispatch_workgroups(wg, 1, 1);
                             }
@@ -3290,36 +3280,26 @@ impl PathTraceCompute {
                             // sky-miss. Writes next-bounce rays into the other
                             // ping-pong slot.
                             {
-                                let mut pass = encoder.begin_compute_pass(
-                                    &wgpu::ComputePassDescriptor {
+                                let mut pass =
+                                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                         label: Some("wf_shade_pass_hybrid"),
                                         timestamp_writes: None,
-                                    },
-                                );
+                                    });
                                 pass.set_pipeline(wf_shade_pl);
-                                pass.set_bind_group(
-                                    0,
-                                    &current_set.shade_bg,
-                                    &[tile_off],
-                                );
+                                pass.set_bind_group(0, &current_set.shade_bg, &[tile_off]);
                                 let wg = tile_pixels.div_ceil(64);
                                 pass.dispatch_workgroups(wg, 1, 1);
                             }
 
                             // Swap count_in/count_out via encoder copy.
                             {
-                                let mut pass = encoder.begin_compute_pass(
-                                    &wgpu::ComputePassDescriptor {
+                                let mut pass =
+                                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                         label: Some("wf_count_swap_pass_hybrid"),
                                         timestamp_writes: None,
-                                    },
-                                );
+                                    });
                                 pass.set_pipeline(count_swap_pl);
-                                pass.set_bind_group(
-                                    0,
-                                    &bgs.count_swap_bg,
-                                    &[tile_off],
-                                );
+                                pass.set_bind_group(0, &bgs.count_swap_bg, &[tile_off]);
                                 pass.dispatch_workgroups(1, 1, 1);
                             }
 
@@ -3328,23 +3308,16 @@ impl PathTraceCompute {
 
                         // Path-guide SVO update (mirrors the non-restir branch).
                         if pathguide_enabled {
-                            if let (Some(pg), Some(pg_bgs)) = (
-                                &self.pathguide,
-                                &self.pathguide_bind_groups,
-                            ) {
+                            if let (Some(pg), Some(pg_bgs)) =
+                                (&self.pathguide, &self.pathguide_bind_groups)
+                            {
                                 let update_params = PathGuideUpdateParams {
                                     scene_min: {
-                                        let v = self
-                                            .scene_bounds
-                                            .map(|b| b.0)
-                                            .unwrap_or([0.0; 3]);
+                                        let v = self.scene_bounds.map(|b| b.0).unwrap_or([0.0; 3]);
                                         [v[0], v[1], v[2], 0.0]
                                     },
                                     scene_max: {
-                                        let v = self
-                                            .scene_bounds
-                                            .map(|b| b.1)
-                                            .unwrap_or([1.0; 3]);
+                                        let v = self.scene_bounds.map(|b| b.1).unwrap_or([1.0; 3]);
                                         [v[0], v[1], v[2], 0.0]
                                     },
                                     params0: [
@@ -3362,12 +3335,11 @@ impl PathTraceCompute {
                                 );
                                 let (update_pl, _) = pg.pipelines();
                                 let wg = tile_pixels.max(1).div_ceil(64);
-                                let mut pass = encoder.begin_compute_pass(
-                                    &wgpu::ComputePassDescriptor {
+                                let mut pass =
+                                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                                         label: Some("pathguide_update_pass_hybrid"),
                                         timestamp_writes: None,
-                                    },
-                                );
+                                    });
                                 pass.set_pipeline(update_pl);
                                 pass.set_bind_group(0, &pg_bgs.update_bg, &[]);
                                 pass.dispatch_workgroups(wg, 1, 1);
@@ -3391,8 +3363,7 @@ impl PathTraceCompute {
                 // in tiled mode (last tile's slice wrote to offset 0).
                 if self.restir_config.temporal && !self.restir_config.spatial {
                     let (cur_res, prev_res) = rs.reservoirs();
-                    let res_size =
-                        (full_w * full_h).max(1) as u64 * Reservoir::SIZE as u64;
+                    let res_size = (full_w * full_h).max(1) as u64 * Reservoir::SIZE as u64;
                     encoder.copy_buffer_to_buffer(cur_res, 0, prev_res, 0, res_size);
                 }
                 let depth_size = (full_w * full_h).max(1) as u64 * 4;

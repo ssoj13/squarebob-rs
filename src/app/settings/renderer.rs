@@ -249,13 +249,19 @@ impl App {
     /// Each subsection is a collapsible group so the panel stays tidy
     /// when several modes are configured.
     fn ui_3d_geometry(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Geometry", true, self.settings_tint_mix, self.settings_section_header_height, |ui| {
-            // --- Height -----------------------------------------------
-            let height_header = format!("Height: {}", self.render_3d_opts.height_mode.name());
-            egui::CollapsingHeader::new(section_header_text(
-                &height_header,
-                self.settings_panel_font_subheading,
-            ))
+        tinted_section(
+            ui,
+            "Geometry",
+            true,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                // --- Height -----------------------------------------------
+                let height_header = format!("Height: {}", self.render_3d_opts.height_mode.name());
+                egui::CollapsingHeader::new(section_header_text(
+                    &height_header,
+                    self.settings_panel_font_subheading,
+                ))
                 .id_salt("geom_height_section")
                 .default_open(true)
                 .show(ui, |ui| {
@@ -303,12 +309,12 @@ impl App {
                     });
                 });
 
-            // --- Color ------------------------------------------------
-            let color_header = format!("Color: {}", self.render_3d_opts.color_mode.name());
-            egui::CollapsingHeader::new(section_header_text(
-                &color_header,
-                self.settings_panel_font_subheading,
-            ))
+                // --- Color ------------------------------------------------
+                let color_header = format!("Color: {}", self.render_3d_opts.color_mode.name());
+                egui::CollapsingHeader::new(section_header_text(
+                    &color_header,
+                    self.settings_panel_font_subheading,
+                ))
                 .id_salt("geom_color_section")
                 .default_open(false)
                 .show(ui, |ui| {
@@ -347,15 +353,15 @@ impl App {
                     }
                 });
 
-            // --- Folder tint -----------------------------------------
-            let folder_header = format!(
-                "Folder tint: {}",
-                self.render_3d_opts.folder_color_mode.name()
-            );
-            egui::CollapsingHeader::new(section_header_text(
-                &folder_header,
-                self.settings_panel_font_subheading,
-            ))
+                // --- Folder tint -----------------------------------------
+                let folder_header = format!(
+                    "Folder tint: {}",
+                    self.render_3d_opts.folder_color_mode.name()
+                );
+                egui::CollapsingHeader::new(section_header_text(
+                    &folder_header,
+                    self.settings_panel_font_subheading,
+                ))
                 .id_salt("geom_folder_section")
                 .default_open(false)
                 .show(ui, |ui| {
@@ -398,11 +404,11 @@ impl App {
                     }
                 });
 
-            // --- LOD --------------------------------------------------
-            egui::CollapsingHeader::new(section_header_text(
-                "LOD",
-                self.settings_panel_font_subheading,
-            ))
+                // --- LOD --------------------------------------------------
+                egui::CollapsingHeader::new(section_header_text(
+                    "LOD",
+                    self.settings_panel_font_subheading,
+                ))
                 .id_salt("geom_lod_section")
                 .default_open(false)
                 .show(ui, |ui| {
@@ -434,200 +440,210 @@ impl App {
                         }
                     });
                 });
-        });
+            },
+        );
     }
 
     /// Effects settings (hash transforms, animation)
     fn ui_3d_effects(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Effects", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
-            egui::Grid::new("effects_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
-                .show(ui, |ui| {
-                    control_label(ui, "Effect:");
-                    let old = self.render_3d_opts.hash_effect;
-                    egui::ComboBox::from_id_salt("effect")
-                        .selected_text(self.render_3d_opts.hash_effect.name())
-                        .show_ui(ui, |ui| {
-                            for e in HashTransformEffect::all() {
-                                ui.selectable_value(
-                                    &mut self.render_3d_opts.hash_effect,
-                                    *e,
-                                    e.name(),
-                                );
-                            }
-                        });
-                    if self.render_3d_opts.hash_effect != old {
-                        self.needs_layout = true;
-                    }
-                    ui.end_row();
-
-                    if self.render_3d_opts.hash_effect != HashTransformEffect::None {
-                        // Per-effect Strength + Speed: switching effects
-                        // preserves each variant's tuning so "Wave" can
-                        // shimmer fast and "Pulse" can breathe slow
-                        // without re-tuning when you swap.
-                        let effect_idx = self.render_3d_opts.hash_effect as usize;
-                        let params = self
-                            .render_3d_opts
-                            .effects
-                            .hash_per_variant
-                            .get_mut(effect_idx);
-                        control_label(ui, "Strength");
-                        if ui
-                            .add(egui::Slider::new(&mut params.strength, 0.0..=10.0))
-                            .changed()
-                        {
-                            self.needs_layout = true;
-                        }
-                        ui.end_row();
-                        control_label(ui, "Speed");
-                        if ui
-                            .add(egui::Slider::new(&mut params.speed, 0.0..=5.0))
-                            .changed()
-                        {
-                            self.needs_layout = true;
-                        }
-                        ui.end_row();
-                    }
-
-                });
-
-            // Slice plane controls
-            ui.separator();
-            egui::Grid::new("slice_enable_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
-                .show(ui, |ui| {
-                    control_label(ui, "Slice Plane:");
-                    if ui
-                        .checkbox(&mut self.render_3d_opts.slice_enabled, "")
-                        .changed()
-                    {
-                        self.needs_layout = true;
-                    }
-                    ui.end_row();
-                });
-            if self.render_3d_opts.slice_enabled {
-                egui::Grid::new("slice_grid")
+        tinted_section(
+            ui,
+            "Effects",
+            false,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                egui::Grid::new("effects_grid")
                     .num_columns(2)
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        control_label(ui, "Mode:");
-                        ui.horizontal(|ui| {
-                            if ui
-                                .selectable_label(!self.render_3d_opts.slice_use_vector, "Axis")
-                                .clicked()
-                            {
-                                self.render_3d_opts.slice_use_vector = false;
-                                self.needs_layout = true;
-                            }
-                            if ui
-                                .selectable_label(self.render_3d_opts.slice_use_vector, "Vector")
-                                .clicked()
-                            {
-                                self.render_3d_opts.slice_use_vector = true;
-                                self.needs_layout = true;
-                            }
-                        });
-                        ui.end_row();
-
-                        if self.render_3d_opts.slice_use_vector {
-                            control_label(ui, "Normal:");
-                            let mut changed = false;
-                            ui.horizontal(|ui| {
-                                changed |= ui
-                                    .add(
-                                        egui::DragValue::new(
-                                            &mut self.render_3d_opts.slice_normal[0],
-                                        )
-                                        .speed(0.01)
-                                        .range(-1.0..=1.0)
-                                        .prefix("X:"),
-                                    )
-                                    .changed();
-                                changed |= ui
-                                    .add(
-                                        egui::DragValue::new(
-                                            &mut self.render_3d_opts.slice_normal[1],
-                                        )
-                                        .speed(0.01)
-                                        .range(-1.0..=1.0)
-                                        .prefix("Y:"),
-                                    )
-                                    .changed();
-                                changed |= ui
-                                    .add(
-                                        egui::DragValue::new(
-                                            &mut self.render_3d_opts.slice_normal[2],
-                                        )
-                                        .speed(0.01)
-                                        .range(-1.0..=1.0)
-                                        .prefix("Z:"),
-                                    )
-                                    .changed();
-                            });
-                            if changed {
-                                let n = &mut self.render_3d_opts.slice_normal;
-                                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-                                if len > 0.001 {
-                                    n[0] /= len;
-                                    n[1] /= len;
-                                    n[2] /= len;
+                        control_label(ui, "Effect:");
+                        let old = self.render_3d_opts.hash_effect;
+                        egui::ComboBox::from_id_salt("effect")
+                            .selected_text(self.render_3d_opts.hash_effect.name())
+                            .show_ui(ui, |ui| {
+                                for e in HashTransformEffect::all() {
+                                    ui.selectable_value(
+                                        &mut self.render_3d_opts.hash_effect,
+                                        *e,
+                                        e.name(),
+                                    );
                                 }
-                                self.needs_layout = true;
-                            }
-                            ui.end_row();
-                        } else {
-                            control_label(ui, "Axis:");
-                            let axes = [(0_u32, "X"), (1_u32, "Y"), (2_u32, "Z")];
-                            if multibutton_exclusive(
-                                ui,
-                                &mut self.render_3d_opts.slice_axis,
-                                &axes,
-                                MultiButtonAxis::Horizontal,
-                            ) {
-                                self.needs_layout = true;
-                            }
-                            ui.end_row();
-                        }
-
-                        control_label(ui, "Distance:");
-                        let range = if self.render_3d_opts.slice_use_vector {
-                            -500.0..=500.0
-                        } else {
-                            -2000.0..=2000.0
-                        };
-                        let pos_ref = if self.render_3d_opts.slice_use_vector {
-                            &mut self.render_3d_opts.slice_position_vector
-                        } else {
-                            &mut self.render_3d_opts.slice_position
-                        };
-                        if ui.add(egui::Slider::new(pos_ref, range)).changed() {
+                            });
+                        if self.render_3d_opts.hash_effect != old {
                             self.needs_layout = true;
                         }
                         ui.end_row();
+
+                        if self.render_3d_opts.hash_effect != HashTransformEffect::None {
+                            // Per-effect Strength + Speed: switching effects
+                            // preserves each variant's tuning so "Wave" can
+                            // shimmer fast and "Pulse" can breathe slow
+                            // without re-tuning when you swap.
+                            let effect_idx = self.render_3d_opts.hash_effect as usize;
+                            let params = self
+                                .render_3d_opts
+                                .effects
+                                .hash_per_variant
+                                .get_mut(effect_idx);
+                            control_label(ui, "Strength");
+                            if ui
+                                .add(egui::Slider::new(&mut params.strength, 0.0..=10.0))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+                            control_label(ui, "Speed");
+                            if ui
+                                .add(egui::Slider::new(&mut params.speed, 0.0..=5.0))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+                        }
                     });
 
-                egui::Grid::new("slice_invert_grid")
+                // Slice plane controls
+                ui.separator();
+                egui::Grid::new("slice_enable_grid")
                     .num_columns(2)
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        control_label(ui, "Invert:");
+                        control_label(ui, "Slice Plane:");
                         if ui
-                            .checkbox(&mut self.render_3d_opts.slice_invert, "")
+                            .checkbox(&mut self.render_3d_opts.slice_enabled, "")
                             .changed()
                         {
                             self.needs_layout = true;
                         }
                         ui.end_row();
                     });
-            }
-        });
+                if self.render_3d_opts.slice_enabled {
+                    egui::Grid::new("slice_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 4.0])
+                        .min_col_width(SETTINGS_LABEL_WIDTH)
+                        .show(ui, |ui| {
+                            control_label(ui, "Mode:");
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .selectable_label(!self.render_3d_opts.slice_use_vector, "Axis")
+                                    .clicked()
+                                {
+                                    self.render_3d_opts.slice_use_vector = false;
+                                    self.needs_layout = true;
+                                }
+                                if ui
+                                    .selectable_label(
+                                        self.render_3d_opts.slice_use_vector,
+                                        "Vector",
+                                    )
+                                    .clicked()
+                                {
+                                    self.render_3d_opts.slice_use_vector = true;
+                                    self.needs_layout = true;
+                                }
+                            });
+                            ui.end_row();
+
+                            if self.render_3d_opts.slice_use_vector {
+                                control_label(ui, "Normal:");
+                                let mut changed = false;
+                                ui.horizontal(|ui| {
+                                    changed |= ui
+                                        .add(
+                                            egui::DragValue::new(
+                                                &mut self.render_3d_opts.slice_normal[0],
+                                            )
+                                            .speed(0.01)
+                                            .range(-1.0..=1.0)
+                                            .prefix("X:"),
+                                        )
+                                        .changed();
+                                    changed |= ui
+                                        .add(
+                                            egui::DragValue::new(
+                                                &mut self.render_3d_opts.slice_normal[1],
+                                            )
+                                            .speed(0.01)
+                                            .range(-1.0..=1.0)
+                                            .prefix("Y:"),
+                                        )
+                                        .changed();
+                                    changed |= ui
+                                        .add(
+                                            egui::DragValue::new(
+                                                &mut self.render_3d_opts.slice_normal[2],
+                                            )
+                                            .speed(0.01)
+                                            .range(-1.0..=1.0)
+                                            .prefix("Z:"),
+                                        )
+                                        .changed();
+                                });
+                                if changed {
+                                    let n = &mut self.render_3d_opts.slice_normal;
+                                    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                                    if len > 0.001 {
+                                        n[0] /= len;
+                                        n[1] /= len;
+                                        n[2] /= len;
+                                    }
+                                    self.needs_layout = true;
+                                }
+                                ui.end_row();
+                            } else {
+                                control_label(ui, "Axis:");
+                                let axes = [(0_u32, "X"), (1_u32, "Y"), (2_u32, "Z")];
+                                if multibutton_exclusive(
+                                    ui,
+                                    &mut self.render_3d_opts.slice_axis,
+                                    &axes,
+                                    MultiButtonAxis::Horizontal,
+                                ) {
+                                    self.needs_layout = true;
+                                }
+                                ui.end_row();
+                            }
+
+                            control_label(ui, "Distance:");
+                            let range = if self.render_3d_opts.slice_use_vector {
+                                -500.0..=500.0
+                            } else {
+                                -2000.0..=2000.0
+                            };
+                            let pos_ref = if self.render_3d_opts.slice_use_vector {
+                                &mut self.render_3d_opts.slice_position_vector
+                            } else {
+                                &mut self.render_3d_opts.slice_position
+                            };
+                            if ui.add(egui::Slider::new(pos_ref, range)).changed() {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+                        });
+
+                    egui::Grid::new("slice_invert_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 4.0])
+                        .min_col_width(SETTINGS_LABEL_WIDTH)
+                        .show(ui, |ui| {
+                            control_label(ui, "Invert:");
+                            if ui
+                                .checkbox(&mut self.render_3d_opts.slice_invert, "")
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+                        });
+                }
+            },
+        );
     }
 
     /// Animation panel: master Animate + global speed for the object
@@ -635,39 +651,40 @@ impl App {
     /// independently (own gate) so the sky can keep rolling when cubes
     /// are paused with Space.
     fn ui_3d_animation(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Animation", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
-            settings_grid(ui, "animation_grid", |ui| {
-                control_label(ui, "Animate");
-                ui.horizontal(|ui| {
-                    if ui
-                        .checkbox(&mut self.render_3d_opts.animate, "")
-                        .changed()
-                    {
-                        self.needs_layout = true;
-                    }
-                    ui.add_enabled(
-                        self.render_3d_opts.animate,
-                        egui::Slider::new(
-                            &mut self.render_3d_opts.animation_speed,
-                            0.0..=5.0,
-                        )
-                        .show_value(true),
-                    );
-                });
-                ui.end_row();
+        tinted_section(
+            ui,
+            "Animation",
+            false,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                settings_grid(ui, "animation_grid", |ui| {
+                    control_label(ui, "Animate");
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut self.render_3d_opts.animate, "").changed() {
+                            self.needs_layout = true;
+                        }
+                        ui.add_enabled(
+                            self.render_3d_opts.animate,
+                            egui::Slider::new(&mut self.render_3d_opts.animation_speed, 0.0..=5.0)
+                                .show_value(true),
+                        );
+                    });
+                    ui.end_row();
 
-                control_label(ui, "Env");
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.render_3d_opts.env_animate, "Animate");
-                    ui.add_enabled(
-                        self.render_3d_opts.env_animate,
-                        egui::Slider::new(&mut self.render_3d_opts.env_speed, 0.0..=5.0)
-                            .show_value(true),
-                    );
+                    control_label(ui, "Env");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.render_3d_opts.env_animate, "Animate");
+                        ui.add_enabled(
+                            self.render_3d_opts.env_animate,
+                            egui::Slider::new(&mut self.render_3d_opts.env_speed, 0.0..=5.0)
+                                .show_value(true),
+                        );
+                    });
+                    ui.end_row();
                 });
-                ui.end_row();
-            });
-        });
+            },
+        );
     }
 
     /// Materials: shared assignment (PBR + path tracing), PT light/glass counts, raster BRDF knobs.
@@ -678,330 +695,341 @@ impl App {
             self.backfill_pt_material_counts(total_cubes);
         }
 
-        tinted_section(ui, "Materials", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
-            egui::Grid::new("materials_unified_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
-                .show(ui, |ui| {
-                    // Source: what data determines the material
-                    control_label(ui, "Source:");
-                    let old_source = self.render_3d_opts.mat_source;
-                    if multibutton_exclusive(
-                        ui,
-                        &mut self.render_3d_opts.mat_source,
-                        &[
-                            (MaterialSource::None, "None"),
-                            (MaterialSource::Extension, "Ext"),
-                            (MaterialSource::Path, "Path"),
-                            (MaterialSource::Size, "Size"),
-                            (MaterialSource::Depth, "Depth"),
-                            (MaterialSource::Random, "Rand"),
-                        ],
-                        MultiButtonAxis::Horizontal,
-                    ) {
-                        self.render_3d_opts.materialize_mode = match self.render_3d_opts.mat_source {
-                            MaterialSource::None => MaterializeMode::None,
-                            MaterialSource::Extension => MaterializeMode::ByExtension,
-                            MaterialSource::Path => MaterializeMode::ByPath,
-                            MaterialSource::Size => MaterializeMode::BySize,
-                            MaterialSource::Age | MaterialSource::Depth => MaterializeMode::ByAge,
-                            MaterialSource::Random => MaterializeMode::Random,
-                        };
-                        self.mark_pt_scene_dirty();
-                    }
-                    if self.render_3d_opts.mat_source != old_source {
-                        self.mark_pt_scene_dirty();
-                    }
-                    ui.end_row();
+        tinted_section(
+            ui,
+            "Materials",
+            false,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                egui::Grid::new("materials_unified_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .min_col_width(SETTINGS_LABEL_WIDTH)
+                    .show(ui, |ui| {
+                        // Source: what data determines the material
+                        control_label(ui, "Source:");
+                        let old_source = self.render_3d_opts.mat_source;
+                        if multibutton_exclusive(
+                            ui,
+                            &mut self.render_3d_opts.mat_source,
+                            &[
+                                (MaterialSource::None, "None"),
+                                (MaterialSource::Extension, "Ext"),
+                                (MaterialSource::Path, "Path"),
+                                (MaterialSource::Size, "Size"),
+                                (MaterialSource::Depth, "Depth"),
+                                (MaterialSource::Random, "Rand"),
+                            ],
+                            MultiButtonAxis::Horizontal,
+                        ) {
+                            self.render_3d_opts.materialize_mode =
+                                match self.render_3d_opts.mat_source {
+                                    MaterialSource::None => MaterializeMode::None,
+                                    MaterialSource::Extension => MaterializeMode::ByExtension,
+                                    MaterialSource::Path => MaterializeMode::ByPath,
+                                    MaterialSource::Size => MaterializeMode::BySize,
+                                    MaterialSource::Age | MaterialSource::Depth => {
+                                        MaterializeMode::ByAge
+                                    }
+                                    MaterialSource::Random => MaterializeMode::Random,
+                                };
+                            self.mark_pt_scene_dirty();
+                        }
+                        if self.render_3d_opts.mat_source != old_source {
+                            self.mark_pt_scene_dirty();
+                        }
+                        ui.end_row();
 
-                    if self.render_3d_opts.mat_source != MaterialSource::None {
-                        // Palette: `None` lets pt-mats auto-pick for the active source.
-                        control_label(ui, "Palette:");
-                        let mut palette_changed = false;
-                        let cur_label = match self.render_3d_opts.mat_palette {
-                            None => "Auto".to_string(),
-                            Some(p) => p.name().to_string(),
-                        };
-                        egui::ComboBox::from_id_salt("mat_palette")
-                            .selected_text(cur_label)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.render_3d_opts.mat_palette,
-                                        None,
-                                        "Auto",
-                                    )
-                                    .changed()
-                                {
-                                    palette_changed = true;
-                                }
-                                for &p in Palette::all() {
+                        if self.render_3d_opts.mat_source != MaterialSource::None {
+                            // Palette: `None` lets pt-mats auto-pick for the active source.
+                            control_label(ui, "Palette:");
+                            let mut palette_changed = false;
+                            let cur_label = match self.render_3d_opts.mat_palette {
+                                None => "Auto".to_string(),
+                                Some(p) => p.name().to_string(),
+                            };
+                            egui::ComboBox::from_id_salt("mat_palette")
+                                .selected_text(cur_label)
+                                .show_ui(ui, |ui| {
                                     if ui
                                         .selectable_value(
                                             &mut self.render_3d_opts.mat_palette,
-                                            Some(p),
-                                            p.name(),
+                                            None,
+                                            "Auto",
                                         )
                                         .changed()
                                     {
                                         palette_changed = true;
                                     }
-                                }
-                            });
-                        if palette_changed {
-                            self.mark_pt_scene_dirty();
-                        }
-                        ui.end_row();
+                                    for &p in Palette::all() {
+                                        if ui
+                                            .selectable_value(
+                                                &mut self.render_3d_opts.mat_palette,
+                                                Some(p),
+                                                p.name(),
+                                            )
+                                            .changed()
+                                        {
+                                            palette_changed = true;
+                                        }
+                                    }
+                                });
+                            if palette_changed {
+                                self.mark_pt_scene_dirty();
+                            }
+                            ui.end_row();
 
-                        if self.render_3d_opts.mat_source == MaterialSource::Path {
-                            control_label(ui, "Cluster siblings:");
+                            if self.render_3d_opts.mat_source == MaterialSource::Path {
+                                control_label(ui, "Cluster siblings:");
+                                if ui
+                                    .checkbox(
+                                        &mut self.render_3d_opts.mat_path_hierarchical,
+                                        "Hierarchical",
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_pt_scene_dirty();
+                                }
+                                ui.end_row();
+                            }
+
+                            control_label(ui, "Distribute:");
+                            let old_dist = self.render_3d_opts.mat_distribution;
+                            if multibutton_exclusive(
+                                ui,
+                                &mut self.render_3d_opts.mat_distribution,
+                                &[
+                                    (MaterialDistribution::Direct, "Direct"),
+                                    (MaterialDistribution::Quantized, "Quant"),
+                                    (MaterialDistribution::Gradient, "Grad"),
+                                    (MaterialDistribution::Spatial, "Spatial"),
+                                    (MaterialDistribution::Bands, "Bands"),
+                                ],
+                                MultiButtonAxis::Horizontal,
+                            ) {
+                                self.mark_pt_scene_dirty();
+                            }
+                            if self.render_3d_opts.mat_distribution != old_dist {
+                                self.mark_pt_scene_dirty();
+                            }
+                            ui.end_row();
+
+                            match self.render_3d_opts.mat_distribution {
+                                MaterialDistribution::Quantized => {
+                                    control_label(ui, "Levels:");
+                                    if ui
+                                        .add(egui::Slider::new(
+                                            &mut self.render_3d_opts.mat_quant_levels,
+                                            2..=14,
+                                        ))
+                                        .changed()
+                                    {
+                                        self.mark_pt_scene_dirty();
+                                    }
+                                    ui.end_row();
+                                }
+                                MaterialDistribution::Bands => {
+                                    control_label(ui, "Bands:");
+                                    if ui
+                                        .add(egui::Slider::new(
+                                            &mut self.render_3d_opts.mat_band_count,
+                                            2..=20,
+                                        ))
+                                        .changed()
+                                    {
+                                        self.mark_pt_scene_dirty();
+                                    }
+                                    ui.end_row();
+                                }
+                                MaterialDistribution::Spatial => {
+                                    control_label(ui, "Scale:");
+                                    if ui
+                                        .add(
+                                            egui::Slider::new(
+                                                &mut self.render_3d_opts.mat_spatial_scale,
+                                                0.001..=0.1,
+                                            )
+                                            .logarithmic(true),
+                                        )
+                                        .changed()
+                                    {
+                                        self.mark_pt_scene_dirty();
+                                    }
+                                    ui.end_row();
+                                }
+                                _ => {}
+                            }
+
+                            control_label(ui, "Seed:");
                             if ui
-                                .checkbox(
-                                    &mut self.render_3d_opts.mat_path_hierarchical,
-                                    "Hierarchical",
+                                .add(
+                                    egui::Slider::new(
+                                        &mut self.render_3d_opts.mat_seed,
+                                        1..=u32::MAX,
+                                    )
+                                    .logarithmic(true),
                                 )
                                 .changed()
                             {
                                 self.mark_pt_scene_dirty();
                             }
                             ui.end_row();
-                        }
 
-                        control_label(ui, "Distribute:");
-                        let old_dist = self.render_3d_opts.mat_distribution;
-                        if multibutton_exclusive(
-                            ui,
-                            &mut self.render_3d_opts.mat_distribution,
-                            &[
-                                (MaterialDistribution::Direct, "Direct"),
-                                (MaterialDistribution::Quantized, "Quant"),
-                                (MaterialDistribution::Gradient, "Grad"),
-                                (MaterialDistribution::Spatial, "Spatial"),
-                                (MaterialDistribution::Bands, "Bands"),
-                            ],
-                            MultiButtonAxis::Horizontal,
-                        ) {
-                            self.mark_pt_scene_dirty();
-                        }
-                        if self.render_3d_opts.mat_distribution != old_dist {
-                            self.mark_pt_scene_dirty();
-                        }
-                        ui.end_row();
-
-                        match self.render_3d_opts.mat_distribution {
-                            MaterialDistribution::Quantized => {
-                                control_label(ui, "Levels:");
-                                if ui
-                                    .add(egui::Slider::new(
-                                        &mut self.render_3d_opts.mat_quant_levels,
-                                        2..=14,
-                                    ))
-                                    .changed()
-                                {
-                                    self.mark_pt_scene_dirty();
-                                }
-                                ui.end_row();
-                            }
-                            MaterialDistribution::Bands => {
-                                control_label(ui, "Bands:");
-                                if ui
-                                    .add(egui::Slider::new(
-                                        &mut self.render_3d_opts.mat_band_count,
-                                        2..=20,
-                                    ))
-                                    .changed()
-                                {
-                                    self.mark_pt_scene_dirty();
-                                }
-                                ui.end_row();
-                            }
-                            MaterialDistribution::Spatial => {
-                                control_label(ui, "Scale:");
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.render_3d_opts.mat_spatial_scale,
-                                            0.001..=0.1,
-                                        )
-                                        .logarithmic(true),
+                            control_label(ui, "Mix:");
+                            if ui
+                                .add(
+                                    egui::Slider::new(
+                                        &mut self.render_3d_opts.materialize_mix,
+                                        0.0..=1.0,
                                     )
+                                    .show_value(true),
+                                )
+                                .changed()
+                            {
+                                if path_tracing {
+                                    if let Some(r) = &mut self.renderer_3d {
+                                        r.mark_pt_accum_reset();
+                                    }
+                                } else {
+                                    self.needs_layout = true;
+                                }
+                            }
+                            ui.end_row();
+
+                            if path_tracing {
+                                self.ui_pt_material_counts(ui, total_cubes);
+                            }
+                        }
+
+                        if !path_tracing {
+                            control_label(ui, "Roughness:");
+                            if ui
+                                .add(egui::Slider::new(
+                                    &mut self.render_3d_opts.roughness,
+                                    0.04..=1.0,
+                                ))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+
+                            control_label(ui, "Metalness:");
+                            if ui
+                                .add(egui::Slider::new(
+                                    &mut self.render_3d_opts.metalness,
+                                    0.0..=1.0,
+                                ))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+
+                            control_label(ui, "Specular IOR:");
+                            if ui
+                                .add(egui::Slider::new(
+                                    &mut self.render_3d_opts.specular_ior,
+                                    1.0..=3.0,
+                                ))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+
+                if !path_tracing {
+                    egui::Grid::new("material_flags_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 4.0])
+                        .min_col_width(SETTINGS_LABEL_WIDTH)
+                        .show(ui, |ui| {
+                            control_label(ui, "Shading:");
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .checkbox(&mut self.render_3d_opts.flat_shading, "Flat")
                                     .changed()
                                 {
-                                    self.mark_pt_scene_dirty();
+                                    self.needs_layout = true;
                                 }
-                                ui.end_row();
-                            }
-                            _ => {}
-                        }
-
-                        control_label(ui, "Seed:");
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.render_3d_opts.mat_seed, 1..=u32::MAX)
-                                    .logarithmic(true),
-                            )
-                            .changed()
-                        {
-                            self.mark_pt_scene_dirty();
-                        }
-                        ui.end_row();
-
-                        control_label(ui, "Mix:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.materialize_mix,
-                                0.0..=1.0,
-                            ).show_value(true))
-                            .changed()
-                        {
-                            if path_tracing {
-                                if let Some(r) = &mut self.renderer_3d {
-                                    r.mark_pt_accum_reset();
+                                if ui
+                                    .checkbox(&mut self.render_3d_opts.double_sided, "Double Sided")
+                                    .changed()
+                                {
+                                    self.needs_layout = true;
                                 }
-                            } else {
-                                self.needs_layout = true;
-                            }
-                        }
-                        ui.end_row();
-
-                        if path_tracing {
-                            self.ui_pt_material_counts(ui, total_cubes);
-                        }
-                    }
-
-                    if !path_tracing {
-                        control_label(ui, "Roughness:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.roughness,
-                                0.04..=1.0,
-                            ))
-                            .changed()
-                        {
-                            self.needs_layout = true;
-                        }
-                        ui.end_row();
-
-                        control_label(ui, "Metalness:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.metalness,
-                                0.0..=1.0,
-                            ))
-                            .changed()
-                        {
-                            self.needs_layout = true;
-                        }
-                        ui.end_row();
-
-                        control_label(ui, "Specular IOR:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.specular_ior,
-                                1.0..=3.0,
-                            ))
-                            .changed()
-                        {
-                            self.needs_layout = true;
-                        }
-                        ui.end_row();
-                    }
-                });
-
-            if !path_tracing {
-                egui::Grid::new("material_flags_grid")
-                    .num_columns(2)
-                    .spacing([8.0, 4.0])
-                    .min_col_width(SETTINGS_LABEL_WIDTH)
-                    .show(ui, |ui| {
-                        control_label(ui, "Shading:");
-                        ui.horizontal(|ui| {
-                            if ui
-                                .checkbox(&mut self.render_3d_opts.flat_shading, "Flat")
-                                .changed()
-                            {
-                                self.needs_layout = true;
-                            }
-                            if ui
-                                .checkbox(&mut self.render_3d_opts.double_sided, "Double Sided")
-                                .changed()
-                            {
-                                self.needs_layout = true;
-                            }
+                            });
+                            ui.end_row();
                         });
-                        ui.end_row();
-                    });
-            }
-        });
+                }
+            },
+        );
     }
 
     /// Path tracer settings
     fn ui_3d_pathtracer(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Path Tracer", true, self.settings_tint_mix, self.settings_section_header_height, |ui| {
-            let mut pt_changed = false;
+        tinted_section(
+            ui,
+            "Path Tracer",
+            true,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                let mut pt_changed = false;
 
-            compact_section(
-                ui,
-                "Lighting",
-                true,
-                self.settings_section_header_height,
-                |ui| {
-                    self.ui_pt_lighting(ui, &mut pt_changed)
-                },
-            );
-            compact_section(
-                ui,
-                "Sampling",
-                true,
-                self.settings_section_header_height,
-                |ui| {
-                    self.ui_pt_sampling(ui, &mut pt_changed)
-                },
-            );
-            compact_section(
-                ui,
-                "Paths",
-                false,
-                self.settings_section_header_height,
-                |ui| {
-                    self.ui_pt_paths(ui, &mut pt_changed)
-                },
-            );
-            compact_section(
-                ui,
-                "Glass",
-                false,
-                self.settings_section_header_height,
-                |ui| {
-                    self.ui_pt_glass(ui, &mut pt_changed)
-                },
-            );
-            compact_section(
-                ui,
-                "Camera",
-                false,
-                self.settings_section_header_height,
-                |ui| {
-                    self.ui_pt_camera(ui, &mut pt_changed)
-                },
-            );
-            compact_section(
-                ui,
-                "Advanced",
-                false,
-                self.settings_section_header_height,
-                |ui| {
-                    self.ui_pt_advanced(ui, &mut pt_changed)
-                },
-            );
+                compact_section(
+                    ui,
+                    "Lighting",
+                    true,
+                    self.settings_section_header_height,
+                    |ui| self.ui_pt_lighting(ui, &mut pt_changed),
+                );
+                compact_section(
+                    ui,
+                    "Sampling",
+                    true,
+                    self.settings_section_header_height,
+                    |ui| self.ui_pt_sampling(ui, &mut pt_changed),
+                );
+                compact_section(
+                    ui,
+                    "Paths",
+                    false,
+                    self.settings_section_header_height,
+                    |ui| self.ui_pt_paths(ui, &mut pt_changed),
+                );
+                compact_section(
+                    ui,
+                    "Glass",
+                    false,
+                    self.settings_section_header_height,
+                    |ui| self.ui_pt_glass(ui, &mut pt_changed),
+                );
+                compact_section(
+                    ui,
+                    "Camera",
+                    false,
+                    self.settings_section_header_height,
+                    |ui| self.ui_pt_camera(ui, &mut pt_changed),
+                );
+                compact_section(
+                    ui,
+                    "Advanced",
+                    false,
+                    self.settings_section_header_height,
+                    |ui| self.ui_pt_advanced(ui, &mut pt_changed),
+                );
 
-            if pt_changed {
-                if let Some(r) = &mut self.renderer_3d {
-                    r.reset_pt_accumulation();
+                if pt_changed {
+                    if let Some(r) = &mut self.renderer_3d {
+                        r.reset_pt_accumulation();
+                    }
                 }
-            }
-        });
+            },
+        );
     }
 
     fn mark_pt_scene_dirty(&mut self) {
@@ -1818,216 +1846,237 @@ impl App {
 
     /// Environment settings (env map, lighting)
     fn ui_3d_environment(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Environment", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
-            egui::Grid::new("env_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
-                .show(ui, |ui| {
-                    control_label(ui, "Background:");
-                    let mut color = egui::Color32::from_rgb(
-                        (self.render_3d_opts.background_color[0] * 255.0) as u8,
-                        (self.render_3d_opts.background_color[1] * 255.0) as u8,
-                        (self.render_3d_opts.background_color[2] * 255.0) as u8,
-                    );
-                    if ui.color_edit_button_srgba(&mut color).changed() {
-                        self.render_3d_opts.background_color = [
-                            color.r() as f32 / 255.0,
-                            color.g() as f32 / 255.0,
-                            color.b() as f32 / 255.0,
-                        ];
-                        self.needs_layout = true;
-                    }
-                    ui.end_row();
-
-                    control_label(ui, "Env Map:");
-                    ui.horizontal(|ui| {
-                        let old_enabled = self.render_3d_opts.env_map_enabled;
-                        if ui
-                            .checkbox(&mut self.render_3d_opts.env_map_enabled, "")
-                            .changed()
-                        {
-                            if let Some(r) = &mut self.renderer_3d {
-                                if self.render_3d_opts.env_map_enabled {
-                                    if let Some(ref path) = self.render_3d_opts.env_map_path {
-                                        if path.exists() {
-                                            if let Err(e) = r.load_env_map(path) {
-                                                log::error!("Env map: {e}");
-                                            }
-                                        }
-                                    }
-                                }
-                                r.mark_pt_env_dirty();
-                                r.reset_pt_accumulation();
-                            }
-                            if self.render_3d_opts.env_map_enabled != old_enabled {
-                                self.needs_layout = true;
-                            }
-                        }
-                        if self.render_3d_opts.env_map_enabled
-                            && ui.small_button("Load...").clicked()
-                        {
-                            let mut dlg = rfd::FileDialog::new()
-                                .add_filter("Images", &["png", "jpg", "jpeg", "hdr", "exr"]);
-                            if let Some(dir) =
-                                rfd_env_map_pick_start_dir(self.render_3d_opts.env_map_path.as_ref())
-                            {
-                                dlg = dlg.set_directory(dir);
-                            }
-                            if let Some(path) = dlg.pick_file() {
-                                if let Some(r) = &mut self.renderer_3d {
-                                    if let Err(e) = r.load_env_map(&path) {
-                                        log::error!("Env map: {e}");
-                                    } else {
-                                        self.render_3d_opts.env_map_path = Some(path);
-                                    }
-                                }
-                            }
-                        }
-                    });
-                    ui.end_row();
-
-                    if self.render_3d_opts.env_map_enabled {
-                        control_label(ui, "Intensity:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.env_map_intensity,
-                                0.0..=5.0,
-                            ))
-                            .changed()
-                        {
-                            self.needs_layout = true;
-                        }
-                        ui.end_row();
-
-                        control_label(ui, "Rotation:");
-                        let mut env_deg = self.render_3d_opts.env_map_rotation.to_degrees();
-                        if ui
-                            .add(egui::Slider::new(&mut env_deg, -360.0..=360.0).suffix(" deg"))
-                            .changed()
-                        {
-                            self.render_3d_opts.env_map_rotation = env_deg.to_radians();
-                            self.needs_layout = true;
-                        }
-                        ui.end_row();
-                    }
-                });
-
-            if self.render_3d_opts.env_map_enabled {
-                egui::Grid::new("env_visibility_grid")
+        tinted_section(
+            ui,
+            "Environment",
+            false,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                egui::Grid::new("env_grid")
                     .num_columns(2)
                     .spacing([8.0, 4.0])
                     .min_col_width(SETTINGS_LABEL_WIDTH)
                     .show(ui, |ui| {
-                        // Visibility only — env animation lives in the
-                        // Animation section.
-                        control_label(ui, "Visible");
-                        ui.checkbox(&mut self.render_3d_opts.env_map_visible, "")
-                            .on_hover_text(
+                        control_label(ui, "Background:");
+                        let mut color = egui::Color32::from_rgb(
+                            (self.render_3d_opts.background_color[0] * 255.0) as u8,
+                            (self.render_3d_opts.background_color[1] * 255.0) as u8,
+                            (self.render_3d_opts.background_color[2] * 255.0) as u8,
+                        );
+                        if ui.color_edit_button_srgba(&mut color).changed() {
+                            self.render_3d_opts.background_color = [
+                                color.r() as f32 / 255.0,
+                                color.g() as f32 / 255.0,
+                                color.b() as f32 / 255.0,
+                            ];
+                            self.needs_layout = true;
+                        }
+                        ui.end_row();
+
+                        control_label(ui, "Env Map:");
+                        ui.horizontal(|ui| {
+                            let old_enabled = self.render_3d_opts.env_map_enabled;
+                            if ui
+                                .checkbox(&mut self.render_3d_opts.env_map_enabled, "")
+                                .changed()
+                            {
+                                if let Some(r) = &mut self.renderer_3d {
+                                    if self.render_3d_opts.env_map_enabled {
+                                        if let Some(ref path) = self.render_3d_opts.env_map_path {
+                                            if path.exists() {
+                                                if let Err(e) = r.load_env_map(path) {
+                                                    log::error!("Env map: {e}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                    r.mark_pt_env_dirty();
+                                    r.reset_pt_accumulation();
+                                }
+                                if self.render_3d_opts.env_map_enabled != old_enabled {
+                                    self.needs_layout = true;
+                                }
+                            }
+                            if self.render_3d_opts.env_map_enabled
+                                && ui.small_button("Load...").clicked()
+                            {
+                                let mut dlg = rfd::FileDialog::new()
+                                    .add_filter("Images", &["png", "jpg", "jpeg", "hdr", "exr"]);
+                                if let Some(dir) = rfd_env_map_pick_start_dir(
+                                    self.render_3d_opts.env_map_path.as_ref(),
+                                ) {
+                                    dlg = dlg.set_directory(dir);
+                                }
+                                if let Some(path) = dlg.pick_file() {
+                                    if let Some(r) = &mut self.renderer_3d {
+                                        if let Err(e) = r.load_env_map(&path) {
+                                            log::error!("Env map: {e}");
+                                        } else {
+                                            self.render_3d_opts.env_map_path = Some(path);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        if self.render_3d_opts.env_map_enabled {
+                            control_label(ui, "Intensity:");
+                            if ui
+                                .add(egui::Slider::new(
+                                    &mut self.render_3d_opts.env_map_intensity,
+                                    0.0..=5.0,
+                                ))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+
+                            control_label(ui, "Rotation:");
+                            let mut env_deg = self.render_3d_opts.env_map_rotation.to_degrees();
+                            if ui
+                                .add(egui::Slider::new(&mut env_deg, -360.0..=360.0).suffix(" deg"))
+                                .changed()
+                            {
+                                self.render_3d_opts.env_map_rotation = env_deg.to_radians();
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+
+                if self.render_3d_opts.env_map_enabled {
+                    egui::Grid::new("env_visibility_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 4.0])
+                        .min_col_width(SETTINGS_LABEL_WIDTH)
+                        .show(ui, |ui| {
+                            // Visibility only — env animation lives in the
+                            // Animation section.
+                            control_label(ui, "Visible");
+                            ui.checkbox(&mut self.render_3d_opts.env_map_visible, "")
+                                .on_hover_text(
                                 "Show the env background while keeping its lighting contribution",
                             );
-                        ui.end_row();
-                    });
-            }
-        });
+                            ui.end_row();
+                        });
+                }
+            },
+        );
     }
 
     /// Interaction settings (hover highlight)
     fn ui_3d_interaction(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Interaction", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
-            egui::Grid::new("interaction_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
-                .show(ui, |ui| {
-                    control_label(ui, "Hover:");
-                    multibutton_exclusive(
-                        ui,
-                        &mut self.render_3d_opts.hover_mode,
-                        &[
-                            (HoverMode::None, "None"),
-                            (HoverMode::Outline, "Outline"),
-                            (HoverMode::Tint, "Tint"),
-                            (HoverMode::Both, "Both"),
-                        ],
-                        MultiButtonAxis::Horizontal,
-                    );
-                    ui.end_row();
-
-                    if matches!(
-                        self.render_3d_opts.hover_mode,
-                        HoverMode::Outline | HoverMode::Both
-                    ) {
-                        control_label(ui, "Width:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.hover_outline_width,
-                                0.5..=5.0,
-                            ))
-                            .changed()
-                        {
-                            self.needs_layout = true;
-                        }
+        tinted_section(
+            ui,
+            "Interaction",
+            false,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                egui::Grid::new("interaction_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .min_col_width(SETTINGS_LABEL_WIDTH)
+                    .show(ui, |ui| {
+                        control_label(ui, "Hover:");
+                        multibutton_exclusive(
+                            ui,
+                            &mut self.render_3d_opts.hover_mode,
+                            &[
+                                (HoverMode::None, "None"),
+                                (HoverMode::Outline, "Outline"),
+                                (HoverMode::Tint, "Tint"),
+                                (HoverMode::Both, "Both"),
+                            ],
+                            MultiButtonAxis::Horizontal,
+                        );
                         ui.end_row();
 
-                        control_label(ui, "Alpha:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.hover_outline_alpha,
-                                0.1..=1.0,
-                            ))
-                            .changed()
-                        {
-                            self.needs_layout = true;
+                        if matches!(
+                            self.render_3d_opts.hover_mode,
+                            HoverMode::Outline | HoverMode::Both
+                        ) {
+                            control_label(ui, "Width:");
+                            if ui
+                                .add(egui::Slider::new(
+                                    &mut self.render_3d_opts.hover_outline_width,
+                                    0.5..=5.0,
+                                ))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+
+                            control_label(ui, "Alpha:");
+                            if ui
+                                .add(egui::Slider::new(
+                                    &mut self.render_3d_opts.hover_outline_alpha,
+                                    0.1..=1.0,
+                                ))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
                         }
-                        ui.end_row();
-                    }
-                });
-        });
+                    });
+            },
+        );
     }
 
     /// Camera controls
     fn ui_3d_camera(&mut self, ui: &mut egui::Ui) {
-        tinted_section(ui, "Camera", false, self.settings_tint_mix, self.settings_section_header_height, |ui| {
-            egui::Grid::new("camera_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .min_col_width(SETTINGS_LABEL_WIDTH)
-                .show(ui, |ui| {
-                    control_label(ui, "Inertia:");
-                    ui.checkbox(&mut self.render_3d_opts.inertia_enabled, "")
-                        .on_hover_text("Enable smooth camera momentum after drag");
-                    ui.end_row();
-
-                    if self.render_3d_opts.inertia_enabled {
-                        control_label(ui, "Friction:");
-                        ui.add(egui::Slider::new(
-                            &mut self.render_3d_opts.inertia_friction,
-                            1.0..=15.0,
-                        ))
-                        .on_hover_text("Higher = faster stop (1=floaty, 15=responsive)");
+        tinted_section(
+            ui,
+            "Camera",
+            false,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                egui::Grid::new("camera_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .min_col_width(SETTINGS_LABEL_WIDTH)
+                    .show(ui, |ui| {
+                        control_label(ui, "Inertia:");
+                        ui.checkbox(&mut self.render_3d_opts.inertia_enabled, "")
+                            .on_hover_text("Enable smooth camera momentum after drag");
                         ui.end_row();
 
-                        control_label(ui, "Cutoff:");
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.render_3d_opts.inertia_cutoff,
-                                0.0001..=0.05,
+                        if self.render_3d_opts.inertia_enabled {
+                            control_label(ui, "Friction:");
+                            ui.add(egui::Slider::new(
+                                &mut self.render_3d_opts.inertia_friction,
+                                1.0..=15.0,
+                            ))
+                            .on_hover_text("Higher = faster stop (1=floaty, 15=responsive)");
+                            ui.end_row();
+
+                            control_label(ui, "Cutoff:");
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut self.render_3d_opts.inertia_cutoff,
+                                    0.0001..=0.05,
+                                )
+                                .logarithmic(true),
                             )
-                            .logarithmic(true),
-                        )
-                        .on_hover_text("Stop inertia when speed drops below this threshold");
-                        ui.end_row();
+                            .on_hover_text("Stop inertia when speed drops below this threshold");
+                            ui.end_row();
+                        }
+                    });
+
+                ui.horizontal(|ui| {
+                    ui.small("LMB: Orbit  MMB: Pan  RMB: Zoom");
+                    if ui.small_button("Reset").clicked() {
+                        self.orbit_camera.reset();
+                        self.needs_layout = true;
                     }
                 });
-
-            ui.horizontal(|ui| {
-                ui.small("LMB: Orbit  MMB: Pan  RMB: Zoom");
-                if ui.small_button("Reset").clicked() {
-                    self.orbit_camera.reset();
-                    self.needs_layout = true;
-                }
-            });
-        });
+            },
+        );
     }
 }

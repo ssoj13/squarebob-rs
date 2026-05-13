@@ -110,6 +110,14 @@ impl App {
                         });
                     }
 
+                    if ui
+                        .add(egui::Button::new("E").selected(self.show_encode_panel))
+                        .on_hover_text("Toggle encoder")
+                        .clicked()
+                    {
+                        self.show_encode_panel = !self.show_encode_panel;
+                    }
+
                     // 2D/3D toggle
                     let mode_label = match self.render_mode {
                         RenderMode::Mode2D => "2D",
@@ -195,9 +203,7 @@ impl App {
         // leak the registration in egui_wgpu's internal map on every mode
         // switch. Both 3D and 2D-GPU paths register native textures
         // (post-Stage D.1), so this applies to either direction.
-        if let (Some(render_state), Some(id)) =
-            (&self.wgpu_render_state, self.render_texture_id)
-        {
+        if let (Some(render_state), Some(id)) = (&self.wgpu_render_state, self.render_texture_id) {
             let mut renderer = render_state.renderer.write();
             renderer.free_texture(&id);
         }

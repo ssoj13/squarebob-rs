@@ -109,12 +109,12 @@ impl WavefrontPipeline {
             RAYGEN_WGSL,
             "raygen",
             &[
-                bgl_uniform(0),                                // camera
-                bgl_uniform_dyn(1, WF_DIMS_SIZE),              // dims (per-tile)
-                bgl_storage_rw(2),                             // ray output
-                bgl_storage_rw_dyn(3, WF_COUNTS_SIZE),         // count (per-tile)
-                bgl_storage_ro(4),                             // sample map
-                bgl_storage_ro(5),                             // accum (read-only check)
+                bgl_uniform(0),                        // camera
+                bgl_uniform_dyn(1, WF_DIMS_SIZE),      // dims (per-tile)
+                bgl_storage_rw(2),                     // ray output
+                bgl_storage_rw_dyn(3, WF_COUNTS_SIZE), // count (per-tile)
+                bgl_storage_ro(4),                     // sample map
+                bgl_storage_ro(5),                     // accum (read-only check)
             ],
         );
 
@@ -123,11 +123,11 @@ impl WavefrontPipeline {
             INTERSECT_WGSL,
             "intersect",
             &[
-                bgl_storage_ro(0),                             // nodes
-                bgl_storage_ro(1),                             // instances
-                bgl_storage_ro(2),                             // rays
-                bgl_storage_rw(3),                             // hits
-                bgl_storage_rw_dyn(4, WF_COUNTS_SIZE),         // count (per-tile)
+                bgl_storage_ro(0),                     // nodes
+                bgl_storage_ro(1),                     // instances
+                bgl_storage_ro(2),                     // rays
+                bgl_storage_rw(3),                     // hits
+                bgl_storage_rw_dyn(4, WF_COUNTS_SIZE), // count (per-tile)
             ],
         );
 
@@ -136,18 +136,18 @@ impl WavefrontPipeline {
             SHADE_WGSL,
             "shade",
             &[
-                bgl_storage_ro(0),                             // instances
-                bgl_storage_ro(1),                             // materials
-                bgl_storage_ro(2),                             // rays in
-                bgl_storage_ro(3),                             // hits
-                bgl_storage_rw(4),                             // rays out
-                bgl_storage_rw(5),                             // accum
-                bgl_storage_rw_dyn(6, WF_COUNTS_SIZE),         // counts (per-tile)
-                bgl_uniform(7),                                // params
-                bgl_texture_2d(8),                             // env_map
-                bgl_sampler(9),                                // env_sampler
-                bgl_uniform(10),                               // env_params
-                bgl_storage_rw(11),                            // guide buffer
+                bgl_storage_ro(0),                     // instances
+                bgl_storage_ro(1),                     // materials
+                bgl_storage_ro(2),                     // rays in
+                bgl_storage_ro(3),                     // hits
+                bgl_storage_rw(4),                     // rays out
+                bgl_storage_rw(5),                     // accum
+                bgl_storage_rw_dyn(6, WF_COUNTS_SIZE), // counts (per-tile)
+                bgl_uniform(7),                        // params
+                bgl_texture_2d(8),                     // env_map
+                bgl_sampler(9),                        // env_sampler
+                bgl_uniform(10),                       // env_params
+                bgl_storage_rw(11),                    // guide buffer
             ],
         );
 
@@ -157,7 +157,7 @@ impl WavefrontPipeline {
             COUNT_SWAP_WGSL,
             "count_swap",
             &[
-                bgl_storage_rw_dyn(0, WF_COUNTS_SIZE),         // counts (per-tile)
+                bgl_storage_rw_dyn(0, WF_COUNTS_SIZE), // counts (per-tile)
             ],
         );
 
@@ -321,7 +321,8 @@ impl WavefrontPipeline {
     /// Dynamic offset (bytes) for tile `idx` into the per-tile dims/counts buffers.
     pub fn tile_offset(&self, idx: u32) -> u32 {
         debug_assert!(idx < self.tile_capacity, "tile_idx out of range");
-        idx.checked_mul(TILE_SLOT_STRIDE as u32).expect("tile offset overflow")
+        idx.checked_mul(TILE_SLOT_STRIDE as u32)
+            .expect("tile offset overflow")
     }
 
     /// Upload all per-tile dims and the per-tile count-init source for one frame's

@@ -93,19 +93,18 @@ pub mod gpu {
             inst_desc.backends = wgpu::Backends::all();
             let instance = wgpu::Instance::new(inst_desc);
 
-            let adapter = match pollster::block_on(instance.request_adapter(
-                &wgpu::RequestAdapterOptions {
+            let adapter =
+                match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     compatible_surface: None,
                     force_fallback_adapter: false,
-                },
-            )) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::error!("GPU init: request_adapter failed: {e}");
-                    return None;
-                }
-            };
+                })) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        log::error!("GPU init: request_adapter failed: {e}");
+                        return None;
+                    }
+                };
 
             // Stage G.A: bump storage-buffer count limit to fit megakernel's
             // ReSTIR bindings (default 8 → request 16, clamped to adapter).
@@ -116,22 +115,21 @@ pub mod gpu {
                 .min(16)
                 .max(required_limits.max_storage_buffers_per_shader_stage);
 
-            let (device, queue) = match pollster::block_on(adapter.request_device(
-                &wgpu::DeviceDescriptor {
+            let (device, queue) =
+                match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                     label: Some("DirStat GPU Device"),
                     required_features: wgpu::Features::POLYGON_MODE_LINE,
                     required_limits,
                     memory_hints: Default::default(),
                     trace: Default::default(),
                     experimental_features: Default::default(),
-                },
-            )) {
-                Ok(pair) => pair,
-                Err(e) => {
-                    log::error!("GPU init: request_device failed: {e}");
-                    return None;
-                }
-            };
+                })) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        log::error!("GPU init: request_device failed: {e}");
+                        return None;
+                    }
+                };
 
             Some(Self {
                 device: Arc::new(device),

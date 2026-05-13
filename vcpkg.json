@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "dirstat-rs",
+  "version-string": "0.1.0",
+  "description": "Dirstat media encoder FFmpeg dependency pin",
+  "homepage": "https://github.com/ssoj13/dirstat-rs",
+  "license": "MIT",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "swresample",
+        "swscale",
+        "nvcodec"
+      ]
+    }
+  ]
+}

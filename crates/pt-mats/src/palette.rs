@@ -102,7 +102,11 @@ pub fn sample_palette(p: Palette, t: f32) -> [f32; 3] {
         Palette::Sunset => stops_sunset(t),
         Palette::Cubehelix => cubehelix(t),
     };
-    [raw[0].clamp(0.0, 1.0), raw[1].clamp(0.0, 1.0), raw[2].clamp(0.0, 1.0)]
+    [
+        raw[0].clamp(0.0, 1.0),
+        raw[1].clamp(0.0, 1.0),
+        raw[2].clamp(0.0, 1.0),
+    ]
 }
 
 /// Hierarchical hash of a path: components closer to the root dominate, so

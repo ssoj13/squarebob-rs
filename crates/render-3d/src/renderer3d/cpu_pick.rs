@@ -210,7 +210,10 @@ mod tests {
             Vec3::ZERO,
             Vec3::ONE,
         );
-        assert!(t.is_some(), "ray inside AABB should hit (degenerate or boundary)");
+        assert!(
+            t.is_some(),
+            "ray inside AABB should hit (degenerate or boundary)"
+        );
     }
 
     #[test]
@@ -256,7 +259,10 @@ mod tests {
             Vec3::ZERO,
             Vec3::ONE,
         );
-        assert!(t.is_none(), "parallel ray above AABB should miss, got {t:?}");
+        assert!(
+            t.is_none(),
+            "parallel ray above AABB should miss, got {t:?}"
+        );
     }
 
     #[test]

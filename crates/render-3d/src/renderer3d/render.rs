@@ -78,7 +78,11 @@ impl Renderer3D {
 
         // Own an `Arc` so we can call `pick_from_existing` (`&mut self`) without borrowing `cached_instances`.
         let instances_arc: Arc<Vec<CubeInstance>> = if cache_valid {
-            Arc::clone(self.cached_instances.as_ref().expect("cached_instances not built — collect_cubes must run before render"))
+            Arc::clone(
+                self.cached_instances
+                    .as_ref()
+                    .expect("cached_instances not built — collect_cubes must run before render"),
+            )
         } else {
             log::info!(
                 "cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
@@ -206,9 +210,17 @@ impl Renderer3D {
 
             // Add outline pass for PT mode (render over PT result)
             if opts.hover_mode != HoverMode::None && hovered_id != 0 {
-                let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
-                let dyn_bgs = self.dyn_bgs.as_ref().expect("dyn_bgs not built — call ensure_render_targets before render");
-                let ib = self.instance_buffer.as_ref().expect("instance_buffer not built — collect_cubes must upload before encode_passes");
+                let targets = self
+                    .targets
+                    .as_ref()
+                    .expect("targets not built — call ensure_render_targets before render");
+                let dyn_bgs = self
+                    .dyn_bgs
+                    .as_ref()
+                    .expect("dyn_bgs not built — call ensure_render_targets before render");
+                let ib = self.instance_buffer.as_ref().expect(
+                    "instance_buffer not built — collect_cubes must upload before encode_passes",
+                );
 
                 let mut enc =
                     self.ctx
@@ -281,8 +293,14 @@ impl Renderer3D {
         }
 
         // Encode PBR/wireframe passes
-        let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
-        let dyn_bgs = self.dyn_bgs.as_ref().expect("dyn_bgs not built — call ensure_render_targets before render");
+        let targets = self
+            .targets
+            .as_ref()
+            .expect("targets not built — call ensure_render_targets before render");
+        let dyn_bgs = self
+            .dyn_bgs
+            .as_ref()
+            .expect("dyn_bgs not built — call ensure_render_targets before render");
         info!(
             "render_to_view: calling encode_passes, targets {:?}",
             targets.size
@@ -291,7 +309,10 @@ impl Renderer3D {
         info!("render_to_view: encode_passes done, submitting");
 
         // Submit picking readback (uses pending_pick set by set_mouse_pos)
-        let targets = self.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
+        let targets = self
+            .targets
+            .as_ref()
+            .expect("targets not built — call ensure_render_targets before render");
         self.picking
             .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
 
@@ -335,5 +356,4 @@ impl Renderer3D {
     // ========================================================================
     // Bind group helpers
     // ========================================================================
-
 }

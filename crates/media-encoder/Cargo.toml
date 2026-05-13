@@ -1,0 +1,24 @@
+[package]
+name = "media-encoder"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+
+[features]
+default = ["ffmpeg", "exr"]
+ffmpeg = ["dep:playa-ffmpeg"]
+exr = ["dep:vfx-core", "dep:vfx-exr", "dep:vfx-io"]
+
+[dependencies]
+bytemuck = "1"
+egui = "0.34"
+egui_dock = { version = "0.19", features = ["serde"] }
+half = { version = "2.7", features = ["bytemuck", "serde"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "tga", "hdr"] }
+log = "0.4"
+playa-ffmpeg = { path = "../playa-ffmpeg", features = ["static"], optional = true }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+vfx-core = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", optional = true }
+vfx-exr = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", features = ["htj2k"], optional = true }
+vfx-io = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", default-features = false, features = ["exr", "htj2k", "png", "jpeg", "tiff", "dpx", "hdr"], optional = true }

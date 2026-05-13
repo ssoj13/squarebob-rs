@@ -16,13 +16,7 @@ pub struct CubeInstance {
 } // Total: 96B
 
 impl CubeInstance {
-    pub fn new(
-        model: Mat4,
-        color: [f32; 4],
-        hash: u32,
-        object_id: u32,
-        material_id: u32,
-    ) -> Self {
+    pub fn new(model: Mat4, color: [f32; 4], hash: u32, object_id: u32, material_id: u32) -> Self {
         Self {
             model: model.to_cols_array_2d(),
             color,

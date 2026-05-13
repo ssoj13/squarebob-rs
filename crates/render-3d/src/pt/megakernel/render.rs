@@ -319,11 +319,7 @@ pub(crate) fn render_path_traced(
     // Env time is accumulated independently in render_loop so the sky
     // keeps rolling even when object animation is paused.
     let _ = anim_time_used;
-    let env_time = if opts.env_animate {
-        opts.env_time
-    } else {
-        0.0
-    };
+    let env_time = if opts.env_animate { opts.env_time } else { 0.0 };
     if anim_active && allow_update {
         pt.mark_history_dirty();
         reset_by_anim = true;
@@ -451,7 +447,10 @@ pub(crate) fn render_path_traced(
     );
 
     let blit_start = std::time::Instant::now();
-    let targets = renderer.targets.as_ref().expect("targets not built — call ensure_render_targets before render");
+    let targets = renderer
+        .targets
+        .as_ref()
+        .expect("targets not built — call ensure_render_targets before render");
     pt.apply_denoiser(&renderer.ctx.device, &renderer.ctx.queue, &mut encoder);
     pt.blit(&mut encoder, &targets.render_view);
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
@@ -493,4 +492,3 @@ pub(crate) fn render_path_traced(
 
     result
 }
-

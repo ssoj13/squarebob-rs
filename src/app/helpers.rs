@@ -104,7 +104,9 @@ pub(super) fn rfd_pick_folder() -> Option<String> {
 
 /// Starting directory for the env-map file picker: parent of the current env map file if it
 /// exists, otherwise the executable's directory (so packaged assets next to the binary are easy to find).
-pub(super) fn rfd_env_map_pick_start_dir(current: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
+pub(super) fn rfd_env_map_pick_start_dir(
+    current: Option<&std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
     if let Some(p) = current {
         if p.is_file() {
             let path_for_parent = p.canonicalize().unwrap_or_else(|_| p.clone());

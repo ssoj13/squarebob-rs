@@ -396,7 +396,10 @@ mod tests {
         assert_eq!(opts.xray_alpha, 0.25);
         assert!(opts.flat_shading);
         assert!(opts.double_sided);
-        assert!(matches!(opts.materialize_mode, MaterializeMode::ByExtension));
+        assert!(matches!(
+            opts.materialize_mode,
+            MaterializeMode::ByExtension
+        ));
         assert!(opts.mat_allow_lights);
         assert_eq!(opts.mat_light_prob, 0.77);
         assert!(opts.mat_allow_glass);
@@ -453,7 +456,10 @@ mod tests {
         assert_eq!(opts.pt_max_bounces, baseline.pt_max_bounces);
         assert_eq!(
             opts.height_curves.get(opts.height_mode as usize).scale,
-            baseline.height_curves.get(baseline.height_mode as usize).scale
+            baseline
+                .height_curves
+                .get(baseline.height_mode as usize)
+                .scale
         );
         assert_eq!(opts.background_color, baseline.background_color);
         assert_eq!(opts.env_map_path, baseline.env_map_path);
