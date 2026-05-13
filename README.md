@@ -5,6 +5,7 @@ Rust version from scratch inspired by WinDirStat/SequoiaView...with WGPU PathTra
 
 ![Screenshot](data/screenshot1.jpg)
 [![Screenshot](data/screenshot2.jpg)](https://youtu.be/8Ot6_7PxvgA "Encoded media")
+<video src=https://github.com/user-attachments/assets/7ccbee90-78fb-4656-be8c-2524be4f2f7a>Dirstat-encoded media</video>
 (Click to open encoded media on Youtube)
 
 ## Features
