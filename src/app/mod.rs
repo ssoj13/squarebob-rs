@@ -17,6 +17,7 @@ mod dock;
 mod ext_panel;
 pub mod filters;
 pub mod helpers;
+mod image_sequence;
 pub mod presets;
 mod render_loop;
 mod scan_orchestration;
@@ -97,6 +98,7 @@ impl App {
                     app.settings_panel_font_monospace = s.settings_panel_font_monospace;
                     app.preset_autosave = s.preset_autosave;
                     app.autosave_interval_secs = s.autosave_interval_secs;
+                    app.image_sequence_dialog = s.image_sequence_dialog;
                     app.filter_merge_outside = s.filter_merge_outside;
                     app.opts.grid = s.opts.grid;
                     app.opts.brightness = s.opts.brightness;
@@ -145,10 +147,7 @@ impl App {
             // the per-mode curve; migrate any in-memory CLI state.
             app.render_3d_opts.height_mode = renderer::CubeHeightMode::Depth;
             let idx = renderer::CubeHeightMode::Depth as usize;
-            app.render_3d_opts
-                .height_curves
-                .get_mut(idx)
-                .exponent = 2.0;
+            app.render_3d_opts.height_curves.get_mut(idx).exponent = 2.0;
         }
         if app.render_3d_opts.slice_use_vector
             && app.render_3d_opts.slice_position_vector == 0.0
@@ -680,7 +679,6 @@ impl App {
             0.0
         };
     }
-
 }
 
 // ── eframe::App impl ──
@@ -732,6 +730,7 @@ impl eframe::App for App {
             settings_panel_font_monospace: self.settings_panel_font_monospace,
             preset_autosave: self.preset_autosave,
             autosave_interval_secs: self.autosave_interval_secs,
+            image_sequence_dialog: self.image_sequence_dialog.clone(),
             filter_merge_outside: self.filter_merge_outside,
         };
         if let Ok(json) = serde_json::to_string(&state) {
@@ -739,4 +738,3 @@ impl eframe::App for App {
         }
     }
 }
-

@@ -816,6 +816,7 @@ dependencies = [
  "glam",
  "half",
  "image",
+ "imageseq-rs",
  "jwalk",
  "libc",
  "log",
@@ -1743,6 +1744,16 @@ checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
 dependencies = [
  "byteorder-lite",
  "quick-error",
+]
+
+[[package]]
+name = "imageseq-rs"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui_dock",
+ "image",
+ "serde",
 ]
 
 [[package]]

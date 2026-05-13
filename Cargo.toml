@@ -15,6 +15,7 @@ members = [
     "crates/render-core",
     "crates/render-shared",
     "crates/render-3d",
+    "crates/imageseq-rs",
     "crates/treemap",
 ]
 
@@ -50,6 +51,7 @@ dirstat-core = { path = "crates/dirstat-core" }
 render-core = { path = "crates/render-core" }
 render-shared = { path = "crates/render-shared" }
 render-3d = { path = "crates/render-3d" }
+imageseq-rs = { path = "crates/imageseq-rs" }
 treemap = { path = "crates/treemap", features = ["wgpu"] }
 pt-core = { path = "crates/pt-core" }
 bvh-gpu = { path = "crates/bvh-gpu" }

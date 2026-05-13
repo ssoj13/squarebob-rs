@@ -272,7 +272,10 @@ impl App {
     /// Delete current preset
     fn delete_current_preset(&mut self) {
         if super::presets::is_builtin_default_preset(self.preset_name.trim()) {
-            log::warn!("Cannot delete built-in \"{}\"", super::presets::DEFAULT_PRESET_NAME);
+            log::warn!(
+                "Cannot delete built-in \"{}\"",
+                super::presets::DEFAULT_PRESET_NAME
+            );
             return;
         }
         if let Err(e) = super::presets::delete_preset(&self.preset_name) {
@@ -339,6 +342,8 @@ impl App {
                             self.ui_presets(ui);
                             ui.add_space(4.0);
                             self.ui_settings_renderer(ui);
+                            ui.add_space(4.0);
+                            self.ui_image_sequence_panel(ui);
                         }
                         SettingsTab::Denoiser => {
                             self.ui_settings_denoiser(ui, &mut changed);

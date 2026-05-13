@@ -292,5 +292,6 @@ impl App {
 
         // Screenshot handling
         self.handle_screenshot(&ctx);
+        self.handle_image_sequence(&ctx);
     }
 }

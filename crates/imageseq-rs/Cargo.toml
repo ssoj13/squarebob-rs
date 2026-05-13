@@ -1,0 +1,11 @@
+[package]
+name = "imageseq-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+
+[dependencies]
+egui = "0.34"
+egui_dock = { version = "0.19", features = ["serde"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }

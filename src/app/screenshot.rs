@@ -60,7 +60,7 @@ impl App {
     }
 
     /// Capture viewport pixels for screenshot
-    fn capture_viewport(&mut self, w: u32, h: u32) -> Vec<u8> {
+    pub(super) fn capture_viewport(&mut self, w: u32, h: u32) -> Vec<u8> {
         match self.render_mode {
             RenderMode::Mode2D => {
                 match self.render_backend {
