@@ -116,6 +116,10 @@ impl App {
                         .clicked()
                     {
                         self.show_encode_panel = !self.show_encode_panel;
+                        if self.show_encode_panel {
+                            self.encode_source = None;
+                            self.encode_source_size = (0, 0);
+                        }
                     }
 
                     // 2D/3D toggle

@@ -293,6 +293,8 @@ pub struct App {
     pub(super) pt_auto_spp_tick: std::time::Instant,
     pub(super) show_encode_panel: bool,
     pub(super) encode_dialog: media_encoder::EncodeDialog,
+    pub(super) encode_source: Option<media_encoder::Comp>,
+    pub(super) encode_source_size: (u32, u32),
     /// Wall-clock anchor for advancing `animation_time` / `env_time`.
     /// Set to `None` after a long idle (or first launch) so the next
     /// frame produces `dt = 0` instead of catching up on lost time. Each
@@ -436,6 +438,8 @@ impl Default for App {
             encode_dialog: media_encoder::EncodeDialog::load_from_settings(
                 &media_encoder::EncodeDialogSettings::default(),
             ),
+            encode_source: None,
+            encode_source_size: (0, 0),
             last_anim_tick: None,
         }
     }
