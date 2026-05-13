@@ -661,25 +661,15 @@ impl Renderer3D {
             bytemuck::cast_slice(&selected_data),
         );
 
-        // Determine active ID for outline: prefer selected (if any), else hovered
-        let (active_id, outline_color) =
-            if let Some(&first_selected) = self.selected_ids.iter().next() {
-                // Selected: use blue color
-                (first_selected, [0.2, 0.6, 1.0, opts.hover_outline_alpha])
-            } else {
-                // Hovered: use orange color
-                (hovered_id, [1.0, 0.5, 0.0, opts.hover_outline_alpha])
-            };
-
         q.write_buffer(
             &self.hover_params_buf,
             0,
             bytemuck::bytes_of(&HoverParamsUniform {
-                hovered_id: active_id,
+                hovered_id,
                 mode: opts.hover_mode.to_u32(),
                 outline_width: opts.hover_outline_width,
                 _pad0: 0.0,
-                outline_color,
+                outline_color: [1.0, 0.5, 0.0, opts.hover_outline_alpha],
                 tint_color: [1.0, 0.7, 0.2, 0.15],
                 viewport_size: [width as f32, height as f32],
                 _pad1: [0.0; 2],

@@ -208,8 +208,9 @@ impl Renderer3D {
                 height,
             );
 
-            // Add outline pass for PT mode (render over PT result)
-            if opts.hover_mode != HoverMode::None && hovered_id != 0 {
+            // Add selection/hover overlay pass for PT mode (render over PT result).
+            let has_active_overlay = !self.selected_ids.is_empty() || hovered_id != 0;
+            if opts.hover_mode != HoverMode::None && has_active_overlay {
                 let targets = self
                     .targets
                     .as_ref()
