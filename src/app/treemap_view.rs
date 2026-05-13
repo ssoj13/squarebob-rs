@@ -152,7 +152,9 @@ impl App {
                     let id = hit_id.unwrap_or(0);
                     if id != self.hovered_3d_id {
                         self.hovered_3d_id = id;
-                        // PT: don't set needs_layout - outline is post-process, no scene rebuild needed
+                        // PT hover is a post-process overlay: redraw, but don't rebuild layout/scene.
+                        self.needs_render_3d = true;
+                        ctx.request_repaint();
                         if let Some(r) = &mut self.renderer_3d {
                             r.set_hovered_id(id);
                         }
@@ -165,6 +167,8 @@ impl App {
                                 self.sticky_hover = Some((path.clone(), size));
                             }
                         }
+                    } else {
+                        self.sticky_hover = None;
                     }
                 }
                 // Raster: hovered_id / sticky_hover are synced after GPU readback in render_3d_callback
