@@ -46,13 +46,13 @@ fn main() -> eframe::Result<()> {
     };
 
     let mut builder = env_logger::Builder::new();
-    let dirstat_level = match log_level {
+    let squarebob_level = match log_level {
         "warn" => log::LevelFilter::Warn,
         "info" => log::LevelFilter::Info,
         "debug" => log::LevelFilter::Debug,
         _ => log::LevelFilter::Trace,
     };
-    builder.filter_module("dirstat_rs", dirstat_level);
+    builder.filter_module("squarebob_rs", squarebob_level);
     if let Some(list) = &cli.log_modules {
         for item in list.split(',').map(|s| s.trim().to_lowercase()) {
             match item.as_str() {
@@ -111,7 +111,7 @@ fn main() -> eframe::Result<()> {
 
     builder.init();
 
-    info!("dirstat-rs starting (log level: {})", log_level);
+    info!("squarebob-rs starting (log level: {})", log_level);
     if let Some(mode) = &cli.mode {
         info!("CLI mode: {:?}", mode);
     }
@@ -142,7 +142,7 @@ fn main() -> eframe::Result<()> {
             .min(16)
             .max(required_limits.max_storage_buffers_per_shader_stage);
         wgpu::DeviceDescriptor {
-            label: Some("dirstat-rs device"),
+            label: Some("squarebob-rs device"),
             required_features: wgpu::Features::POLYGON_MODE_LINE,
             required_limits,
             memory_hints: Default::default(),
@@ -154,7 +154,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
-            .with_title("dirstat-rs"),
+            .with_title("squarebob-rs"),
         persist_window: true,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
@@ -164,7 +164,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "dirstat-rs",
+        "squarebob-rs",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, cli)))),
     )

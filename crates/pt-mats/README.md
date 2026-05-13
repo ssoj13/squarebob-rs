@@ -1,6 +1,6 @@
 # pt-mats
 
-pt-mats is a small, reusable material classification and preset library for dirstat-rs.
+pt-mats is a small, reusable material classification and preset library for squarebob-rs.
 
 ## Why this exists
 The renderer needs deterministic, data-driven materials for two different pipelines:

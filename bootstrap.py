@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-bootstrap.py - Unified local build/test/package script for Dirstat.
+bootstrap.py - Unified local build/test/package script for Squarebob.
 
 Cross-platform, Python 3, stdlib only. Ported from Playa's bootstrap.py and
 adapted for this repository's xtask/vcpkg setup.
 
 Commands:
-    b(uild)       Build dirstat-rs via xtask
+    b(uild)       Build squarebob-rs via xtask
     t(est)        Run workspace tests via xtask
     c(heck)       Format check + clippy via xtask
     cl(ean)       Clean build artifacts
@@ -300,7 +300,7 @@ def run_check(_args: argparse.Namespace) -> int:
     passed = True
 
     step("Checking formatting...")
-    code, _, elapsed = run(["cargo", "fmt", "--check", "-p", "xtask", "-p", "media-encoder", "-p", "dirstat-rs"])
+    code, _, elapsed = run(["cargo", "fmt", "--check", "-p", "xtask", "-p", "media-encoder", "-p", "squarebob-rs"])
     if code == 0:
         ok(f"Format OK ({fmt_time(elapsed)})")
     else:
@@ -390,7 +390,7 @@ def run_xtask(extra_args: list[str]) -> int:
 
 
 HELP_TEXT = """
-DIRSTAT BUILD SYSTEM
+SQUAREBOB BUILD SYSTEM
 
 COMMANDS
   b       build via xtask
@@ -446,7 +446,7 @@ def main() -> int:
         return run_xtask(sys.argv[1:])
 
     parser = argparse.ArgumentParser(
-        description="Dirstat build system",
+        description="Squarebob build system",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

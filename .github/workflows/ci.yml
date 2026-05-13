@@ -30,13 +30,14 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Retag / same ref: do not cancel an in-flight release. Branch/PR: still cancel redundant runs.
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  # Tags: never cancel (retag / long package). main: do not cancel (avoid aborted runs on every push).
+  # PRs: cancel superseded runs when the branch is updated.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  APP_BUNDLE_ID: io.github.dirstatrs.dirstatrs
-  APP_NAME: Dirstat
-  BINARY_NAME: dirstat-rs
+  APP_BUNDLE_ID: io.github.ssoj13.squarebobrs
+  APP_NAME: Squarebob
+  BINARY_NAME: squarebob-rs
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
@@ -231,7 +232,7 @@ jobs:
           version = "${VERSION}"
           identifier = "${APP_BUNDLE_ID}"
           description = "Cross-platform disk usage visualizer with 2D and 3D treemap rendering."
-          homepage = "https://github.com/ssoj13/dirstat-rs"
+          homepage = "https://github.com/ssoj13/squarebob-rs"
           out-dir = "dist"
           binaries-dir = "target/release"
           resources = [{ src = "data", target = "data" }]
@@ -435,7 +436,7 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          mapfile -t assets < <(find release-assets -maxdepth 1 -type f | sort)
+          mapfile -t assets < <(find release-assets -type f | sort)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No regular files found in release-assets" >&2
             exit 1
@@ -446,3 +447,4 @@ jobs:
           else
             gh release create "$TAG_NAME" "${assets[@]}" --verify-tag --generate-notes --title "$TAG_NAME"
           fi
+          gh release edit "$TAG_NAME" --draft=false

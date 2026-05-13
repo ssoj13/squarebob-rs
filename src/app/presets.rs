@@ -96,7 +96,7 @@ pub struct RenderPreset {
 
 /// Get presets directory path
 pub fn presets_dir() -> Option<PathBuf> {
-    ProjectDirs::from("", "", "dirstat-rs").map(|dirs| dirs.data_local_dir().join("presets"))
+    ProjectDirs::from("", "", "squarebob-rs").map(|dirs| dirs.data_local_dir().join("presets"))
 }
 
 /// Ensure presets directory exists
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn adjacent_default_preset_path_uses_executable_directory() {
-        let exe = Path::new("bin").join("dirstat-rs");
+        let exe = Path::new("bin").join("squarebob-rs");
         assert_eq!(
             default_preset_path_for_exe(&exe),
             Some(Path::new("bin").join("default.json"))

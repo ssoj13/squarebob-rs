@@ -177,7 +177,7 @@ struct AliasEntry {
 @group(0) @binding(18) var<storage, read> emissive_alias: array<AliasEntry>;
 
 // LBVH morton-sort can produce branches deeper than log2(N) when the AABB
-// distribution has many near-duplicates (which dirstat hits with many
+// distribution has many near-duplicates (which squarebob hits with many
 // small files in a single dir → near-identical cube centres). 32 was too
 // tight for 30K-instance scenes — a few rays per frame ran out of stack,
 // silently returned no hit, and showed the env map through entire blocks

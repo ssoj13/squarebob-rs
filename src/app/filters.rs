@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use crate::app::helpers::fmt_size;
 use crate::exclusions::Exclusions;
-use dirstat_core::{DirEntry, LodExpandInfo, LodKind};
+use squarebob_core::{DirEntry, LodExpandInfo, LodKind};
 
 /// Collect all paths that match the search/mask filter (and their ancestors)
 pub(super) fn collect_matching_paths(
@@ -123,7 +123,7 @@ pub(super) fn count_files_outside_range(node: &DirEntry, min: u64, max: u64) -> 
 /// files outside `[min, max]`, merge them into at most two synthetic leaves per directory
 /// (“below min” and “above max”). Keeps total sizes and file counts consistent for treemap layout.
 ///
-/// Paths in `expanded` (typically `…/__dirstat_lod_small` / `…/__dirstat_lod_large`) are built as
+/// Paths in `expanded` (typically `…/__squarebob_lod_small` / `…/__squarebob_lod_large`) are built as
 /// real directories listing individual files so the user can zoom into the bucket.
 pub(super) fn merge_tree_by_size_range(
     src: &DirEntry,
@@ -172,7 +172,7 @@ pub(super) fn merge_tree_by_size_range(
         }
     }
 
-    let lod_small_path = src.path.join("__dirstat_lod_small");
+    let lod_small_path = src.path.join("__squarebob_lod_small");
     if small_n > 0 {
         let name = format!(
             "{} file{} below {}",
@@ -218,7 +218,7 @@ pub(super) fn merge_tree_by_size_range(
             children.push(syn);
         }
     }
-    let lod_large_path = src.path.join("__dirstat_lod_large");
+    let lod_large_path = src.path.join("__squarebob_lod_large");
     if large_n > 0 {
         let name = format!(
             "{} file{} above {}",
@@ -560,7 +560,7 @@ mod tests {
         let tiny = merged
             .children
             .iter()
-            .find(|c| c.path.ends_with("__dirstat_lod_small"))
+            .find(|c| c.path.ends_with("__squarebob_lod_small"))
             .expect("lod small");
         assert!(tiny.lod_expand.is_some());
     }
@@ -575,12 +575,12 @@ mod tests {
         root.file_count = 2;
 
         let mut exp = HashSet::new();
-        exp.insert(root_path.join("__dirstat_lod_small"));
+        exp.insert(root_path.join("__squarebob_lod_small"));
         let merged = merge_tree_by_size_range(&root, 100, 1000, &exp);
         let lod = merged
             .children
             .iter()
-            .find(|c| c.path.ends_with("__dirstat_lod_small"))
+            .find(|c| c.path.ends_with("__squarebob_lod_small"))
             .expect("lod");
         assert!(lod.is_dir);
         assert_eq!(lod.children.len(), 1);

@@ -3,7 +3,7 @@
 //! This module contains standalone utility functions extracted from the main app module
 //! for better organization and maintainability.
 
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

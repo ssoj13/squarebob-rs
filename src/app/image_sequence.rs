@@ -13,7 +13,7 @@ use crate::renderer::RenderMode;
 
 use super::App;
 
-pub(super) struct DirstatEncodeSource {
+pub(super) struct SquarebobEncodeSource {
     width: usize,
     height: usize,
     frame_start: i32,
@@ -24,7 +24,7 @@ pub(super) struct DirstatEncodeSource {
     cancelled: AtomicBool,
 }
 
-impl DirstatEncodeSource {
+impl SquarebobEncodeSource {
     fn new(width: u32, height: u32, frame_start: i32, frame_end: i32, fps: f32) -> Self {
         let (request_tx, request_rx) = crossbeam_channel::unbounded();
         Self {
@@ -60,13 +60,13 @@ impl DirstatEncodeSource {
     }
 }
 
-impl fmt::Display for DirstatEncodeSource {
+impl fmt::Display for SquarebobEncodeSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Dirstat viewport")
+        write!(f, "Squarebob viewport")
     }
 }
 
-impl FrameSource for DirstatEncodeSource {
+impl FrameSource for SquarebobEncodeSource {
     fn play_range(&self, _clamp_to_available: bool) -> (i32, i32) {
         (self.frame_start, self.frame_end)
     }
@@ -176,7 +176,7 @@ impl App {
             }
         }
 
-        let source = Arc::new(DirstatEncodeSource::new(w, h, frame_start, frame_end, fps));
+        let source = Arc::new(SquarebobEncodeSource::new(w, h, frame_start, frame_end, fps));
         let comp: Comp = source.clone();
         self.encode_sequence_source = Some(source);
         self.encode_source = Some(comp);
@@ -232,7 +232,7 @@ impl App {
         request.complete(Some(Frame::rgba8(width as usize, height as usize, pixels)));
     }
 
-    fn start_encode_frame(&mut self, source: &DirstatEncodeSource, frame_idx: i32) -> bool {
+    fn start_encode_frame(&mut self, source: &SquarebobEncodeSource, frame_idx: i32) -> bool {
         if self.display_root().is_none() || self.last_render_size == (0, 0) {
             return false;
         }

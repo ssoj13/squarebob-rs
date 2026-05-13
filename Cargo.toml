@@ -1,12 +1,12 @@
 [package]
-name = "dirstat-rs"
+name = "squarebob-rs"
 version = "0.0.1"
 edition = "2021"
 rust-version = "1.95"
 
 [workspace]
 members = [
-    "crates/dirstat-core",
+    "crates/squarebob-core",
     "crates/pt-core",
     "crates/bvh-gpu",
     "crates/pt-megakernel",
@@ -53,7 +53,7 @@ glam = "0.32"
 pollster = "0.4"
 image = "0.25"
 half = "2.7.1"
-dirstat-core = { path = "crates/dirstat-core" }
+squarebob-core = { path = "crates/squarebob-core" }
 render-core = { path = "crates/render-core" }
 render-shared = { path = "crates/render-shared" }
 render-3d = { path = "crates/render-3d" }
@@ -83,10 +83,10 @@ windows = { version = "0.62", features = [
 opt-level = 3
 
 [package.metadata.packager]
-product-name = "Dirstat"
-identifier = "io.github.dirstatrs.dirstatrs"
+product-name = "Squarebob"
+identifier = "io.github.ssoj13.squarebobrs"
 description = "Cross-platform disk usage visualizer with 2D and 3D treemap rendering."
-homepage = "https://github.com/ssoj13/dirstat-rs"
+homepage = "https://github.com/ssoj13/squarebob-rs"
 out-dir = "dist"
 binaries-dir = "target/release"
 resources = [{ src = "data", target = "data" }]

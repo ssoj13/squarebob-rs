@@ -7,7 +7,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::{self as treemap, TreeMapOptions};
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use render_core::gpu::{self, GpuContext};
 use render_core::Viewport;
 

@@ -1,4 +1,4 @@
-// PBR instanced cube shader for dirstat-rs 3D treemap
+// PBR instanced cube shader for squarebob-rs 3D treemap
 // Adapted from alembic-rs Standard Surface for instanced rendering
 // Features: per-instance material lookup via material_id, 3-point lighting,
 // GGX specular, Oren-Nayar diffuse, IBL, flat shading, xray mode, emission

@@ -17,7 +17,7 @@ use crate::events::EventBus;
 use crate::exclusions::Exclusions;
 use crate::renderer::{OrbitCamera, Render3DOptions, RenderBackend, RenderMode};
 use crate::scanner::ScanMsg;
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use render_3d::Renderer3D;
 use render_core::gpu::GpuContext;
 use render_core::Viewport;
@@ -191,7 +191,7 @@ pub struct App {
     pub(super) filter_invert: bool,
     /// When true (and not inverted), files smaller than min or larger than max are merged into synthetic leaves.
     pub(super) filter_merge_outside: bool,
-    /// LoD buckets the user has expanded (double-click); paths are `…/__dirstat_lod_small` / `…/__dirstat_lod_large`.
+    /// LoD buckets the user has expanded (double-click); paths are `…/__squarebob_lod_small` / `…/__squarebob_lod_large`.
     pub(super) lod_expanded_paths: HashSet<PathBuf>,
     pub(super) scan_min_size: u64,
     pub(super) scan_max_size: u64,
@@ -295,7 +295,7 @@ pub struct App {
     pub(super) show_encode_panel: bool,
     pub(super) encode_dialog: media_encoder::EncodeDialog,
     pub(super) encode_source: Option<media_encoder::Comp>,
-    pub(super) encode_sequence_source: Option<Arc<crate::app::image_sequence::DirstatEncodeSource>>,
+    pub(super) encode_sequence_source: Option<Arc<crate::app::image_sequence::SquarebobEncodeSource>>,
     pub(super) encode_source_size: (u32, u32),
     pub(super) encode_active_frame: Option<crate::app::image_sequence::EncodeFrameRequest>,
     pub(super) encode_render_state_active: bool,

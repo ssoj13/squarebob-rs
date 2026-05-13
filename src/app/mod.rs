@@ -1,4 +1,4 @@
-//! dirstat-rs application module.
+//! squarebob-rs application module.
 //!
 //! Modular structure:
 //! - state.rs: App struct, PersistState, defaults
@@ -40,7 +40,7 @@ use eframe::egui;
 
 use crate::exclusions;
 use crate::renderer::{self, RenderBackend, RenderMode};
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use render_3d::Renderer3D;
 use render_core::gpu::GpuContext;
 use treemap::GpuRenderer2D;
@@ -70,7 +70,7 @@ impl App {
 
         // Restore persisted state
         if let Some(storage) = cc.storage {
-            if let Some(json) = storage.get_string("dirstat_state") {
+            if let Some(json) = storage.get_string("squarebob_state") {
                 if let Ok(s) = serde_json::from_str::<PersistState>(&json) {
                     app.scan_path = s.scan_path;
                     app.show_settings = s.show_settings;
@@ -740,7 +740,7 @@ impl eframe::App for App {
             filter_merge_outside: self.filter_merge_outside,
         };
         if let Ok(json) = serde_json::to_string(&state) {
-            storage.set_string("dirstat_state", json);
+            storage.set_string("squarebob_state", json);
         }
     }
 }

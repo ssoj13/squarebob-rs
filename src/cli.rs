@@ -106,16 +106,16 @@ pub struct CliOptions {
     pub inertia_friction: Option<f32>,
     pub inertia_cutoff: Option<f32>,
 
-    /// Subcommand: `test` with remaining args (`dirstat-rs test ping`, etc.).
+    /// Subcommand: `test` with remaining args (`squarebob-rs test ping`, etc.).
     pub test_args: Option<Vec<String>>,
 }
 
 pub fn print_help() {
     eprintln!(
-        r#"dirstat-rs - Disk usage visualization tool
+        r#"squarebob-rs - Disk usage visualization tool
 
 USAGE:
-    dirstat-rs [OPTIONS] [PATH]
+    squarebob-rs [OPTIONS] [PATH]
 
 ARGS:
     [PATH]    Path to scan on startup
@@ -126,7 +126,7 @@ OPTIONS:
     -v                      INFO level logging
     -vv                     DEBUG level logging
     -vvv                    TRACE level logging
-    -l, --log [FILE]        Log to file (default: dirstat-rs.log)
+    -l, --log [FILE]        Log to file (default: squarebob-rs.log)
     --log-pt                Force PT module to TRACE
     --log-wf                Force wavefront module to TRACE
     --log-pg                Force pathguide module to TRACE
@@ -245,13 +245,13 @@ RENDER SETTINGS (3D, overrides saved config):
     --inertia-cutoff <F>           Camera inertia cutoff
 
 TEST HARNESS (no GUI):
-    dirstat-rs test [NAME] [ARGS...]         # See: dirstat-rs test help
+    squarebob-rs test [NAME] [ARGS...]         # See: squarebob-rs test help
 
 EXAMPLES:
-    dirstat-rs /home                         # Scan /home with default settings
-    dirstat-rs --mode 3d /home               # Scan /home in 3D mode
-    dirstat-rs -vv --mode 3d                 # 3D mode with DEBUG logging
-    dirstat-rs --mode 3d --path-trace --screenshot 3 .  # Test PT, screenshot after 3s
+    squarebob-rs /home                         # Scan /home with default settings
+    squarebob-rs --mode 3d /home               # Scan /home in 3D mode
+    squarebob-rs -vv --mode 3d                 # 3D mode with DEBUG logging
+    squarebob-rs --mode 3d --path-trace --screenshot 3 .  # Test PT, screenshot after 3s
 "#
     );
 }
@@ -366,7 +366,7 @@ pub fn parse_args() -> CliOptions {
                 if i < args.len() && !args[i].starts_with('-') {
                     opts.log_file = Some(args[i].clone());
                 } else {
-                    opts.log_file = Some("dirstat-rs.log".to_string());
+                    opts.log_file = Some("squarebob-rs.log".to_string());
                     if i < args.len() {
                         i -= 1;
                     }

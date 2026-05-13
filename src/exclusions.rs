@@ -55,7 +55,7 @@ impl Exclusions {
 }
 
 fn exclusions_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "dirstat-rs")
+    directories::ProjectDirs::from("", "", "squarebob-rs")
         .map(|dirs| dirs.data_dir().join("exclusions"))
 }
 

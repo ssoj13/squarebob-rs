@@ -1,5 +1,5 @@
 use crossbeam_channel::Sender;
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use log::{debug, info, trace};
 /// Multithreaded filesystem scanner using jwalk.
 /// Builds a tree of DirEntry nodes with recursive size aggregation.

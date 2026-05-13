@@ -33,7 +33,7 @@ impl App {
 
         let path = self.screenshot_path.clone().unwrap_or_else(|| {
             let temp = std::env::temp_dir();
-            temp.join("dirstat_screenshot.png")
+            temp.join("squarebob_screenshot.png")
                 .to_string_lossy()
                 .to_string()
         });

@@ -224,7 +224,7 @@ when the ReSTIR-DI checkbox is on, no wavefront round-trip required.
 Fixes the "blocks of cubes flicker on/off, env map peeks through"
 artifact the user reported during camera rotation. The GPU LBVH can
 build branches deeper than `log2(N)` when many sibling instances
-share near-identical centroids (dirstat hits this with many small
+share near-identical centroids (squarebob hits this with many small
 files in one directory). At 30k instances a handful of rays per
 frame ran out of the 32-deep stack inside `trace_ray`, silently
 returned no hit, and showed the sky behind real geometry. RNG jitter
@@ -372,7 +372,7 @@ The prior WIP commit had renamed unused-on-Linux let-bindings to
 Windows-only `#[cfg(windows)]` arms still referenced them as
 `path` / `max_diag` / `max_lp` / `n` — and the parser sees `path` as
 the built-in `#[path]` attribute, not a value. Two related issues in
-`src/scanner_ntfs.rs` (missing `use dirstat_core::DirEntry`) and
+`src/scanner_ntfs.rs` (missing `use squarebob_core::DirEntry`) and
 `src/app/scan_orchestration.rs` (`_path` parameter referenced as
 `path` in body) had the same pattern. Fixed by moving the let-bindings
 inside the `#[cfg(windows)]` arms (or restoring the parameter names).

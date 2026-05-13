@@ -20,7 +20,7 @@ use log::{debug, info, trace, warn};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use pt_mats::{MaterialLibrary, MaterializeMode};
 use render_core::gpu::{self, GpuContext};
 use render_shared::{

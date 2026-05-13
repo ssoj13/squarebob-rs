@@ -1,6 +1,6 @@
-# dirstat-core
+# squarebob-core
 
-dirstat-core holds shared domain types and helpers used by multiple crates in the app.
+squarebob-core holds shared domain types and helpers used by multiple crates in the app.
 
 ## Why this exists
 The app, renderer, and PT layers all need to operate on the same file-tree model. Keeping those

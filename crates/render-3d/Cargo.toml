@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1"
 half = "2.7.1"
 bytemuck = { version = "1", features = ["derive"] }
-dirstat-core = { path = "../dirstat-core" }
+squarebob-core = { path = "../squarebob-core" }
 glam = "0.32"
 image = "0.25"
 log = "0.4"

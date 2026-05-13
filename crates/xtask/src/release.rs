@@ -121,7 +121,7 @@ pub fn run_release(level: &str, dry_run: bool, metadata: Option<&str>) -> Result
     println!("========================================");
     println!();
     println!("Next steps:");
-    println!("1. Build workflow will run at: https://github.com/ssoj13/dirstat-rs/actions");
+    println!("1. Build workflow will run at: https://github.com/ssoj13/squarebob-rs/actions");
     println!("2. Download and test the build artifacts (retained for 7 days)");
     println!("3. Verify release artifacts and publish notes as needed");
     println!();

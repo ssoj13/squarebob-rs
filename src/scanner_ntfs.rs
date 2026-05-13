@@ -9,7 +9,7 @@ use crate::scanner::ScanMsg;
 #[cfg(windows)]
 use crossbeam_channel::Sender;
 #[cfg(windows)]
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 #[cfg(windows)]
 use log::{info, trace, warn};
 #[cfg(windows)]
@@ -451,7 +451,7 @@ fn scan_mft_usn(
 }
 
 /// Debugging: histogram of `USN_RECORD::MajorVersion` and IOCTL buffer sizes (`FSCTL_ENUM_USN_DATA`).
-/// Does not build a tree — `dirstat-rs test enum-diagnose [PATH] [MAX_IOCTL_LOOPS]` (often needs elevation).
+/// Does not build a tree — `squarebob-rs test enum-diagnose [PATH] [MAX_IOCTL_LOOPS]` (often needs elevation).
 #[cfg(windows)]
 pub fn diagnose_fsctl_enum_usn(path: &Path, max_ioctl_loops: usize) -> anyhow::Result<String> {
     use std::collections::HashMap;

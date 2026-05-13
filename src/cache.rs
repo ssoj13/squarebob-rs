@@ -8,7 +8,7 @@ use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::path_key;
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 
 /// Cached scan result with metadata
 #[derive(Serialize, Deserialize)]
@@ -27,7 +27,7 @@ const CACHE_VERSION: u32 = 2;
 
 /// Get the cache directory path
 fn cache_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "dirstat-rs").map(|dirs| dirs.cache_dir().to_path_buf())
+    directories::ProjectDirs::from("", "", "squarebob-rs").map(|dirs| dirs.cache_dir().to_path_buf())
 }
 
 fn cache_filename(scan_path: &str) -> String {

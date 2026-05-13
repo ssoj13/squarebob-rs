@@ -1,4 +1,4 @@
-//! Manual / diagnostic CLI tests: `dirstat-rs test <name> [...]`
+//! Manual / diagnostic CLI tests: `squarebob-rs test <name> [...]`
 //!
 //! Not `cargo test`; avoids GUI and persists for on-machine checks.
 
@@ -116,7 +116,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             }
         }
         _ => anyhow::bail!(
-            "unknown test {:?}; run `dirstat-rs test help` for commands",
+            "unknown test {:?}; run `squarebob-rs test help` for commands",
             sub
         ),
     }
@@ -138,10 +138,10 @@ fn ntfs_sample_path(extra: Option<&String>) -> PathBuf {
 
 fn print_help() {
     eprintln!(
-        r#"dirstat-rs test — diagnostic CLI harness (not `cargo test`)
+        r#"squarebob-rs test — diagnostic CLI harness (not `cargo test`)
 
 USAGE:
-    dirstat-rs test [NAME] [ARGS...]
+    squarebob-rs test [NAME] [ARGS...]
 
 TESTS:
     help               This list

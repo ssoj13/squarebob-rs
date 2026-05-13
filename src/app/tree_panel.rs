@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::events::{NavigateIntoEvent, SelectPathEvent};
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 
 use super::helpers::{collect_all_dir_paths, format_tree_label};
 use super::icons;

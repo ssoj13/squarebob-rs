@@ -1,6 +1,6 @@
 /// Squarified treemap layout + cushion shading renderer.
 /// Ported from WinDirStat's TreeMap.cpp with parallel rendering.
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use log::trace;
 use rayon::prelude::*;
 

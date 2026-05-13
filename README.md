@@ -1,11 +1,11 @@
-# Dirstat
+# Squarebob
 
-Dirstat is a Rust disk usage visualizer with fast directory scanning, a 2D treemap, a real-time 3D treemap renderer, GPU path tracing experiments, and an integrated media export dialog.
+Squarebob is a Rust disk usage visualizer with fast directory scanning, a 2D treemap, a real-time 3D treemap renderer, GPU path tracing experiments, and an integrated media export dialog.
 It is inspired by tools like SequoiaView, WinDirStat and KDirStat, but the renderer and UI are built from scratch around `egui`, `wgpu`, and a modular Rust workspace.
 
 ![Screenshot](data/screenshot1.jpg)
 ![Screenshot](data/screenshot2.jpg)
-<video src=https://github.com/user-attachments/assets/e1c19d3e-9522-4a28-a83c-f2560110a617>Dirstat-encoded media</video>
+<video src=https://github.com/user-attachments/assets/e1c19d3e-9522-4a28-a83c-f2560110a617>Squarebob-encoded media</video>
 
 
 ## Highlights
@@ -160,31 +160,31 @@ The renderer is usable, but some PT areas are still research-grade:
 Run the app without arguments to open the GUI:
 
 ```powershell
-cargo run -p dirstat-rs
+cargo run -p squarebob-rs
 ```
 
 Scan a path on startup:
 
 ```powershell
-cargo run -p dirstat-rs -- C:\Users
+cargo run -p squarebob-rs -- C:\Users
 ```
 
 Start directly in 3D:
 
 ```powershell
-cargo run -p dirstat-rs -- --mode 3d C:\Users
+cargo run -p squarebob-rs -- --mode 3d C:\Users
 ```
 
 Enable path tracing from the command line:
 
 ```powershell
-cargo run -p dirstat-rs -- --mode 3d --path-trace --samples 64 C:\Users
+cargo run -p squarebob-rs -- --mode 3d --path-trace --samples 64 C:\Users
 ```
 
 Print all CLI options:
 
 ```powershell
-cargo run -p dirstat-rs -- --help
+cargo run -p squarebob-rs -- --help
 ```
 
 Useful CLI groups include:
@@ -208,7 +208,7 @@ The default 3D/render preset is compiled into the binary from:
 data/factory_render3d_options.json
 ```
 
-At runtime, Dirstat first looks for this file next to the executable:
+At runtime, Squarebob first looks for this file next to the executable:
 
 ```text
 default.json
@@ -224,7 +224,7 @@ defaults
 
 ## Encoding
 
-Dirstat includes a reusable `media-encoder` crate and wires it into the main app through the `E` button in the top-right toolbar.
+Squarebob includes a reusable `media-encoder` crate and wires it into the main app through the `E` button in the top-right toolbar.
 
 Supported export modes:
 
@@ -259,7 +259,7 @@ Image sequence formats:
 
 EXR support is provided through `vfx-rs` (`vfx-core`, `vfx-exr`, `vfx-io`) and supports common OpenEXR compression modes including ZIP, PIZ, PXR24, B44/B44A, DWA, and HTJ2K variants. FFmpeg integration is provided by the git dependency `playa-ffmpeg`.
 
-The encoder captures the current Dirstat viewport frame-by-frame. For 3D path tracing, it waits for the configured sample target before handing a frame to the encoder.
+The encoder captures the current Squarebob viewport frame-by-frame. For 3D path tracing, it waits for the configured sample target before handing a frame to the encoder.
 
 ## Local Development
 
@@ -386,14 +386,14 @@ Required GitHub secrets for signed macOS release builds:
 
 ```text
 .
-|-- src/                         Main Dirstat app and egui integration
+|-- src/                         Main Squarebob app and egui integration
 |   |-- app/                     App state, dock UI, toolbar, scanning, presets, encode adapter
 |   |-- cli.rs                   Command-line parser
 |   |-- scanner.rs               Standard parallel scanner
 |   |-- scanner_ntfs.rs          Windows NTFS MFT scanner
 |   `-- main.rs                  Binary entry point
 |-- crates/
-|   |-- dirstat-core             Shared tree/data structures
+|   |-- squarebob-core             Shared tree/data structures
 |   |-- treemap                  2D treemap layout and GPU 2D renderer
 |   |-- render-core              Shared GPU context/readback utilities
 |   |-- render-shared            Shared 3D options, camera, uniforms, visualization parameters

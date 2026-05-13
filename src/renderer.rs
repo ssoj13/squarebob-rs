@@ -5,7 +5,7 @@
 pub use render_shared::*;
 
 pub mod cpu {
-    use dirstat_core::DirEntry;
+    use squarebob_core::DirEntry;
     use render_core::Viewport;
     use treemap::TreeMapOptions;
 

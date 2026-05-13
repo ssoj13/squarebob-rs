@@ -176,15 +176,15 @@ impl App {
         // Window title
         let title = if let Some(tree) = &self.tree {
             format!(
-                "dirstat-rs  -  {} [{}]",
+                "squarebob-rs  -  {} [{}]",
                 self.scan_path,
                 fmt_size(tree.size)
             )
         } else if self.progress.scanning {
             let engine = self.progress.scan_engine_label.as_deref().unwrap_or("…");
-            format!("dirstat-rs  -  [{}] {}…", engine, self.scan_path)
+            format!("squarebob-rs  -  [{}] {}…", engine, self.scan_path)
         } else {
-            "dirstat-rs".to_string()
+            "squarebob-rs".to_string()
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 

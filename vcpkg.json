@@ -1,9 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-  "name": "dirstat-rs",
+  "name": "squarebob-rs",
   "version-string": "0.1.0",
-  "description": "Dirstat media encoder FFmpeg dependency pin",
-  "homepage": "https://github.com/ssoj13/dirstat-rs",
+  "description": "Squarebob media encoder FFmpeg dependency pin",
+  "homepage": "https://github.com/ssoj13/squarebob-rs",
   "license": "MIT",
   "dependencies": [
     {

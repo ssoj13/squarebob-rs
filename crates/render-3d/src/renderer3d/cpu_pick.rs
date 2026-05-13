@@ -6,7 +6,7 @@
 
 use glam::{Vec3, Vec4};
 
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use render_shared::{hash_transform_offset, OrbitCamera, Render3DOptions};
 use treemap::TreeMapOptions;
 

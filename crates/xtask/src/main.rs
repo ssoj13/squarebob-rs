@@ -10,9 +10,9 @@ use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "xtask")]
-#[command(about = "Dirstat build automation tasks")]
+#[command(about = "Squarebob build automation tasks")]
 #[command(long_about = "\
-Dirstat build automation tasks
+Squarebob build automation tasks
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 COMMON WORKFLOWS
@@ -86,7 +86,7 @@ enum Commands {
     ///
     /// Examples:
     ///   cargo xtask clippy --workspace --all-targets -- -D warnings
-    ///   cargo xtask clippy -p media-encoder -p dirstat-rs --all-targets -- -D warnings
+    ///   cargo xtask clippy -p media-encoder -p squarebob-rs --all-targets -- -D warnings
     Clippy {
         /// Packages to lint. If omitted, lints the whole workspace.
         #[arg(short = 'p', long = "package")]
@@ -304,7 +304,7 @@ fn run() -> Result<()> {
 /// Command: cargo xtask build [--release] [--features ...]
 fn cmd_build(release: bool, features: Option<&str>) -> Result<()> {
     println!("========================================");
-    println!("Building dirstat-rs");
+    println!("Building squarebob-rs");
     println!("Profile: {}", if release { "release" } else { "debug" });
     println!("Backend: vfx-exr (pure Rust, all compressions)");
     if let Some(f) = features {
@@ -316,7 +316,7 @@ fn cmd_build(release: bool, features: Option<&str>) -> Result<()> {
     println!("Step 1/1: Building...");
 
     let mut cmd = Command::new("cargo");
-    cmd.args(["build", "-p", "dirstat-rs"]);
+    cmd.args(["build", "-p", "squarebob-rs"]);
 
     if release {
         cmd.arg("--release");
@@ -346,7 +346,7 @@ fn cmd_check(
     all_features: bool,
 ) -> Result<()> {
     println!("========================================");
-    println!("Checking dirstat-rs");
+    println!("Checking squarebob-rs");
     println!("Package: {}", package.unwrap_or("workspace"));
     if let Some(features) = features {
         println!("Features: {features}");
@@ -863,14 +863,14 @@ fn cmd_deploy(install_dir: Option<&str>) -> Result<()> {
     } else {
         // Auto-detect based on OS
         if cfg!(target_os = "windows") {
-            // Windows: %LOCALAPPDATA%\Programs\dirstat-rs
+            // Windows: %LOCALAPPDATA%\Programs\squarebob-rs
             let local_app_data = env::var("LOCALAPPDATA").context("LOCALAPPDATA not set")?;
             PathBuf::from(local_app_data)
                 .join("Programs")
-                .join("dirstat-rs")
+                .join("squarebob-rs")
         } else if cfg!(target_os = "macos") {
-            // macOS: /Applications/Dirstat.app
-            PathBuf::from("/Applications/Dirstat.app/Contents/MacOS")
+            // macOS: /Applications/Squarebob.app
+            PathBuf::from("/Applications/Squarebob.app/Contents/MacOS")
         } else {
             // Linux: ~/.local/bin
             let home = env::var("HOME").context("HOME not set")?;
@@ -896,9 +896,9 @@ fn cmd_deploy(install_dir: Option<&str>) -> Result<()> {
     println!("Copying files to install directory...");
 
     let exe_name = if cfg!(target_os = "windows") {
-        "dirstat-rs.exe"
+        "squarebob-rs.exe"
     } else {
-        "dirstat-rs"
+        "squarebob-rs"
     };
 
     let source_exe = PathBuf::from("target/release").join(exe_name);
@@ -933,7 +933,7 @@ fn cmd_deploy(install_dir: Option<&str>) -> Result<()> {
     println!();
 
     if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
-        println!("To run dirstat-rs from anywhere, add to PATH:");
+        println!("To run squarebob-rs from anywhere, add to PATH:");
         println!("  export PATH=\"{}:$PATH\"", target_dir.display());
         println!();
     }

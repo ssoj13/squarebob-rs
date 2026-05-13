@@ -7,7 +7,7 @@
 use glam::{Mat4, Vec3};
 use log::debug;
 
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use pt_mats::{
     hierarchical_path_value, sample_palette, MaterialClass, MaterialDistribution, MaterializeMode,
     Palette,

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use glam::Vec3;
 use log::trace;
 
-use dirstat_core::DirEntry;
+use squarebob_core::DirEntry;
 use render_shared::{HoverMode, OrbitCamera, Render3DOptions};
 use treemap::TreeMapOptions;
 
