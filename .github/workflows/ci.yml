@@ -244,6 +244,39 @@ jobs:
       - name: Package application
         run: cargo packager --release --formats ${{ matrix.formats }}
 
+      - name: Create portable (.zip) archive (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          mkdir -p dist
+          STAGE=$(mktemp -d)
+          cp "target/release/${BINARY_NAME}" "$STAGE/"
+          chmod +x "$STAGE/${BINARY_NAME}"
+          cp -R data "$STAGE/"
+          (cd "$STAGE" && zip -r "$GITHUB_WORKSPACE/dist/${BINARY_NAME}_${VERSION}_linux_amd64.zip" .)
+          rm -rf "$STAGE"
+
+      - name: Create portable (.zip) archive (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]*)"').Matches.Groups[1].Value
+          $staging = Join-Path $env:RUNNER_TEMP "portable-zip"
+          if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          $exe = Join-Path (Get-Location) "target/release/$env:BINARY_NAME.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          Copy-Item $exe $staging
+          Copy-Item -Recurse (Join-Path (Get-Location) "data") (Join-Path $staging "data")
+          New-Item -ItemType Directory -Path (Join-Path (Get-Location) "dist") -Force | Out-Null
+          $out = Join-Path (Get-Location) "dist/$env:BINARY_NAME`_${version}_windows_x64.zip"
+          $exeDest = Join-Path $staging "$env:BINARY_NAME.exe"
+          $dataDest = Join-Path $staging "data"
+          Compress-Archive -LiteralPath @($exeDest, $dataDest) -DestinationPath $out -Force
+
       - name: Sign and package macOS DMG
         if: matrix.platform == 'macos'
         shell: bash
