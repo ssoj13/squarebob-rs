@@ -65,6 +65,7 @@ pt-megakernel = { path = "crates/pt-megakernel" }
 pt-wavefront = { path = "crates/pt-wavefront" }
 pt-mats = { path = "crates/pt-mats" }
 sysinfo = "0.38"
+egui-phosphor = "0.12.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

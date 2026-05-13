@@ -3,6 +3,7 @@
 use eframe::egui;
 
 use super::helpers::{disk_free_info, fmt_size};
+use super::icons;
 use super::App;
 use crate::cache;
 
@@ -40,7 +41,7 @@ impl App {
                 } else if let Some(tree) = &self.tree {
                     let disk_info = disk_free_info(&self.scan_path);
                     let time_info = if let Some(age) = self.cache_age {
-                        ui.colored_label(egui::Color32::from_rgb(180, 180, 80), "\u{25cf}");
+                        ui.colored_label(egui::Color32::from_rgb(180, 180, 80), icons::DOT);
                         format!(" cached: {}", cache::format_age(age))
                     } else {
                         format!(" in {:.1}s", self.progress.elapsed_secs)

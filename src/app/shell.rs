@@ -4,7 +4,11 @@
 //! and system operations like revealing files, opening properties dialogs, and
 //! moving items to trash.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use eframe::egui;
+
+use super::App;
 
 /// Wrapper around `open::that` that logs failures instead of silently
 /// dropping them. Centralises the `let _ = open::that(...)` pattern that
@@ -198,6 +202,42 @@ pub(super) fn shell_properties(path: &Path) {
 pub(super) fn shell_trash(path: &Path) {
     if let Err(e) = trash::delete(path) {
         log::error!("Failed to move to trash: {}", e);
+    }
+}
+
+impl App {
+    pub(super) fn request_trash_confirmation(&mut self, path: PathBuf) {
+        self.pending_trash_path = Some(path);
+    }
+
+    pub(super) fn ui_trash_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.pending_trash_path.clone() else {
+            return;
+        };
+
+        let mut close = false;
+        egui::Window::new(trash_label())
+            .id(egui::Id::new("trash_confirm_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Move this item to trash?");
+                ui.monospace(path.to_string_lossy());
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                    if ui.button(trash_label()).clicked() {
+                        shell_trash(&path);
+                        close = true;
+                    }
+                });
+            });
+
+        if close {
+            self.pending_trash_path = None;
+        }
     }
 }
 

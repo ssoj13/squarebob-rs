@@ -1,4 +1,4 @@
-//! Encoding dialog UI
+﻿//! Encoding dialog UI
 //!
 //! Provides dialog for configuring and running video encoding.
 
@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::thread::JoinHandle;
 
 use eframe::egui;
+use egui_phosphor::regular as icons;
 use log::info;
 
 use crate::dialogs::encode::{
@@ -55,7 +56,7 @@ pub struct EncodeDialog {
     /// Progress bar widget
     progress_bar: ProgressBar,
 
-    /// Tonemapping mode for HDR→LDR conversion
+    /// Tonemapping mode for HDRâ†’LDR conversion
     pub tonemap_mode: crate::frame::TonemapMode,
 
     /// Export mode (Video or Sequence)
@@ -396,7 +397,7 @@ impl EncodeDialog {
                         if ui
                             .button("+")
                             .on_hover_text(
-                                "Increment number in filename (e.g., file001.mp4 → file002.mp4)",
+                                "Increment number in filename (e.g., file001.mp4 -> file002.mp4)",
                             )
                             .clicked()
                         {
@@ -491,7 +492,8 @@ impl EncodeDialog {
                                     });
 
                                     if !is_available {
-                                        ui.label("✗").on_hover_text(format!("{} encoder not available", codec));
+                                        ui.label(icons::X)
+                                            .on_hover_text(format!("{} encoder not available", codec));
                                     }
                                 }
                             });
@@ -812,7 +814,7 @@ impl EncodeDialog {
         self.stop_encoding_internal();
     }
 
-    /// Internal: Stop encoding — non-blocking, no UI freeze.
+    /// Internal: Stop encoding â€” non-blocking, no UI freeze.
     fn stop_encoding_internal(&mut self) {
         self.cancel_flag.store(true, Ordering::Relaxed);
 
@@ -1025,7 +1027,7 @@ impl EncodeDialog {
         });
 
         ui.add_space(4.0);
-        ui.label("💡 AV1: Best compression, slower encoding. HW: RTX 40xx/Arc/RDNA 3");
+        ui.label("ðŸ’¡ AV1: Best compression, slower encoding. HW: RTX 40xx/Arc/RDNA 3");
 
         // Empty line for vertical alignment with H264 tab
         ui.add_space(4.0);
@@ -1039,7 +1041,7 @@ impl EncodeDialog {
             SequenceFormat::Exr => {
                 // Encode mode (Display only vs Pass-through). Pass-through reads
                 // each source EXR via vfx-io and writes back preserving every
-                // layer + per-layer compression — the OIIO-aligned transcode path.
+                // layer + per-layer compression â€” the OIIO-aligned transcode path.
                 ui.horizontal(|ui| {
                     ui.label("Mode:");
                     egui::ComboBox::from_id_salt("exr_mode")
@@ -1097,7 +1099,7 @@ impl EncodeDialog {
                                 }
                             });
                     });
-                    // DWA loss level — only meaningful for DWAA/DWAB.
+                    // DWA loss level â€” only meaningful for DWAA/DWAB.
                     // OpenEXR semantics: lower = less loss, 45 = visually lossless,
                     // higher = smaller files / more loss. NOT the usual "quality 0-100".
                     if self
@@ -1248,7 +1250,7 @@ impl Drop for EncodeDialog {
 }
 
 /// Render H.264/H.265 settings. Codec-specific differences are passed as parameters:
-/// - `id_prefix`: "h264" or "h265" — used as egui ComboBox id_salt to avoid conflicts
+/// - `id_prefix`: "h264" or "h265" â€” used as egui ComboBox id_salt to avoid conflicts
 /// - `crf_hint`: the CRF quality hint string shown next to the slider
 /// - `profiles`: available profile strings for the profile ComboBox
 fn render_h26x_settings(

@@ -9,11 +9,10 @@ use crate::renderer::{RenderBackend, RenderMode};
 use treemap::GpuRenderer2D;
 
 use super::helpers::{find_node_by_path, fmt_size, path_to_dir};
+use super::icons;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::shell::{properties_label, shell_properties};
-use super::shell::{
-    reveal_label, shell_open, shell_open_terminal, shell_reveal, shell_trash, trash_label,
-};
+use super::shell::{reveal_label, shell_open, shell_open_terminal, shell_reveal, trash_label};
 use super::state::HoverInfo;
 use super::App;
 
@@ -846,11 +845,11 @@ impl App {
                     }
                     ui.separator();
                     if is_excluded {
-                        if ui.button("\u{2713} Include").clicked() {
+                        if ui.button(format!("{} Include", icons::CHECK)).clicked() {
                             action_include = true;
                             close = true;
                         }
-                    } else if ui.button("\u{2717} Exclude").clicked() {
+                    } else if ui.button(format!("{} Exclude", icons::X)).clicked() {
                         action_exclude = true;
                         close = true;
                     }
@@ -863,7 +862,7 @@ impl App {
                         }
                     }
                     if ui.button(trash_label()).clicked() {
-                        shell_trash(&menu_path);
+                        self.request_trash_confirmation(menu_path.clone());
                         close = true;
                     }
                 });

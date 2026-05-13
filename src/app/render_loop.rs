@@ -128,8 +128,8 @@ impl App {
             self.events.emit(NavigateUpEvent);
         }
         if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
-            if let Some(sel) = &self.selected_path.clone() {
-                shell::shell_trash(sel);
+            if let Some(sel) = self.selected_path.clone() {
+                self.request_trash_confirmation(sel);
             }
         }
         if kb_ok && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
@@ -291,6 +291,7 @@ impl App {
         });
 
         self.ui_encode_dialog_window(&ctx);
+        self.ui_trash_confirmation(&ctx);
 
         // Screenshot handling
         self.handle_screenshot(&ctx);

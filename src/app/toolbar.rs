@@ -3,6 +3,7 @@
 use eframe::egui;
 
 use super::helpers::rfd_pick_folder;
+use super::icons;
 use super::App;
 use crate::events::{NavigateUpEvent, ZoomResetEvent};
 use crate::renderer::{RenderBackend, RenderMode};
@@ -19,7 +20,7 @@ impl App {
                 // Path history dropdown
                 egui::ComboBox::from_id_salt("path_combo")
                     .width(40.0)
-                    .selected_text("\u{25be}")
+                    .selected_text(icons::CARET_DOWN)
                     .show_ui(ui, |ui| {
                         let mut sorted = self.path_history.clone();
                         sorted.sort_by_key(|a| a.to_lowercase());
@@ -54,10 +55,10 @@ impl App {
 
                 // === SCAN CONTROLS ===
                 if self.progress.scanning {
-                    if ui.button("\u{23f9} Stop").clicked() {
+                    if ui.button(format!("{} Stop", icons::STOP)).clicked() {
                         self.stop_scan();
                     }
-                } else if ui.button("\u{25b6} Scan").clicked() {
+                } else if ui.button(format!("{} Scan", icons::PLAY)).clicked() {
                     start_scan = true;
                 }
 
@@ -68,14 +69,14 @@ impl App {
                 // Zoom controls (only when zoomed)
                 if self.zoom_path.is_some() {
                     if ui
-                        .button("\u{2b06} Up")
+                        .button(format!("{} Up", icons::ARROW_UP))
                         .on_hover_text("Zoom out (Backspace)")
                         .clicked()
                     {
                         self.events.emit(NavigateUpEvent);
                     }
                     if ui
-                        .button("\u{23cf} Reset")
+                        .button(format!("{} Reset", icons::ARROW_COUNTER_CLOCKWISE))
                         .on_hover_text("Reset zoom (Escape)")
                         .clicked()
                     {
@@ -92,9 +93,9 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Dark/Light toggle
                     let theme_label = if self.dark_mode {
-                        "\u{263d}"
+                        icons::MOON
                     } else {
-                        "\u{2600}"
+                        icons::SUN
                     };
                     let theme_hover = if self.dark_mode {
                         "Switch to Light"

@@ -10,6 +10,7 @@ mod view;
 
 pub(super) use ramp_widget::{curve_rows, ramp_section, RampUiCtx};
 
+use super::icons;
 use super::state::SettingsTab;
 use super::App;
 use crate::events::SettingsChangedEvent;
@@ -126,7 +127,9 @@ impl App {
             ui.label("Preset:");
 
             // Dropdown button (left of text input)
-            let dropdown_resp = ui.small_button("\u{25BC}").on_hover_text("Load preset");
+            let dropdown_resp = ui
+                .small_button(icons::CARET_DOWN)
+                .on_hover_text("Load preset");
             if dropdown_resp.clicked() {
                 self.preset_dropdown_open = !self.preset_dropdown_open;
             }
@@ -148,7 +151,7 @@ impl App {
 
             // Save button
             if ui
-                .small_button("\u{1F4BE}")
+                .small_button(icons::FLOPPY_DISK)
                 .on_hover_text("Save preset")
                 .clicked()
                 && !self.preset_name.is_empty()
@@ -159,7 +162,7 @@ impl App {
             // Delete button (only if preset exists)
             if self.presets.contains_key(&self.preset_name)
                 && ui
-                    .small_button("\u{1F5D1}")
+                    .small_button(icons::TRASH)
                     .on_hover_text("Delete preset")
                     .clicked()
             {

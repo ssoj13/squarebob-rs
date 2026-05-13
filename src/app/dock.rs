@@ -61,7 +61,7 @@ impl<'a> TabViewer for DockTabs<'a> {
         match tab {
             DockTab::FileView => self.app.ui_tree_panel(ui),
             DockTab::QuadTreeView => self.app.ui_treemap(ui),
-            DockTab::Extensions => self.app.ui_settings(ui),
+            DockTab::Extensions => self.app.ui_ext_stats(ui),
             DockTab::Settings => self.app.ui_settings(ui),
         }
     }

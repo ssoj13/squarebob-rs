@@ -17,6 +17,7 @@ mod dock;
 mod ext_panel;
 pub mod filters;
 pub mod helpers;
+mod icons;
 mod image_sequence;
 pub mod presets;
 mod render_loop;
@@ -176,6 +177,10 @@ impl App {
             app.scan_path = p;
             app.start_scan();
         }
+
+        let mut fonts = egui::FontDefinitions::default();
+        media_encoder::add_icon_font(&mut fonts);
+        cc.egui_ctx.set_fonts(fonts);
 
         // Apply theme
         cc.egui_ctx.set_visuals(if app.dark_mode {

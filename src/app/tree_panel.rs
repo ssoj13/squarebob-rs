@@ -10,6 +10,7 @@ use crate::events::{NavigateIntoEvent, SelectPathEvent};
 use dirstat_core::DirEntry;
 
 use super::helpers::{collect_all_dir_paths, format_tree_label};
+use super::icons;
 use super::App;
 
 /// Row content height passed to [`egui::ScrollArea::show_rows`].
@@ -69,14 +70,14 @@ impl App {
             ui.heading("Files");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .small_button("\u{25bc}")
+                    .small_button(icons::CARET_DOWN)
                     .on_hover_text("Expand all")
                     .clicked()
                 {
                     expand_all = true;
                 }
                 if ui
-                    .small_button("\u{25b2}")
+                    .small_button(icons::CARET_UP)
                     .on_hover_text("Collapse all")
                     .clicked()
                 {
@@ -159,7 +160,11 @@ impl App {
 
                         // Expand/collapse toggle for directories
                         if flat.has_children {
-                            let icon = if flat.is_expanded { "▼" } else { "▶" };
+                            let icon = if flat.is_expanded {
+                                icons::CARET_DOWN
+                            } else {
+                                icons::CARET_RIGHT
+                            };
                             if ui.small_button(icon).clicked() {
                                 toggle_expand = Some(flat.node.path.clone());
                             }
@@ -189,7 +194,7 @@ impl App {
             }
         });
 
-        // Scroll selected row into view — indices use the same stride as egui `show_rows`:
+        // Scroll selected row into view - indices use the same stride as egui `show_rows`:
         // `row_stride = row_height_sans_spacing + item_spacing.y` (see egui scroll_area.rs).
         //
         // Use laid-out content height for clamp (matches egui:`max_offset = content_size - inner`).

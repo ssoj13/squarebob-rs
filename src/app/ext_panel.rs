@@ -3,6 +3,7 @@
 use eframe::egui;
 
 use super::helpers::fmt_size;
+use super::icons;
 use super::App;
 
 impl App {
@@ -21,7 +22,7 @@ impl App {
             ui.strong("Ext");
             ui.add(
                 egui::TextEdit::singleline(&mut self.ext_search_text)
-                    .hint_text("\u{1f50d}")
+                    .hint_text(icons::MAGNIFYING_GLASS)
                     .desired_width(ui.available_width() - 120.0),
             );
             if ui

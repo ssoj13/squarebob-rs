@@ -467,7 +467,7 @@ impl EncoderImpl {
 impl std::fmt::Display for EncoderImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EncoderImpl::Auto => write!(f, "Auto (HW → CPU)"),
+            EncoderImpl::Auto => write!(f, "Auto (HW -> CPU)"),
             EncoderImpl::Hardware => write!(f, "Hardware only"),
             EncoderImpl::Software => write!(f, "Software (CPU)"),
         }
