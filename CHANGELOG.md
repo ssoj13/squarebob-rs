@@ -8,8 +8,6 @@ adapted for a single-developer workflow that batches by sprint.
 
 ---
 
-## Unreleased — documentation sync (2026-05-12)
-
 ### Documentation & SSOT
 
 - **`TODO4.md` rev 6** — Roadmap reconciled with the tree after Stage B.3:
