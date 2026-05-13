@@ -294,7 +294,15 @@ pub struct App {
     pub(super) show_encode_panel: bool,
     pub(super) encode_dialog: media_encoder::EncodeDialog,
     pub(super) encode_source: Option<media_encoder::Comp>,
+    pub(super) encode_sequence_source: Option<Arc<crate::app::image_sequence::DirstatEncodeSource>>,
     pub(super) encode_source_size: (u32, u32),
+    pub(super) encode_active_frame: Option<crate::app::image_sequence::EncodeFrameRequest>,
+    pub(super) encode_render_state_active: bool,
+    pub(super) encode_restore_render_mode: RenderMode,
+    pub(super) encode_base_animation_time: f32,
+    pub(super) encode_base_env_time: f32,
+    pub(super) encode_restore_animate: bool,
+    pub(super) encode_restore_env_animate: bool,
     /// Wall-clock anchor for advancing `animation_time` / `env_time`.
     /// Set to `None` after a long idle (or first launch) so the next
     /// frame produces `dt = 0` instead of catching up on lost time. Each
@@ -439,7 +447,15 @@ impl Default for App {
                 &media_encoder::EncodeDialogSettings::default(),
             ),
             encode_source: None,
+            encode_sequence_source: None,
             encode_source_size: (0, 0),
+            encode_active_frame: None,
+            encode_render_state_active: false,
+            encode_restore_render_mode: RenderMode::default(),
+            encode_base_animation_time: 0.0,
+            encode_base_env_time: 0.0,
+            encode_restore_animate: false,
+            encode_restore_env_animate: false,
             last_anim_tick: None,
         }
     }

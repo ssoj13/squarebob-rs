@@ -8,7 +8,7 @@ Branch: `main`
 
 The repository currently contains a reusable `media-encoder` crate and the app has an `E` toggle button in the top-right toolbar that opens the encoder dialog.
 
-Latest relevant commits:
+Latest relevant commits before this working tree:
 
 - `a3bfdd2 Connect encoder to viewport source`
 - `29c9939 Use git dependency for playa ffmpeg`
@@ -66,16 +66,18 @@ Files changed for app integration:
 
 ## How It Is Done Right Now
 
-The current implementation connects the encoder dialog to the app by taking a snapshot of the current rendered viewport and exposing it as a `media_encoder::FrameSource`.
+The current implementation connects the encoder dialog to the app through a request/response `FrameSource`.
 
 Current behavior:
 
-- opening the `E` dialog captures the current viewport
+- opening the `E` dialog creates a `DirstatEncodeSource`
 - the dialog gets `Some(&Comp)` instead of `None`
-- encode can start because there is now an active source
-- the source currently has a one-frame play range: `(0, 0)`
+- the copied Playa encoder calls `FrameSource::get_frame(frame_idx, true)` from its encoder thread
+- `DirstatEncodeSource::get_frame` sends an `EncodeFrameRequest` to the app thread and blocks
+- `App::handle_image_sequence` receives the request, applies the frame time, waits for render readiness, captures the viewport, and replies with `media_encoder::Frame::rgba8`
+- the encode dialog now has editable frame range controls, defaulting to `0..119`
 
-This is a functional adapter, but it is not the final desired sequence encoder.
+This avoids calling the renderer/GPU directly from the encoder thread.
 
 ## Why It Was Done This Way
 
@@ -91,52 +93,35 @@ The snapshot adapter was added as the smallest safe bridge:
 - it avoids forcing GPU rendering from the encoder background thread
 - it gives the next implementation a concrete `FrameSource` boundary to replace
 
-## Important Limitation
+## Important Notes
 
-The current encoder source is only a single-frame viewport snapshot.
+The encoder now produces real per-frame requests rather than encoding a single snapshot.
 
-This is not the final implementation the app needs.
+For 3D mode, frame time is mapped as:
 
-The user explicitly wants actual image sequence / animation encoding, not only a still snapshot. The next implementation must replace or extend `ViewportFrameSource` with a real frame source that can provide frame `N` as the renderer state changes over time.
+```text
+seconds = (frame_idx - frame_start) / fps
+animation_time = base_animation_time + seconds * animation_speed
+env_time = base_env_time + seconds * animation_speed * env_speed
+```
+
+The app disables live animation toggles during encode and restores them after encode completes/stops.
+
+If path tracing is enabled, the app waits for `pt_max_samples` before handing the frame to the encoder. If path tracing is disabled, it captures after the requested 3D render pass.
 
 ## What Still Needs To Be Done
 
-### 1. Implement Real Frame Sequence Source
+### 1. Validate End-To-End Encoding In The UI
 
-Replace the temporary snapshot source with a Dirstat sequence source that can generate or request frames for a range.
+The code compiles, but the next practical step is to run the app and verify actual output files:
 
-Required behavior:
+- video output through ffmpeg
+- image sequence output
+- Stop button while `get_frame` is blocked
+- 3D path-traced sequence with low `pt_max_samples`
+- non-path-traced 3D sequence
 
-- expose a real play range, not `(0, 0)`
-- produce distinct frames for `frame_idx`
-- use Dirstat render settings and animation time
-- support 2D and 3D render modes where possible
-- avoid unsafe renderer access from the encoder thread
-
-Likely shape:
-
-- keep `media_encoder::FrameSource` as the public boundary
-- add a Dirstat-specific frame producer in `src/app/image_sequence.rs` or a small submodule
-- coordinate rendering on the app/UI/render thread
-- let the encoder consume completed frames through a queue/cache
-
-The key issue is thread ownership: the renderer and GPU state should stay on the app/render thread. The encoder thread should not directly mutate `App`, `Renderer3D`, `wgpu` state, or egui state.
-
-### 2. Decide Frame Range UI
-
-The copied Playa UI uses `active_comp.play_range(true)`.
-
-Dirstat needs an app-level definition for:
-
-- start frame
-- end frame
-- FPS
-- animation duration
-- whether frame range comes from render preset, encoder dialog, or app settings
-
-Until this exists, `FrameSource::play_range` cannot honestly report a meaningful sequence range.
-
-### 3. Restore/Adapt Previous Export Logic If Useful
+### 2. Restore/Adapt Previous Export Logic If Useful
 
 There was previous Dirstat image-sequence/export logic before the Playa encoder replacement.
 
@@ -151,13 +136,12 @@ That old code likely contains app-specific handling for:
 - capturing viewport frames
 - writing frame sequences
 
-This should be adapted into the new modular `media-encoder` integration instead of being pasted as a monolith.
+The current implementation already adapted the main idea: UI-thread frame production and render-state restore. The old code may still be useful for output defaults or sampling UI.
 
-### 4. Verify End-To-End Encoding
+### 3. CI / Cross-Platform Verification
 
-After the real sequence source is implemented, verify:
+Verify:
 
-- still image output
 - image sequence output
 - video output through ffmpeg
 - behavior on Windows with `C:\vcpkg`
@@ -169,6 +153,7 @@ Current local checks that passed before this handoff:
 cargo fmt --check -p media-encoder -p dirstat-rs
 cargo run -p xtask -- check -p media-encoder
 cargo run -p xtask -- check -p dirstat-rs
+cargo run -p xtask -- clippy -p media-encoder -p dirstat-rs --all-targets -- -D warnings
 ```
 
 `xtask` currently falls back to global `VCPKG_ROOT`, which is expected on this machine because vcpkg exists at:
@@ -176,6 +161,8 @@ cargo run -p xtask -- check -p dirstat-rs
 ```text
 C:\vcpkg
 ```
+
+Use `xtask clippy`, not raw `cargo clippy`, because FFmpeg/bindgen needs the same vcpkg/MSVC environment bootstrap as `xtask check`.
 
 ## Constraints / Decisions To Preserve
 
@@ -199,4 +186,3 @@ Recommended first step:
 3. Reintroduce that behavior as a Dirstat-specific producer feeding `media_encoder::FrameSource`.
 4. Keep renderer/GPU work on the app thread.
 5. Leave `media-encoder` generic.
-

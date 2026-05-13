@@ -82,6 +82,41 @@ enum Commands {
         all_features: bool,
     },
 
+    /// Run clippy after bootstrapping native build dependencies
+    ///
+    /// Examples:
+    ///   cargo xtask clippy --workspace --all-targets -- -D warnings
+    ///   cargo xtask clippy -p media-encoder -p dirstat-rs --all-targets -- -D warnings
+    Clippy {
+        /// Packages to lint. If omitted, lints the whole workspace.
+        #[arg(short = 'p', long = "package")]
+        package: Vec<String>,
+
+        /// Comma-separated cargo features to enable
+        #[arg(short = 'f', long)]
+        features: Option<String>,
+
+        /// Disable default features
+        #[arg(long)]
+        no_default_features: bool,
+
+        /// Enable all features
+        #[arg(long)]
+        all_features: bool,
+
+        /// Check all targets
+        #[arg(long)]
+        all_targets: bool,
+
+        /// Check the whole workspace explicitly
+        #[arg(long)]
+        workspace: bool,
+
+        /// Arguments passed after `--` to clippy/rustc, e.g. `-D warnings`.
+        #[arg(last = true)]
+        clippy_args: Vec<String>,
+    },
+
     /// 📋 Regenerate full CHANGELOG.md from git history
     Changelog,
 
@@ -207,13 +242,20 @@ fn run() -> Result<()> {
 
     if matches!(
         cli.command,
-        Commands::Build { .. } | Commands::Check { .. } | Commands::Test { .. }
+        Commands::Build { .. }
+            | Commands::Check { .. }
+            | Commands::Clippy { .. }
+            | Commands::Test { .. }
     ) {
         env_setup::prepare_build_environment().context("Build environment bootstrap")?;
     }
 
     match cli.command {
-        Commands::Build { release: _, debug, features } => {
+        Commands::Build {
+            release: _,
+            debug,
+            features,
+        } => {
             let is_release = !debug;
             cmd_build(is_release, features.as_deref())
         }
@@ -227,6 +269,23 @@ fn run() -> Result<()> {
             features.as_deref(),
             no_default_features,
             all_features,
+        ),
+        Commands::Clippy {
+            package,
+            features,
+            no_default_features,
+            all_features,
+            all_targets,
+            workspace,
+            clippy_args,
+        } => cmd_clippy(
+            &package,
+            features.as_deref(),
+            no_default_features,
+            all_features,
+            all_targets,
+            workspace,
+            &clippy_args,
         ),
         Commands::Changelog => cmd_changelog(),
         Commands::TagDev { level, dry_run } => cmd_tag_dev(&level, dry_run),
@@ -330,6 +389,83 @@ fn cmd_check(
     Ok(())
 }
 
+/// Command: cargo xtask clippy [-p package ...] [--all-targets] [-- -D warnings]
+fn cmd_clippy(
+    packages: &[String],
+    features: Option<&str>,
+    no_default_features: bool,
+    all_features: bool,
+    all_targets: bool,
+    workspace: bool,
+    clippy_args: &[String],
+) -> Result<()> {
+    println!("========================================");
+    println!("Running clippy");
+    if packages.is_empty() || workspace {
+        println!("Package: workspace");
+    } else {
+        println!("Packages: {}", packages.join(", "));
+    }
+    if let Some(features) = features {
+        println!("Features: {features}");
+    }
+    if no_default_features {
+        println!("Default features: disabled");
+    }
+    if all_features {
+        println!("Features: all");
+    }
+    if all_targets {
+        println!("Targets: all");
+    }
+    if !clippy_args.is_empty() {
+        println!("Clippy args: {}", clippy_args.join(" "));
+    }
+    println!("========================================");
+    println!();
+
+    if workspace && !packages.is_empty() {
+        anyhow::bail!("Use either --workspace or -p/--package, not both");
+    }
+
+    let mut cmd = Command::new("cargo");
+    cmd.arg("clippy");
+
+    if workspace || packages.is_empty() {
+        cmd.arg("--workspace");
+    } else {
+        for package in packages {
+            cmd.arg("-p").arg(package);
+        }
+    }
+
+    if all_targets {
+        cmd.arg("--all-targets");
+    }
+    if let Some(features) = features {
+        cmd.args(["--features", features]);
+    }
+    if no_default_features {
+        cmd.arg("--no-default-features");
+    }
+    if all_features {
+        cmd.arg("--all-features");
+    }
+    if !clippy_args.is_empty() {
+        cmd.arg("--");
+        cmd.args(clippy_args);
+    }
+
+    let status = cmd.status().context("Failed to run cargo clippy")?;
+    if !status.success() {
+        anyhow::bail!("Clippy failed!");
+    }
+
+    println!();
+    println!("Clippy complete.");
+    Ok(())
+}
+
 /// Command: cargo xtask wipe (non-recursive)
 fn cmd_wipe(verbose: bool, dry_run: bool) -> Result<()> {
     println!("========================================");
@@ -380,59 +516,57 @@ fn cmd_wipe(verbose: bool, dry_run: bool) -> Result<()> {
                 continue;
             }
         };
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                let meta = match fs::symlink_metadata(&path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                let ftype = meta.file_type();
-                if !(ftype.is_file() || ftype.is_symlink()) {
-                    continue;
-                }
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let ftype = meta.file_type();
+            if !(ftype.is_file() || ftype.is_symlink()) {
+                continue;
+            }
 
-                let name_lc = path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_ascii_lowercase())
-                    .unwrap_or_default();
-                let stem_lc = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_ascii_lowercase())
-                    .unwrap_or_default();
+            let name_lc = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            let stem_lc = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
 
-                // Never remove our own helper binary
-                if stem_lc == "xtask" {
-                    continue;
-                }
+            // Never remove our own helper binary
+            if stem_lc == "xtask" {
+                continue;
+            }
 
-                let is_installer = name_lc.ends_with(".msi")
-                    || (name_lc.ends_with(".exe") && name_lc.contains("setup"));
-                let is_win_bin = name_lc.ends_with(".exe") || name_lc.ends_with(".dll");
-                let is_unix_lib = name_lc.contains(".so") || name_lc.ends_with(".dylib");
+            let is_installer = name_lc.ends_with(".msi")
+                || (name_lc.ends_with(".exe") && name_lc.contains("setup"));
+            let is_win_bin = name_lc.ends_with(".exe") || name_lc.ends_with(".dll");
+            let is_unix_lib = name_lc.contains(".so") || name_lc.ends_with(".dylib");
 
-                // Regular files
-                if ftype.is_file() && (is_installer || is_win_bin || is_unix_lib) {
-                    if dry_run {
-                        println!("  would remove {}", path.display());
-                    } else {
-                        println!("  removing {}", path.display());
-                        let _ = fs::remove_file(&path);
-                    }
-                    removed += 1;
-                    continue;
-                }
-
-                // Symlinks to shared libs
-                #[cfg(unix)]
-                if ftype.is_symlink() && is_unix_lib {
-                    println!("  removing symlink {}", path.display());
+            // Regular files
+            if ftype.is_file() && (is_installer || is_win_bin || is_unix_lib) {
+                if dry_run {
+                    println!("  would remove {}", path.display());
+                } else {
+                    println!("  removing {}", path.display());
                     let _ = fs::remove_file(&path);
-                    removed += 1;
-                    continue;
                 }
+                removed += 1;
+                continue;
+            }
+
+            // Symlinks to shared libs
+            #[cfg(unix)]
+            if ftype.is_symlink() && is_unix_lib {
+                println!("  removing symlink {}", path.display());
+                let _ = fs::remove_file(&path);
+                removed += 1;
+                continue;
             }
         }
     }
@@ -494,8 +628,7 @@ fn cmd_wipe_wf() -> Result<()> {
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(8)
-        .min(16)
-        .max(4);
+        .clamp(4, 16);
     println!(
         "Found {} run(s). Deleting with {} workers...",
         ids.len(),
@@ -572,7 +705,7 @@ fn cmd_changelog() -> Result<()> {
     println!();
 
     let status = Command::new("git-cliff")
-        .args(&["-o", "CHANGELOG.md"])
+        .args(["-o", "CHANGELOG.md"])
         .status()
         .context("Failed to run git-cliff. Is it installed?")?;
 
@@ -609,7 +742,7 @@ fn cmd_tag_rel(level: &str, dry_run: bool) -> Result<()> {
 
     // Check if on main branch
     let output = Command::new("git")
-        .args(&["branch", "--show-current"])
+        .args(["branch", "--show-current"])
         .output()
         .context("Failed to get current branch")?;
 
@@ -657,7 +790,7 @@ fn cmd_pr(version: Option<&str>) -> Result<()> {
     // Count commits between main and dev
     println!("Calculating changes between main and dev...");
     let output = Command::new("git")
-        .args(&["rev-list", "--count", "origin/main..dev"])
+        .args(["rev-list", "--count", "origin/main..dev"])
         .output()
         .context("Failed to count commits")?;
 
@@ -682,7 +815,7 @@ fn cmd_pr(version: Option<&str>) -> Result<()> {
 
     // Create PR using gh CLI
     let status = Command::new("gh")
-        .args(&[
+        .args([
             "pr", "create", "--base", "main", "--head", "dev", "--title", &title, "--body", &body,
         ])
         .status()
@@ -732,7 +865,9 @@ fn cmd_deploy(install_dir: Option<&str>) -> Result<()> {
         if cfg!(target_os = "windows") {
             // Windows: %LOCALAPPDATA%\Programs\dirstat-rs
             let local_app_data = env::var("LOCALAPPDATA").context("LOCALAPPDATA not set")?;
-            PathBuf::from(local_app_data).join("Programs").join("dirstat-rs")
+            PathBuf::from(local_app_data)
+                .join("Programs")
+                .join("dirstat-rs")
         } else if cfg!(target_os = "macos") {
             // macOS: /Applications/Dirstat.app
             PathBuf::from("/Applications/Dirstat.app/Contents/MacOS")

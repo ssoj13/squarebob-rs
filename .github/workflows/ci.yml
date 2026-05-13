@@ -89,7 +89,7 @@ jobs:
         run: cargo build --workspace --all-targets
 
       - name: Clippy workspace
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo run -p xtask -- clippy --workspace --all-targets -- -D warnings
 
       - name: Test workspace
         run: cargo test --workspace

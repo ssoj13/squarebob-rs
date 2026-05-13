@@ -38,6 +38,10 @@ pub struct EncodeDialogSettings {
     pub output_path: PathBuf,
     pub container: Container,
     pub fps: f32,
+    #[serde(default)]
+    pub frame_start: i32,
+    #[serde(default = "default_frame_end")]
+    pub frame_end: i32,
     pub selected_codec: VideoCodec,
 
     // HDR → LDR conversion settings
@@ -63,6 +67,8 @@ impl Default for EncodeDialogSettings {
             output_path: PathBuf::from("output.mp4"),
             container: Container::MP4,
             fps: 24.0,
+            frame_start: 0,
+            frame_end: default_frame_end(),
             selected_codec: VideoCodec::H264,
             tonemap_mode: TonemapMode::default(),
             codec_settings: CodecSettings::default(),
@@ -70,6 +76,10 @@ impl Default for EncodeDialogSettings {
             sequence_settings: SequenceSettings::default(),
         }
     }
+}
+
+fn default_frame_end() -> i32 {
+    119
 }
 
 /// Encoder input settings (transport DTO for encode_sequence)
@@ -2512,7 +2522,7 @@ pub fn encode_image_sequence(
 
     // Get play range from Comp
     let play_range = comp.play_range(true);
-    let total_frames = (play_range.1.saturating_sub(play_range.0) + 1) as i32;
+    let total_frames = play_range.1.saturating_sub(play_range.0) + 1;
 
     info!(
         "Image sequence export: format={:?}, channels={:?}, frames={}",
@@ -2574,7 +2584,7 @@ pub fn encode_image_sequence(
             return Err(EncodeError::Cancelled);
         }
 
-        let current_frame = (frame_idx - play_range.0 + 1) as i32;
+        let current_frame = frame_idx - play_range.0 + 1;
 
         // Get frame from comp
         let frame = comp.get_frame(frame_idx, true).ok_or_else(|| {

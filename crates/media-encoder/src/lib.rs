@@ -13,7 +13,7 @@ pub use source::*;
 
 #[cfg(feature = "ffmpeg")]
 pub fn init_ffmpeg() -> Result<(), Box<dyn std::error::Error>> {
-    playa_ffmpeg::init().map_err(|err| Box::<dyn std::error::Error>::from(err))
+    playa_ffmpeg::init().map_err(Box::<dyn std::error::Error>::from)
 }
 
 #[cfg(not(feature = "ffmpeg"))]

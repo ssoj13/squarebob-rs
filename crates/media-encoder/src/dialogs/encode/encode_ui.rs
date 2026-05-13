@@ -25,6 +25,8 @@ pub struct EncodeDialog {
     pub output_path: PathBuf,
     pub container: Container,
     pub fps: f32,
+    pub frame_start: i32,
+    pub frame_end: i32,
 
     /// Currently selected codec tab
     pub selected_codec: VideoCodec,
@@ -191,6 +193,8 @@ impl EncodeDialog {
             output_path: settings.output_path.clone(),
             container: settings.container,
             fps: settings.fps,
+            frame_start: settings.frame_start,
+            frame_end: settings.frame_end.max(settings.frame_start),
             selected_codec: settings.selected_codec,
             codec_settings: settings.codec_settings.clone(),
             is_encoding: false,
@@ -253,6 +257,8 @@ impl EncodeDialog {
             output_path: self.output_path.clone(),
             container: self.container,
             fps: self.fps,
+            frame_start: self.frame_start,
+            frame_end: self.frame_end.max(self.frame_start),
             selected_codec: self.selected_codec,
             tonemap_mode: self.tonemap_mode,
             codec_settings: self.codec_settings.clone(),
@@ -611,8 +617,25 @@ impl EncodeDialog {
 
                 ui.add_space(12.0);
 
-                // === Frame Range Info ===
-                ui.label("Frame Range: (use active Comp)");
+                // === Frame Range ===
+                ui.horizontal(|ui| {
+                    ui.label("Frame Range:");
+                    ui.add_enabled_ui(!self.is_encoding, |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.frame_start)
+                                .speed(1.0)
+                                .prefix("Start "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.frame_end)
+                                .speed(1.0)
+                                .prefix("End "),
+                        );
+                    });
+                });
+                if self.frame_end < self.frame_start {
+                    self.frame_end = self.frame_start;
+                }
 
                 ui.add_space(12.0);
 

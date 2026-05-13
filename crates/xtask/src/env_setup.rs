@@ -27,13 +27,21 @@ const MAC_DEFAULT_TRIPLET: &str = "x64-osx-release";
 /// and the README install matrix. Returns `None` only on truly unsupported targets.
 fn default_triplet() -> Option<&'static str> {
     #[cfg(windows)]
-    { Some(WIN_DEFAULT_TRIPLET) }
+    {
+        Some(WIN_DEFAULT_TRIPLET)
+    }
     #[cfg(target_os = "linux")]
-    { Some(LINUX_DEFAULT_TRIPLET) }
+    {
+        Some(LINUX_DEFAULT_TRIPLET)
+    }
     #[cfg(target_os = "macos")]
-    { Some(MAC_DEFAULT_TRIPLET) }
+    {
+        Some(MAC_DEFAULT_TRIPLET)
+    }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-    { None }
+    {
+        None
+    }
 }
 
 #[cfg(windows)]
@@ -99,11 +107,11 @@ fn setup_vcpkg() {
         }
     }
 
-    if std::env::var_os("VCPKGRS_TRIPLET").is_none() {
-        if let Some(t) = default_triplet() {
-            env_set("VCPKGRS_TRIPLET", t);
-            eprintln!("xtask: VCPKGRS_TRIPLET -> {t}");
-        }
+    if std::env::var_os("VCPKGRS_TRIPLET").is_none()
+        && let Some(t) = default_triplet()
+    {
+        env_set("VCPKGRS_TRIPLET", t);
+        eprintln!("xtask: VCPKGRS_TRIPLET -> {t}");
     }
 
     prepend_pkg_config_path();
@@ -137,9 +145,7 @@ fn try_manifest_mode_vcpkg() -> bool {
             "xtask: manifest-mode vcpkg install not populated at {}",
             lib_dir.display()
         );
-        eprintln!(
-            "xtask: run once to install pinned FFmpeg (~5–10 GB, ~20 min on first build):"
-        );
+        eprintln!("xtask: run once to install pinned FFmpeg (~5–10 GB, ~20 min on first build):");
         eprintln!(
             "xtask:   vcpkg install --x-manifest-root . --x-install-root .vcpkg/installed --triplet {triplet}"
         );
