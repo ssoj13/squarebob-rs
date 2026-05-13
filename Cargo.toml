@@ -16,7 +16,6 @@ members = [
     "crates/render-shared",
     "crates/render-3d",
     "crates/media-encoder",
-    "crates/playa-ffmpeg",
     "crates/xtask",
     "crates/treemap",
 ]

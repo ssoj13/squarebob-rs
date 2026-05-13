@@ -23,7 +23,7 @@ const MAC_DEFAULT_TRIPLET: &str = "arm64-osx-release";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const MAC_DEFAULT_TRIPLET: &str = "x64-osx-release";
 
-/// Platform-default vcpkg triplet — matches `crates/playa-ffmpeg/build.rs::get_vcpkg_triplet`
+/// Platform-default vcpkg triplet — matches playa-ffmpeg's build.rs triplet.
 /// and the README install matrix. Returns `None` only on truly unsupported targets.
 fn default_triplet() -> Option<&'static str> {
     #[cfg(windows)]
