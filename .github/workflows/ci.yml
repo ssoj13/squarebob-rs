@@ -72,9 +72,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # rustup 1.28+ is strict about component flags; install channel + clippy in one shot.
+          rustup set auto-self-update disable 2>/dev/null || true
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           channel=$(grep '^channel' rust-toolchain.toml | tr -d '\r' | sed -E 's/^channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
-          rustup toolchain install "$channel" --profile minimal --component clippy
+          rustup toolchain install "$channel" --profile minimal --component clippy --no-self-update
+          rustup default "$channel"
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -164,8 +166,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rustup set auto-self-update disable 2>/dev/null || true
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           channel=$(grep '^channel' rust-toolchain.toml | tr -d '\r' | sed -E 's/^channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
-          rustup toolchain install "$channel" --profile minimal
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
