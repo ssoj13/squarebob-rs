@@ -7,7 +7,9 @@
 //!   instead of system `/usr/include` (which can carry deprecated/incompatible
 //!   declarations bindgen chokes on).
 
-use anyhow::{Context, Result};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::Result;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
