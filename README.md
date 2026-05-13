@@ -4,8 +4,7 @@ Dirstat is a Rust disk usage visualizer with fast directory scanning, a 2D treem
 It is inspired by tools like SequoiaView, WinDirStat and KDirStat, but the renderer and UI are built from scratch around `egui`, `wgpu`, and a modular Rust workspace.
 
 ![Screenshot](data/screenshot1.jpg)
-[![Screenshot](data/screenshot2.jpg)](https://youtu.be/8Ot6_7PxvgA "Encoded media")
-(Click to open encoded media on Youtube)
+![Screenshot](data/screenshot2.jpg)
 <video src=https://github.com/user-attachments/assets/e1c19d3e-9522-4a28-a83c-f2560110a617>Dirstat-encoded media</video>
 
 
