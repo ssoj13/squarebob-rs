@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1778430569560,
+  "lastScanned": 1778653226748,
   "projectRoot": "C:\\projects\\projects.rust.cg\\dirstat-rs",
   "techStack": {
     "languages": [
@@ -18,8 +18,8 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "cargo build --release --message-format=short 2>&1 | grep -E \"error|warning:\" | head -10",
-    "testCommand": "cargo test --workspace --message-format=short 2>&1 | grep -E \"test result|FAILED\" | head -10",
+    "buildCommand": "cargo build",
+    "testCommand": "cargo test",
     "lintCommand": "cargo clippy",
     "devCommand": "cargo run",
     "scripts": {}
@@ -48,15 +48,16 @@
       "path": "crates",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1778430569514,
+      "lastAccessed": 1778653226711,
       "keyFiles": []
     },
     "data": {
       "path": "data",
       "purpose": "Data files",
-      "fileCount": 4,
-      "lastAccessed": 1778430569515,
+      "fileCount": 5,
+      "lastAccessed": 1778653226711,
       "keyFiles": [
+        "factory_render3d_options.json",
         "LICENSE",
         "screenshot1.jpg",
         "screenshot2.jpg",
@@ -67,7 +68,7 @@
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 3,
-      "lastAccessed": 1778430569516,
+      "lastAccessed": 1778653226712,
       "keyFiles": [
         "Fast_BVH_construction_on_gpus.pdf",
         "jakob2021_optimizing_lbvh.pdf",
@@ -78,7 +79,7 @@
       "path": "src",
       "purpose": "Source code",
       "fileCount": 10,
-      "lastAccessed": 1778430569517,
+      "lastAccessed": 1778653226713,
       "keyFiles": [
         "cache.rs",
         "cli.rs",
@@ -91,7 +92,7 @@
       "path": "target",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1778430569517,
+      "lastAccessed": 1778653226713,
       "keyFiles": [
         "CACHEDIR.TAG"
       ]
@@ -99,8 +100,8 @@
     "src\\app": {
       "path": "src\\app",
       "purpose": "Application code",
-      "fileCount": 16,
-      "lastAccessed": 1778430569520,
+      "fileCount": 17,
+      "lastAccessed": 1778653226715,
       "keyFiles": [
         "cli_apply.rs",
         "dock.rs",

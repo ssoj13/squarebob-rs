@@ -5,6 +5,7 @@ Rust version from scratch inspired by WinDirStat/SequoiaView...with WGPU PathTra
 
 ![Screenshot](data/screenshot1.jpg)
 ![Screenshot](data/screenshot2.jpg)
+![Encoding demo](data/media.mp4)
 
 ## Features
 

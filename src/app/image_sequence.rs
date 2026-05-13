@@ -246,6 +246,7 @@ impl App {
 
         if self.render_mode == RenderMode::Mode3D {
             self.needs_render_3d = true;
+            self.needs_layout = true;
             if let Some(renderer) = &mut self.renderer_3d {
                 renderer.reset_pt_accumulation();
             }
