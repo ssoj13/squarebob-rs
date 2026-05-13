@@ -15,7 +15,19 @@
         "swresample",
         "swscale",
         "nvcodec"
-      ]
+      ],
+      "platform": "windows | linux"
+    },
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "swresample",
+        "swscale"
+      ],
+      "platform": "osx"
     }
   ]
 }
