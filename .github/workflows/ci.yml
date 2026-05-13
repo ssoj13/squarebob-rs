@@ -31,11 +31,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Temporarily disabled while macOS CI/CD is being stabilized.
-          # - platform: linux
-          #   runner: ubuntu-latest
-          # - platform: windows
-          #   runner: windows-latest
+          - platform: linux
+            runner: ubuntu-latest
+          - platform: windows
+            runner: windows-latest
           - platform: macos
             runner: macos-latest
 
@@ -109,15 +108,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Temporarily disabled while macOS CI/CD is being stabilized.
-          # - platform: linux
-          #   runner: ubuntu-latest
-          #   target: x86_64-unknown-linux-gnu
-          #   formats: deb
-          # - platform: windows
-          #   runner: windows-latest
-          #   target: x86_64-pc-windows-msvc
-          #   formats: nsis
+          - platform: linux
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            formats: deb
+          - platform: windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            formats: nsis
           - platform: macos
             runner: macos-latest
             target: aarch64-apple-darwin
