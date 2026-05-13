@@ -30,7 +30,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Retag / same ref: do not cancel an in-flight release. Branch/PR: still cancel redundant runs.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   APP_BUNDLE_ID: io.github.dirstatrs.dirstatrs
@@ -395,14 +396,20 @@ jobs:
           merge-multiple: true
 
       - name: Publish GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          find release-assets -maxdepth 1 -type f -print | sort
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No regular files found in release-assets" >&2
+            exit 1
+          fi
+          printf '%s\n' "${assets[@]}"
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" release-assets/* --clobber
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
           else
-            gh release create "$TAG_NAME" release-assets/* --verify-tag --generate-notes --title "$TAG_NAME"
+            gh release create "$TAG_NAME" "${assets[@]}" --verify-tag --generate-notes --title "$TAG_NAME"
           fi
