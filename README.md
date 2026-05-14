@@ -5,8 +5,7 @@ It is inspired by tools like SequoiaView, WinDirStat and KDirStat, but the rende
 
 ![Screenshot](data/screenshot1.jpg)
 ![Screenshot](data/screenshot2.jpg)
-<video src=https://github.com/user-attachments/assets/e1c19d3e-9522-4a28-a83c-f2560110a617>Squarebob-encoded media</video>
-
+<video src=https://github.com/user-attachments/assets/0dbd5b81-f529-4d05-b7ad-19922f156f69>Squarebob-encoded media</video>
 
 ## Highlights
 
