@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn adjacent_default_preset_path_uses_executable_directory() {
-        let exe = Path::new("bin").join("squarebob-rs");
+        let exe = Path::new("bin").join("squarebob");
         assert_eq!(
             default_preset_path_for_exe(&exe),
             Some(Path::new("bin").join("default.json"))

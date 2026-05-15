@@ -863,11 +863,11 @@ fn cmd_deploy(install_dir: Option<&str>) -> Result<()> {
     } else {
         // Auto-detect based on OS
         if cfg!(target_os = "windows") {
-            // Windows: %LOCALAPPDATA%\Programs\squarebob-rs
+            // Windows: %LOCALAPPDATA%\Programs\Squarebob
             let local_app_data = env::var("LOCALAPPDATA").context("LOCALAPPDATA not set")?;
             PathBuf::from(local_app_data)
                 .join("Programs")
-                .join("squarebob-rs")
+                .join("Squarebob")
         } else if cfg!(target_os = "macos") {
             // macOS: /Applications/Squarebob.app
             PathBuf::from("/Applications/Squarebob.app/Contents/MacOS")
@@ -896,9 +896,9 @@ fn cmd_deploy(install_dir: Option<&str>) -> Result<()> {
     println!("Copying files to install directory...");
 
     let exe_name = if cfg!(target_os = "windows") {
-        "squarebob-rs.exe"
+        "squarebob.exe"
     } else {
-        "squarebob-rs"
+        "squarebob"
     };
 
     let source_exe = PathBuf::from("target/release").join(exe_name);

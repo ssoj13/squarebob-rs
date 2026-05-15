@@ -4,6 +4,15 @@ version = "0.0.1"
 edition = "2021"
 rust-version = "1.95"
 
+# Produced binary is `squarebob.exe` / `squarebob` rather than the
+# crate-default `squarebob-rs`. The package name stays as `squarebob-rs`
+# because dozens of references (xtask, bootstrap.py, CI, vcpkg.json,
+# ProjectDirs identifiers) treat it as crate identity and renaming
+# would invalidate user-side cache/preset directories.
+[[bin]]
+name = "squarebob"
+path = "src/main.rs"
+
 [workspace]
 members = [
     "crates/squarebob-core",
