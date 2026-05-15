@@ -53,15 +53,15 @@ struct GpuMaterial {
     params2: vec4<f32>,                   // x=spec_aniso, y=coat_rough, z=coat_IOR, w=visible
 };
 
-// Global per-frame uniform shared by all instances — kept at 16 bytes so
-// both the materialise slider and the live age recolour toggle update
-// without rebuilding the cube instance buffer. Mirrors the Rust
-// `MatGlobalUniform` exactly.
+// Global material params shared by all instances — kept tiny so the materialize
+// slider stays live without rebuilding the cube instance buffer.
+// Three trailing f32 pads (instead of vec3) keep WGSL std140 size at 16 bytes,
+// matching the Rust `MatGlobalUniform` exactly (vec3 would round up to 32).
 struct MatGlobal {
-    materialize_mix: f32,       // 0=ignore mat library albedo, 1=use mat library albedo
-    age_recolor_enabled: f32,   // 0=use per-instance color, 1=shader-side age gradient
-    now_epoch_secs: f32,        // SystemTime::now() at frame start (seconds since 1970)
-    age_range_secs: f32,        // denominator for age normalisation (default = 1 Julian year)
+    materialize_mix: f32,  // 0=ignore mat library albedo, 1=use mat library albedo
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -99,7 +99,6 @@ struct InstanceInput {
     @location(7) hash: u32,
     @location(8) object_id: u32,
     @location(9) material_id: u32,
-    @location(10) mtime: u32,   // Unix epoch seconds (u32, truncated). 0 = scanner had no mtime.
 }
 
 struct VertexOutput {
@@ -215,20 +214,6 @@ fn compute_light(
 // Vertex Shader
 // ============================================================================
 
-// 3-stop age gradient: young (recent mtime) → mid → old. Tuned to be
-// readable both as an absolute mode (file freshness) and overlaid on
-// material colours via the existing materialize_mix path.
-fn age_color(t: f32) -> vec3<f32> {
-    let young = vec3<f32>(0.18, 0.95, 0.85);   // bright cyan
-    let mid   = vec3<f32>(1.00, 0.90, 0.25);   // warm yellow
-    let old   = vec3<f32>(0.95, 0.25, 0.10);   // red-orange
-    let s = clamp(t, 0.0, 1.0);
-    if s < 0.5 {
-        return mix(young, mid, s * 2.0);
-    }
-    return mix(mid, old, (s - 0.5) * 2.0);
-}
-
 @vertex
 fn vs_main(v: VertexInput, i: InstanceInput) -> VertexOutput {
     let model = mat4x4<f32>(i.model_0, i.model_1, i.model_2, i.model_3);
@@ -239,19 +224,7 @@ fn vs_main(v: VertexInput, i: InstanceInput) -> VertexOutput {
     out.clip_position = camera.view_proj * wp;
     out.world_pos = wp.xyz;
     out.world_normal = wn;
-
-    // Live age recolour: when the toggle is on AND the scanner captured
-    // an mtime for this cube, replace the per-instance colour with the
-    // gradient. Mtime=0 falls back to the CPU-computed colour so files
-    // without metadata stay visually distinct from "freshly modified".
-    if mat_global.age_recolor_enabled > 0.5 && i.mtime != 0u {
-        let mt_f = f32(i.mtime);
-        let age = max(mat_global.now_epoch_secs - mt_f, 0.0);
-        let t = age / max(mat_global.age_range_secs, 1.0);
-        out.color = vec4<f32>(age_color(t), i.color.a);
-    } else {
-        out.color = i.color;
-    }
+    out.color = i.color;
     out.object_id = i.object_id;
     out.material_id = i.material_id;
     return out;

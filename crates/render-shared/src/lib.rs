@@ -506,19 +506,6 @@ pub struct Render3DOptions {
     /// base color (tint), blended with material via `materialize_mix`.
     #[serde(default)]
     pub color_ramps: Mapping<RampParams, N_COLOR_MODES>,
-    /// Live shader-side recolour by file age. When `true`, the PBR
-    /// vertex shader replaces the per-instance colour with a gradient
-    /// computed from each cube's `mtime` attribute and the current
-    /// `now`/`age_range_secs` uniforms — no host recollect needed.
-    /// Cubes whose scanner had no mtime (mtime=0) fall through to the
-    /// CPU-precomputed colour.
-    #[serde(default = "default_false")]
-    pub live_age_recolor: bool,
-    /// Age range in years that maps `t=0.0` (young / cyan) to `t=1.0`
-    /// (ancient / red). Defaults to 1 year so a fresh repo lights up
-    /// cleanly; bump for older trees.
-    #[serde(default = "default_age_range_years")]
-    pub age_range_years: f32,
     #[serde(default)]
     pub folder_color_mode: FolderColorMode,
     #[serde(default = "default_folder_tint")]
@@ -786,9 +773,6 @@ fn default_prob() -> f32 {
 fn default_materialize_mix() -> f32 {
     1.0
 }
-fn default_age_range_years() -> f32 {
-    1.0
-}
 fn default_light_warm() -> f32 {
     0.5
 }
@@ -916,8 +900,6 @@ impl Default for Render3DOptions {
             height_curves: Mapping::default(),
             color_mode: ColorMode::FileType,
             color_ramps: Mapping::default(),
-            live_age_recolor: false,
-            age_range_years: default_age_range_years(),
             folder_color_mode: FolderColorMode::Depth,
             folder_tint: default_folder_tint(),
             folder_ramps: Mapping::default(),

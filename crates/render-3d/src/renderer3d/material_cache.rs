@@ -17,40 +17,21 @@ use crate::geometry::CubeInstance;
 use crate::picking::PickingState;
 use crate::renderer3d::helpers::{apply_glass_controls, hash_f32, mix_material};
 
-/// Global per-frame uniform shared by all cubes in the PBR shader.
-///
-/// Stays at 16 bytes (single `vec4`) so the live materialise slider and
-/// the live age recolour toggle both update without rebuilding the
-/// cube instance buffer. The four fields are read on the WGSL side as
-/// `MatGlobal { materialize_mix, age_recolor_enabled, now_epoch_secs,
-/// age_range_secs }` (see `cube_pbr.wgsl`).
+/// Global material params shared across all cubes in the PBR shader. Currently holds
+/// only the materialize-mix (instance color → library albedo blend factor). Kept
+/// separate from per-instance data so the slider doesn't trigger an instance rebuild.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct MatGlobalUniform {
-    /// Instance-color → library-albedo blend (0=pure instance tint, 1=pure material).
     pub(crate) materialize_mix: f32,
-    /// `0.0` = use the per-instance `color` as today; `1.0` = shader
-    /// computes a live age gradient from the per-instance `mtime` and
-    /// the two scalars below. No host-side recollect needed when the
-    /// user changes the toggle or the range.
-    pub(crate) age_recolor_enabled: f32,
-    /// Snapshot of `SystemTime::now()` at frame start, in seconds since
-    /// the Unix epoch, as `f32`. Precision loss above ~1.6e9 seconds
-    /// is limited to ~100 seconds per increment — well below the
-    /// year-scale resolution the age gradient needs.
-    pub(crate) now_epoch_secs: f32,
-    /// Denominator for the age normalisation (`t = age / age_range`).
-    /// Defaults to `365.25 * 86400` (one Julian year).
-    pub(crate) age_range_secs: f32,
+    pub(crate) _pad: [f32; 3],
 }
 
 impl Default for MatGlobalUniform {
     fn default() -> Self {
         Self {
             materialize_mix: 1.0,
-            age_recolor_enabled: 0.0,
-            now_epoch_secs: 0.0,
-            age_range_secs: 365.25 * 24.0 * 60.0 * 60.0,
+            _pad: [0.0; 3],
         }
     }
 }
