@@ -947,6 +947,47 @@ impl Renderer3D {
         pt::frame_count(self.pt.pt_backend_kind, self)
     }
 
+    /// Target global SPP (mirrors `Render3DOptions::pt_samples`). One number
+    /// drives all accumulation; everything else (per-dispatch batch size,
+    /// adaptive caps, OIDN trigger threshold) is derived from this.
+    pub fn pt_target_spp(&self) -> u32 {
+        self.pt
+            .path_tracer
+            .as_ref()
+            .map(|p| p.samples)
+            .unwrap_or(0)
+    }
+
+    /// PT output color texture (Rgba32Float, post sample-normalization).
+    /// `None` until `path_tracer` is built on the first PT-mode frame.
+    pub fn pt_output_texture(&self) -> Option<&wgpu::Texture> {
+        self.pt.path_tracer.as_ref().map(|p| p.output_texture())
+    }
+
+    /// PT viewport dims, when available.
+    pub fn pt_dimensions(&self) -> Option<(u32, u32)> {
+        self.pt.path_tracer.as_ref().map(|p| p.dimensions())
+    }
+
+    /// Per-pixel primary-hit albedo AOV. Available for both megakernel and
+    /// wavefront PT backends (each writes its own buffer at bounce 0; the
+    /// active backend's buffer is returned).
+    pub fn pt_albedo_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.pt.path_tracer.as_ref().map(|p| p.albedo_buffer())
+    }
+
+    /// Per-pixel primary-hit world-space normal AOV. Available for both
+    /// megakernel and wavefront PT backends.
+    pub fn pt_normal_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.pt.path_tracer.as_ref().map(|p| p.normal_buffer())
+    }
+
+    /// Access to the underlying GPU context — needed by the OIDN denoiser
+    /// to share the `wgpu::Device`/`Queue`/`Adapter`/`Instance` quartet.
+    pub fn gpu_context(&self) -> &Arc<render_core::gpu::GpuContext> {
+        &self.ctx
+    }
+
     fn pt_frame_count_impl(&self) -> u32 {
         self.pt
             .path_tracer

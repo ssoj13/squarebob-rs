@@ -396,6 +396,12 @@ pub struct PathTraceCompute {
     accum_buffer: wgpu::Buffer,
     // Variance buffer (M2 for Welford's algorithm, vec4<f32> per pixel)
     variance_buffer: wgpu::Buffer,
+    // Primary-hit albedo / normal AOVs (vec4<f32> per pixel, full-image
+    // sized). Written from the megakernel at bounce == 0. Consumed by the
+    // OIDN denoiser when the renderer is in megakernel mode. Race writes
+    // across samples are safe — primary hits are deterministic per pixel.
+    albedo_aov_buffer: wgpu::Buffer,
+    normal_aov_buffer: wgpu::Buffer,
 
     // Environment map
     #[allow(dead_code)]
@@ -435,7 +441,10 @@ pub struct PathTraceCompute {
 
     // Progressive frame counter
     pub frame_count: u32,
-    pub max_samples: u32,
+    /// Target global SPP. Renamed from `max_samples` — name now matches the
+    /// V-Ray-style "samples" UX semantics: one number drives total
+    /// accumulation; `dispatch` early-returns once accumulated_spp >= samples.
+    pub samples: u32,
 
     /// Last camera position for change detection (resets accumulation on move)
     pub last_camera_pos: Option<[f32; 3]>,
@@ -509,18 +518,10 @@ pub struct PathTraceCompute {
     last_pathguide_svo_resolution: u32,
     guide_buffer: wgpu::Buffer,
 
-    // Denoiser (optional, Stage D.2 — à-trous edge-aware filter).
-    // When `denoise_enabled`, dispatch() runs the filter after the PT
-    // compute pass and rewires `blit_bind_group` to read the denoised
-    // texture. When disabled, blit reads `output_view` (raw PT) directly.
-    denoiser: Option<crate::denoiser::DenoiserPipeline>,
-    denoise_enabled: bool,
-    denoise_iterations: u32,
-    denoise_sigma_color: f32,
-    /// Tracks whether `blit_bind_group` currently points at the denoiser
-    /// output (true) or at `output_view` (false). Used to avoid
-    /// rebuilding the BG every frame when state hasn't changed.
-    blit_bg_uses_denoiser: bool,
+    // Denoising is now handled outside the megakernel by `pt-denoise-oidn`,
+    // which consumes `output_texture` (and AOV buffers, when wavefront is
+    // active) and produces a separate result texture displayed by the blit
+    // pass. The megakernel no longer owns any denoise state.
     scene_bounds: Option<([f32; 3], [f32; 3])>,
     history_dirty: bool,
 }
@@ -810,6 +811,28 @@ impl PathTraceCompute {
                     },
                     count: None,
                 },
+                // @binding(19) Primary-hit albedo AOV for OIDN.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 19,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // @binding(20) Primary-hit world-space normal AOV for OIDN.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 20,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -922,6 +945,10 @@ impl PathTraceCompute {
         let (output_texture, output_view) = Self::create_output(device, width, height);
         let accum_buffer = Self::create_accum_buffer(device, width, height);
         let variance_buffer = Self::create_variance_buffer(device, width, height);
+        let albedo_aov_buffer =
+            Self::create_aov_buffer(device, "pt_albedo_aov", width, height);
+        let normal_aov_buffer =
+            Self::create_aov_buffer(device, "pt_normal_aov", width, height);
 
         // Blit pipeline
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1071,7 +1098,7 @@ impl PathTraceCompute {
             pick_params_buffer,
             pick_result_buffer,
             pick_readback_buffer,
-            max_samples: 512,
+            samples: 512,
             last_camera_pos: None,
             last_view_proj: None,
             prev_view_proj: None,
@@ -1081,6 +1108,8 @@ impl PathTraceCompute {
             output_view,
             accum_buffer,
             variance_buffer,
+            albedo_aov_buffer,
+            normal_aov_buffer,
             env_texture,
             env_view,
             env_sampler,
@@ -1141,33 +1170,7 @@ impl PathTraceCompute {
             spectral_samples: 1,
             spectral_dispersion: 0,
             history_dirty: false,
-            denoiser: None,
-            denoise_enabled: false,
-            denoise_iterations: 3,
-            denoise_sigma_color: 0.3,
-            blit_bg_uses_denoiser: false,
         }
-    }
-
-    /// Enable/disable the path-tracer denoiser. Lazy-instantiates the
-    /// pipeline on first enable (allocates two ping-pong textures sized
-    /// to the current viewport). Stage D.2 of the TODO4 roadmap.
-    pub fn set_denoise_enabled(&mut self, device: &wgpu::Device, enabled: bool) {
-        self.denoise_enabled = enabled;
-        if enabled && self.denoiser.is_none() {
-            self.denoiser = Some(crate::denoiser::DenoiserPipeline::new(
-                device,
-                self.width,
-                self.height,
-            ));
-        }
-    }
-
-    /// Update denoiser iteration count and color edge-stop sigma.
-    /// `iterations` is clamped to 1..=5; `sigma_color` to >= 1e-3.
-    pub fn set_denoise_options(&mut self, iterations: u32, sigma_color: f32) {
-        self.denoise_iterations = iterations.clamp(1, 5);
-        self.denoise_sigma_color = sigma_color.max(1e-3);
     }
 
     /// Enable/disable ReSTIR. Stage G.B: when `di` is true, the megakernel
@@ -1327,9 +1330,9 @@ impl PathTraceCompute {
 
     fn effective_max_samples(&self) -> u32 {
         if self.adaptive_config.enabled && self.adaptive.is_some() {
-            self.max_samples.min(self.adaptive_config.max_spp.max(1))
+            self.samples.min(self.adaptive_config.max_spp.max(1))
         } else {
-            self.max_samples
+            self.samples
         }
     }
 
@@ -1367,7 +1370,7 @@ impl PathTraceCompute {
             width: self.width,
             height: self.height,
             min_spp: self.adaptive_config.min_spp,
-            max_spp: self.adaptive_config.max_spp.min(self.max_samples).max(1),
+            max_spp: self.adaptive_config.max_spp.min(self.samples).max(1),
             variance_threshold: self.adaptive_config.variance_threshold,
             _pad: [0.0; 3],
             _pad2: [0.0; 4],
@@ -1429,6 +1432,54 @@ impl PathTraceCompute {
 
     pub fn set_wavefront_rr_enabled(&mut self, enabled: bool) {
         self.wavefront_rr_enabled = enabled;
+    }
+
+    /// Output color texture (Rgba32Float) holding the sample-normalized PT
+    /// accumulator after the latest `dispatch()`. Used by the OIDN denoiser
+    /// as a `copy_texture_to_buffer` source.
+    pub fn output_texture(&self) -> &wgpu::Texture {
+        &self.output_texture
+    }
+
+    /// Shader-readable view of [`Self::output_texture`].
+    pub fn output_view(&self) -> &wgpu::TextureView {
+        &self.output_view
+    }
+
+    /// Active wavefront pipeline, when wavefront mode is enabled. Exposes
+    /// the per-pixel albedo / normal AOV buffers via
+    /// [`pt_wavefront::WavefrontPipeline::albedo_buf`] etc.
+    pub fn wavefront(&self) -> Option<&pt_wavefront::WavefrontPipeline> {
+        self.wavefront.as_ref()
+    }
+
+    /// Per-pixel primary-hit albedo AOV (`vec4<f32>`, full-image sized).
+    /// Returned regardless of backend mode:
+    /// - megakernel writes its own buffer at `bounce == 0` inside the main
+    ///   PT compute shader;
+    /// - wavefront writes its own buffer inside `shade.wgsl` (also bounce 0).
+    /// In wavefront mode the wavefront buffer is authoritative; otherwise
+    /// the megakernel buffer is returned. Consumers (OIDN) don't need to
+    /// know which path is active.
+    pub fn albedo_buffer(&self) -> &wgpu::Buffer {
+        match &self.wavefront {
+            Some(wf) if self.wavefront_config.enabled => wf.albedo_buf(),
+            _ => &self.albedo_aov_buffer,
+        }
+    }
+
+    /// Per-pixel primary-hit world-space normal AOV. See [`Self::albedo_buffer`]
+    /// for backend dispatch rationale.
+    pub fn normal_buffer(&self) -> &wgpu::Buffer {
+        match &self.wavefront {
+            Some(wf) if self.wavefront_config.enabled => wf.normal_buf(),
+            _ => &self.normal_aov_buffer,
+        }
+    }
+
+    /// Current viewport size used by the PT output texture and AOV buffers.
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     pub fn set_spectral_options(&mut self, mode: u32, samples: u32, dispersion: u32) {
@@ -1803,6 +1854,14 @@ impl PathTraceCompute {
                     wgpu::BindGroupEntry {
                         binding: 11,
                         resource: guide.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wf.albedo_buf().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: wf.normal_buf().as_entire_binding(),
                     },
                 ],
             });
@@ -2879,7 +2938,7 @@ impl PathTraceCompute {
         log::debug!(
             "WF dispatch: frame {}/{}, full={}x{}, wf_buf={}x{}, tile={}, bounces={}, restir={}, pathguide={}, adaptive={}",
             self.frame_count,
-            self.max_samples,
+            self.samples,
             full_w,
             full_h,
             wf_w,
@@ -3505,6 +3564,18 @@ impl PathTraceCompute {
         })
     }
 
+    fn create_aov_buffer(device: &wgpu::Device, label: &str, width: u32, height: u32) -> wgpu::Buffer {
+        let size = (width * height) as u64 * 16;
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: size.max(16),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
     fn create_variance_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
         let size = (width * height) as u64 * 16; // M2 (vec4) for Welford's algorithm
         log::debug!("PT variance buffer: {}x{} -> {} bytes", width, height, size);
@@ -3699,6 +3770,10 @@ impl PathTraceCompute {
         self.output_view = view;
         self.accum_buffer = Self::create_accum_buffer(device, width, height);
         self.variance_buffer = Self::create_variance_buffer(device, width, height);
+        self.albedo_aov_buffer =
+            Self::create_aov_buffer(device, "pt_albedo_aov", width, height);
+        self.normal_aov_buffer =
+            Self::create_aov_buffer(device, "pt_normal_aov", width, height);
         self.guide_buffer = Self::create_guide_buffer(device, width, height);
         self.frame_count = 0;
         if let Some(wf) = &mut self.wavefront {
@@ -3710,14 +3785,6 @@ impl PathTraceCompute {
         if let Some(ad) = &mut self.adaptive {
             ad.resize(device, width, height);
         }
-        if let Some(dn) = &mut self.denoiser {
-            dn.resize(device, width, height);
-        }
-        // Blit BG references self.output_view which has just been
-        // recreated; force rebuild on next dispatch by clearing the
-        // "denoiser owns blit input" flag (update_pipeline_bindings
-        // rebuilds blit_bind_group at end of resize-related setup).
-        self.blit_bg_uses_denoiser = false;
         let fallback_samples = vec![u32::MAX; (width * height).max(1) as usize];
         self.sample_map_fallback = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("pt_sample_map_fallback"),
@@ -4033,6 +4100,14 @@ impl PathTraceCompute {
                     binding: 18,
                     resource: self.emissive_alias_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 19,
+                    resource: self.albedo_aov_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 20,
+                    resource: self.normal_aov_buffer.as_entire_binding(),
+                },
             ],
         }));
 
@@ -4347,74 +4422,6 @@ impl PathTraceCompute {
         let elapsed_ms = dispatch_start.elapsed().as_secs_f64() * 1000.0;
         log::trace!("PT dispatch: done ({:.2}ms)", elapsed_ms);
         true
-    }
-
-    /// Run the à-trous denoiser if enabled, and rewire the blit bind
-    /// group so the next `blit()` reads the denoised texture instead
-    /// of the raw PT output. Idempotent — when denoising is OFF, only
-    /// rebuilds the blit BG once on the OFF→ON edge to point back at
-    /// `self.output_view`. Stage D.2 of TODO4.
-    ///
-    /// Call sequence per frame: `dispatch()` → `apply_denoiser()` → `blit()`.
-    pub fn apply_denoiser(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        if self.denoise_enabled {
-            // Take ownership of the denoiser temporarily so we can
-            // borrow `self.output_view` and `self.blit_bind_group_layout`
-            // while denoiser.dispatch holds &mut to the denoiser.
-            let Some(mut denoiser) = self.denoiser.take() else {
-                return;
-            };
-            denoiser.dispatch(
-                device,
-                queue,
-                encoder,
-                &self.output_view,
-                self.denoise_iterations,
-                self.denoise_sigma_color,
-            );
-            let denoised_view = denoiser
-                .output_view()
-                .expect("denoiser output_view missing after dispatch");
-            self.blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pt_blit_bg_denoised"),
-                layout: &self.blit_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(denoised_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
-                    },
-                ],
-            }));
-            self.blit_bg_uses_denoiser = true;
-            self.denoiser = Some(denoiser);
-        } else if self.blit_bg_uses_denoiser {
-            // Denoiser just turned OFF — rebuild blit BG to point at the
-            // raw PT output again.
-            self.blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pt_blit_bg"),
-                layout: &self.blit_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.output_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
-                    },
-                ],
-            }));
-            self.blit_bg_uses_denoiser = false;
-        }
     }
 
     /// Blit the path tracer output to a render target with tone mapping.

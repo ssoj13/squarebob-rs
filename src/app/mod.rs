@@ -57,7 +57,11 @@ use helpers::{compute_ext_stats, find_node_by_path};
 use state::{PersistState, SavedOpts};
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, cli: crate::CliOptions) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        cli: crate::CliOptions,
+        gpu_ctx: Arc<GpuContext>,
+    ) -> Self {
         let default_path = if cfg!(windows) {
             "C:\\".to_string()
         } else {
@@ -189,48 +193,34 @@ impl App {
             egui::Visuals::light()
         });
 
-        // Use eframe's wgpu device for zero-copy rendering
-        // Note: eframe's device may not have POLYGON_MODE_LINE feature,
-        // so we check before using it for our renderer
+        // Wire up wgpu state. We built `gpu_ctx` in main.rs and handed both
+        // it and a `WgpuSetup::Existing` to eframe, so `cc.wgpu_render_state`
+        // is guaranteed to wrap the *same* device/queue as `gpu_ctx`. No
+        // feature checks, no fallback adapter — single shared GPU context.
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
             app.wgpu_render_state = Some(render_state.clone());
-            let error_flag = app.wgpu_error_flag.clone();
-            render_state
-                .device
-                .on_uncaptured_error(Arc::new(move |err| {
-                    log::error!("wgpu uncaptured error: {:?}", err);
-                    error_flag.store(true, Ordering::SeqCst);
-                }));
-            let limits = render_state.device.limits();
-            log::info!(
-                "wgpu limits: max_storage_buffer_binding_size={}, max_storage_buffers_per_shader_stage={}, max_uniform_buffers_per_shader_stage={}, max_bind_groups={}, max_texture_dimension_2d={}, max_buffer_size={}, min_uniform_buffer_offset_alignment={}, min_storage_buffer_offset_alignment={}",
-                limits.max_storage_buffer_binding_size,
-                limits.max_storage_buffers_per_shader_stage,
-                limits.max_uniform_buffers_per_shader_stage,
-                limits.max_bind_groups,
-                limits.max_texture_dimension_2d,
-                limits.max_buffer_size,
-                limits.min_uniform_buffer_offset_alignment,
-                limits.min_storage_buffer_offset_alignment
-            );
-            let has_polygon_mode = render_state
-                .device
-                .features()
-                .contains(wgpu::Features::POLYGON_MODE_LINE);
-            if has_polygon_mode {
-                // Use eframe's device for zero-copy
-                let gpu_ctx = GpuContext::from_eframe(
-                    Arc::new(render_state.device.clone()),
-                    Arc::new(render_state.queue.clone()),
-                );
-                app.gpu_context = Some(Arc::new(gpu_ctx));
-                log::info!("Using eframe wgpu device for zero-copy rendering");
-            } else {
-                log::warn!("eframe device lacks POLYGON_MODE_LINE, will create separate device");
-            }
-
-            // Note: using egui native texture display, no callback resources needed
         }
+
+        let error_flag = app.wgpu_error_flag.clone();
+        gpu_ctx
+            .device
+            .on_uncaptured_error(Arc::new(move |err| {
+                log::error!("wgpu uncaptured error: {:?}", err);
+                error_flag.store(true, Ordering::SeqCst);
+            }));
+        let limits = gpu_ctx.device.limits();
+        log::info!(
+            "wgpu limits: max_storage_buffer_binding_size={}, max_storage_buffers_per_shader_stage={}, max_uniform_buffers_per_shader_stage={}, max_bind_groups={}, max_texture_dimension_2d={}, max_buffer_size={}, min_uniform_buffer_offset_alignment={}, min_storage_buffer_offset_alignment={}",
+            limits.max_storage_buffer_binding_size,
+            limits.max_storage_buffers_per_shader_stage,
+            limits.max_uniform_buffers_per_shader_stage,
+            limits.max_bind_groups,
+            limits.max_texture_dimension_2d,
+            limits.max_buffer_size,
+            limits.min_uniform_buffer_offset_alignment,
+            limits.min_storage_buffer_offset_alignment
+        );
+        app.gpu_context = Some(gpu_ctx);
 
         app
     }
@@ -539,15 +529,9 @@ impl App {
         self.viewport.width = w;
         self.viewport.height = h;
 
-        // GPU context should already be initialized from eframe in App::new()
-        // Fallback to creating our own if not available
-        let needs_gpu = self.render_mode == RenderMode::Mode3D
-            || (self.render_mode == RenderMode::Mode2D
-                && self.render_backend == RenderBackend::Gpu);
-
-        if needs_gpu && self.gpu_context.is_none() {
-            self.gpu_context = GpuContext::new().map(Arc::new);
-        }
+        // GPU context is always populated by App::new from main.rs's shared
+        // setup — no per-mode fallback creation needed.
+        let _ = (RenderMode::Mode3D, RenderBackend::Gpu); // explicit: paths used elsewhere
 
         if self.render_mode == RenderMode::Mode3D {
             if self.renderer_3d.is_none() {

@@ -48,7 +48,7 @@ pub(crate) fn render_path_traced_no_readback(
 
     let pt = renderer.pt.path_tracer.as_mut().unwrap();
     pt.resize(&renderer.ctx.device, width, height);
-    pt.max_samples = opts.pt_max_samples;
+    pt.samples = opts.pt_samples;
     pt.set_emissive_sampling(
         &renderer.ctx.queue,
         opts.pt_emissive_sampling,
@@ -327,8 +327,6 @@ pub(crate) fn render_path_traced_no_readback(
         opts.pt_spectral_samples,
         if opts.pt_spectral_dispersion { 1 } else { 0 },
     );
-    pt.set_denoise_enabled(&renderer.ctx.device, opts.pt_denoise_enabled);
-    pt.set_denoise_options(opts.pt_denoise_iterations, opts.pt_denoise_sigma_color);
     pt.set_wavefront_tile_size(opts.pt_wavefront_tile_size);
     pt.update_env_params(
         &renderer.ctx.queue,
@@ -390,7 +388,8 @@ pub(crate) fn render_path_traced_no_readback(
         .targets
         .as_ref()
         .expect("targets not built — call ensure_render_targets before render");
-    pt.apply_denoiser(&renderer.ctx.device, &renderer.ctx.queue, &mut encoder);
+    // OIDN denoise is invoked from the app layer (`pt-denoise-oidn`),
+    // not from the megakernel render path.
     pt.blit(&mut encoder, &targets.render_view);
     log::trace!("PT: blit called, target size {:?}", targets.size);
 

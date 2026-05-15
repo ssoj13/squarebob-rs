@@ -85,6 +85,10 @@ struct EnvParams {
 @group(0) @binding(9) var env_sampler: sampler;
 @group(0) @binding(10) var<uniform> env: EnvParams;
 @group(0) @binding(11) var<storage, read_write> guide: array<u32>;
+// AOVs for OIDN denoiser. Written only on primary hit (ray.bounce == 0).
+// Race writes across samples are safe because primary hits are deterministic.
+@group(0) @binding(12) var<storage, read_write> albedo_aov: array<vec4<f32>>;
+@group(0) @binding(13) var<storage, read_write> normal_aov: array<vec4<f32>>;
 
 fn guide_base(idx: u32) -> u32 {
     return idx * 6u;
@@ -298,6 +302,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Miss - accumulate sky color and end path
     if hit.hit == 0u {
+        if ray.bounce == 0u {
+            // Primary miss: zero out AOVs so OIDN sees a deterministic
+            // "background" (the sky is the visible color; the denoiser is
+            // told there's no surface here).
+            albedo_aov[pixel_id] = vec4<f32>(0.0);
+            normal_aov[pixel_id] = vec4<f32>(0.0);
+        }
         let sky = sky_color(ray.dir);
         let tint = spectral_tint(&seed, params.spectral_mode, params.spectral_samples, params.spectral_dispersion, ray.bounce);
         let contrib = ray.throughput * sky * tint;
@@ -308,6 +319,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let inst = instances[hit.instance_id];
     let mat = materials[inst.material_id];
     let hit_pos = ray.origin + ray.dir * hit.t;
+
+    // Primary-hit AOVs for OIDN. base_color * instance tint = surface albedo
+    // before any tone curve. World-space normal goes through unchanged; OIDN
+    // accepts both view-space and world-space as long as it's consistent.
+    if ray.bounce == 0u {
+        let primary_albedo = mat.base_color_weight.rgb * inst.color.rgb;
+        albedo_aov[pixel_id] = vec4<f32>(primary_albedo, 1.0);
+        normal_aov[pixel_id] = vec4<f32>(hit.normal, 1.0);
+    }
 
     // Accumulate emission (if any)
     let emission = mat.emission_color_weight.rgb * mat.emission_color_weight.a;

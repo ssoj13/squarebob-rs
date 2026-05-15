@@ -1,0 +1,516 @@
+//! `pt-denoise-oidn` — Intel OIDN integration for squarebob-rs path-tracer output.
+//!
+//! Runs the OIDN U-Net on the *same* wgpu device as the renderer (shared via
+//! `cubecl_wgpu::init_device(WgpuSetup{...})`). Burn-wgpu allocates its tensors
+//! on that shared device, so the only cross-system bridge is the input/output
+//! staging on the host: the Image-based API in `oidn-rs` today still expects
+//! CPU slices. Phase I in `oidn-rs` lifts this to pure GPU tensors and removes
+//! the host roundtrip; the public API here stays unchanged.
+//!
+//! Pipeline per `denoise()` call:
+//! 1. `copy_texture_to_buffer(color_tex)` + `copy_buffer_to_buffer(albedo/normal)`
+//!    into mappable staging buffers on the *same* wgpu device.
+//! 2. `device.poll(Wait)` + `map_async(Read)` → contiguous `Vec<u8>` per input.
+//! 3. Strip alpha (`Rgba32Float` → `Rgb32f` 12-byte stride) into f32 slices.
+//! 4. Build a one-shot `RtFilter<WgpuBackend>`, set inputs, commit, execute.
+//! 5. `take_output()` → `queue.write_texture(result_texture)`.
+//!
+//! The denoiser is built lazily on the first `denoise()` call with a
+//! non-`Off` mode, so app startup pays no TZA load cost.
+
+#![forbid(unsafe_op_in_unsafe_fn)]
+
+use std::path::PathBuf;
+use std::time::Instant;
+
+use anyhow::Result;
+use render_core::gpu::GpuContext;
+
+use oidn_rs::filter::Filter;
+pub use oidn_rs::Quality;
+
+// ---------- Public API ----------
+
+/// Inputs the denoiser feeds into OIDN. Higher modes pick a richer model:
+/// `Color` → `rt_hdr`, `ColorAlbedo` → `rt_hdr_alb`, `ColorAlbedoNormal` →
+/// `rt_hdr_alb_nrm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OidnMode {
+    Off,
+    Color,
+    ColorAlbedo,
+    #[default]
+    ColorAlbedoNormal,
+}
+
+impl OidnMode {
+    /// `(uses_albedo, uses_normal)` — drives which AOV buffers the caller
+    /// must supply to [`OidnDenoiser::denoise`].
+    pub fn requires_aov(self) -> (bool, bool) {
+        match self {
+            Self::Off => (false, false),
+            Self::Color => (false, false),
+            Self::ColorAlbedo => (true, false),
+            Self::ColorAlbedoNormal => (true, true),
+        }
+    }
+}
+
+/// Lazy-built OIDN denoiser.
+pub struct OidnDenoiser {
+    weights_dir: PathBuf,
+
+    mode: OidnMode,
+    quality: Quality,
+    width: u32,
+    height: u32,
+
+    /// Linear `Rgba32Float` result texture, same dims as input. Lazily allocated.
+    result_texture: Option<wgpu::Texture>,
+    result_view: Option<wgpu::TextureView>,
+
+    /// Last successful execute() wallclock for UI display.
+    last_latency_ms: Option<f32>,
+
+    /// Burn device sharing squarebob's wgpu setup. Built on first denoise.
+    burn_device: Option<burn_wgpu::WgpuDevice>,
+}
+
+impl OidnDenoiser {
+    pub fn new(_ctx: &GpuContext, width: u32, height: u32, weights_dir: PathBuf) -> Self {
+        Self {
+            weights_dir,
+            mode: OidnMode::default(),
+            quality: Quality::Balanced,
+            width,
+            height,
+            result_texture: None,
+            result_view: None,
+            last_latency_ms: None,
+            burn_device: None,
+        }
+    }
+
+    pub fn resize(&mut self, _ctx: &GpuContext, width: u32, height: u32) {
+        if self.width == width && self.height == height {
+            return;
+        }
+        self.width = width;
+        self.height = height;
+        self.result_texture = None;
+        self.result_view = None;
+    }
+
+    pub fn set_mode(&mut self, mode: OidnMode) {
+        self.mode = mode;
+    }
+
+    pub fn set_quality(&mut self, quality: Quality) {
+        self.quality = quality;
+    }
+
+    pub fn mode(&self) -> OidnMode {
+        self.mode
+    }
+
+    pub fn quality(&self) -> Quality {
+        self.quality
+    }
+
+    pub fn result_view(&self) -> Option<&wgpu::TextureView> {
+        self.result_view.as_ref()
+    }
+
+    pub fn last_latency_ms(&self) -> Option<f32> {
+        self.last_latency_ms
+    }
+
+    /// Run a single denoise pass. `color_tex` must be the PT accumulator
+    /// (Rgba32Float, sample-normalized — the divide-by-frame-count step
+    /// has already happened, e.g. in wavefront's `finalize.wgsl`).
+    /// `albedo_buf` / `normal_buf` are required when [`OidnMode`] needs them;
+    /// see [`OidnMode::requires_aov`]. The supplied `encoder` is consumed —
+    /// caller must obtain a fresh one for any subsequent work, since
+    /// `denoise` submits its own command stream to the queue.
+    pub fn denoise(
+        &mut self,
+        ctx: &GpuContext,
+        encoder: wgpu::CommandEncoder,
+        color_tex: &wgpu::Texture,
+        albedo_buf: Option<&wgpu::Buffer>,
+        normal_buf: Option<&wgpu::Buffer>,
+    ) -> Result<()> {
+        if matches!(self.mode, OidnMode::Off) {
+            return Ok(());
+        }
+
+        // Graceful downgrade: if the configured mode needs AOVs but they
+        // aren't available (e.g. wavefront PT disabled), drop to the richest
+        // mode the supplied inputs support. This keeps the default preset
+        // (`ColorAlbedoNormal` + wavefront off) working out of the box —
+        // it produces a `Color` denoise rather than an error.
+        let effective_mode = match self.mode {
+            OidnMode::ColorAlbedoNormal => {
+                if normal_buf.is_some() && albedo_buf.is_some() {
+                    OidnMode::ColorAlbedoNormal
+                } else if albedo_buf.is_some() {
+                    OidnMode::ColorAlbedo
+                } else {
+                    OidnMode::Color
+                }
+            }
+            OidnMode::ColorAlbedo => {
+                if albedo_buf.is_some() {
+                    OidnMode::ColorAlbedo
+                } else {
+                    OidnMode::Color
+                }
+            }
+            other => other,
+        };
+        if effective_mode != self.mode {
+            log::debug!(
+                "OIDN: mode {:?} downgraded to {:?} (AOV unavailable)",
+                self.mode, effective_mode
+            );
+        }
+        let use_albedo = matches!(
+            effective_mode,
+            OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal
+        );
+        let use_normal = matches!(effective_mode, OidnMode::ColorAlbedoNormal);
+
+        // Lazy init: Burn device + result texture.
+        if self.burn_device.is_none() {
+            self.burn_device = Some(make_burn_device(ctx)?);
+            log::info!("OIDN: Burn-wgpu device initialised on shared wgpu setup");
+        }
+        if self.result_texture.is_none() {
+            let (tex, view) = create_result_texture(&ctx.device, self.width, self.height);
+            self.result_texture = Some(tex);
+            self.result_view = Some(view);
+        }
+
+        let started = Instant::now();
+        // From here on use `effective_mode` rather than `self.mode` so the
+        // model picker and AOV reads stay consistent with the downgrade.
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let n = w * h;
+
+        // Color readback. PT output is Rgba32Float = 16 bytes/pixel. We allocate
+        // an aligned staging buffer (256-byte row pitch as required by wgpu's
+        // `copy_texture_to_buffer`), then map and tightly repack into f32x4
+        // before stripping alpha.
+        let bpp = 16u64;
+        let unpadded_bpr = (w as u64) * bpp;
+        let padded_bpr = (unpadded_bpr + 255) & !255;
+        let color_size = padded_bpr * (h as u64);
+        let color_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("oidn_color_staging"),
+            size: color_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = encoder;
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: color_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &color_staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr as u32),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        // AOV buffer readback: source buffers are already vec4<f32>, tightly
+        // packed at full_w*full_h*16 bytes — no padding needed. We copy them
+        // into mappable staging buffers regardless, because the source buffers
+        // are not MAP_READ.
+        // Respect downgrade: drop AOV inputs we don't intend to consume so
+        // we don't copy 32 MB of normals just to throw them away.
+        let albedo_buf = if use_albedo { albedo_buf } else { None };
+        let normal_buf = if use_normal { normal_buf } else { None };
+
+        let aov_size = (n as u64) * 16;
+        let albedo_staging = albedo_buf.map(|src| {
+            let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("oidn_albedo_staging"),
+                size: aov_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_buffer_to_buffer(src, 0, &buf, 0, aov_size);
+            buf
+        });
+        let normal_staging = normal_buf.map(|src| {
+            let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("oidn_normal_staging"),
+                size: aov_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_buffer_to_buffer(src, 0, &buf, 0, aov_size);
+            buf
+        });
+
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+
+        // Map everything and pull bytes back to host.
+        let color_rgb = map_and_strip_rgba_padded(&ctx.device, &color_staging, w, h, padded_bpr)?;
+        let albedo_rgb = albedo_staging
+            .as_ref()
+            .map(|b| map_and_strip_rgba_tight(&ctx.device, b, n))
+            .transpose()?;
+        let normal_rgb = normal_staging
+            .as_ref()
+            .map(|b| map_and_strip_rgba_tight(&ctx.device, b, n))
+            .transpose()?;
+
+        // Build the filter and run inference.
+        let burn_device = self
+            .burn_device
+            .as_ref()
+            .expect("burn_device init guaranteed above");
+        let hdr = matches!(
+            self.mode,
+            OidnMode::Color | OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal
+        );
+
+        let mut filter = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
+            burn_device,
+            &self.weights_dir,
+        )
+        .hdr(hdr)
+        .quality(self.quality)
+        .build();
+
+        let color_img = oidn_rs::Image::from_rgb_f32(&color_rgb, w, h);
+        filter.set_color(&color_img);
+        if let Some(buf) = albedo_rgb.as_deref() {
+            let img = oidn_rs::Image::from_rgb_f32(buf, w, h);
+            filter.set_albedo(&img);
+        }
+        if let Some(buf) = normal_rgb.as_deref() {
+            let img = oidn_rs::Image::from_rgb_f32(buf, w, h);
+            filter.set_normal(&img);
+        }
+        filter.allocate_output(w, h, oidn_rs::PixelFormat::Rgb32f);
+        filter.commit().map_err(|e| anyhow::anyhow!("OIDN commit: {e:?}"))?;
+        filter.execute().map_err(|e| anyhow::anyhow!("OIDN execute: {e:?}"))?;
+        let (out_bytes, _, _, _) = filter
+            .take_output()
+            .ok_or_else(|| anyhow::anyhow!("OIDN take_output: empty"))?;
+
+        // Repack Rgb32f → Rgba32Float for the wgpu storage texture (alpha=1).
+        let out_f32: &[f32] = bytemuck::cast_slice(&out_bytes);
+        debug_assert_eq!(out_f32.len(), n * 3);
+        let mut rgba: Vec<f32> = Vec::with_capacity(n * 4);
+        for px in out_f32.chunks_exact(3) {
+            rgba.extend_from_slice(&[px[0], px[1], px[2], 1.0]);
+        }
+
+        // Upload into the result texture. wgpu handles row padding for textures
+        // larger than the unpadded width; our width is whatever the viewport is,
+        // and `bytes_per_row` here is the *unpadded* row size — write_texture
+        // computes the padded copy internally.
+        let result_tex = self.result_texture.as_ref().unwrap();
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: result_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&rgba),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((w * 16) as u32),
+                rows_per_image: Some(self.height),
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let elapsed = started.elapsed().as_secs_f32() * 1000.0;
+        self.last_latency_ms = Some(elapsed);
+        log::info!(
+            "OIDN: denoise {}×{} mode={:?} quality={:?} -> {:.1} ms",
+            self.width, self.height, self.mode, self.quality, elapsed
+        );
+
+        Ok(())
+    }
+}
+
+// ---------- Helpers ----------
+
+/// Construct a `burn_wgpu::WgpuDevice` that shares squarebob's wgpu setup.
+///
+/// Without this bridge OIDN would create its own adapter+device, forcing PCIe
+/// roundtrips on every input/output buffer. By feeding our `Instance`/
+/// `Adapter`/`Device`/`Queue` to `cubecl_wgpu::init_device`, Burn allocates
+/// its tensors on the *same* device.
+pub fn make_burn_device(ctx: &GpuContext) -> Result<burn_wgpu::WgpuDevice> {
+    let backend = ctx.adapter.get_info().backend;
+    let setup = cubecl_wgpu::WgpuSetup {
+        instance: (*ctx.instance).clone(),
+        adapter: (*ctx.adapter).clone(),
+        device: (*ctx.device).clone(),
+        queue: (*ctx.queue).clone(),
+        backend,
+    };
+    let device = cubecl_wgpu::init_device(setup, cubecl_wgpu::RuntimeOptions::default());
+    Ok(device)
+}
+
+/// Resolve the directory holding OIDN `.tza` weights in this order:
+/// 1. `$OIDN_WEIGHTS_DIR` (highest priority — runtime override).
+/// 2. `<exe_dir>/data/oidn-weights/`.
+/// 3. `<cwd>/data/oidn-weights/`.
+pub fn resolve_weights_dir() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("OIDN_WEIGHTS_DIR") {
+        let pb = PathBuf::from(p);
+        if pb.exists() {
+            return Ok(pb);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let pb = dir.join("data").join("oidn-weights");
+            if pb.exists() {
+                return Ok(pb);
+            }
+        }
+    }
+    let pb = std::path::Path::new("data").join("oidn-weights");
+    if pb.exists() {
+        return Ok(pb);
+    }
+    anyhow::bail!(
+        "OIDN weights directory not found. Set $OIDN_WEIGHTS_DIR or place \
+         weights at data/oidn-weights/ (next to the executable, or under \
+         the current working directory)."
+    )
+}
+
+fn create_result_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("oidn_result"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
+}
+
+/// Map a buffer that was filled from `copy_texture_to_buffer` (256-byte row
+/// padding), then strip alpha to produce a tight `Vec<f32>` of length
+/// `width * height * 3` in HWC order.
+fn map_and_strip_rgba_padded(
+    device: &wgpu::Device,
+    buf: &wgpu::Buffer,
+    width: usize,
+    height: usize,
+    padded_bpr: u64,
+) -> Result<Vec<f32>> {
+    let slice = buf.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    rx.recv()
+        .map_err(|e| anyhow::anyhow!("OIDN map_async channel: {e}"))?
+        .map_err(|e| anyhow::anyhow!("OIDN map_async: {e:?}"))?;
+
+    let mapped = slice.get_mapped_range();
+    let mut out = Vec::with_capacity(width * height * 3);
+    let padded = padded_bpr as usize;
+    for y in 0..height {
+        let row = &mapped[y * padded..y * padded + width * 16];
+        let row_f32: &[f32] = bytemuck::cast_slice(row);
+        for px in row_f32.chunks_exact(4) {
+            out.push(px[0]);
+            out.push(px[1]);
+            out.push(px[2]);
+        }
+    }
+    drop(mapped);
+    buf.unmap();
+    Ok(out)
+}
+
+/// Map a tightly-packed `vec4<f32>` storage buffer and strip alpha.
+fn map_and_strip_rgba_tight(
+    device: &wgpu::Device,
+    buf: &wgpu::Buffer,
+    n_pixels: usize,
+) -> Result<Vec<f32>> {
+    let slice = buf.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    rx.recv()
+        .map_err(|e| anyhow::anyhow!("OIDN map_async channel: {e}"))?
+        .map_err(|e| anyhow::anyhow!("OIDN map_async: {e:?}"))?;
+
+    let mapped = slice.get_mapped_range();
+    let src: &[f32] = bytemuck::cast_slice(&mapped);
+    debug_assert!(src.len() >= n_pixels * 4);
+    let mut out = Vec::with_capacity(n_pixels * 3);
+    for px in src.chunks_exact(4).take(n_pixels) {
+        out.push(px[0]);
+        out.push(px[1]);
+        out.push(px[2]);
+    }
+    drop(mapped);
+    buf.unmap();
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_aov_requirements() {
+        assert_eq!(OidnMode::Off.requires_aov(), (false, false));
+        assert_eq!(OidnMode::Color.requires_aov(), (false, false));
+        assert_eq!(OidnMode::ColorAlbedo.requires_aov(), (true, false));
+        assert_eq!(OidnMode::ColorAlbedoNormal.requires_aov(), (true, true));
+    }
+}

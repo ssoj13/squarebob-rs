@@ -37,7 +37,6 @@ pub enum SettingsTab {
     #[default]
     General,
     Rendering,
-    Denoiser,
     Exclusions,
     Extensions,
 }
@@ -241,6 +240,29 @@ pub struct App {
     pub(super) preset_last_save: std::time::Instant,
     pub(super) orbit_camera: OrbitCamera,
     pub(super) gpu_context: Option<Arc<GpuContext>>,
+    /// Lazy-built OIDN denoiser. Replaces the previous à-trous filter.
+    /// Materialised the first time the render loop sees a non-`Off` mode
+    /// and a built PT pipeline.
+    pub(super) oidn_denoiser: Option<pt_denoise_oidn::OidnDenoiser>,
+    /// One-shot trigger: UI sets this to true ("Denoise now"), the render
+    /// loop honours it once on the next frame and clears it.
+    pub(super) oidn_run_requested: bool,
+    /// Wallclock for the last successful OIDN pass, shown in the UI.
+    pub(super) oidn_last_latency_ms: Option<f32>,
+    /// True if OIDN has already run once during the current PT accumulation.
+    /// Reset whenever `pt_frame_count` drops (camera/scene change).
+    pub(super) oidn_denoised_this_accumulation: bool,
+    /// Last observed PT frame counter — used to detect accumulation resets.
+    pub(super) oidn_last_frame_count: u32,
+    /// True when the egui-registered texture currently points at the OIDN
+    /// result rather than the raw PT target. Drives transition logic in
+    /// `treemap_view::render_3d_callback` so we re-`update_egui_texture`
+    /// only on the raw↔oidn edge.
+    pub(super) oidn_display_is_denoised: bool,
+    /// Mirror of `oidn_display_is_denoised` from the previous frame, used
+    /// to detect raw↔oidn transitions even when this frame chose the same
+    /// state again.
+    pub(super) oidn_last_display_was_denoised: bool,
     pub(super) wgpu_render_state: Option<egui_wgpu::RenderState>,
     pub(super) renderer_2d_gpu: Option<GpuRenderer2D>,
     pub(super) renderer_3d: Option<Renderer3D>,
@@ -404,6 +426,13 @@ impl Default for App {
             preset_last_save: std::time::Instant::now(),
             orbit_camera: OrbitCamera::default(),
             gpu_context: None,
+            oidn_denoiser: None,
+            oidn_run_requested: false,
+            oidn_last_latency_ms: None,
+            oidn_denoised_this_accumulation: false,
+            oidn_last_frame_count: 0,
+            oidn_display_is_denoised: false,
+            oidn_last_display_was_denoised: false,
             wgpu_render_state: None,
             renderer_2d_gpu: None,
             renderer_3d: None,

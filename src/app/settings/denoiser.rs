@@ -1,162 +1,136 @@
-//! PT denoiser settings panel — Stage D.2 of the TODO4 roadmap.
+//! OIDN denoiser settings — replaces the previous à-trous panel.
 //!
-//! This is a dedicated tab so the denoiser controls are not buried
-//! inside the Rendering tab (which is already crowded with PT, ReSTIR,
-//! path-guiding, materials, hover, etc.).
-//!
-//! MVP variant: color-only edge stopping (à-trous filter). G-buffer
-//! guidance (normal/depth) is deferred — see
-//! `crates/pt-megakernel/src/denoiser/atrous.wgsl` and CHANGELOG.md.
+//! Controls live under Settings → Rendering. State lives on `Render3DOptions`
+//! as `pt_oidn_mode` (Off / Color / Color+Albedo / Color+Albedo+Normal),
+//! `pt_oidn_quality` (High / Balanced / Fast), and `pt_oidn_auto` (run
+//! denoiser automatically once `current_spp >= target_spp`). A manual
+//! "Denoise now" button forces a single pass regardless of `auto`.
 
-use super::LABEL_WIDTH;
+use super::{control_label, settings_grid, tinted_section};
 use crate::app::App;
 use eframe::egui;
+use render_shared::{OidnModeOption, OidnQualityOption};
 
 impl App {
-    /// Render the Denoiser settings tab.
     pub(super) fn ui_settings_denoiser(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
-        egui::CollapsingHeader::new(egui::RichText::new("Denoiser (À-trous)").heading())
-            .default_open(true)
-            .show(ui, |ui| {
-                egui::Grid::new("denoiser_grid")
-                    .num_columns(2)
-                    .spacing([8.0, 4.0])
-                    .min_col_width(LABEL_WIDTH)
-                    .show(ui, |ui| {
-                        // Master enable toggle.
-                        ui.label("Enabled:");
-                        ui.horizontal(|ui| {
-                            *changed |= ui
-                                .checkbox(&mut self.render_3d_opts.pt_denoise_enabled, "")
-                                .on_hover_text(
-                                    "Run an edge-aware à-trous filter on every PT sample. \
-                                     Reduces noise dramatically at low spp; loses some \
-                                     fine detail. Cost: ~1 ms / iteration at 1080p.",
-                                )
-                                .changed();
-                            ui.label(if self.render_3d_opts.pt_denoise_enabled {
-                                "ON"
-                            } else {
-                                "off"
-                            });
-                        });
-                        ui.end_row();
-
-                        // Iteration count (1..=5). Each iteration doubles the
-                        // effective filter footprint via the à-trous trick.
-                        ui.label("Iterations:");
-                        ui.horizontal(|ui| {
-                            let resp = ui.add_enabled(
-                                self.render_3d_opts.pt_denoise_enabled,
-                                egui::Slider::new(
-                                    &mut self.render_3d_opts.pt_denoise_iterations,
-                                    1..=5,
-                                )
-                                .clamping(egui::SliderClamping::Always)
-                                .text("passes"),
-                            );
-                            if resp.changed() {
-                                *changed = true;
+        tinted_section(
+            ui,
+            "Denoiser (OIDN)",
+            true,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                settings_grid(ui, "oidn_grid", |ui| {
+                    control_label(ui, "Mode:");
+                    let mode = &mut self.render_3d_opts.pt_oidn_mode;
+                    egui::ComboBox::from_id_salt("oidn_mode_cb")
+                        .selected_text(mode_label(*mode))
+                        .show_ui(ui, |ui| {
+                            for opt in [
+                                OidnModeOption::Off,
+                                OidnModeOption::Color,
+                                OidnModeOption::ColorAlbedo,
+                                OidnModeOption::ColorAlbedoNormal,
+                            ] {
+                                if ui
+                                    .selectable_label(*mode == opt, mode_label(opt))
+                                    .clicked()
+                                {
+                                    *mode = opt;
+                                    *changed = true;
+                                }
                             }
-                            resp.on_hover_text(
-                                "More iterations = larger smoothing radius (1, 2, 4, 8, 16 \
-                                 pixels). 3 is a good default; 5 for very low-spp renders.",
-                            );
                         });
-                        ui.end_row();
+                    ui.end_row();
 
-                        // Color edge-stop sigma. Smaller = more smoothing, less
-                        // edge preservation.
-                        ui.label("Color sigma:");
-                        ui.horizontal(|ui| {
-                            let resp = ui.add_enabled(
-                                self.render_3d_opts.pt_denoise_enabled,
-                                egui::Slider::new(
-                                    &mut self.render_3d_opts.pt_denoise_sigma_color,
-                                    0.05..=2.0,
-                                )
-                                .clamping(egui::SliderClamping::Always)
-                                .logarithmic(true)
-                                .text("σ_c"),
-                            );
-                            if resp.changed() {
-                                *changed = true;
+                    control_label(ui, "Quality:");
+                    let q = &mut self.render_3d_opts.pt_oidn_quality;
+                    egui::ComboBox::from_id_salt("oidn_quality_cb")
+                        .selected_text(quality_label(*q))
+                        .show_ui(ui, |ui| {
+                            for opt in [
+                                OidnQualityOption::High,
+                                OidnQualityOption::Balanced,
+                                OidnQualityOption::Fast,
+                            ] {
+                                if ui
+                                    .selectable_label(*q == opt, quality_label(opt))
+                                    .clicked()
+                                {
+                                    *q = opt;
+                                    *changed = true;
+                                }
                             }
-                            resp.on_hover_text(
-                                "Edge-stop strength: lower = more smoothing (less edge \
-                                 preservation). 0.3 is a good starting point. \
-                                 Bump up if denoised images look blurry; reduce if noise \
-                                 still leaks through.",
-                            );
                         });
-                        ui.end_row();
-                    });
+                    ui.end_row();
 
-                ui.add_space(8.0);
-
-                // Quick-apply preset buttons.
-                ui.horizontal(|ui| {
-                    ui.label("Presets:");
+                    control_label(ui, "Auto:");
                     if ui
-                        .button("Conservative")
-                        .on_hover_text("Light smoothing — preserves detail but leaves some noise.")
-                        .clicked()
-                    {
-                        self.render_3d_opts.pt_denoise_enabled = true;
-                        self.render_3d_opts.pt_denoise_iterations = 2;
-                        self.render_3d_opts.pt_denoise_sigma_color = 0.6;
-                        *changed = true;
-                    }
-                    if ui
-                        .button("Balanced")
-                        .on_hover_text("Default — good visual quality at low spp.")
-                        .clicked()
-                    {
-                        self.render_3d_opts.pt_denoise_enabled = true;
-                        self.render_3d_opts.pt_denoise_iterations = 3;
-                        self.render_3d_opts.pt_denoise_sigma_color = 0.3;
-                        *changed = true;
-                    }
-                    if ui
-                        .button("Aggressive")
+                        .checkbox(&mut self.render_3d_opts.pt_oidn_auto, "")
                         .on_hover_text(
-                            "Maximum smoothing — for very-low-spp interactive previews. \
-                         Loses fine detail.",
+                            "Run OIDN automatically once the accumulating render reaches \
+                             its sample target. Disable to use only the manual button.",
+                        )
+                        .changed()
+                    {
+                        *changed = true;
+                    }
+                    ui.end_row();
+
+                    control_label(ui, "Trigger:");
+                    if ui
+                        .button("Denoise now")
+                        .on_hover_text(
+                            "Force a single OIDN pass on the current PT accumulator. \
+                             Honors Mode and Quality. Latency depends on resolution and \
+                             quality preset (≈300 ms at 1080p, balanced).",
                         )
                         .clicked()
                     {
-                        self.render_3d_opts.pt_denoise_enabled = true;
-                        self.render_3d_opts.pt_denoise_iterations = 5;
-                        self.render_3d_opts.pt_denoise_sigma_color = 0.15;
-                        *changed = true;
+                        self.oidn_run_requested = true;
                     }
-                    if ui.button("Off").clicked() {
-                        self.render_3d_opts.pt_denoise_enabled = false;
-                        *changed = true;
-                    }
+                    ui.end_row();
                 });
 
                 ui.add_space(8.0);
 
-                // Architectural note for the user.
-                ui.label(
-                    egui::RichText::new(
-                        "MVP: color-only edge stopping. Future versions will add \
-                         normal/depth guidance from the wavefront PT's G-buffer for \
-                         better edge preservation.",
-                    )
-                    .small()
-                    .weak(),
-                );
+                if let Some(ms) = self.oidn_last_latency_ms {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Last denoise: {:.1} ms",
+                            ms
+                        ))
+                        .small(),
+                    );
+                }
 
                 ui.label(
                     egui::RichText::new(
-                        "Tip: the denoiser only runs when PT is enabled. With \
-                         path_tracing=false, this section is dormant.",
+                        "OIDN replaces the legacy à-trous filter with a U-Net trained \
+                         by Intel. Model picks scale with Mode + Quality. Weights live \
+                         in data/oidn-weights/. Runs on the same wgpu device as PT.",
                     )
                     .small()
                     .weak(),
                 );
-            });
+            },
+        );
+    }
+}
+
+fn mode_label(m: OidnModeOption) -> &'static str {
+    match m {
+        OidnModeOption::Off => "Off",
+        OidnModeOption::Color => "Color (rt_hdr)",
+        OidnModeOption::ColorAlbedo => "Color + Albedo (rt_hdr_alb)",
+        OidnModeOption::ColorAlbedoNormal => "Color + Albedo + Normal (rt_hdr_alb_nrm)",
+    }
+}
+
+fn quality_label(q: OidnQualityOption) -> &'static str {
+    match q {
+        OidnQualityOption::High => "High",
+        OidnQualityOption::Balanced => "Balanced",
+        OidnQualityOption::Fast => "Fast (small models)",
     }
 }

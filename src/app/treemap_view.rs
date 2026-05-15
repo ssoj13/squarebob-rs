@@ -976,7 +976,11 @@ impl App {
         if need_render {
             let t0 = std::time::Instant::now();
 
-            let render_state = self.wgpu_render_state.as_ref().unwrap();
+            // Clone the RenderState (cheap — all internals are Arc'd) so
+            // we don't hold an immutable borrow of `self.wgpu_render_state`
+            // through the later `maybe_run_oidn_denoise` call which needs
+            // `&mut self`.
+            let render_state = self.wgpu_render_state.clone().unwrap();
             #[cfg(debug_assertions)]
             let error_scope = render_state
                 .device
@@ -1014,31 +1018,57 @@ impl App {
             self.needs_render_3d = false;
             let t_render = t0.elapsed();
 
-            // Register/update texture with egui
-            if let Some(r) = &self.renderer_3d {
-                if let Some(texture) = r.get_render_texture() {
-                    if let Some(tex_id) = self.render_texture_id {
-                        if size_changed {
-                            // Size changed - update texture
-                            let mut renderer = render_state.renderer.write();
-                            renderer.update_egui_texture_from_wgpu_texture(
-                                &render_state.device,
-                                &texture.create_view(&wgpu::TextureViewDescriptor::default()),
-                                wgpu::FilterMode::Linear,
-                                tex_id,
-                            );
-                        }
-                    } else {
-                        // First time - register texture
+            // OIDN denoise pass. Fires only when PT is active, mode != Off,
+            // and (a) the user pressed "Denoise now", or (b) auto-mode is on
+            // and we've reached the sample target for the current
+            // accumulation (and haven't denoised it yet).
+            self.maybe_run_oidn_denoise(w, h);
+
+            // Register/update texture with egui. The displayed view is
+            // either the raw PT target (`get_render_texture()`) or the OIDN
+            // result texture, depending on whether a denoise pass landed
+            // this frame.
+            let oidn_view: Option<wgpu::TextureView> =
+                if self.oidn_display_is_denoised {
+                    self.oidn_denoiser
+                        .as_ref()
+                        .and_then(|d| d.result_view().cloned())
+                } else {
+                    None
+                };
+            let raw_view: Option<wgpu::TextureView> = self
+                .renderer_3d
+                .as_ref()
+                .and_then(|r| r.get_render_texture())
+                .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
+            let display_view = oidn_view.or(raw_view);
+
+            if let Some(view) = display_view.as_ref() {
+                if let Some(tex_id) = self.render_texture_id {
+                    // `size_changed` covers viewport resize; we also force an
+                    // update whenever we swap between raw and denoised, since
+                    // those are different wgpu textures.
+                    let display_kind_changed =
+                        self.oidn_last_display_was_denoised != self.oidn_display_is_denoised;
+                    if size_changed || display_kind_changed {
                         let mut renderer = render_state.renderer.write();
-                        self.render_texture_id = Some(renderer.register_native_texture(
+                        renderer.update_egui_texture_from_wgpu_texture(
                             &render_state.device,
-                            &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                            view,
                             wgpu::FilterMode::Linear,
-                        ));
+                            tex_id,
+                        );
                     }
+                } else {
+                    let mut renderer = render_state.renderer.write();
+                    self.render_texture_id = Some(renderer.register_native_texture(
+                        &render_state.device,
+                        view,
+                        wgpu::FilterMode::Linear,
+                    ));
                 }
             }
+            self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
             #[cfg(debug_assertions)]
             if let Some(err) = pollster::block_on(error_scope.pop()) {
                 log::error!("wgpu validation error after 3D render: {:?}", err);
@@ -1228,5 +1258,142 @@ impl App {
             self.handle_2d_interactions(ui, &resp, &ctx);
             self.handle_context_menu(&ctx);
         }
+    }
+}
+
+impl App {
+    /// Decide whether OIDN should run this frame and, if so, dispatch a
+    /// single denoise pass. Sets `self.oidn_display_is_denoised` to indicate
+    /// which texture the registration block downstream should bind for
+    /// display.
+    ///
+    /// Trigger logic (one-shot — not per-frame):
+    /// - Manual: user pressed "Denoise now" → `oidn_run_requested = true`.
+    /// - Auto: `pt_oidn_auto && current_spp >= target_spp && !already_denoised`.
+    ///
+    /// Camera/scene changes drop `pt_frame_count` back toward 0 — we detect
+    /// that and clear `oidn_denoised_this_accumulation` so the next target-spp
+    /// arrival fires OIDN again.
+    pub(super) fn maybe_run_oidn_denoise(&mut self, w: u32, h: u32) {
+        use pt_denoise_oidn::{OidnDenoiser, OidnMode, Quality};
+        use render_shared::{OidnModeOption, OidnQualityOption};
+
+        // PT must be running and OIDN enabled, otherwise force raw display.
+        let mode_opt = self.render_3d_opts.pt_oidn_mode;
+        if !self.render_3d_opts.path_tracing || mode_opt == OidnModeOption::Off {
+            self.oidn_display_is_denoised = false;
+            // Honor any pending manual click only when PT comes back up.
+            if !self.render_3d_opts.path_tracing {
+                self.oidn_run_requested = false;
+            }
+            return;
+        }
+
+        let Some(r) = self.renderer_3d.as_ref() else {
+            self.oidn_display_is_denoised = false;
+            return;
+        };
+        let current_spp = r.pt_frame_count();
+        let target_spp = r.pt_target_spp();
+
+        // Detect accumulation reset (camera / scene change).
+        if current_spp < self.oidn_last_frame_count {
+            self.oidn_denoised_this_accumulation = false;
+            self.oidn_display_is_denoised = false;
+        }
+        self.oidn_last_frame_count = current_spp;
+
+        let manual = self.oidn_run_requested;
+        let auto = self.render_3d_opts.pt_oidn_auto
+            && target_spp > 0
+            && current_spp >= target_spp
+            && !self.oidn_denoised_this_accumulation;
+
+        if !(manual || auto) {
+            return;
+        }
+
+        let Some(gpu_ctx) = self.gpu_context.clone() else {
+            return;
+        };
+        let Some(output_tex_view) = r.pt_output_texture() else {
+            return;
+        };
+        // `pt_output_texture` returns `&wgpu::Texture` borrowed from the
+        // renderer; we need an owned clone to pass into denoise() which
+        // also borrows `r` indirectly. wgpu textures are cheap to clone.
+        let output_tex = output_tex_view.clone();
+        let (pt_w, pt_h) = r.pt_dimensions().unwrap_or((w, h));
+        let albedo = r.pt_albedo_buffer().cloned();
+        let normal = r.pt_normal_buffer().cloned();
+
+        // Lazy build (or rebuild on resize).
+        let need_new = match &self.oidn_denoiser {
+            None => true,
+            Some(_d) => false, // resize() inside handles dims mismatch
+        };
+        if need_new {
+            match pt_denoise_oidn::resolve_weights_dir() {
+                Ok(dir) => {
+                    self.oidn_denoiser =
+                        Some(OidnDenoiser::new(&gpu_ctx, pt_w, pt_h, dir));
+                }
+                Err(e) => {
+                    log::warn!("OIDN disabled: {e}");
+                    self.oidn_run_requested = false;
+                    return;
+                }
+            }
+        }
+
+        let Some(denoiser) = self.oidn_denoiser.as_mut() else {
+            return;
+        };
+        denoiser.resize(&gpu_ctx, pt_w, pt_h);
+        denoiser.set_mode(map_mode(mode_opt));
+        denoiser.set_quality(map_quality(self.render_3d_opts.pt_oidn_quality));
+
+        let encoder = gpu_ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("oidn_denoise_encoder"),
+        });
+        match denoiser.denoise(&gpu_ctx, encoder, &output_tex, albedo.as_ref(), normal.as_ref()) {
+            Ok(()) => {
+                self.oidn_last_latency_ms = denoiser.last_latency_ms();
+                self.oidn_denoised_this_accumulation = true;
+                self.oidn_run_requested = false;
+                self.oidn_display_is_denoised = true;
+            }
+            Err(e) => {
+                log::warn!("OIDN denoise failed: {e}");
+                self.oidn_run_requested = false;
+                self.oidn_display_is_denoised = false;
+            }
+        }
+
+        // Quiet the local `_` references introduced by `OidnMode` import path.
+        let _ = OidnMode::Off;
+        let _ = Quality::Balanced;
+        let _ = OidnQualityOption::Balanced;
+    }
+}
+
+fn map_mode(m: render_shared::OidnModeOption) -> pt_denoise_oidn::OidnMode {
+    use pt_denoise_oidn::OidnMode;
+    use render_shared::OidnModeOption;
+    match m {
+        OidnModeOption::Off => OidnMode::Off,
+        OidnModeOption::Color => OidnMode::Color,
+        OidnModeOption::ColorAlbedo => OidnMode::ColorAlbedo,
+        OidnModeOption::ColorAlbedoNormal => OidnMode::ColorAlbedoNormal,
+    }
+}
+
+fn map_quality(q: render_shared::OidnQualityOption) -> pt_denoise_oidn::Quality {
+    use pt_denoise_oidn::Quality;
+    use render_shared::OidnQualityOption;
+    match q {
+        OidnQualityOption::High => Quality::High,
+        OidnQualityOption::Balanced => Quality::Balanced,
+        OidnQualityOption::Fast => Quality::Fast,
     }
 }

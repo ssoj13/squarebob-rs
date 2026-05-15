@@ -51,7 +51,7 @@ pub(crate) fn render_path_traced(
 
     let pt = renderer.pt.path_tracer.as_mut().unwrap();
     pt.resize(&renderer.ctx.device, width, height);
-    pt.max_samples = opts.pt_max_samples;
+    pt.samples = opts.pt_samples;
     pt.set_emissive_sampling(
         &renderer.ctx.queue,
         opts.pt_emissive_sampling,
@@ -375,8 +375,6 @@ pub(crate) fn render_path_traced(
         opts.pt_spectral_samples,
         if opts.pt_spectral_dispersion { 1 } else { 0 },
     );
-    pt.set_denoise_enabled(&renderer.ctx.device, opts.pt_denoise_enabled);
-    pt.set_denoise_options(opts.pt_denoise_iterations, opts.pt_denoise_sigma_color);
     pt.update_env_params(
         &renderer.ctx.queue,
         opts.env_map_intensity,
@@ -451,7 +449,10 @@ pub(crate) fn render_path_traced(
         .targets
         .as_ref()
         .expect("targets not built — call ensure_render_targets before render");
-    pt.apply_denoiser(&renderer.ctx.device, &renderer.ctx.queue, &mut encoder);
+    // Denoising (OIDN) is now invoked from the app layer, after PT output is
+    // sample-normalized — see `pt-denoise-oidn`. The raw blit always uses
+    // the PT accumulator; if OIDN is active, the app blits its result texture
+    // separately on top.
     pt.blit(&mut encoder, &targets.render_view);
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);

@@ -65,7 +65,7 @@ pub struct CliOptions {
     pub wireframe: Option<bool>,
     pub animate: Option<bool>,
     pub pt_max_bounces: Option<u32>,
-    pub pt_max_samples: Option<u32>,
+    pub pt_samples: Option<u32>,
     pub pt_samples_per_update: Option<u32>,
     pub pt_max_transmission_depth: Option<u32>,
     pub pt_dof_enabled: Option<bool>,
@@ -90,9 +90,10 @@ pub struct CliOptions {
     pub pt_restir_m_max: Option<u32>,
     pub pt_path_guiding: Option<bool>,
     pub pt_svo_resolution: Option<u32>,
-    pub pt_denoise_enabled: Option<bool>,
-    pub pt_denoise_iterations: Option<u32>,
-    pub pt_denoise_sigma_color: Option<f32>,
+    // OIDN denoiser (replaces the previous à-trous filter).
+    pub pt_oidn_mode: Option<String>,
+    pub pt_oidn_quality: Option<String>,
+    pub pt_oidn_auto: Option<bool>,
     pub slice_enabled: Option<bool>,
     pub slice_axis: Option<u32>,
     pub slice_position: Option<f32>,
@@ -477,7 +478,7 @@ pub fn parse_args() -> CliOptions {
                 i += 1;
                 if i < args.len() {
                     if let Ok(n) = args[i].parse::<u32>() {
-                        opts.pt_max_samples = Some(n);
+                        opts.pt_samples = Some(n);
                     }
                 }
             }
@@ -496,27 +497,23 @@ pub fn parse_args() -> CliOptions {
             "--no-pt-path-guiding" => {
                 opts.pt_path_guiding = Some(false);
             }
-            "--pt-denoise" => {
-                opts.pt_denoise_enabled = Some(true);
-            }
-            "--no-pt-denoise" => {
-                opts.pt_denoise_enabled = Some(false);
-            }
-            "--pt-denoise-iterations" => {
+            "--oidn-mode" => {
                 i += 1;
                 if i < args.len() {
-                    if let Ok(n) = args[i].parse::<u32>() {
-                        opts.pt_denoise_iterations = Some(n.clamp(1, 5));
-                    }
+                    opts.pt_oidn_mode = Some(args[i].clone());
                 }
             }
-            "--pt-denoise-sigma-color" => {
+            "--oidn-quality" => {
                 i += 1;
                 if i < args.len() {
-                    if let Ok(v) = args[i].parse::<f32>() {
-                        opts.pt_denoise_sigma_color = Some(v.max(1e-3));
-                    }
+                    opts.pt_oidn_quality = Some(args[i].clone());
                 }
+            }
+            "--oidn-auto" => {
+                opts.pt_oidn_auto = Some(true);
+            }
+            "--no-oidn-auto" => {
+                opts.pt_oidn_auto = Some(false);
             }
             "--pt-restir-di" => {
                 opts.pt_restir_di = Some(true);

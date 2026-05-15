@@ -68,26 +68,41 @@ impl Viewport {
     }
 }
 
-/// Shared GPU context for wgpu-based rendering
+/// Shared GPU context for wgpu-based rendering.
+///
+/// Owns the full wgpu setup quartet (`Instance` / `Adapter` / `Device` / `Queue`)
+/// behind `Arc`. We hold all four because:
+///
+/// * `Instance` + `Adapter` are required by `cubecl_wgpu::WgpuSetup` when sharing
+///   the device with Burn-wgpu for the OIDN denoiser (see `pt-denoise-oidn`).
+/// * `eframe` is initialised with `WgpuSetup::Existing` from these handles so
+///   the GUI renders on the *same* device as PT / treemap / OIDN — no parallel
+///   adapters, no readback to bridge between subsystems.
+///
+/// There is exactly **one** way to construct this: [`GpuContext::new`]. The
+/// `from_eframe` path was removed; eframe is now a consumer of our setup, not
+/// its source.
 pub mod gpu {
     use super::*;
 
-    /// Shared GPU context - holds wgpu device and queue
     pub struct GpuContext {
+        pub instance: Arc<wgpu::Instance>,
+        pub adapter: Arc<wgpu::Adapter>,
         pub device: Arc<wgpu::Device>,
         pub queue: Arc<wgpu::Queue>,
     }
 
     impl GpuContext {
-        /// Create GpuContext from existing device/queue (for eframe integration)
-        pub fn from_eframe(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
-            Self { device, queue }
-        }
-
-        /// Create a new standalone GPU context. Returns `None` (with a logged
-        /// reason) if no compatible adapter or device can be obtained — the
-        /// caller stores the result as `Option<Arc<GpuContext>>` and falls
-        /// back to CPU-only paths.
+        /// Build the wgpu setup with the limits/features squarebob needs.
+        ///
+        /// Returns `None` (with a logged reason) if adapter/device acquisition
+        /// fails. Callers should treat this as a hard failure — there is no
+        /// CPU-only fallback path for the renderer.
+        ///
+        /// Limits enforced here:
+        /// * `max_storage_buffers_per_shader_stage`: bumped to 16 (default 8)
+        ///   for the megakernel's ReSTIR + path-guide + denoise bindings.
+        /// * `Features::POLYGON_MODE_LINE` for wireframe rendering.
         pub fn new() -> Option<Self> {
             let mut inst_desc = wgpu::InstanceDescriptor::new_without_display_handle();
             inst_desc.backends = wgpu::Backends::all();
@@ -106,8 +121,6 @@ pub mod gpu {
                     }
                 };
 
-            // Stage G.A: bump storage-buffer count limit to fit megakernel's
-            // ReSTIR bindings (default 8 → request 16, clamped to adapter).
             let adapter_limits = adapter.limits();
             let mut required_limits = wgpu::Limits::default();
             required_limits.max_storage_buffers_per_shader_stage = adapter_limits
@@ -117,7 +130,7 @@ pub mod gpu {
 
             let (device, queue) =
                 match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                    label: Some("DirStat GPU Device"),
+                    label: Some("squarebob GPU Device"),
                     required_features: wgpu::Features::POLYGON_MODE_LINE,
                     required_limits,
                     memory_hints: Default::default(),
@@ -132,6 +145,8 @@ pub mod gpu {
                 };
 
             Some(Self {
+                instance: Arc::new(instance),
+                adapter: Arc::new(adapter),
                 device: Arc::new(device),
                 queue: Arc::new(queue),
             })

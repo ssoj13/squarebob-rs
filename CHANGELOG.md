@@ -6,6 +6,35 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-05-14 — OIDN denoiser
+
+Replaced the color-only à-trous denoiser with Intel Open Image Denoise
+running on the same wgpu device as the renderer via a Rust port (`oidn-rs`)
+on Burn + cubecl-wgpu.
+
+- **Added** `pt-denoise-oidn` workspace crate. Owns `OidnDenoiser` with three
+  modes — Color, Color+Albedo, Color+Albedo+Normal — picking the corresponding
+  `rt_hdr` / `rt_hdr_alb` / `rt_hdr_alb_nrm` model. Quality selector maps to
+  OIDN's High / Balanced / Fast presets.
+- **Added** primary-hit AOV outputs in the wavefront PT shade pass: per-pixel
+  albedo and world-space normal storage buffers, race-write safe across samples.
+- **Added** shared `wgpu::Instance` / `Adapter` / `Device` / `Queue` setup in
+  `render-core::GpuContext`; eframe is initialised with `WgpuSetup::Existing`,
+  Burn-wgpu via `cubecl_wgpu::init_device` — every subsystem shares one device.
+- **Added** `OIDN_WEIGHTS_DIR` env var (overrides bundled `data/oidn-weights/`).
+- **Added** CLI flags `--oidn-mode <off|color|color_albedo|color_albedo_normal>`,
+  `--oidn-quality <high|balanced|fast>`, `--oidn-auto`, `--no-oidn-auto`.
+- **Added** vendored OIDN TZA weights at `data/oidn-weights/*.tza` (5 models,
+  ~9 MB). Bundled with the packager via the existing `data` resource.
+- **Removed** à-trous filter (`crates/pt-megakernel/src/denoiser/`,
+  `pt_denoise_*` state fields, `set_denoise_*` / `apply_denoiser` methods,
+  `--pt-denoise*` CLI flags) — replaced wholesale, no compatibility shim.
+- **Changed** denoiser UI under Settings → Rendering: Mode / Quality / Auto
+  selectors and a "Denoise now" button with last-latency readout.
+- **Changed** factory render preset (`data/factory_render3d_options.json`):
+  `pt_oidn_mode = ColorAlbedoNormal`, `pt_oidn_quality = Balanced`,
+  `pt_oidn_auto = true` — production-grade denoise out of the box.
+
 ---
 
 ### Documentation & SSOT

@@ -21,7 +21,7 @@ It is inspired by tools like SequoiaView, WinDirStat and KDirStat, but the rende
 
 ## Screens
 
-The main UI is the application, not a launcher page. It opens into the treemap workspace:
+The main UI consists of Viewport in the middle, TreeView in the left panel and Settings at the right side.
 
 - Top toolbar: path entry, scan controls, theme toggle, encode toggle (`E`), 2D/3D switch, and 2D CPU/GPU switch.
 - Left/right dock panels: file tree, extension statistics, renderer settings, scanner settings, and other tools.
@@ -111,7 +111,7 @@ Implemented PT features include:
 - Adaptive sampling.
 - ReSTIR DI/GI plumbing and live megakernel ReSTIR-DI.
 - Path guiding hooks.
-- Color-only a-trous denoiser.
+- Intel Open Image Denoise (OIDN) integration via the local `pt-denoise-oidn` crate, with color / +albedo / +albedo+normal modes.
 - Wavefront tiled backend.
 
 Recent fixes and outcomes:
@@ -149,7 +149,6 @@ What this achieved:
 
 The renderer is usable, but some PT areas are still research-grade:
 
-- The denoiser is currently color-only; normal/depth guided filtering is a planned improvement.
 - ReSTIR temporal/spatial quality still needs more visual tuning.
 - Extreme animated scenes may still need a threshold that falls back from BVH refit to full rebuild.
 - Age-based color currently uses deterministic fallback data unless real modification-time plumbing is available from the scanner.

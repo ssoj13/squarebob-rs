@@ -1259,29 +1259,29 @@ impl App {
             ui.horizontal(|ui| {
                 if ui
                     .add(
-                        egui::Slider::new(&mut self.render_3d_opts.pt_max_samples, 16..=32768)
+                        egui::Slider::new(&mut self.render_3d_opts.pt_samples, 16..=32768)
                             .logarithmic(true),
                     )
                     .changed()
                 {
                     if self.render_3d_opts.pt_adaptive_sampling
                         && self.render_3d_opts.pt_adaptive_max_spp
-                            < self.render_3d_opts.pt_max_samples
+                            < self.render_3d_opts.pt_samples
                     {
                         self.render_3d_opts.pt_adaptive_max_spp =
-                            self.render_3d_opts.pt_max_samples;
+                            self.render_3d_opts.pt_samples;
                     }
                     *pt_changed = true;
                 }
                 for samples in [512_u32, 2048, 4096, 8192, 16384] {
                     if ui
                         .selectable_label(
-                            self.render_3d_opts.pt_max_samples == samples,
+                            self.render_3d_opts.pt_samples == samples,
                             samples.to_string(),
                         )
                         .clicked()
                     {
-                        self.render_3d_opts.pt_max_samples = samples;
+                        self.render_3d_opts.pt_samples = samples;
                         if self.render_3d_opts.pt_adaptive_sampling {
                             self.render_3d_opts.pt_adaptive_max_spp = samples;
                         }
@@ -1349,10 +1349,10 @@ impl App {
             let current = r.pt_frame_count();
             let max = if self.render_3d_opts.pt_adaptive_sampling {
                 self.render_3d_opts
-                    .pt_max_samples
+                    .pt_samples
                     .min(self.render_3d_opts.pt_adaptive_max_spp.max(1))
             } else {
-                self.render_3d_opts.pt_max_samples
+                self.render_3d_opts.pt_samples
             };
             let progress = current as f32 / max as f32;
             let done = current >= max;
@@ -1365,7 +1365,7 @@ impl App {
                 ui.small(format!(
                     "Adaptive cap: {} (Max {}, Adaptive {})",
                     max,
-                    self.render_3d_opts.pt_max_samples,
+                    self.render_3d_opts.pt_samples,
                     self.render_3d_opts.pt_adaptive_max_spp
                 ));
             }

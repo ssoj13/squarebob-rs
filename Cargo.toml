@@ -18,6 +18,7 @@ members = [
     "crates/media-encoder",
     "crates/xtask",
     "crates/treemap",
+    "crates/pt-denoise-oidn",
 ]
 resolver = "2"
 
@@ -64,6 +65,7 @@ bvh-gpu = { path = "crates/bvh-gpu" }
 pt-megakernel = { path = "crates/pt-megakernel" }
 pt-wavefront = { path = "crates/pt-wavefront" }
 pt-mats = { path = "crates/pt-mats" }
+pt-denoise-oidn = { path = "crates/pt-denoise-oidn" }
 sysinfo = "0.38"
 egui-phosphor = "0.12.0"
 

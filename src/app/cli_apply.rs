@@ -28,8 +28,8 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
     if let Some(b) = cli.pt_max_bounces {
         opts.pt_max_bounces = b;
     }
-    if let Some(s) = cli.pt_max_samples {
-        opts.pt_max_samples = s;
+    if let Some(s) = cli.pt_samples {
+        opts.pt_samples = s;
     }
     if let Some(g) = cli.pt_gpu_bvh {
         opts.pt_gpu_bvh = g;
@@ -37,14 +37,24 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
     if let Some(pg) = cli.pt_path_guiding {
         opts.pt_path_guiding = pg;
     }
-    if let Some(d) = cli.pt_denoise_enabled {
-        opts.pt_denoise_enabled = d;
+    if let Some(ref m) = cli.pt_oidn_mode {
+        opts.pt_oidn_mode = match m.to_ascii_lowercase().as_str() {
+            "off" => render_shared::OidnModeOption::Off,
+            "color" => render_shared::OidnModeOption::Color,
+            "color_albedo" | "color+albedo" => render_shared::OidnModeOption::ColorAlbedo,
+            // default for any other input → full quality
+            _ => render_shared::OidnModeOption::ColorAlbedoNormal,
+        };
     }
-    if let Some(it) = cli.pt_denoise_iterations {
-        opts.pt_denoise_iterations = it;
+    if let Some(ref q) = cli.pt_oidn_quality {
+        opts.pt_oidn_quality = match q.to_ascii_lowercase().as_str() {
+            "high" => render_shared::OidnQualityOption::High,
+            "fast" => render_shared::OidnQualityOption::Fast,
+            _ => render_shared::OidnQualityOption::Balanced,
+        };
     }
-    if let Some(sc) = cli.pt_denoise_sigma_color {
-        opts.pt_denoise_sigma_color = sc;
+    if let Some(a) = cli.pt_oidn_auto {
+        opts.pt_oidn_auto = a;
     }
     if let Some(di) = cli.pt_restir_di {
         opts.pt_restir_di = di;
@@ -313,7 +323,7 @@ mod tests {
             wireframe: Some(true),
             animate: Some(true),
             pt_max_bounces: Some(13),
-            pt_max_samples: Some(123),
+            pt_samples: Some(123),
             pt_samples_per_update: Some(4),
             pt_max_transmission_depth: Some(8),
             pt_dof_enabled: Some(true),
@@ -338,9 +348,9 @@ mod tests {
             pt_restir_m_max: Some(20),
             pt_path_guiding: Some(true),
             pt_svo_resolution: Some(128),
-            pt_denoise_enabled: Some(true),
-            pt_denoise_iterations: Some(4),
-            pt_denoise_sigma_color: Some(0.5),
+            pt_oidn_mode: Some("color_albedo_normal".to_string()),
+            pt_oidn_quality: Some("high".to_string()),
+            pt_oidn_auto: Some(true),
             slice_enabled: Some(true),
             slice_axis: Some(2),
             slice_position: Some(0.5),
@@ -366,12 +376,12 @@ mod tests {
         assert!(opts.pt_wavefront);
         assert_eq!(opts.pt_wavefront_tile_size, 64);
         assert_eq!(opts.pt_max_bounces, 13);
-        assert_eq!(opts.pt_max_samples, 123);
+        assert_eq!(opts.pt_samples, 123);
         assert!(opts.pt_gpu_bvh);
         assert!(opts.pt_path_guiding);
-        assert!(opts.pt_denoise_enabled);
-        assert_eq!(opts.pt_denoise_iterations, 4);
-        assert!((opts.pt_denoise_sigma_color - 0.5).abs() < 1e-6);
+        assert_eq!(opts.pt_oidn_mode, render_shared::OidnModeOption::ColorAlbedoNormal);
+        assert_eq!(opts.pt_oidn_quality, render_shared::OidnQualityOption::High);
+        assert!(opts.pt_oidn_auto);
         assert!(opts.pt_restir_di);
         assert!(opts.pt_restir_gi);
         assert!(opts.pt_adaptive_sampling);

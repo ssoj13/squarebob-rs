@@ -83,6 +83,13 @@ pub struct WavefrontPipeline {
     ray_buf_b: Option<wgpu::Buffer>,
     hit_buf: Option<wgpu::Buffer>,
 
+    // Per-pixel AOVs for OIDN denoising (primary-hit albedo and world-space
+    // normal). Written from `shade.wgsl` when `ray.bounce == 0`. Sized at
+    // `full_width * full_height * 16` bytes (vec4<f32>). Race writes across
+    // samples are safe — primary hits are deterministic per pixel.
+    albedo_buf: Option<wgpu::Buffer>,
+    normal_buf: Option<wgpu::Buffer>,
+
     // Per-tile dims uniform: tile_capacity * TILE_SLOT_STRIDE bytes.
     // Bound with has_dynamic_offset; per-dispatch offset selects a tile.
     tile_dims_buf: wgpu::Buffer,
@@ -148,6 +155,8 @@ impl WavefrontPipeline {
                 bgl_sampler(9),                        // env_sampler
                 bgl_uniform(10),                       // env_params
                 bgl_storage_rw(11),                    // guide buffer
+                bgl_storage_rw(12),                    // albedo AOV (per-pixel)
+                bgl_storage_rw(13),                    // normal AOV (per-pixel)
             ],
         );
 
@@ -179,6 +188,8 @@ impl WavefrontPipeline {
             ray_buf_a: None,
             ray_buf_b: None,
             hit_buf: None,
+            albedo_buf: None,
+            normal_buf: None,
             tile_dims_buf,
             tile_counts_buf,
             count_init_src,
@@ -212,10 +223,16 @@ impl WavefrontPipeline {
         let n = (self.width * self.height) as u64;
         let ray_sz = std::mem::size_of::<WfRay>() as u64;
         let hit_sz = std::mem::size_of::<WfHit>() as u64;
+        // 16 bytes per pixel for albedo / normal AOVs (vec4<f32>). Sized at
+        // `full_w * full_h` — these are full-image storage buffers, not
+        // tile-local.
+        let aov_sz = 16u64;
 
         self.ray_buf_a = Some(create_buf(device, "wf_ray_a", n * ray_sz));
         self.ray_buf_b = Some(create_buf(device, "wf_ray_b", n * ray_sz));
         self.hit_buf = Some(create_buf(device, "wf_hit", n * hit_sz));
+        self.albedo_buf = Some(create_buf(device, "wf_albedo_aov", n * aov_sz));
+        self.normal_buf = Some(create_buf(device, "wf_normal_aov", n * aov_sz));
         self.cur_buf = 0;
     }
 
@@ -265,6 +282,25 @@ impl WavefrontPipeline {
 
     pub fn hit_buf(&self) -> &wgpu::Buffer {
         self.hit_buf.as_ref().unwrap()
+    }
+
+    /// Per-pixel primary-hit albedo AOV (`vec4<f32>`, full-image sized).
+    /// Consumers (e.g. OIDN denoiser) read this as a `wgpu::Buffer` and
+    /// translate to a Burn tensor view. Race writes across samples are
+    /// safe because primary hits are deterministic per pixel.
+    pub fn albedo_buf(&self) -> &wgpu::Buffer {
+        self.albedo_buf.as_ref().unwrap()
+    }
+
+    /// Per-pixel primary-hit world-space normal AOV (`vec4<f32>`, full-image
+    /// sized). See [`Self::albedo_buf`] for race-write rationale.
+    pub fn normal_buf(&self) -> &wgpu::Buffer {
+        self.normal_buf.as_ref().unwrap()
+    }
+
+    /// `(width, height)` of the AOV buffers. Equal to [`Self::dimensions`].
+    pub fn aov_dims(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     pub fn pipelines(

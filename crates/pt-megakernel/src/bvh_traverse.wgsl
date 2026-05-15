@@ -175,6 +175,11 @@ struct AliasEntry {
     alt: u32,
 };
 @group(0) @binding(18) var<storage, read> emissive_alias: array<AliasEntry>;
+// Primary-hit AOVs for the OIDN denoiser. Written exactly once per pixel
+// per sample on `bounce == 0`. Race writes across samples are safe because
+// primary hits are deterministic per pixel.
+@group(0) @binding(19) var<storage, read_write> albedo_aov: array<vec4<f32>>;
+@group(0) @binding(20) var<storage, read_write> normal_aov: array<vec4<f32>>;
 
 // LBVH morton-sort can produce branches deeper than log2(N) when the AABB
 // distribution has many near-duplicates (which squarebob hits with many
@@ -943,6 +948,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let hit = trace_ray(ray);
 
         if !hit.hit {
+            if bounce == 0u {
+                // Primary miss: zero AOVs so OIDN sees a flat "no surface".
+                albedo_aov[pixel_idx] = vec4<f32>(0.0);
+                normal_aov[pixel_idx] = vec4<f32>(0.0);
+            }
             radiance += throughput * sky_color(ray.dir);
             break;
         }
@@ -956,6 +966,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var normal = hit.normal;
         if dot(normal, ray.dir) > 0.0 {
             normal = -normal;
+        }
+
+        if bounce == 0u {
+            // Primary-hit AOVs for OIDN. Albedo = pre-shading base colour;
+            // normal = ray-facing world-space normal (consistent with what
+            // OIDN expects from the prefilter weights).
+            albedo_aov[pixel_idx] = vec4<f32>(base_color, 1.0);
+            normal_aov[pixel_idx] = vec4<f32>(normal, 1.0);
         }
 
         // Unpack material fields

@@ -128,28 +128,28 @@ fn main() -> eframe::Result<()> {
         );
     }
 
-    // Configure wgpu to request POLYGON_MODE_LINE for wireframe rendering.
-    // Stage G.A bumped `max_storage_buffers_per_shader_stage` because the
-    // megakernel BGL now binds 11 storage buffers (8 original + 3 new
-    // ReSTIR-DI slots at @binding(15/16/17)). Default wgpu downlevel limit
-    // is 8 — request 16 (clamped to adapter capability).
-    let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
-        let adapter_limits = adapter.limits();
-        let mut required_limits = wgpu::Limits::default();
-        required_limits.max_storage_buffers_per_shader_stage = adapter_limits
-            .max_storage_buffers_per_shader_stage
-            .min(16)
-            .max(required_limits.max_storage_buffers_per_shader_stage);
-        wgpu::DeviceDescriptor {
-            label: Some("squarebob-rs device"),
-            required_features: wgpu::Features::POLYGON_MODE_LINE,
-            required_limits,
-            memory_hints: Default::default(),
-            trace: Default::default(),
-            experimental_features: Default::default(),
+    // Build the wgpu setup ourselves so we can share the same Instance /
+    // Adapter / Device / Queue with every consumer: eframe (via
+    // `WgpuSetup::Existing`), the path-tracer compute passes, treemap GPU
+    // backend, and Burn-wgpu inside `pt-denoise-oidn` for the OIDN denoiser.
+    //
+    // Limits (POLYGON_MODE_LINE, max_storage_buffers_per_shader_stage = 16)
+    // live in `render_core::gpu::GpuContext::new` — this is the single source
+    // of wgpu setup truth.
+    let gpu_ctx = match render_core::gpu::GpuContext::new() {
+        Some(ctx) => std::sync::Arc::new(ctx),
+        None => {
+            eprintln!("Fatal: failed to initialise wgpu device (see log for details)");
+            std::process::exit(1);
         }
-    });
+    };
+
+    let existing_setup = eframe::egui_wgpu::WgpuSetupExisting {
+        instance: (*gpu_ctx.instance).clone(),
+        adapter: (*gpu_ctx.adapter).clone(),
+        device: (*gpu_ctx.device).clone(),
+        queue: (*gpu_ctx.queue).clone(),
+    };
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -157,15 +157,16 @@ fn main() -> eframe::Result<()> {
             .with_title("squarebob-rs"),
         persist_window: true,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
+            wgpu_setup: eframe::egui_wgpu::WgpuSetup::Existing(existing_setup),
             ..Default::default()
         },
         ..Default::default()
     };
 
+    let gpu_for_app = gpu_ctx.clone();
     eframe::run_native(
         "squarebob-rs",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, cli)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, cli, gpu_for_app.clone())))),
     )
 }

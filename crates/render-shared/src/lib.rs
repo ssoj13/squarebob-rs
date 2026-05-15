@@ -620,7 +620,7 @@ pub struct Render3DOptions {
     // Path tracing
     pub path_tracing: bool,
     pub pt_max_bounces: u32,
-    pub pt_max_samples: u32,
+    pub pt_samples: u32,
     pub pt_samples_per_update: u32,
     pub pt_max_transmission_depth: u32,
     pub pt_dof_enabled: bool,
@@ -694,23 +694,53 @@ pub struct Render3DOptions {
     pub inertia_friction: f32, // Higher = faster stop (1-10 typical)
     #[serde(default = "default_inertia_cutoff")]
     pub inertia_cutoff: f32, // Stop inertia when speed is below cutoff
-    // PT denoiser (à-trous edge-aware filter; Stage D.2)
-    #[serde(default)]
-    pub pt_denoise_enabled: bool,
-    #[serde(default = "default_denoise_iterations")]
-    pub pt_denoise_iterations: u32, // 1-5 typical; default 3
-    #[serde(default = "default_denoise_sigma_color")]
-    pub pt_denoise_sigma_color: f32, // smaller = more smoothing, less edge preservation
+    // OIDN denoiser (replaces the previous à-trous filter — `pt-denoise-oidn`).
+    // Mirrors `pt_denoise_oidn::OidnMode` / `pt_denoise_oidn::Quality` but kept
+    // here as a string-serialised enum so `render-shared` need not depend on
+    // Burn or oidn-rs.
+    #[serde(default = "default_oidn_mode")]
+    pub pt_oidn_mode: OidnModeOption,
+    #[serde(default = "default_oidn_quality")]
+    pub pt_oidn_quality: OidnQualityOption,
+    /// Run the denoiser automatically once `current_spp >= target_spp` for
+    /// the accumulating render.
+    #[serde(default = "default_oidn_auto")]
+    pub pt_oidn_auto: bool,
+}
+
+/// String-serialised mirror of `pt_denoise_oidn::OidnMode`. Default is the
+/// production target (color+albedo+normal) so a fresh install denoises out
+/// of the box once accumulation completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum OidnModeOption {
+    Off,
+    Color,
+    ColorAlbedo,
+    #[default]
+    ColorAlbedoNormal,
+}
+
+/// String-serialised mirror of `oidn_rs::Quality`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum OidnQualityOption {
+    High,
+    #[default]
+    Balanced,
+    Fast,
+}
+
+fn default_oidn_mode() -> OidnModeOption {
+    OidnModeOption::ColorAlbedoNormal
+}
+fn default_oidn_quality() -> OidnQualityOption {
+    OidnQualityOption::Balanced
+}
+fn default_oidn_auto() -> bool {
+    true
 }
 
 fn default_lod_min_size() -> f32 {
     2.0
-}
-fn default_denoise_iterations() -> u32 {
-    3
-}
-fn default_denoise_sigma_color() -> f32 {
-    0.3
 }
 fn default_true() -> bool {
     true
@@ -916,7 +946,7 @@ impl Default for Render3DOptions {
             background_color: [0.1, 0.1, 0.1],
             path_tracing: true,
             pt_max_bounces: 4,
-            pt_max_samples: 3500,
+            pt_samples: 3500,
             pt_samples_per_update: 25,
             pt_max_transmission_depth: 8,
             pt_dof_enabled: false,
@@ -969,10 +999,10 @@ impl Default for Render3DOptions {
             inertia_enabled: true,
             inertia_friction: 5.0,
             inertia_cutoff: 0.001,
-            // PT denoiser
-            pt_denoise_enabled: false,
-            pt_denoise_iterations: 3,
-            pt_denoise_sigma_color: 0.3,
+            // OIDN denoiser defaults: production-grade out of the box.
+            pt_oidn_mode: OidnModeOption::ColorAlbedoNormal,
+            pt_oidn_quality: OidnQualityOption::Balanced,
+            pt_oidn_auto: true,
         }
     }
 }
@@ -987,7 +1017,7 @@ mod tests {
         let opts: Render3DOptions = serde_json::from_str(json).expect("deserialize");
         let defaults = Render3DOptions::default();
         assert_eq!(opts.pt_max_bounces, defaults.pt_max_bounces);
-        assert_eq!(opts.pt_max_samples, defaults.pt_max_samples);
+        assert_eq!(opts.pt_samples, defaults.pt_samples);
         assert_eq!(opts.pt_gpu_bvh, defaults.pt_gpu_bvh);
         assert_eq!(opts.pt_spectral_mode, defaults.pt_spectral_mode);
         assert_eq!(opts.pt_spectral_samples, defaults.pt_spectral_samples);

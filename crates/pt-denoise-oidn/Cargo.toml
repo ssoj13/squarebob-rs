@@ -1,0 +1,27 @@
+[package]
+name = "pt-denoise-oidn"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+description = "Intel OIDN GPU denoiser integration for squarebob-rs PT output."
+
+[dependencies]
+wgpu = "29"
+bytemuck = { version = "1", features = ["derive"] }
+anyhow = "1"
+log = "0.4"
+half = "2.7.1"
+render-core = { path = "../render-core" }
+
+# Burn + WGPU backend share the same wgpu 29.0.3 we already pin in workspace.
+# `cubecl-wgpu::init_device` lets us reuse squarebob's wgpu::Instance/Adapter/
+# Device/Queue, so every Burn dispatch runs on the same GPU context as PT.
+burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
+burn-wgpu = { version = "0.21", default-features = false }
+# Must match the version burn-wgpu 0.21 transitively pulls (otherwise we end
+# up with two wgpu+naga+wgpu-hal copies and the wgpu-hal compile fails on
+# duplicate `windows` types). Burn-wgpu 0.21 → cubecl 0.10 → wgpu 29.0.3.
+cubecl-wgpu = "0.10"
+
+# Our fork of Intel OIDN (pure Rust, weights ship as plain git blobs).
+oidn-rs = { git = "https://github.com/ssoj13/oidn-rs.git" }

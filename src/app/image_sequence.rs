@@ -268,7 +268,7 @@ impl App {
             return true;
         }
 
-        let target_samples = self.render_3d_opts.pt_max_samples.max(1);
+        let target_samples = self.render_3d_opts.pt_samples.max(1);
         self.renderer_3d
             .as_ref()
             .map(|renderer| renderer.pt_frame_count() >= target_samples)
