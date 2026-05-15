@@ -64,12 +64,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Reconstruct world-space ray from screen UV. Reversed-Z: NDC z=0.0
-    // corresponds to the far plane (the direction we want the skybox to
-    // sample). Forward-Z used z=1.0 here, which under reversed-Z lands at
-    // the *near* plane and yielded a jittery direction per pixel because
-    // the inverse-projection's `w` collapsed to ~near, killing precision
-    // on camera rotation.
-    let ndc = vec4<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0, 0.0, 1.0);
+    // is the far plane (the direction we want), but with a
+    // perspective_infinite_reverse_rh matrix exactly 0.0 maps to view_z=-∞
+    // — `inv_view_proj * (uv, 0, 1)` has w ≈ 0, the perspective divide
+    // produces NaN/Inf and the texture sample returns black. Stepping a
+    // tiny ε off the far plane (here 0.001, corresponding to view_z ≈
+    // -1000 × near, way beyond any geometry) keeps w well-defined while
+    // the resulting direction is indistinguishable from a true
+    // infinite-far ray for skybox sampling.
+    let ndc = vec4<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0, 0.001, 1.0);
     let world = camera.inv_view_proj * ndc;
     let dir = normalize(world.xyz / world.w - camera.position);
 
