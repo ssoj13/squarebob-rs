@@ -1359,17 +1359,23 @@ impl App {
             Some(_d) => false, // resize() inside handles dims mismatch
         };
         if need_new {
-            match pt_denoise_oidn::resolve_weights_dir() {
-                Ok(dir) => {
-                    self.oidn_denoiser =
-                        Some(OidnDenoiser::new(&gpu_ctx, pt_w, pt_h, dir));
-                }
+            // External weights dir is optional now — `embed-hdr` on
+            // `oidn-rs` bakes the HDR TZA blobs into the binary, so we
+            // can run end-to-end without any `data/oidn-weights/` on
+            // disk. The dir, when present, is still consulted as a
+            // fallback (env override / clean_aux / lightmap modes).
+            let weights_dir = match pt_denoise_oidn::resolve_weights_dir() {
+                Ok(dir) => Some(dir),
                 Err(e) => {
-                    log::warn!("OIDN disabled: {e}");
-                    self.oidn_run_requested = false;
-                    return;
+                    log::info!(
+                        "OIDN: no external weights dir found ({e}); \
+                         falling back to embedded blobs."
+                    );
+                    None
                 }
-            }
+            };
+            self.oidn_denoiser =
+                Some(OidnDenoiser::new(&gpu_ctx, pt_w, pt_h, weights_dir));
         }
 
         let Some(denoiser) = self.oidn_denoiser.as_mut() else {

@@ -20,7 +20,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -58,7 +58,12 @@ impl OidnMode {
 
 /// Lazy-built OIDN denoiser.
 pub struct OidnDenoiser {
-    weights_dir: PathBuf,
+    /// Optional filesystem fallback for TZA blobs not baked into the
+    /// binary by an `embed-*` feature on `oidn-rs`. `None` means we run
+    /// embed-only — fine for the standard HDR modes since `embed-hdr`
+    /// covers them all; required if the user wants `clean_aux`,
+    /// `lightmap`, or LDR modes.
+    weights_dir: Option<PathBuf>,
 
     mode: OidnMode,
     quality: Quality,
@@ -96,7 +101,12 @@ pub struct OidnDenoiser {
 }
 
 impl OidnDenoiser {
-    pub fn new(_ctx: &GpuContext, width: u32, height: u32, weights_dir: PathBuf) -> Self {
+    pub fn new(
+        _ctx: &GpuContext,
+        width: u32,
+        height: u32,
+        weights_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
             weights_dir,
             mode: OidnMode::default(),
@@ -369,35 +379,24 @@ impl OidnDenoiser {
         let cached_bytes = match self.cached_model_bytes.clone() {
             Some(b) => Some(b),
             None => {
-                // Resolve filename via oidn-rs registry, then read it once
-                // and cache. Errors leave the cache empty so we fall back
-                // to the builder's own fs::read on commit.
+                // Delegate weight discovery to oidn-rs: tries the embed-hdr
+                // blob baked into the binary first, then `weights_dir`
+                // (resolved via env / exe-relative / cwd; missing dir is
+                // fine — embedded path covers the standard modes alone).
                 let base_key = oidn_rs::registry::select_rt(
                     true, use_albedo, use_normal,
                     /*hdr*/ true, /*srgb*/ false, /*directional*/ false,
                     /*clean_aux*/ false, self.quality,
                 );
-                if let Some(key) = base_key {
-                    let candidates = oidn_rs::registry::quality_candidates(&key, self.quality);
-                    let mut loaded: Option<Vec<u8>> = None;
-                    for stem in &candidates {
-                        let path = self.weights_dir.join(format!("{stem}.tza"));
-                        if let Ok(bytes) = std::fs::read(&path) {
-                            log::debug!(
-                                "OIDN: cached TZA stem={} ({} bytes)",
-                                stem, bytes.len()
-                            );
-                            loaded = Some(bytes);
-                            break;
-                        }
-                    }
-                    if let Some(b) = loaded {
-                        self.cached_model_bytes = Some(b.clone());
-                        self.cached_model_key = Some(cache_key);
-                        Some(b)
-                    } else {
-                        None
-                    }
+                let fallback_dir = self.weights_dir.as_ref().map(|p| p.as_path());
+                let loaded = base_key.as_ref().and_then(|key| {
+                    oidn_rs::weights::resolve(key, self.quality, fallback_dir)
+                });
+                if let Some((stem, b)) = loaded {
+                    log::debug!("OIDN: weights resolved stem={} ({} bytes)", stem, b.len());
+                    self.cached_model_bytes = Some(b.clone());
+                    self.cached_model_key = Some(cache_key);
+                    Some(b)
                 } else {
                     None
                 }
@@ -419,9 +418,19 @@ impl OidnDenoiser {
                 "OIDN: building RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, cached_weights={})",
                 hdr, self.quality, user_scale, cached_bytes_for_build.is_some()
             );
+            // weights_dir is only consulted by RtFilter::commit when the
+            // builder wasn't given pre-loaded bytes via `.weights(...)`.
+            // We always pass cached bytes below (resolved via
+            // `oidn_rs::weights::resolve`), so the path here is a
+            // formality — empty string keeps the type happy without
+            // requiring the dir to exist.
+            let weights_dir_placeholder: &Path = self
+                .weights_dir
+                .as_deref()
+                .unwrap_or(Path::new(""));
             let mut builder = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
                 burn_device,
-                &self.weights_dir,
+                weights_dir_placeholder,
             )
             .hdr(hdr)
             .quality(self.quality);

@@ -24,6 +24,14 @@ burn-wgpu = { version = "0.21", default-features = false }
 cubecl-wgpu = "0.10"
 
 # Our fork of Intel OIDN (pure Rust, weights ship as plain git blobs).
-# Pointing to the sibling working copy while debugging — switch back to the
-# git source once changes there are pushed.
-oidn-rs = { path = "../../../oidn-rs/crates/oidn-rs" }
+#
+# `embed-hdr` bakes the 6 HDR TZA blobs (~10 MB) into the binary via
+# `include_bytes!` inside oidn-rs. The OIDN denoiser then runs
+# standalone: `data/oidn-weights/` becomes optional and serves only as
+# a runtime override (env `OIDN_WEIGHTS_DIR` or co-installed dir).
+# Disable with `default-features = false` if shipping with external
+# weights instead.
+#
+# Pinned to a specific commit on `main` so builds stay reproducible.
+# Bump the `rev` when you want a fresh oidn-rs.
+oidn-rs = { git = "https://github.com/ssoj13/oidn-rs", rev = "a0c32f2a2a1feb1bd635dba0218c354b3ea80526", features = ["embed-hdr"] }
