@@ -848,9 +848,20 @@ impl Renderer3D {
         self.picking.hovered_id = id;
     }
 
-    /// Set selected object IDs for outline rendering
+    /// Set selected object IDs for outline rendering. Eagerly pushes the
+    /// set to the GPU `selected_ids_buf` so callers that bypass the
+    /// per-frame `update_uniforms` path (e.g. the selection-overlay
+    /// refresh below) see the latest selection without a full render.
     pub fn set_selected_ids(&mut self, ids: &std::collections::HashSet<u32>) {
         self.selected_ids = ids.clone();
+        let data: Vec<u32> = std::iter::once(self.selected_ids.len() as u32)
+            .chain(self.selected_ids.iter().copied())
+            .collect();
+        self.ctx.queue.write_buffer(
+            &self.selected_ids_buf,
+            0,
+            bytemuck::cast_slice(&data),
+        );
     }
 
     /// Total number of times the instance buffer has been rebuilt since
@@ -949,26 +960,52 @@ impl Renderer3D {
     /// This is how denoised output reaches the screen without bypassing
     /// the tone-mapping chain. No-op when `targets` or `path_tracer` are
     /// uninitialised.
-    pub fn blit_oidn_result_into_render_target(&self, denoised_view: &wgpu::TextureView) {
-        let Some(targets) = self.targets.as_ref() else {
-            return;
-        };
-        let Some(pt) = self.pt.path_tracer.as_ref() else {
-            return;
-        };
+    /// Re-composite `render_view` from a colour source and re-draw the
+    /// outline overlay on top. Used by both the OIDN denoise display
+    /// switch and the selection-change refresh path — neither needs a
+    /// fresh PT sample, both just want the latest colour + outline
+    /// state on screen.
+    ///
+    /// `source = Some(view)` uses that view (e.g. the OIDN result
+    /// texture).
+    /// `source = None` blits PT's own output view (the accumulator
+    /// post-tonemap); equivalent to "re-display the last PT frame".
+    ///
+    /// The outline pass is conditional on having something to
+    /// highlight (selection or hover); the object_id texture is reused
+    /// from the previous full `render_to_view` so we don't pay for a
+    /// per-instance pass here.
+    pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>) {
+        let Some(targets) = self.targets.as_ref() else { return; };
+        let Some(pt) = self.pt.path_tracer.as_ref() else { return; };
         let mut encoder = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("oidn_blit_to_render_target"),
+                label: Some("composite_overlay"),
             });
-        pt.blit_with_source(
-            &self.ctx.device,
-            &mut encoder,
-            &targets.render_view,
-            Some(denoised_view),
-        );
+        pt.blit_with_source(&self.ctx.device, &mut encoder, &targets.render_view, source);
+        let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
+        if has_active {
+            if let Some(dyn_bgs) = self.dyn_bgs.as_ref() {
+                self.encode_outline_pass(&mut encoder, targets, dyn_bgs);
+            }
+        }
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Thin wrapper: composite the denoised OIDN view into render_view.
+    /// Kept for call-site readability — the app layer doesn't need to
+    /// know that "OIDN blit" and "selection refresh" share a code path.
+    pub fn blit_oidn_result_into_render_target(&self, denoised_view: &wgpu::TextureView) {
+        self.composite_overlay(Some(denoised_view));
+    }
+
+    /// Thin wrapper: re-composite from PT's own accumulator (no fresh
+    /// sample). Used by the selection-change refresh path when OIDN is
+    /// not the currently-displayed source.
+    pub fn refresh_pt_selection_overlay(&self) {
+        self.composite_overlay(None);
     }
 
     fn pt_frame_count_impl(&self) -> u32 {

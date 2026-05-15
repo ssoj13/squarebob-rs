@@ -1,10 +1,10 @@
 /target
 /temp
-*.cmd
+.cmd
 .gitnexus
 .planning
 .omc
 .claude
 .env
 .vcpkg
-
+.log

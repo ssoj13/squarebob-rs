@@ -1168,10 +1168,16 @@ impl OrbitCamera {
         self.target += up * delta_y * sensitivity;
     }
 
-    /// Zoom the camera (right mouse drag or scroll) - non-inertia version
-    #[allow(dead_code)]
+    /// Zoom the camera (right mouse drag or scroll) — exponential, no inertia.
+    ///
+    /// Each unit of `delta` multiplies `distance` by `exp(delta * k)`, so
+    /// zoom feels uniform across the whole 10..5000 range: one wheel tick
+    /// is always the same *ratio*, not the same absolute distance. The
+    /// previous linear approximation (`1 + delta * k`) degenerated for
+    /// large negative deltas — factor could hit 0 or go negative,
+    /// which was only saved by the post-clamp.
     pub fn zoom(&mut self, delta: f32) {
-        let factor = 1.0 + delta * 0.001;
+        let factor = (delta * 0.001).exp();
         self.distance = (self.distance * factor).clamp(10.0, 5000.0);
     }
 
@@ -1230,9 +1236,16 @@ impl OrbitCamera {
         self.target_velocity += up * delta_y * sensitivity;
     }
 
-    /// Zoom with inertia
+    /// Zoom with inertia — exponential in distance.
+    ///
+    /// `distance_velocity` is interpreted as a *log-space* rate
+    /// (`d/dt of ln(distance)`), so the per-frame integration in
+    /// `update_inertia` multiplies `distance` by `exp(velocity * dt)`.
+    /// Same constant coefficient regardless of current zoom level: the
+    /// wheel feels identical close-up and far-away, no “sluggish near
+    /// the cubes, runaway far out” effect.
     pub fn zoom_inertia(&mut self, delta: f32) {
-        self.distance_velocity += delta * self.distance * 0.0005;
+        self.distance_velocity += delta * 0.0005;
     }
 
     /// Update camera with inertia (call each frame)
@@ -1247,7 +1260,12 @@ impl OrbitCamera {
             -std::f32::consts::FRAC_PI_2 + 0.1,
             std::f32::consts::FRAC_PI_2 - 0.1,
         );
-        self.distance = (self.distance + self.distance_velocity * dt).clamp(10.0, 5000.0);
+        // Distance lives in log-space for inertia integration so the wheel
+        // feels uniform across the whole zoom range (see `zoom_inertia`).
+        // `distance_velocity` is the log-rate; multiplying by `exp(v*dt)`
+        // each frame is the proper time-stepped solution.
+        self.distance = (self.distance * (self.distance_velocity * dt).exp())
+            .clamp(10.0, 5000.0);
         self.target += self.target_velocity * dt;
 
         // Apply friction

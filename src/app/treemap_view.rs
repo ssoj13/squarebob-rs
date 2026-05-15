@@ -135,7 +135,15 @@ impl App {
             } else {
                 std::time::Duration::ZERO
             };
-            let should_pick = moved_enough && self.last_pick_time_3d.elapsed() >= pick_interval;
+            // Skip the per-frame hover pick during shift+drag (marquee selection).
+            // Otherwise the cursor sweeping across cubes updates `hovered_3d_id` →
+            // sets `needs_render_3d = true` → full PT/PBR re-render every frame,
+            // which is dramatically more expensive than the egui-side marquee
+            // overlay we actually want to update. The marquee rectangle is
+            // drawn by `draw_marquee_overlay` independently of any scene state.
+            let should_pick = !shift_held
+                && moved_enough
+                && self.last_pick_time_3d.elapsed() >= pick_interval;
             if should_pick {
                 self.last_pick_time_3d = std::time::Instant::now();
                 self.last_hover_pos_3d = Some((lx_f, ly_f));
@@ -312,11 +320,11 @@ impl App {
                             log::warn!("Picked id={} but path_for_id returned None!", id);
                         }
                     }
-                    // Selection is a pure overlay (selected_ids_buf is a
-                    // separate GPU buffer written each frame). A redraw
-                    // is enough — full layout rebuild would reset the PT
-                    // accumulation buffer for no reason.
-                    self.needs_render_3d = true;
+                    // Selection is a pure overlay — refresh just the
+                    // outline composite (no new PT sample, no PBR
+                    // re-shading) so the highlight updates the moment
+                    // the user clicks.
+                    self.refresh_selection_overlay(ctx);
                 } else if !shift_held {
                     // Click on empty space clears selection (but not with shift)
                     self.selected_3d_ids.clear();
@@ -401,27 +409,56 @@ impl App {
             self.needs_render_3d = true;
         }
 
-        // Shift+LMB drag - marquee selection
+        // Shift+LMB drag — live marquee. On the first drag frame we
+        // snapshot the existing selection; every subsequent frame we
+        // reset back to that snapshot and re-add the cubes inside the
+        // current rect, then refresh the outline overlay so the user
+        // sees in real time which cubes WILL be selected if they
+        // release the button now.
         if shift_held && resp.dragged_by(egui::PointerButton::Primary) {
             if let Some(pos) = resp.interact_pointer_pos() {
                 if self.marquee_start.is_none() {
                     self.marquee_start = Some(pos);
+                    self.marquee_baseline = Some(self.selected_3d_ids.clone());
                 }
+                if let Some(start) = self.marquee_start {
+                    let rect = egui::Rect::from_two_pos(start, pos);
+                    if rect.width() > 5.0 || rect.height() > 5.0 {
+                        if let Some(baseline) = self.marquee_baseline.as_ref() {
+                            self.selected_3d_ids = baseline.clone();
+                        }
+                        self.select_objects_in_rect(rect, &resp.rect, w, h, is_pt, true);
+                        self.refresh_selection_overlay(ctx);
+                    }
+                }
+                // Egui doesn't auto-repaint inside a drag if nothing
+                // else flips render state, so the marquee rectangle
+                // would freeze visually. Force a per-frame repaint
+                // while the drag is in progress.
+                ctx.request_repaint();
             }
         }
-        // Shift+LMB released - complete marquee selection (min 5px to avoid click conflicts)
+        // Shift+LMB released — commit the live preview and drop the
+        // baseline. Selection is already in `selected_3d_ids` from the
+        // last drag frame; the explicit release-time recompute below
+        // covers the edge case where the user did a tiny drag (<5 px)
+        // that the preview block ignored.
         if self.marquee_start.is_some()
             && !ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary))
         {
             if let Some(start) = self.marquee_start.take() {
                 if let Some(end) = resp.interact_pointer_pos().or(resp.hover_pos()) {
                     let rect = egui::Rect::from_two_pos(start, end);
-                    // Only process as marquee if dragged more than 5 pixels
                     if rect.width() > 5.0 || rect.height() > 5.0 {
+                        if let Some(baseline) = self.marquee_baseline.as_ref() {
+                            self.selected_3d_ids = baseline.clone();
+                        }
                         self.select_objects_in_rect(rect, &resp.rect, w, h, is_pt, shift_held);
+                        self.refresh_selection_overlay(ctx);
                     }
                 }
             }
+            self.marquee_baseline = None;
         }
         // MMB - pan (inertia optional)
         if resp.dragged_by(egui::PointerButton::Middle) {
@@ -643,8 +680,44 @@ impl App {
             }
         }
 
-        self.needs_layout = true;
         log::info!("Marquee selected {} objects", self.selected_3d_ids.len());
+    }
+
+    /// Push the current `selected_3d_ids` into the GPU outline buffer
+    /// and refresh the overlay on top of the existing rendered frame.
+    /// Skips PT compute / PBR rebuild — the cube colours don't depend
+    /// on which IDs are selected, only the outline shader does. Use
+    /// after click / shift-click / marquee-complete so the new
+    /// highlight shows up immediately without spending a PT sample or
+    /// invalidating the accumulator.
+    fn refresh_selection_overlay(&mut self, ctx: &egui::Context) {
+        if let Some(r) = &mut self.renderer_3d {
+            r.set_selected_ids(&self.selected_3d_ids);
+        }
+        if self.render_3d_opts.path_tracing {
+            // PT path: re-blit the accumulator (or denoised result) and
+            // re-draw the outline. Cheap — couple of fullscreen passes.
+            if self.oidn_display_is_denoised {
+                let denoised_view = self
+                    .oidn_denoiser
+                    .as_ref()
+                    .and_then(|d| d.result_view());
+                if let (Some(r), Some(view)) =
+                    (self.renderer_3d.as_ref(), denoised_view)
+                {
+                    r.blit_oidn_result_into_render_target(view);
+                }
+            } else if let Some(r) = self.renderer_3d.as_ref() {
+                r.refresh_pt_selection_overlay();
+            }
+            ctx.request_repaint();
+        } else {
+            // PBR/wireframe: cube colours come from a full rasterisation
+            // pass, so a redraw is unavoidable. `needs_render_3d` (not
+            // `needs_layout`) keeps the instance cache intact and the
+            // PT accumulator untouched if PT is wired up.
+            self.needs_render_3d = true;
+        }
     }
 
     /// 2D mode interactions: selection highlight, hover, clicks, scroll zoom
