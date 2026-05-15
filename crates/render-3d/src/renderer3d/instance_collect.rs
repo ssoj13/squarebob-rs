@@ -64,6 +64,14 @@ impl Renderer3D {
         } else {
             None
         };
+        // Hoist `SystemTime::now()` out of the per-cube `FileAge` branch.
+        // The recursive collect emits one cube per visible leaf — calling
+        // SystemTime::now() inside that loop was thousands of syscalls
+        // per scan. We snapshot once here and pass it down.
+        let now_epoch_secs: u32 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as u32)
+            .unwrap_or(0);
         self.collect_recursive(
             root,
             0,
@@ -73,6 +81,7 @@ impl Renderer3D {
             world_center,
             need_picking,
             lod_ctx,
+            now_epoch_secs,
             &mut instances,
         );
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -117,6 +126,7 @@ impl Renderer3D {
         world_center: Vec3,
         need_picking: bool,
         lod_ctx: Option<(Vec3, f32, f32, f32)>, // (cam_eye, screen_h, fov, min_size)
+        now_epoch_secs: u32, // snapshot of SystemTime::now() at collect_cubes entry
         out: &mut Vec<CubeInstance>,
     ) {
         let [x, y, w, h] = node.rect.get();
@@ -159,13 +169,12 @@ impl Renderer3D {
                 ColorMode::FileType => name_hash(&node.ext) as f32 / u32::MAX as f32,
                 ColorMode::FileAge => {
                     if let Some(mtime) = node.modified_time {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
-                        let age_secs = now.saturating_sub(mtime);
-                        let year_secs = 365 * 24 * 60 * 60;
-                        (age_secs as f32 / year_secs as f32).clamp(0.0, 1.0)
+                        // `now_epoch_secs` was snapshotted once in
+                        // `collect_cubes`; no per-cube syscall here.
+                        let age_secs =
+                            (now_epoch_secs as u64).saturating_sub(mtime);
+                        const YEAR_SECS: u64 = 365 * 24 * 60 * 60;
+                        (age_secs as f32 / YEAR_SECS as f32).clamp(0.0, 1.0)
                     } else {
                         (name_hash(&node.path.to_string_lossy()) % 1000) as f32 / 1000.0
                     }
@@ -285,7 +294,14 @@ impl Renderer3D {
             } else {
                 0
             };
-            out.push(CubeInstance::new(model, color_f, hash, oid, material_id));
+            // mtime as Unix epoch seconds, truncated to u32. Per-cube
+            // attribute lets a future shader-side age recolour run live
+            // off a `now` uniform without rebuilding instances. `0`
+            // means scanner had no mtime for this entry.
+            let mtime_u32 = node.modified_time.unwrap_or(0) as u32;
+            out.push(CubeInstance::new(
+                model, color_f, hash, oid, material_id, mtime_u32,
+            ));
         } else {
             let my_hash = treemap::path_hash(&node.name, dir_hash);
             for child in &node.children {
@@ -298,6 +314,7 @@ impl Renderer3D {
                     world_center,
                     need_picking,
                     lod_ctx,
+                    now_epoch_secs,
                     out,
                 );
             }
