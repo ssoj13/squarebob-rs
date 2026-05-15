@@ -25,13 +25,16 @@ cubecl-wgpu = "0.10"
 
 # Our fork of Intel OIDN (pure Rust, weights ship as plain git blobs).
 #
-# `embed-hdr` bakes the 6 HDR TZA blobs (~10 MB) into the binary via
-# `include_bytes!` inside oidn-rs. The OIDN denoiser then runs
-# standalone: `data/oidn-weights/` becomes optional and serves only as
-# a runtime override (env `OIDN_WEIGHTS_DIR` or co-installed dir).
-# Disable with `default-features = false` if shipping with external
+# `embed-all` bakes the full 23 TZA blobs (~48 MB) into the binary via
+# `include_bytes!` inside oidn-rs. The OIDN denoiser runs standalone:
+# `data/oidn-weights/` becomes optional and serves only as a runtime
+# override (env `OIDN_WEIGHTS_DIR` or co-installed dir). Today's UI
+# only reaches the HDR subset, but `embed-all` keeps every Intel
+# variant (LDR, AOV-only, clean_aux, lightmap) baked in so the
+# renderer can grow new pipelines without an oidn-rs rebuild.
+# Disable with `default-features = false` if shipping external
 # weights instead.
 #
 # Pinned to a specific commit on `main` so builds stay reproducible.
 # Bump the `rev` when you want a fresh oidn-rs.
-oidn-rs = { git = "https://github.com/ssoj13/oidn-rs", rev = "a0c32f2a2a1feb1bd635dba0218c354b3ea80526", features = ["embed-hdr"] }
+oidn-rs = { git = "https://github.com/ssoj13/oidn-rs", rev = "a0c32f2a2a1feb1bd635dba0218c354b3ea80526", features = ["embed-all"] }
