@@ -14,6 +14,7 @@ use render_shared::{HoverMode, OrbitCamera, Render3DOptions};
 use treemap::TreeMapOptions;
 
 use crate::geometry::{self, CubeInstance, NUM_INDICES};
+use crate::targets::{DynamicBindGroups, RenderTargets};
 use crate::{pt, Renderer3D};
 
 impl Renderer3D {
@@ -167,6 +168,8 @@ impl Renderer3D {
 
         // Match outline/hover uniforms to the *current* cursor: read last frame's object_id buffer
         // at pending pixel before encoding (full render still ends with readback from *this* frame).
+        // PT mode skips this path — it uses CPU ray pick (`pt_pick`) driven from the UI thread,
+        // not the GPU readback used by PBR/wireframe.
         if !opts.path_tracing && cache_valid && self.instance_count > 0 {
             if let Some((px, py)) = self.picking.pending_pick {
                 self.picking.ensure_readback(&self.ctx.device, width);
@@ -208,7 +211,12 @@ impl Renderer3D {
                 height,
             );
 
-            // Add selection/hover overlay pass for PT mode (render over PT result).
+            // Outline overlay in PT mode. Picking is handled separately on
+            // the UI thread via `pt_pick` (CPU ray cast on the BVH), so
+            // this block runs only when there's something to highlight —
+            // no Object ID readback needed. We still do an Object ID pass
+            // because the outline shader samples that texture to detect
+            // silhouettes of the hovered/selected IDs.
             let has_active_overlay = !self.selected_ids.is_empty() || hovered_id != 0;
             if opts.hover_mode != HoverMode::None && has_active_overlay {
                 let targets = self
@@ -230,57 +238,8 @@ impl Renderer3D {
                             label: Some("PT Outline Encoder"),
                         });
 
-                // Object ID pass (needed for outline detection)
-                {
-                    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("PT Object ID"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &targets.object_id_view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: &targets.depth_view,
-                            depth_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(0.0), // reversed-Z: far = 0.0
-                                store: wgpu::StoreOp::Store,
-                            }),
-                            stencil_ops: None,
-                        }),
-                        ..Default::default()
-                    });
-                    pass.set_pipeline(&self.pipes.object_id);
-                    pass.set_bind_group(0, &self.obj_id_bg0, &[]);
-                    pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    pass.set_vertex_buffer(1, ib.slice(..));
-                    pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                    pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
-                }
-
-                // Outline pass
-                {
-                    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("PT Outline"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &targets.render_view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        ..Default::default()
-                    });
-                    pass.set_pipeline(&self.pipes.outline);
-                    pass.set_bind_group(0, &dyn_bgs.outline, &[]);
-                    pass.draw(0..3, 0..1);
-                }
+                self.encode_object_id_pass(&mut enc, targets, ib, opts.double_sided);
+                self.encode_outline_pass(&mut enc, targets, dyn_bgs);
 
                 self.ctx.queue.submit(std::iter::once(enc.finish()));
             }
@@ -355,6 +314,87 @@ impl Renderer3D {
     }
 
     // ========================================================================
-    // Bind group helpers
+    // Picking / outline shared passes
     // ========================================================================
+    //
+    // These two helpers eliminate the structural duplication between
+    // the PBR/wireframe flow (`encode_passes` in `lib.rs`) and the PT
+    // outline+picking encoder (further up in this file). Both modes
+    // now call exactly the same code, so future depth/blend/format
+    // tweaks land once and apply uniformly.
+
+    /// Render the per-pixel u32 Object ID texture used by hover
+    /// picking. Caller gates on `opts.hover_mode != None`; the pass
+    /// itself runs unconditionally so `picking::pick_from_existing`
+    /// can read out a fresh ID texture even when nothing is hovered
+    /// or selected yet (otherwise the overlay can never bootstrap).
+    pub(crate) fn encode_object_id_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        targets: &RenderTargets,
+        ib: &wgpu::Buffer,
+        double_sided: bool,
+    ) {
+        let pipe = if double_sided {
+            &self.pipes.object_id_double
+        } else {
+            &self.pipes.object_id
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Object ID"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &targets.object_id_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &targets.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0), // reversed-Z: far = 0.0
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        pass.set_pipeline(pipe);
+        pass.set_bind_group(0, &self.obj_id_bg0, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, ib.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
+    }
+
+    /// Composite the fullscreen outline overlay onto
+    /// `targets.render_view`. Caller gates on
+    /// `selected_ids.is_empty() && hovered_id == 0` (we don't waste a
+    /// fullscreen blit on idle frames).
+    pub(crate) fn encode_outline_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        targets: &RenderTargets,
+        dyn_bgs: &DynamicBindGroups,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Outline"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &targets.render_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.pipes.outline);
+        pass.set_bind_group(0, &dyn_bgs.outline, &[]);
+        pass.draw(0..3, 0..1);
+    }
 }

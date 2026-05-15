@@ -805,42 +805,13 @@ impl Renderer3D {
             pass.draw(0..3, 0..1);
         }
 
-        // Pass 3: Object ID (for hover picking)
+        // Pass 3: Object ID (for hover picking) and Pass 4: Outline.
+        // Shared with the PT-mode outline+picking encoder in
+        // `renderer3d/render.rs` — see `encode_object_id_pass` /
+        // `encode_outline_pass` for the actual encoder bodies.
         if opts.hover_mode != HoverMode::None {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Object ID"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.object_id_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &targets.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0), // reversed-Z: far = 0.0 // Fresh depth for correct picking
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-            if opts.double_sided {
-                pass.set_pipeline(&self.pipes.object_id_double);
-            } else {
-                pass.set_pipeline(&self.pipes.object_id);
-            }
-            pass.set_bind_group(0, &self.obj_id_bg0, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_vertex_buffer(1, ib.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
+            self.encode_object_id_pass(encoder, targets, ib, opts.double_sided);
         }
-
-        // Pass 4: Outline/tint overlay (fullscreen post-process)
         let has_active = !self.selected_ids.is_empty() || hovered_id != 0;
         info!(
             "encode_passes: outline condition hover_mode={:?}, hovered_id={}, selected={}",
@@ -850,23 +821,7 @@ impl Renderer3D {
         );
         if opts.hover_mode != HoverMode::None && has_active {
             info!("encode_passes: RENDERING OUTLINE PASS");
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Outline"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.render_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.pipes.outline);
-            pass.set_bind_group(0, &dyn_bgs.outline, &[]);
-            pass.draw(0..3, 0..1);
+            self.encode_outline_pass(encoder, targets, dyn_bgs);
         }
     }
 
@@ -1073,9 +1028,14 @@ impl Renderer3D {
         let ndc_x = rel_x * 2.0 - 1.0;
         let ndc_y = 1.0 - rel_y * 2.0;
 
-        // Reversed-Z: near maps to NDC depth 1.0, far to 0.0.
+        // Reversed-Z: near maps to NDC depth 1.0, far to 0.0. But with
+        // `perspective_infinite_reverse_rh`, exactly NDC z=0 = view z=-∞,
+        // so `inv_view_proj * (x, y, 0, 1)` gives w ≈ 0 and the
+        // perspective divide produces NaN. Step a tiny ε off the far
+        // plane (view_z ≈ -1000 × near is plenty for a pick ray); see
+        // the same fix in `skybox.wgsl` for the rendering side.
         let near = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
-        let far = Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far = Vec4::new(ndc_x, ndc_y, 0.001, 1.0);
 
         let near_world4 = inv_view_proj * near;
         let far_world4 = inv_view_proj * far;
