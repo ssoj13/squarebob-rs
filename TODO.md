@@ -9,12 +9,28 @@
    - [x] Wavefront and megakernel both write primary-hit `albedo`/`normal` AOVs.
    - [x] `OidnDenoiser` with lazy build, graceful AOV downgrade, manual + auto triggers.
    - [x] Render-loop wire: display switches raw↔denoised, latency shown in UI.
+   - [x] Display routed through `blit_with_source` so OIDN result inherits
+         ACES tonemap + gamma + hover/selection overlay.
    - [x] Model-size selector (Small / Base / Large) wired to OIDN's
          `_small`/base/`_large` registry; UI tooltips name the actual TZA file.
-   - [ ] **oidn-rs Phase I (deferred)**: lift `unet_runner` pre/post-process
-         and `autoexposure` from CPU loops into Burn ops on shared wgpu.
-         Saves ~80 ms/1080p and ~250 ms/4K of host roundtrip. Work happens
-         in the `oidn-rs` repo, not here.
+   - [x] Periodic re-fire `pt_oidn_interval` (default 128 spp) on top of
+         the final-spp trigger.
+   - [x] Shared-device kernels actually run (full adapter features +
+         `experimental_features = ExperimentalFeatures::enabled()` for
+         SPIR-V passthrough; `max_buffer_size` / `max_storage_buffer_binding_size`
+         raised to adapter caps; missing texture/buffer `COPY_SRC` flags).
+   - [x] **First-tier perf caching landed.**
+         TZA bytes cache, reused staging buffers, idempotent
+         `RtFilter::commit()`, and full `RtFilter<'static>` reuse across
+         denoise calls via `Box::leak(burn_device)`. ~80-100 ms saved per
+         periodic re-fire after the first.
+   - [ ] **`oidn-rs` Phase I — full GPU pipeline (deferred).**
+         Lift `unet_runner` pre/post-process (pack + transfer fn forward,
+         reflect-pad, inverse transfer, tile stitch) and `autoexposure`
+         from CPU pixel loops to Burn tensor ops on shared wgpu. Removes
+         the remaining 50 ms (1080p) / 200 ms (4K) host-roundtrip /
+         CPU-loop cost per denoise. Detailed plan:
+         `docs/oidn-phase1-plan.md`.
 
 3. [x] **Adaptive sampling — bugfixes landed.**
    - [x] Welford variance buffer was not cleared on accumulation reset;
@@ -45,6 +61,21 @@
   `.github/workflows/ci.yml`, and any platform-specific signing/NSIS
   configs — every produced binary should be named after `squarebob` (`squarebob.exe`
   / `Squarebob.app` / `squarebob`).
+
+## Rendering correctness landed today
+- [x] **Reversed-Z + infinite far plane.** `Mat4::perspective_rh(near, far)`
+      → `Mat4::perspective_infinite_reverse_rh(near)`; all PBR / wireframe
+      / object-id / skybox pipelines flipped to `Greater(Equal)`; depth
+      clears to `0.0`; picking ray NDC z swapped. Eliminates the strobing
+      background that appeared in PBR/wireframe on camera rotation.
+- [x] **OIDN dark-output fix.** Result now goes through PT's
+      `blit_with_source` (ACES + gamma) instead of a separate egui-native
+      registration that skipped tone-mapping.
+- [x] **OIDN renderer-side shared-device bring-up.** Three fixes:
+      full adapter features + `ExperimentalFeatures::enabled()` (kernels
+      were silently no-op'ing); raised `max_buffer_size` /
+      `max_storage_buffer_binding_size` (cubecl was panicking on pool
+      init); added `COPY_SRC` to `pt_output` and wavefront AOV buffers.
 
 ## Follow-ups outside this initial sprint
 
