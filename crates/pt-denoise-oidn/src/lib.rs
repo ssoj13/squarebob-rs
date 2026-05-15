@@ -250,11 +250,17 @@ impl OidnDenoiser {
         let unpadded_bpr = (w as u64) * bpp;
         let padded_bpr = (unpadded_bpr + 255) & !255;
         let color_size = padded_bpr * (h as u64);
-        let color_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("oidn_color_staging"),
-            size: color_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
+        if self.color_staging_size != color_size {
+            self.color_staging = None;
+            self.color_staging_size = color_size;
+        }
+        let color_staging = self.color_staging.get_or_insert_with(|| {
+            ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("oidn_color_staging"),
+                size: color_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
         });
 
         let mut encoder = encoder;
@@ -266,7 +272,7 @@ impl OidnDenoiser {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &color_staging,
+                buffer: color_staging,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bpr as u32),
@@ -290,44 +296,59 @@ impl OidnDenoiser {
         let normal_buf = if use_normal { normal_buf } else { None };
 
         let aov_size = (n as u64) * 16;
-        let albedo_staging = albedo_buf.map(|src| {
-            let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("oidn_albedo_staging"),
-                size: aov_size,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
+        if self.aov_staging_size != aov_size {
+            self.albedo_staging = None;
+            self.normal_staging = None;
+            self.aov_staging_size = aov_size;
+        }
+        let albedo_staging_ref = if let Some(src) = albedo_buf {
+            let buf = self.albedo_staging.get_or_insert_with(|| {
+                ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("oidn_albedo_staging"),
+                    size: aov_size,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                })
             });
-            encoder.copy_buffer_to_buffer(src, 0, &buf, 0, aov_size);
-            buf
-        });
-        let normal_staging = normal_buf.map(|src| {
-            let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("oidn_normal_staging"),
-                size: aov_size,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
+            encoder.copy_buffer_to_buffer(src, 0, buf, 0, aov_size);
+            Some(buf)
+        } else {
+            None
+        };
+        let normal_staging_ref = if let Some(src) = normal_buf {
+            let buf = self.normal_staging.get_or_insert_with(|| {
+                ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("oidn_normal_staging"),
+                    size: aov_size,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                })
             });
-            encoder.copy_buffer_to_buffer(src, 0, &buf, 0, aov_size);
-            buf
-        });
+            encoder.copy_buffer_to_buffer(src, 0, buf, 0, aov_size);
+            Some(buf)
+        } else {
+            None
+        };
 
         log::debug!(
             "OIDN: encoder built — color_size={} aov_size={} (albedo={}, normal={})",
             color_size, aov_size,
-            albedo_staging.is_some(), normal_staging.is_some(),
+            albedo_staging_ref.is_some(), normal_staging_ref.is_some(),
         );
+        // Re-borrow color_staging by index after the get_or_insert_with above
+        // (the binding shadowed earlier) — staging buffers live in `self`
+        // now and persist across denoise calls.
+        let color_staging_ref: &wgpu::Buffer = self.color_staging.as_ref().unwrap();
         ctx.queue.submit(std::iter::once(encoder.finish()));
         log::trace!("OIDN: copy encoder submitted, mapping color staging");
 
         // Map everything and pull bytes back to host.
-        let color_rgb = map_and_strip_rgba_padded(&ctx.device, &color_staging, w, h, padded_bpr)?;
+        let color_rgb = map_and_strip_rgba_padded(&ctx.device, color_staging_ref, w, h, padded_bpr)?;
         log::trace!("OIDN: color readback done ({} f32 = {} bytes)", color_rgb.len(), color_rgb.len() * 4);
-        let albedo_rgb = albedo_staging
-            .as_ref()
+        let albedo_rgb = albedo_staging_ref
             .map(|b| map_and_strip_rgba_tight(&ctx.device, b, n))
             .transpose()?;
-        let normal_rgb = normal_staging
-            .as_ref()
+        let normal_rgb = normal_staging_ref
             .map(|b| map_and_strip_rgba_tight(&ctx.device, b, n))
             .transpose()?;
 
@@ -348,9 +369,56 @@ impl OidnDenoiser {
         let user_scale: Option<f32> = std::env::var("OIDN_INPUT_SCALE")
             .ok()
             .and_then(|s| s.parse::<f32>().ok());
+
+        // Cache TZA bytes across denoise calls. Key = (use_albedo, use_normal,
+        // quality) since hdr is always true for our pipeline. When the user
+        // toggles mode/quality we transparently reload.
+        let cache_key = (use_albedo, use_normal, self.quality);
+        if self.cached_model_key != Some(cache_key) {
+            self.cached_model_bytes = None;
+            self.cached_model_key = None;
+        }
+        let cached_bytes = match self.cached_model_bytes.clone() {
+            Some(b) => Some(b),
+            None => {
+                // Resolve filename via oidn-rs registry, then read it once
+                // and cache. Errors leave the cache empty so we fall back
+                // to the builder's own fs::read on commit.
+                let base_key = oidn_rs::registry::select_rt(
+                    true, use_albedo, use_normal,
+                    /*hdr*/ true, /*srgb*/ false, /*directional*/ false,
+                    /*clean_aux*/ false, self.quality,
+                );
+                if let Some(key) = base_key {
+                    let candidates = oidn_rs::registry::quality_candidates(&key, self.quality);
+                    let mut loaded: Option<Vec<u8>> = None;
+                    for stem in &candidates {
+                        let path = self.weights_dir.join(format!("{stem}.tza"));
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            log::debug!(
+                                "OIDN: cached TZA stem={} ({} bytes)",
+                                stem, bytes.len()
+                            );
+                            loaded = Some(bytes);
+                            break;
+                        }
+                    }
+                    if let Some(b) = loaded {
+                        self.cached_model_bytes = Some(b.clone());
+                        self.cached_model_key = Some(cache_key);
+                        Some(b)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
         log::debug!(
-            "OIDN: building RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, weights_dir={})",
-            hdr, self.quality, user_scale, self.weights_dir.display()
+            "OIDN: building RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, cached_weights={})",
+            hdr, self.quality, user_scale, cached_bytes.is_some()
         );
         let mut builder = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
             burn_device,
@@ -360,6 +428,9 @@ impl OidnDenoiser {
         .quality(self.quality);
         if let Some(s) = user_scale {
             builder = builder.input_scale(Some(s));
+        }
+        if let Some(bytes) = cached_bytes {
+            builder = builder.weights(bytes);
         }
         let mut filter = builder.build();
 
