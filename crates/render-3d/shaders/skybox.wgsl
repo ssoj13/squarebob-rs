@@ -39,7 +39,12 @@ fn vs_main(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
     var out: VertexOutput;
     let x = f32(i32(vertex_idx & 1u) * 4 - 1);
     let y = f32(i32(vertex_idx >> 1u) * 4 - 1);
-    out.position = vec4<f32>(x, y, 1.0, 1.0); // z=1.0 = far plane (behind geometry)
+    // Reversed-Z convention: clip-space z=0.0 is the far plane (depth
+    // attachment is cleared to 0.0 and the cube pipeline uses Greater).
+    // The skybox must sit at far so any geometry (depth > 0) wins the
+    // `GreaterEqual` compare. Forward-Z used z=1.0 here, which now
+    // marks the near plane and would paint over every cube.
+    out.position = vec4<f32>(x, y, 0.0, 1.0);
     out.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
     return out;
 }
@@ -58,8 +63,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.1, 0.1, 0.1, 1.0); // Default dark background
     }
 
-    // Reconstruct world-space ray from screen UV using inverse view-projection
-    let ndc = vec4<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0, 1.0, 1.0);
+    // Reconstruct world-space ray from screen UV. Reversed-Z: NDC z=0.0
+    // corresponds to the far plane (the direction we want the skybox to
+    // sample). Forward-Z used z=1.0 here, which under reversed-Z lands at
+    // the *near* plane and yielded a jittery direction per pixel because
+    // the inverse-projection's `w` collapsed to ~near, killing precision
+    // on camera rotation.
+    let ndc = vec4<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0, 0.0, 1.0);
     let world = camera.inv_view_proj * ndc;
     let dir = normalize(world.xyz / world.w - camera.position);
 
