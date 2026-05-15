@@ -6,6 +6,193 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-05-15 — OIDN Phase I: zero host roundtrip on the denoise hot path
+
+Lifted the entire OIDN forward pass onto the shared wgpu device. Pixel
+data now stays in VRAM from the moment the path tracer writes it to
+the moment the denoised result lands in `result_texture` — no PCIe
+roundtrip, no per-tile CPU loop. Implementation landed across the
+`oidn-rs/phase1-gpu-pipeline` branch and squarebob's `main`. Reference:
+[`docs/oidn-phase1-plan.md`](docs/oidn-phase1-plan.md) +
+[`docs/oidn-phase1-i5-survey.md`](docs/oidn-phase1-i5-survey.md).
+
+### oidn-rs (commits `8ae2939` → `5392389` → `c357622` → `b3c9c62`)
+- **Added** `image_tensor` module: layout helpers (`chw_to_hwc` /
+  `hwc_to_chw`), `Tensor<B, 4>` ↔ `Vec<f32>` bridges.
+- **Added** tensor-native API on `RtFilter`: `set_color_tensor` /
+  `set_albedo_tensor` / `set_normal_tensor` / `allocate_output_tensor`
+  / `take_output_tensor`. Stores `Tensor<B, 4>` directly — no
+  `OwnedImage` round-trip.
+- **Added** `gpu_ops` module: `reflect_pad_2d` (cat + flip emulation),
+  vectorised PU / sRGB / Log forward/inverse transfer functions via
+  `mask_where` cascades.
+- **Added** `autoexposure::compute_scale_tensor` — bin reduction via
+  `avg_pool2d` + `mask_fill`, only the two reduced scalars cross to
+  host. Replaces the host `compute_scale` on the tensor path.
+- **Rewrote** `unet_runner` as `run_tensors` (primary) + `run` (thin
+  wrapper for legacy `Image<'_>` callers). Per-tile pack/unpack CPU
+  loops gone; slice + reflect-pad + transfer + cat + forward + inverse
+  + slice_assign all run as Burn ops on the device.
+- **`RtFilter::execute`** dispatches between the tensor and legacy
+  paths based on which input slot is populated. `commit()` handles
+  both modes via unified `output_dims()` + cross-mode dim checks.
+- Test coverage: 10 NdArray-backend unit tests covering layout
+  helpers, transfer-function parity (rtol = 1e-4), autoexposure
+  parity (≤ 1 % vs CPU reference).
+
+### squarebob `pt-denoise-oidn` (commits `3d174cc` → `3cd7ef2`)
+- **Replaced** staging buffer pool + `map_async` readback +
+  `to_rgb_f32` + `Tensor::from_data` chain with the
+  **input bridge**: `alloc_hwc4_input` allocates `[1, H, W, 4]` Burn
+  tensors, extracts their `wgpu::Buffer` via
+  `ComputeClient::get_resource`, then squarebob's encoder issues
+  `copy_texture_to_buffer` / `copy_buffer_to_buffer` directly into
+  Burn-owned VRAM. `hwc4_to_chw3` slices off alpha and permutes to
+  `[1, 3, H, W]` on-device.
+- **Replaced** `filter.take_output()` byte readback + per-pixel
+  repack + `queue.write_texture` chain with the
+  **output bridge**: `chw_rgb_to_hwc_rgba_ones` permutes + cats a
+  ones-plane on-device, then a single `copy_buffer_to_texture` lands
+  the result in `Rgba32Float result_texture`. No host bytes.
+- **Removed** unused infrastructure: `color_staging` /
+  `albedo_staging` / `normal_staging` fields and their resize
+  bookkeeping, `map_and_strip_rgba_padded` / `map_and_strip_rgba_tight`
+  helpers, the host-side input stats trace.
+- **Width constraint** at the bridge entrance: `w * 16` must be a
+  multiple of 256 (wgpu's `COPY_BYTES_PER_ROW_ALIGNMENT`). Common
+  viewport widths satisfy this; non-aligned widths bail with a clear
+  error pending a padded-row fallback.
+
+### Phase I survey deliverable
+- `docs/oidn-phase1-i5-survey.md` documents the cubecl-wgpu /
+  burn-cubecl public API surface used by the bridge. Path 1 (zero-copy
+  wrap of an external `wgpu::Buffer`) is unreachable without patches
+  to two private types across cubecl-runtime + cubecl-wgpu; Path 2
+  (device-local copy via `ComputeClient::get_resource` →
+  `WgpuResource::buffer`) is fully public and is what we implemented.
+
+### Deferred to follow-up
+- **I.7** automated bench tool + PSNR regression. Today's bench is
+  squarebob's runtime latency log (`OIDN: denoise … -> X.X ms`); a
+  scripted (mode × size × resolution) CSV + a 16-spp-vs-4096-spp
+  PSNR check would catch silent regressions but needs a headless
+  reference renderer.
+
+## 2026-05-15 — OIDN denoiser quality + perf
+
+Stabilisation pass on the OIDN integration: visual correctness, adaptive
+sampling math, GPU precision, and first-tier perf caching.
+
+### Visual correctness
+- **Fixed** dark OIDN output and missing hover/selection overlay. The
+  denoised result texture is now blitted through the same megakernel
+  `blit_with_source` pipeline as raw PT (ACES tonemap + gamma 1/2.2),
+  instead of being registered as a separate egui-native texture. Hover and
+  tone-mapping are now consistent across raw and denoised views.
+- **Added** `PathTraceCompute::blit_with_source(...)` and
+  `Renderer3D::blit_oidn_result_into_render_target(view)` — public API
+  so the app layer can pipe the OIDN result through the existing display
+  shader chain.
+- **Changed** OIDN `result_texture` format `Rgba16Float` → `Rgba32Float`
+  (matches blit BGL's `Float { filterable: false }` requirement; the blit
+  pass uses `textureLoad`, no filtering needed).
+
+### Reversed-Z depth
+- **Replaced** `Mat4::perspective_rh(fov, aspect, near, far)` with
+  `Mat4::perspective_infinite_reverse_rh(fov, aspect, near)` in
+  `render-shared::Camera`. Far plane is now infinity, near maps to NDC
+  depth 1.0. f32 depth precision is now logarithmic across the range.
+- **Updated** every PBR / wireframe / object-id / skybox pipeline to use
+  `CompareFunction::Greater(Equal)` instead of `Less(Equal)`, depth-buffer
+  load to `Clear(0.0)`, and the picking ray-cast NDC z swap.
+- Eliminates the strobing background users reported in PBR/wireframe on
+  camera rotation — the previous near=0.1 / far=100000 (1e6 ratio) left
+  far-plane fragments quantised so coarsely that env-map sample direction
+  flickered frame-to-frame.
+
+### Adaptive sampling correctness
+- **Fixed** Welford `adaptive.variance_buf` was not cleared on
+  accumulation reset, so per-pixel mean/M2 mixed stale and fresh samples
+  across camera/scene changes. Cleared together with `accum_buffer` and
+  `variance_buffer` in both megakernel and wavefront dispatch paths.
+- **Changed** `adaptive/allocate.wgsl` uses DMC-style relative noise
+  (`std_err / max(luminance(mean), eps)`) instead of raw luminance
+  variance, so a single `variance_threshold` works across the full HDR
+  range.
+- **Refactored** adaptive SPP range is now *derived* from `pt_samples`
+  (single V-Ray-style global samples knob): `min_spp = max(samples/16, 8)`,
+  `max_spp = samples`. Removed `pt_adaptive_min_spp` / `pt_adaptive_max_spp`
+  from `Render3DOptions`, factory JSON, and UI.
+- **Unified** `pt_max_samples` → `pt_samples` everywhere
+  (`Render3DOptions`, factory JSON, CLI mapping, UI, PT internal field).
+
+### Denoiser triggers + UI
+- **Added** `pt_oidn_interval` (default **128**): re-run OIDN every N
+  accumulated samples during the render, in addition to the final-spp
+  fire. `0` disables periodic re-runs.
+- **Reworked** Sampling section in Settings → Rendering: numeric chip-row
+  presets for `pt_samples` (16, 64, 128, 256, 512, 1024, 2048, 4096,
+  8192), each preset also sets `pt_adaptive_variance` proportionally
+  (`1/√N` scaling). The slider stays for fine tuning.
+- **Renamed** OIDN `Quality` → **Model size** (`Small` / `Base` /
+  `Large`) — names match what the user actually controls (which TZA
+  variant gets loaded).
+- **Added** colour-coded status indicator and a periodic-fire `Interval`
+  DragValue to the OIDN UI block.
+- **Renamed** `data/factory_render3d_options.json` → `data/default.json`,
+  same name convention as the runtime-override file next to the
+  executable.
+
+### Bundle
+- **Vendored** all 23 OIDN TZA model variants Intel ships (~48 MB) to
+  `data/oidn-weights/`. Previously only 5 base files were bundled; now
+  `Quality::Small` / `Quality::Large` actually load size-specific weights
+  where Intel ships them.
+
+### Shared device hardening
+- **Fixed** Burn-cubecl inference returned all-zero tensors when handed
+  squarebob's existing wgpu setup via `cubecl_wgpu::init_device(WgpuSetup
+  ::Existing(...))`. Root cause: `GpuContext::new` requested
+  `wgpu::Limits::default()` plus `POLYGON_MODE_LINE`, but cubecl's
+  compute path on Vulkan needs the full adapter feature set
+  (`adapter.features() - MAPPABLE_PRIMARY_BUFFERS`), full
+  `adapter.limits()`, and `experimental_features =
+  ExperimentalFeatures::enabled()` for SPIR-V passthrough. Without those,
+  kernels silently no-op. Now mirrors Burn's own `request_device`.
+- **Fixed** `cubecl-wgpu` panic `can't allocate buffer of size: 200 MiB`
+  during memory-pool init. Bumped `max_buffer_size` and
+  `max_storage_buffer_binding_size` to adapter caps (the previous default
+  256 MiB conflicted with cubecl's page-size derivation).
+- **Fixed** validation errors `MissingTextureUsage(COPY_SRC)` on
+  `pt_output`: added `COPY_SRC` to its usage flags. Similar fix on
+  wavefront AOV buffers (`COPY_SRC` added to `albedo_buf` / `normal_buf`).
+
+### Perf — first-tier caching
+- **Added** TZA bytes cache in `pt-denoise-oidn::OidnDenoiser`. Key =
+  `(use_albedo, use_normal, quality)`. Skips ~10-15 ms of disk I/O per
+  periodic denoise.
+- **Added** reused staging buffers (color/albedo/normal). Allocated once
+  per viewport size, dropped on `resize()`.
+- **Made `oidn-rs::RtFilter`'s `commit()` idempotent** when the model
+  selection and output dims/format match the previous commit. `set_color`
+  / `set_albedo` / `set_normal` no longer reset `committed` when only
+  pixel content changes; `allocate_output` tracks
+  `last_committed_dims`. Skips ~30-50 ms of UNet rebuild on every
+  periodic fire.
+- **Added** `RtFilter<'static>` caching in `OidnDenoiser` via
+  `Box::leak(burn_device)`. Key =
+  `(use_albedo, use_normal, quality, w, h)`. The full filter (UNet +
+  tile plan + weights) survives between denoise calls.
+
+### Misc
+- **Vendored** `gpu-mem` crate from `vfx-rs` workspace into
+  `crates/gpu-mem/` — zero-dependency VRAM query helper.
+- **Vendored** local `oidn-rs` checkout via path dependency while debug
+  iteration is active. Switch back to git source once a stable cut is
+  ready.
+- **Added** `OIDN_INPUT_SCALE` env var to override OIDN autoexposure for
+  diagnostics, and verbose per-tile trace logs in `unet_runner.rs`.
+
 ## 2026-05-14 — OIDN denoiser
 
 Replaced the color-only à-trous denoiser with Intel Open Image Denoise
