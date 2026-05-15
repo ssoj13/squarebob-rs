@@ -93,13 +93,6 @@ pub struct OidnDenoiser {
         Option<Box<oidn_rs::RtFilter<'static, burn_wgpu::Wgpu<f32, i32>>>>,
     cached_filter_key: Option<(bool, bool, Quality, u32, u32)>,
 
-    /// Reused staging buffers for color readback (padded to 256-byte rows)
-    /// and the two AOVs (tight `w*h*16`). Invalidated on resize.
-    color_staging: Option<wgpu::Buffer>,
-    color_staging_size: u64,
-    aov_staging_size: u64,
-    albedo_staging: Option<wgpu::Buffer>,
-    normal_staging: Option<wgpu::Buffer>,
 }
 
 impl OidnDenoiser {
@@ -118,11 +111,6 @@ impl OidnDenoiser {
             cached_model_bytes: None,
             cached_filter: None,
             cached_filter_key: None,
-            color_staging: None,
-            color_staging_size: 0,
-            aov_staging_size: 0,
-            albedo_staging: None,
-            normal_staging: None,
         }
     }
 
@@ -134,12 +122,11 @@ impl OidnDenoiser {
         self.height = height;
         self.result_texture = None;
         self.result_view = None;
-        // Staging dims change with viewport; drop reused buffers.
-        self.color_staging = None;
-        self.albedo_staging = None;
-        self.normal_staging = None;
-        self.color_staging_size = 0;
-        self.aov_staging_size = 0;
+        // Filter cache is keyed on (mode, quality, w, h) — when dims change
+        // the cached filter is invalidated lazily on the next denoise call
+        // (see filter_key check there). Burn input tensors are allocated
+        // per-call by the I.5b bridge, so there's nothing dimension-tied
+        // to drop here aside from the result texture above.
     }
 
     pub fn set_mode(&mut self, mode: OidnMode) {
@@ -260,28 +247,46 @@ impl OidnDenoiser {
         let h = self.height as usize;
         let n = w * h;
 
-        // Color readback. PT output is Rgba32Float = 16 bytes/pixel. We allocate
-        // an aligned staging buffer (256-byte row pitch as required by wgpu's
-        // `copy_texture_to_buffer`), then map and tightly repack into f32x4
-        // before stripping alpha.
-        let bpp = 16u64;
-        let unpadded_bpr = (w as u64) * bpp;
-        let padded_bpr = (unpadded_bpr + 255) & !255;
-        let color_size = padded_bpr * (h as u64);
-        if self.color_staging_size != color_size {
-            self.color_staging = None;
-            self.color_staging_size = color_size;
+        // I.5b input bridge: copy PT-side data directly into Burn-allocated
+        // wgpu::Buffers, then wrap as on-device tensors. No host roundtrip.
+        //
+        // Width constraint: `w * 16` must be a multiple of 256 (wgpu's
+        // `COPY_BYTES_PER_ROW_ALIGNMENT`). Common viewport widths satisfy
+        // this. Padded-row fallback is deferred until a non-aligned width
+        // shows up in the field.
+        let unpadded_bpr = (w as u64) * 16;
+        if unpadded_bpr % 256 != 0 {
+            anyhow::bail!(
+                "OIDN tensor bridge requires width*16 to be 256-byte aligned (got w={w}, bpr={unpadded_bpr}). \
+                 Use a width that's a multiple of 16 px, or extend the bridge with a padded-row fallback."
+            );
         }
-        let color_staging = self.color_staging.get_or_insert_with(|| {
-            ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("oidn_color_staging"),
-                size: color_size,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            })
-        });
+
+        // Respect downgrade: drop AOV inputs we don't intend to consume so
+        // we don't allocate / copy ~30 MB of AOV per side just to throw away.
+        let albedo_buf = if use_albedo { albedo_buf } else { None };
+        let normal_buf = if use_normal { normal_buf } else { None };
+
+        let burn_device: &'static burn_wgpu::WgpuDevice = self
+            .burn_device_ref
+            .expect("burn_device init guaranteed above");
+
+        // Allocate one [1, H, W, 4] HWC RGBA tensor per active input and
+        // grab the underlying wgpu::Buffer for the encoder copy below.
+        use burn::tensor::Tensor;
+        type Wgpu = burn_wgpu::Wgpu<f32, i32>;
+        let (color_hwc4, color_buf, color_off) = alloc_hwc4_input(burn_device, w, h)?;
+        let albedo_bridge = albedo_buf.map(|src| -> Result<_> {
+            let (t, buf, off) = alloc_hwc4_input(burn_device, w, h)?;
+            Ok((t, buf, off, src))
+        }).transpose()?;
+        let normal_bridge = normal_buf.map(|src| -> Result<_> {
+            let (t, buf, off) = alloc_hwc4_input(burn_device, w, h)?;
+            Ok((t, buf, off, src))
+        }).transpose()?;
 
         let mut encoder = encoder;
+        // Color: copy_texture_to_buffer with natural HWC RGBA layout.
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: color_tex,
@@ -290,10 +295,10 @@ impl OidnDenoiser {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: color_staging,
+                buffer: &color_buf,
                 layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bpr as u32),
+                    offset: color_off,
+                    bytes_per_row: Some(unpadded_bpr as u32),
                     rows_per_image: Some(self.height),
                 },
             },
@@ -303,77 +308,32 @@ impl OidnDenoiser {
                 depth_or_array_layers: 1,
             },
         );
-
-        // AOV buffer readback: source buffers are already vec4<f32>, tightly
-        // packed at full_w*full_h*16 bytes — no padding needed. We copy them
-        // into mappable staging buffers regardless, because the source buffers
-        // are not MAP_READ.
-        // Respect downgrade: drop AOV inputs we don't intend to consume so
-        // we don't copy 32 MB of normals just to throw them away.
-        let albedo_buf = if use_albedo { albedo_buf } else { None };
-        let normal_buf = if use_normal { normal_buf } else { None };
-
+        // AOVs: already vec4<f32> tightly packed, copy_buffer_to_buffer
+        // straight into the Burn allocation.
         let aov_size = (n as u64) * 16;
-        if self.aov_staging_size != aov_size {
-            self.albedo_staging = None;
-            self.normal_staging = None;
-            self.aov_staging_size = aov_size;
+        if let Some((_, ref dst_buf, dst_off, src)) = albedo_bridge {
+            encoder.copy_buffer_to_buffer(src, 0, dst_buf, dst_off, aov_size);
         }
-        let albedo_staging_ref = if let Some(src) = albedo_buf {
-            let buf = self.albedo_staging.get_or_insert_with(|| {
-                ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("oidn_albedo_staging"),
-                    size: aov_size,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                })
-            });
-            encoder.copy_buffer_to_buffer(src, 0, buf, 0, aov_size);
-            Some(buf)
-        } else {
-            None
-        };
-        let normal_staging_ref = if let Some(src) = normal_buf {
-            let buf = self.normal_staging.get_or_insert_with(|| {
-                ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("oidn_normal_staging"),
-                    size: aov_size,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                })
-            });
-            encoder.copy_buffer_to_buffer(src, 0, buf, 0, aov_size);
-            Some(buf)
-        } else {
-            None
-        };
-
-        log::debug!(
-            "OIDN: encoder built — color_size={} aov_size={} (albedo={}, normal={})",
-            color_size, aov_size,
-            albedo_staging_ref.is_some(), normal_staging_ref.is_some(),
-        );
-        // Re-borrow color_staging by index after the get_or_insert_with above
-        // (the binding shadowed earlier) — staging buffers live in `self`
-        // now and persist across denoise calls.
-        let color_staging_ref: &wgpu::Buffer = self.color_staging.as_ref().unwrap();
+        if let Some((_, ref dst_buf, dst_off, src)) = normal_bridge {
+            encoder.copy_buffer_to_buffer(src, 0, dst_buf, dst_off, aov_size);
+        }
         ctx.queue.submit(std::iter::once(encoder.finish()));
-        log::trace!("OIDN: copy encoder submitted, mapping color staging");
+        log::trace!(
+            "OIDN: input bridge submitted ({} bytes color + 2×{} AOV)",
+            unpadded_bpr * (h as u64), aov_size,
+        );
 
-        // Map everything and pull bytes back to host.
-        let color_rgb = map_and_strip_rgba_padded(&ctx.device, color_staging_ref, w, h, padded_bpr)?;
-        log::trace!("OIDN: color readback done ({} f32 = {} bytes)", color_rgb.len(), color_rgb.len() * 4);
-        let albedo_rgb = albedo_staging_ref
-            .map(|b| map_and_strip_rgba_tight(&ctx.device, b, n))
-            .transpose()?;
-        let normal_rgb = normal_staging_ref
-            .map(|b| map_and_strip_rgba_tight(&ctx.device, b, n))
-            .transpose()?;
+        // Convert HWC RGBA → CHW RGB on the same wgpu device via Burn ops.
+        // permute is a strided view; downstream ops in run_tensors (slice,
+        // reflect_pad, transfer, cat) handle non-contiguous tensors.
+        let color_chw3_t: Tensor<Wgpu, 4> = hwc4_to_chw3(color_hwc4);
+        let albedo_chw3_t: Option<Tensor<Wgpu, 4>> =
+            albedo_bridge.map(|(t, _, _, _)| hwc4_to_chw3(t));
+        let normal_chw3_t: Option<Tensor<Wgpu, 4>> =
+            normal_bridge.map(|(t, _, _, _)| hwc4_to_chw3(t));
 
-        // Build the filter and run inference.
-        let burn_device: &'static burn_wgpu::WgpuDevice = self
-            .burn_device_ref
-            .expect("burn_device init guaranteed above");
+        // Build the filter and run inference. `burn_device` was acquired
+        // above for the input bridge; reuse the same reference here.
         let hdr = matches!(
             self.mode,
             OidnMode::Color | OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal
@@ -468,43 +428,12 @@ impl OidnDenoiser {
             filter_was_cached, self.cached_filter_key
         );
 
-        // Sanity-trace the readback so it's obvious whether the input was
-        // actually populated or we're feeding OIDN a blank frame.
-        let in_stats = stats(&color_rgb);
-        log::info!(
-            "OIDN input color: min={:.4} max={:.4} mean={:.4} (n={} pixels)",
-            in_stats.0, in_stats.1, in_stats.2, n
-        );
-
-        // Build Burn tensors from the host-side colour/albedo/normal
-        // buffers. Phase I.5/I.6: feed the filter through the tensor API
-        // so it runs the pure on-device pipeline (no per-tile host
-        // roundtrip inside oidn-rs). The host upload here is the same
-        // work the legacy `run(Image)` wrapper used to do internally;
-        // a future follow-up will lift it onto a direct PT-buffer →
-        // Burn-buffer encoder copy to remove the host roundtrip entirely.
-        use burn::tensor::{Tensor, TensorData};
-        type Wgpu = burn_wgpu::Wgpu<f32, i32>;
-        let color_chw = chw_from_hwc_rgb(&color_rgb, w, h);
-        let color_t = Tensor::<Wgpu, 4>::from_data(
-            TensorData::new(color_chw, [1usize, 3, h, w]),
-            burn_device,
-        );
-        filter.set_color_tensor(color_t);
-        if let Some(buf) = albedo_rgb.as_deref() {
-            let chw = chw_from_hwc_rgb(buf, w, h);
-            filter.set_albedo_tensor(Tensor::<Wgpu, 4>::from_data(
-                TensorData::new(chw, [1usize, 3, h, w]),
-                burn_device,
-            ));
-        }
-        if let Some(buf) = normal_rgb.as_deref() {
-            let chw = chw_from_hwc_rgb(buf, w, h);
-            filter.set_normal_tensor(Tensor::<Wgpu, 4>::from_data(
-                TensorData::new(chw, [1usize, 3, h, w]),
-                burn_device,
-            ));
-        }
+        // Tensor handoff to the filter. All three inputs already live on
+        // the shared wgpu device — the bridge above wrote PT pixels
+        // directly into each tensor's wgpu::Buffer, no host roundtrip.
+        filter.set_color_tensor(color_chw3_t);
+        if let Some(t) = albedo_chw3_t { filter.set_albedo_tensor(t); }
+        if let Some(t) = normal_chw3_t { filter.set_normal_tensor(t); }
         filter.allocate_output_tensor(w, h);
         log::trace!("OIDN: filter.commit() begin");
         filter.commit().map_err(|e| anyhow::anyhow!("OIDN commit: {e:?}"))?;
@@ -635,91 +564,55 @@ fn create_result_texture(
     (tex, view)
 }
 
-/// Map a buffer that was filled from `copy_texture_to_buffer` (256-byte row
-/// padding), then strip alpha to produce a tight `Vec<f32>` of length
-/// `width * height * 3` in HWC order.
-fn map_and_strip_rgba_padded(
-    device: &wgpu::Device,
-    buf: &wgpu::Buffer,
-    width: usize,
-    height: usize,
-    padded_bpr: u64,
-) -> Result<Vec<f32>> {
-    let slice = buf.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    rx.recv()
-        .map_err(|e| anyhow::anyhow!("OIDN map_async channel: {e}"))?
-        .map_err(|e| anyhow::anyhow!("OIDN map_async: {e:?}"))?;
-
-    let mapped = slice.get_mapped_range();
-    let mut out = Vec::with_capacity(width * height * 3);
-    let padded = padded_bpr as usize;
-    for y in 0..height {
-        let row = &mapped[y * padded..y * padded + width * 16];
-        let row_f32: &[f32] = bytemuck::cast_slice(row);
-        for px in row_f32.chunks_exact(4) {
-            out.push(px[0]);
-            out.push(px[1]);
-            out.push(px[2]);
-        }
-    }
-    drop(mapped);
-    buf.unmap();
-    Ok(out)
+/// Allocate a `[1, H, W, 4]` HWC RGBA Burn tensor on the shared wgpu
+/// device and return `(tensor, wgpu::Buffer clone, offset)` so squarebob
+/// can issue `copy_texture_to_buffer` / `copy_buffer_to_buffer` directly
+/// into the tensor's backing memory. After the copy is submitted, the
+/// tensor can be used by Burn ops as if its bytes were populated by
+/// Burn itself — the wgpu queue's FIFO ordering guarantees our writes
+/// land before any cubecl-side reads.
+fn alloc_hwc4_input(
+    device: &burn_wgpu::WgpuDevice,
+    w: usize,
+    h: usize,
+) -> Result<(burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>, wgpu::Buffer, u64)> {
+    let t = burn::tensor::Tensor::<burn_wgpu::Wgpu<f32, i32>, 4>::zeros(
+        [1, h, w, 4],
+        device,
+    );
+    // Reach the underlying CubeTensor via the public Tensor::into_primitive +
+    // TensorPrimitive::Float route. All fields on CubeTensor are pub
+    // (burn-cubecl-0.21.0/src/tensor/base.rs).
+    let primitive = t.clone().into_primitive();
+    let cube = match primitive {
+        burn::tensor::TensorPrimitive::Float(c) => c,
+        _ => anyhow::bail!("alloc_hwc4_input: expected Float tensor primitive"),
+    };
+    let managed = cube
+        .client
+        .get_resource(cube.handle.clone())
+        .map_err(|e| anyhow::anyhow!("OIDN get_resource: {e:?}"))?;
+    let res = managed.resource();
+    Ok((t, res.buffer.clone(), res.offset))
 }
 
-/// Map a tightly-packed `vec4<f32>` storage buffer and strip alpha.
-fn map_and_strip_rgba_tight(
-    device: &wgpu::Device,
-    buf: &wgpu::Buffer,
-    n_pixels: usize,
-) -> Result<Vec<f32>> {
-    let slice = buf.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    rx.recv()
-        .map_err(|e| anyhow::anyhow!("OIDN map_async channel: {e}"))?
-        .map_err(|e| anyhow::anyhow!("OIDN map_async: {e:?}"))?;
-
-    let mapped = slice.get_mapped_range();
-    let src: &[f32] = bytemuck::cast_slice(&mapped);
-    debug_assert!(src.len() >= n_pixels * 4);
-    let mut out = Vec::with_capacity(n_pixels * 3);
-    for px in src.chunks_exact(4).take(n_pixels) {
-        out.push(px[0]);
-        out.push(px[1]);
-        out.push(px[2]);
-    }
-    drop(mapped);
-    buf.unmap();
-    Ok(out)
-}
-
-/// HWC RGB → CHW RGB layout conversion. `hwc` is `width*height*3` floats in
-/// `(r, g, b, r, g, b, ...)` order; output is `(r-plane, g-plane, b-plane)`
-/// laid out row-major, suitable for `Tensor::from_data` with shape
-/// `[1, 3, H, W]`.
-fn chw_from_hwc_rgb(hwc: &[f32], width: usize, height: usize) -> Vec<f32> {
-    debug_assert_eq!(hwc.len(), width * height * 3);
-    let plane = width * height;
-    let mut chw = vec![0.0f32; plane * 3];
-    for y in 0..height {
-        for x in 0..width {
-            let src = (y * width + x) * 3;
-            let idx = y * width + x;
-            chw[idx] = hwc[src];
-            chw[plane + idx] = hwc[src + 1];
-            chw[2 * plane + idx] = hwc[src + 2];
-        }
-    }
-    chw
+/// Convert a `[1, H, W, 4]` HWC RGBA Burn tensor into a `[1, 3, H, W]`
+/// CHW RGB view. Slice trims off the alpha channel; permute swaps axes
+/// without copying. The result is non-contiguous (view); downstream
+/// `run_tensors` ops (`slice`, `reflect_pad_2d`, `cat`, ...) handle
+/// strides correctly.
+fn hwc4_to_chw3(
+    hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+) -> burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4> {
+    let dims = hwc4.dims();
+    debug_assert_eq!(dims[0], 1);
+    debug_assert_eq!(dims[3], 4);
+    let h = dims[1];
+    let w = dims[2];
+    // [1, H, W, 4] -> [1, H, W, 3] (drop alpha)
+    let hwc3 = hwc4.slice([0..1, 0..h, 0..w, 0..3]);
+    // [1, H, W, 3] -> [1, 3, H, W]
+    hwc3.permute([0, 3, 1, 2])
 }
 
 /// Convert a `[1, 3, H, W]` CHW RGB Burn tensor into a contiguous
@@ -805,29 +698,6 @@ fn copy_tensor_into_texture(
     );
     queue.submit(std::iter::once(encoder.finish()));
     Ok(())
-}
-
-/// Cheap min/max/mean over a flat HWC f32 slice — used to trace OIDN
-/// input/output magnitudes when diagnosing a black-frame display.
-fn stats(data: &[f32]) -> (f32, f32, f32) {
-    if data.is_empty() {
-        return (0.0, 0.0, 0.0);
-    }
-    let mut min = f32::INFINITY;
-    let mut max = f32::NEG_INFINITY;
-    let mut sum = 0.0f64;
-    for &v in data {
-        if v.is_finite() {
-            if v < min {
-                min = v;
-            }
-            if v > max {
-                max = v;
-            }
-            sum += v as f64;
-        }
-    }
-    (min, max, (sum / data.len() as f64) as f32)
 }
 
 #[cfg(test)]
