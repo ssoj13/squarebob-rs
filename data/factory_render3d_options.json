@@ -280,8 +280,6 @@
   "pt_russian_roulette": true,
   "pt_adaptive_sampling": true,
   "pt_adaptive_preset": "Custom",
-  "pt_adaptive_min_spp": 128,
-  "pt_adaptive_max_spp": 4096,
   "pt_adaptive_variance": 2.5e-05,
   "pt_adaptive_interval": 4,
   "pt_restir_di": true,

@@ -19,7 +19,7 @@ use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 const MAX_PT_MAT_CUBE_COUNT: u32 = 5000;
 
 use super::{
-    curve_rows, ramp_section, settings_grid, RampUiCtx, PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH,
+    curve_rows, ramp_section, settings_grid, RampUiCtx, SETTINGS_LABEL_WIDTH,
 };
 
 fn control_label(ui: &mut egui::Ui, label: &'static str) {
@@ -1255,24 +1255,20 @@ impl App {
 
     fn ui_pt_sampling(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_sampling_grid", |ui| {
-            control_label(ui, "Max Samples:");
+            control_label(ui, "Samples:");
             ui.horizontal(|ui| {
-                if ui
+                *pt_changed |= ui
                     .add(
                         egui::Slider::new(&mut self.render_3d_opts.pt_samples, 16..=32768)
                             .logarithmic(true),
                     )
-                    .changed()
-                {
-                    if self.render_3d_opts.pt_adaptive_sampling
-                        && self.render_3d_opts.pt_adaptive_max_spp
-                            < self.render_3d_opts.pt_samples
-                    {
-                        self.render_3d_opts.pt_adaptive_max_spp =
-                            self.render_3d_opts.pt_samples;
-                    }
-                    *pt_changed = true;
-                }
+                    .on_hover_text(
+                        "Global samples budget (V-Ray-style). Drives target SPP, \
+                         adaptive sampling per-pixel cap (max_spp = pt_samples), \
+                         adaptive floor (min_spp = pt_samples / 16), and the OIDN \
+                         auto-trigger threshold. One knob — everything else derived.",
+                    )
+                    .changed();
                 for samples in [512_u32, 2048, 4096, 8192, 16384] {
                     if ui
                         .selectable_label(
@@ -1282,9 +1278,6 @@ impl App {
                         .clicked()
                     {
                         self.render_3d_opts.pt_samples = samples;
-                        if self.render_3d_opts.pt_adaptive_sampling {
-                            self.render_3d_opts.pt_adaptive_max_spp = samples;
-                        }
                         *pt_changed = true;
                     }
                 }
@@ -1347,13 +1340,7 @@ impl App {
 
         if let Some(r) = &self.renderer_3d {
             let current = r.pt_frame_count();
-            let max = if self.render_3d_opts.pt_adaptive_sampling {
-                self.render_3d_opts
-                    .pt_samples
-                    .min(self.render_3d_opts.pt_adaptive_max_spp.max(1))
-            } else {
-                self.render_3d_opts.pt_samples
-            };
+            let max = self.render_3d_opts.pt_samples.max(1);
             let progress = current as f32 / max as f32;
             let done = current >= max;
             ui.add(egui::ProgressBar::new(progress.min(1.0)).text(if done {
@@ -1362,11 +1349,10 @@ impl App {
                 format!("{} / {} samples", current, max)
             }));
             if self.render_3d_opts.pt_adaptive_sampling {
+                let derived_min = (max / 16).max(8);
                 ui.small(format!(
-                    "Adaptive cap: {} (Max {}, Adaptive {})",
-                    max,
-                    self.render_3d_opts.pt_samples,
-                    self.render_3d_opts.pt_adaptive_max_spp
+                    "Adaptive (derived from Samples): min {}, max {}",
+                    derived_min, max
                 ));
             }
         }
@@ -1401,21 +1387,15 @@ impl App {
             ) {
                 match self.render_3d_opts.pt_adaptive_preset {
                     AdaptivePreset::Conservative => {
-                        self.render_3d_opts.pt_adaptive_min_spp = 64;
-                        self.render_3d_opts.pt_adaptive_max_spp = 512;
-                        self.render_3d_opts.pt_adaptive_variance = 0.002;
+                        self.render_3d_opts.pt_adaptive_variance = 0.01;
                         self.render_3d_opts.pt_adaptive_interval = 6;
                     }
                     AdaptivePreset::Balanced => {
-                        self.render_3d_opts.pt_adaptive_min_spp = 96;
-                        self.render_3d_opts.pt_adaptive_max_spp = 1024;
-                        self.render_3d_opts.pt_adaptive_variance = 0.001;
+                        self.render_3d_opts.pt_adaptive_variance = 0.005;
                         self.render_3d_opts.pt_adaptive_interval = 4;
                     }
                     AdaptivePreset::Aggressive => {
-                        self.render_3d_opts.pt_adaptive_min_spp = 128;
-                        self.render_3d_opts.pt_adaptive_max_spp = 2048;
-                        self.render_3d_opts.pt_adaptive_variance = 0.0005;
+                        self.render_3d_opts.pt_adaptive_variance = 0.001;
                         self.render_3d_opts.pt_adaptive_interval = 2;
                     }
                     AdaptivePreset::Custom => {}
@@ -1424,36 +1404,9 @@ impl App {
             }
             ui.end_row();
 
-            control_label(ui, "SPP Range:");
-            ui.horizontal(|ui| {
-                ui.small("Min");
-                let min_changed = ui
-                    .add_sized(
-                        [PT_VALUE_WIDTH, ui.spacing().interact_size.y],
-                        egui::DragValue::new(&mut self.render_3d_opts.pt_adaptive_min_spp)
-                            .range(32..=1024)
-                            .speed(1),
-                    )
-                    .changed();
-                ui.small("Max");
-                let max_changed = ui
-                    .add_sized(
-                        [PT_VALUE_WIDTH, ui.spacing().interact_size.y],
-                        egui::DragValue::new(&mut self.render_3d_opts.pt_adaptive_max_spp)
-                            .range(1..=16384)
-                            .speed(1),
-                    )
-                    .changed();
-                if min_changed || max_changed {
-                    self.render_3d_opts.pt_adaptive_preset = AdaptivePreset::Custom;
-                    *pt_changed = true;
-                }
-            });
-            ui.end_row();
-
-            if self.render_3d_opts.pt_adaptive_max_spp < self.render_3d_opts.pt_adaptive_min_spp {
-                self.render_3d_opts.pt_adaptive_max_spp = self.render_3d_opts.pt_adaptive_min_spp;
-            }
+            // SPP min/max are derived from the global `Samples` knob; see
+            // the "Adaptive (derived from Samples)" hint shown in the
+            // sampling section. No separate SPP-range slider here.
 
             control_label(ui, "Variance:");
             let variance_changed = ui

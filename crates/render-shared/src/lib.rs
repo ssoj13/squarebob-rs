@@ -653,10 +653,13 @@ pub struct Render3DOptions {
     pub pt_adaptive_sampling: bool,
     #[serde(default)]
     pub pt_adaptive_preset: AdaptivePreset,
-    #[serde(default = "default_adaptive_min_spp")]
-    pub pt_adaptive_min_spp: u32,
-    #[serde(default = "default_adaptive_max_spp")]
-    pub pt_adaptive_max_spp: u32,
+    // Per-pixel SPP range used by the adaptive sampler is now *derived* from
+    // `pt_samples` rather than configured independently:
+    //   min_spp = max(pt_samples / 16, 8)
+    //   max_spp = pt_samples
+    // This keeps one global samples knob in charge of everything. See
+    // `pt-megakernel/src/compute.rs::set_adaptive_config` callers in
+    // `render-3d`.
     #[serde(default = "default_adaptive_variance")]
     pub pt_adaptive_variance: f32,
     #[serde(default = "default_adaptive_interval")]
@@ -829,12 +832,6 @@ fn default_slice_position_vector() -> f32 {
 fn default_slice_normal() -> [f32; 3] {
     [0.0, 1.0, 0.0]
 } // Default: Y-up
-fn default_adaptive_min_spp() -> u32 {
-    64
-}
-fn default_adaptive_max_spp() -> u32 {
-    1024
-}
 fn default_adaptive_variance() -> f32 {
     0.001
 }
@@ -971,8 +968,6 @@ impl Default for Render3DOptions {
             pt_russian_roulette: true,
             pt_adaptive_sampling: true,
             pt_adaptive_preset: AdaptivePreset::Custom,
-            pt_adaptive_min_spp: default_adaptive_min_spp(),
-            pt_adaptive_max_spp: default_adaptive_max_spp(),
             pt_adaptive_variance: default_adaptive_variance(),
             pt_adaptive_interval: default_adaptive_interval(),
             // ReSTIR

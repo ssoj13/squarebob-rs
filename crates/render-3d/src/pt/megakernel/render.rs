@@ -361,10 +361,14 @@ pub(crate) fn render_path_traced(
         &renderer.ctx.queue,
         opts.pt_adaptive_sampling,
     );
+    // Adaptive per-pixel SPP range derives from the single global samples
+    // knob — one slider drives all sampling budgets.
+    let derived_min = (opts.pt_samples / 16).max(8);
+    let derived_max = opts.pt_samples.max(derived_min);
     pt.set_adaptive_config(
         &renderer.ctx.queue,
-        opts.pt_adaptive_min_spp,
-        opts.pt_adaptive_max_spp,
+        derived_min,
+        derived_max,
         opts.pt_adaptive_variance,
         opts.pt_adaptive_interval,
     );

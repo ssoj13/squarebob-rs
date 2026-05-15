@@ -28,11 +28,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixel_id = gid.y * params.width + gid.x;
     let data = variance[pixel_id];
 
-    // Compute variance (M2 / (n-1))
-    var var_val = 0.0;
+    // DMC-style noise estimate: relative standard error of the mean.
+    //   variance = M2 / (n-1)
+    //   std_err  = sqrt(variance / n)              (uncertainty of mean estimate)
+    //   noise    = std_err / max(luminance(mean), eps)
+    // This is the same quantity V-Ray's DMC sampler / Arnold's noise threshold
+    // expose to the user, so a single tunable `variance_threshold` works across
+    // an HDR luminance range instead of clipping bright pixels to "too noisy"
+    // and dark pixels to "too clean".
+    var noise = 0.0;
     if data.count > 1u {
         let v = data.m2 / f32(data.count - 1u);
-        var_val = dot(max(v, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+        let var_lum = dot(max(v, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+        let std_err = sqrt(var_lum / f32(data.count));
+        let mean_lum = dot(max(data.mean, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+        noise = std_err / max(mean_lum, 1e-3);
     }
 
     let min_spp = min(params.min_spp, params.max_spp);
@@ -44,10 +54,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // Map variance to a per-pixel SPP cap. At the threshold we allocate a small
-    // extra budget; by 10x threshold the pixel receives the configured max.
+    // Map relative noise to a per-pixel SPP cap. At the threshold we hand out
+    // min_spp; by 4× threshold we hit max_spp. The 4× factor reflects DMC
+    // ergonomics: doubling samples halves std-err, so 4× threshold ≈ "needs
+    // ~16× more samples", which is exactly the budget we should hand it.
     let span = params.max_spp - min_spp;
-    let severity = clamp(var_val / max(params.variance_threshold * 10.0, 1e-6), 0.0, 1.0);
+    let severity = clamp(noise / max(params.variance_threshold * 4.0, 1e-6), 0.0, 1.0);
     var spp = min_spp + u32(round(severity * f32(span)));
 
     // Keep giving "quiet" pixels a small rolling budget. This preserves the

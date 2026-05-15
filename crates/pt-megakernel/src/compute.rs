@@ -2573,11 +2573,15 @@ impl PathTraceCompute {
         }
 
         let wf_start = std::time::Instant::now();
-        // Clear accum buffer on first frame
+        // Clear accum buffer on first frame. See `dispatch()` for why the
+        // adaptive variance buffer also has to be cleared here.
         if self.frame_count == 0 {
             self.fill_sample_map(queue);
             encoder.clear_buffer(&self.accum_buffer, 0, None);
             encoder.clear_buffer(&self.variance_buffer, 0, None);
+            if let Some(ad) = &self.adaptive {
+                encoder.clear_buffer(ad.variance_buffer(), 0, None);
+            }
             if self.history_dirty {
                 // Clear ReSTIR history on jump to avoid stale temporal reuse
                 if let (Some(rs), Some(restir_bgs)) = (&self.restir, &self.restir_bind_groups) {
@@ -4388,11 +4392,18 @@ impl PathTraceCompute {
 
         let dispatch_start = std::time::Instant::now();
 
-        // Clear accum buffer on first frame (after reset)
+        // Clear accum buffer on first frame (after reset). Adaptive sampling
+        // also lives across accumulations — without clearing its Welford
+        // mean/M2 buffer here it would mix stale statistics with fresh
+        // samples and produce garbage variance estimates (and therefore
+        // garbage per-pixel SPP allocations).
         if self.frame_count == 0 {
             self.fill_sample_map(queue);
             encoder.clear_buffer(&self.accum_buffer, 0, None);
             encoder.clear_buffer(&self.variance_buffer, 0, None);
+            if let Some(ad) = &self.adaptive {
+                encoder.clear_buffer(ad.variance_buffer(), 0, None);
+            }
         }
         let Some(bg) = &self.bind_group else {
             log::warn!("PT dispatch: bind_group is None!");
