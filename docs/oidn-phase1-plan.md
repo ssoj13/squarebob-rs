@@ -95,22 +95,23 @@ that crosses the PCIe boundary is the autoexposure result (4 bytes).
 
 ## 3. Sub-tasks (in implementation order)
 
-> **Status 2026-05-15** — Phase I is complete except for I.7
-> (bench/regression).
+> **Status 2026-05-15 — Phase I complete (all 7 sub-tasks landed).**
 >
-> `oidn-rs/phase1-gpu-pipeline` carries `8ae2939` (I.1), `c357622`
-> (I.3), `5392389` (I.2+I.4), `b3c9c62` (I.5 oidn-rs half). Squarebob
-> `main` carries `3d174cc` (I.5+I.6 output bridge) and `3cd7ef2`
-> (I.5b input bridge). Every byte of pixel data now stays in VRAM
-> from PT output through denoise to `result_texture` — zero host
-> roundtrip on the hot path. See
-> [`oidn-phase1-i5-survey.md`](oidn-phase1-i5-survey.md) for why
-> path 1 (zero-copy wrap) was abandoned and path 2 (device-local
-> copy via public `ComputeClient::get_resource`) was used instead.
+> `oidn-rs/phase1-gpu-pipeline`: `8ae2939` (I.1), `c357622` (I.3),
+> `5392389` (I.2+I.4), `b3c9c62` (I.5 oidn-rs half), `78fab42` (I.7
+> bench example). Squarebob `main`: `3d174cc` (I.5+I.6 output bridge)
+> and `3cd7ef2` (I.5b input bridge).
 >
-> **Remaining:** I.7 (automated bench + PSNR regression). Today's
-> bench is the runtime latency log; the formal CSV + visual
-> regression deliverable awaits a headless reference renderer.
+> Every byte of pixel data stays in VRAM from PT output through
+> denoise to `result_texture` — zero host roundtrip on the hot path.
+> See [`oidn-phase1-i5-survey.md`](oidn-phase1-i5-survey.md) for the
+> public-API path used by the bridge.
+>
+> I.7 ships as `cargo run --release --example bench` in `oidn-rs`.
+> Sweeps `(resolution × mode × quality)` and writes a CSV row per
+> combo with median/min/max latency, RMSE, and PSNR (noisy → denoised).
+> Smoke run (320×240 colour, debug): PSNR 23.19 → 43.77 dB (+20.6 dB,
+> target ≥ +10 dB), 10.7× RMSE reduction.
 
 ### I.1 — Tensor-native I/O API (foundation) ✅ done
 
@@ -302,7 +303,7 @@ The Image-based API stays for the CLI and tests.
 
 Estimate: 3-4 h once the upstream bits are stable.
 
-### I.7 — Benchmark + visual regression (verification)
+### I.7 — Benchmark + visual regression (verification) ✅ done
 
 **Files:** new `tools/oidn-bench/`, `data/benchmarks/oidn-2026-05-15.csv`.
 
