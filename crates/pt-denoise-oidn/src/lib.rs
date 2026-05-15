@@ -313,17 +313,27 @@ impl OidnDenoiser {
             OidnMode::Color | OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal
         );
 
+        // Diagnostic override: `OIDN_INPUT_SCALE=1.0` (or any number) skips
+        // OIDN's autoexposure and uses the value as a hard input_scale. Use
+        // 1.0 to test "no scaling at all" — quickly tells us whether the
+        // dark output is autoexposure-driven.
+        let user_scale: Option<f32> = std::env::var("OIDN_INPUT_SCALE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok());
         log::debug!(
-            "OIDN: building RtFilter (hdr={}, quality={:?}, weights_dir={})",
-            hdr, self.quality, self.weights_dir.display()
+            "OIDN: building RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, weights_dir={})",
+            hdr, self.quality, user_scale, self.weights_dir.display()
         );
-        let mut filter = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
+        let mut builder = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
             burn_device,
             &self.weights_dir,
         )
         .hdr(hdr)
-        .quality(self.quality)
-        .build();
+        .quality(self.quality);
+        if let Some(s) = user_scale {
+            builder = builder.input_scale(Some(s));
+        }
+        let mut filter = builder.build();
 
         // Sanity-trace the readback so it's obvious whether the input was
         // actually populated or we're feeding OIDN a blank frame.
@@ -380,13 +390,15 @@ impl OidnDenoiser {
                 out_stats.1
             );
         }
-        let mut rgba: Vec<half::f16> = Vec::with_capacity(n * 4);
-        let one = half::f16::from_f32(1.0);
+        // Repack Rgb32f → Rgba32Float (alpha=1). Full f32 — display goes
+        // through `blit_with_source` (ACES + gamma) so the texture stays
+        // linear HDR right up to the screen.
+        let mut rgba: Vec<f32> = Vec::with_capacity(n * 4);
         for px in out_f32.chunks_exact(3) {
-            rgba.push(half::f16::from_f32(px[0]));
-            rgba.push(half::f16::from_f32(px[1]));
-            rgba.push(half::f16::from_f32(px[2]));
-            rgba.push(one);
+            rgba.push(px[0]);
+            rgba.push(px[1]);
+            rgba.push(px[2]);
+            rgba.push(1.0);
         }
 
         // Upload into the result texture. wgpu handles row padding for textures
@@ -404,7 +416,7 @@ impl OidnDenoiser {
             bytemuck::cast_slice(&rgba),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some((w * 8) as u32),
+                bytes_per_row: Some((w * 16) as u32),
                 rows_per_image: Some(self.height),
             },
             wgpu::Extent3d {
@@ -492,11 +504,12 @@ fn create_result_texture(
     width: u32,
     height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    // `Rgba16Float` (not `Rgba32Float`) — egui registers this texture with
-    // `FilterMode::Linear`, which requires a *filterable* sample type. f32
-    // textures are not filterable without the `FLOAT32_FILTERABLE` device
-    // feature; f16 is filterable by default. f16 is plenty for display —
-    // OIDN's network output is full-precision Vec<f32>, we narrow on upload.
+    // `Rgba32Float` so the PT megakernel `blit_with_source` pipeline (which
+    // expects non-filterable Float textures via `textureLoad`) can read this
+    // directly. Display path: this texture is *not* egui-native; instead the
+    // caller pipes it through `PathTraceCompute::blit_with_source` so it
+    // goes through the same ACES + gamma tonemap (and the hover/selection
+    // pipeline that lives upstream of the blit).
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("oidn_result"),
         size: wgpu::Extent3d {
@@ -507,7 +520,7 @@ fn create_result_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba16Float,
+        format: wgpu::TextureFormat::Rgba32Float,
         usage: wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_SRC,

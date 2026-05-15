@@ -709,6 +709,11 @@ pub struct Render3DOptions {
     /// the accumulating render.
     #[serde(default = "default_oidn_auto")]
     pub pt_oidn_auto: bool,
+    /// Re-run OIDN every N accumulated samples (in addition to the
+    /// target-spp auto trigger). `0` disables the periodic re-run and only
+    /// the final-spp fire remains.
+    #[serde(default = "default_oidn_interval")]
+    pub pt_oidn_interval: u32,
 }
 
 /// String-serialised mirror of `pt_denoise_oidn::OidnMode`. Default is the
@@ -748,6 +753,9 @@ fn default_oidn_quality() -> OidnQualityOption {
 }
 fn default_oidn_auto() -> bool {
     true
+}
+fn default_oidn_interval() -> u32 {
+    128
 }
 
 fn default_lod_min_size() -> f32 {
@@ -1006,6 +1014,7 @@ impl Default for Render3DOptions {
             pt_oidn_mode: OidnModeOption::ColorAlbedoNormal,
             pt_oidn_quality: OidnQualityOption::Base,
             pt_oidn_auto: true,
+            pt_oidn_interval: 128,
         }
     }
 }

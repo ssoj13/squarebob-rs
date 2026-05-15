@@ -1255,33 +1255,53 @@ impl App {
 
     fn ui_pt_sampling(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_sampling_grid", |ui| {
-            control_label(ui, "Samples:");
+            control_label(ui, "Preset:");
             ui.horizontal(|ui| {
-                *pt_changed |= ui
-                    .add(
-                        egui::Slider::new(&mut self.render_3d_opts.pt_samples, 16..=32768)
-                            .logarithmic(true),
-                    )
-                    .on_hover_text(
-                        "Global samples budget (V-Ray-style). Drives target SPP, \
-                         adaptive sampling per-pixel cap (max_spp = pt_samples), \
-                         adaptive floor (min_spp = pt_samples / 16), and the OIDN \
-                         auto-trigger threshold. One knob — everything else derived.",
-                    )
-                    .changed();
-                for samples in [512_u32, 2048, 4096, 8192, 16384] {
+                // Named quality presets — one click sets `pt_samples` plus
+                // the matching adaptive `variance_threshold`. The slider
+                // below remains for fine-tuning; touching it doesn't
+                // re-select a preset (presets are only triggered by an
+                // explicit button click).
+                // Doubling sequence (16→8192). Adaptive noise threshold
+                // scales as 1/√N — Monte-Carlo std-err halves with 4× more
+                // samples, so the threshold the sampler aims to satisfy
+                // tightens proportionally. Round to 1e-4 for readable
+                // numbers in the tooltip.
+                for samples in [16_u32, 64, 128, 256, 512, 1024, 2048, 4096, 8192] {
+                    let variance = (0.04 * (16.0 / samples as f32).sqrt() * 10000.0).round() / 10000.0;
+                    let selected = self.render_3d_opts.pt_samples == samples
+                        && (self.render_3d_opts.pt_adaptive_variance - variance).abs() < 1e-5;
                     if ui
-                        .selectable_label(
-                            self.render_3d_opts.pt_samples == samples,
-                            samples.to_string(),
-                        )
+                        .selectable_label(selected, samples.to_string())
+                        .on_hover_text(format!(
+                            "Samples = {samples}; adaptive noise threshold = {variance:.4}.\n\
+                             Derived: adaptive max_spp = samples, \
+                             min_spp = samples / 16, OIDN auto-trigger fires at samples."
+                        ))
                         .clicked()
                     {
                         self.render_3d_opts.pt_samples = samples;
+                        self.render_3d_opts.pt_adaptive_variance = variance;
+                        self.render_3d_opts.pt_adaptive_preset = AdaptivePreset::Custom;
                         *pt_changed = true;
                     }
                 }
             });
+            ui.end_row();
+
+            control_label(ui, "Samples:");
+            *pt_changed |= ui
+                .add(
+                    egui::Slider::new(&mut self.render_3d_opts.pt_samples, 16..=32768)
+                        .logarithmic(true),
+                )
+                .on_hover_text(
+                    "Global samples budget (V-Ray-style). Drives PT target SPP, \
+                     adaptive per-pixel cap (max_spp = pt_samples), adaptive \
+                     floor (min_spp = pt_samples / 16), and the OIDN auto-trigger \
+                     threshold. One knob — everything else derived.",
+                )
+                .changed();
             ui.end_row();
 
             control_label(ui, "SPP/frame:");

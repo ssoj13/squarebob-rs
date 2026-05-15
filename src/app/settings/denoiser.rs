@@ -82,7 +82,9 @@ impl App {
                             .checkbox(&mut self.render_3d_opts.pt_oidn_auto, "Auto")
                             .on_hover_text(
                                 "Run OIDN automatically once accumulation reaches \
-                                 the global Samples target. Off → use the button.",
+                                 the global Samples target, AND every N samples \
+                                 during accumulation (see Interval below). \
+                                 Off → only the manual button fires.",
                             );
                         if auto_resp.changed() {
                             *changed = true;
@@ -99,6 +101,27 @@ impl App {
                             self.oidn_run_requested = true;
                         }
                     });
+                    ui.end_row();
+
+                    // Row 4 — Periodic re-run interval. 0 disables the
+                    // periodic fire and leaves only the final-spp trigger.
+                    control_label(ui, "Interval:");
+                    let interval_resp = ui
+                        .add(
+                            egui::DragValue::new(&mut self.render_3d_opts.pt_oidn_interval)
+                                .range(0..=10_000)
+                                .speed(1)
+                                .suffix(" spp"),
+                        )
+                        .on_hover_text(
+                            "Re-run OIDN every N accumulated samples during the \
+                             render, on top of the final-spp fire. 0 disables \
+                             periodic re-runs. Default 128 — gives smoothed \
+                             intermediate previews without hammering inference.",
+                        );
+                    if interval_resp.changed() {
+                        *changed = true;
+                    }
                     ui.end_row();
                 });
 

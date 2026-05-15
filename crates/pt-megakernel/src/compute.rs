@@ -4440,11 +4440,62 @@ impl PathTraceCompute {
         true
     }
 
-    /// Blit the path tracer output to a render target with tone mapping.
+    /// Convenience wrapper — blit the raw PT output (no override).
     pub fn blit(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
-        let Some(bg) = &self.blit_bind_group else {
-            return;
+        if let Some(bg) = &self.blit_bind_group {
+            self.blit_inner(encoder, target, bg);
+        }
+    }
+
+    /// Blit the path tracer output to a render target with tone mapping.
+    /// `source_override` lets the caller substitute a different source
+    /// texture for one pass — used by the OIDN denoiser to push its
+    /// post-inference result through the same ACES + gamma pipeline,
+    /// instead of bypassing it. Caller is responsible for the override
+    /// view being a valid `Float { filterable: false }` 2D texture (in
+    /// practice: `Rgba32Float`).
+    pub fn blit_with_source(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        source_override: Option<&wgpu::TextureView>,
+    ) {
+        let owned_bg;
+        let bg = match source_override {
+            Some(view) => {
+                owned_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("pt_blit_bg_override"),
+                    layout: &self.blit_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                        },
+                    ],
+                });
+                &owned_bg
+            }
+            None => {
+                let Some(bg) = &self.blit_bind_group else {
+                    return;
+                };
+                bg
+            }
         };
+        self.blit_inner(encoder, target, bg);
+    }
+
+    fn blit_inner(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        bg: &wgpu::BindGroup,
+    ) {
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pt_blit_pass"),

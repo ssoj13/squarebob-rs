@@ -1024,51 +1024,48 @@ impl App {
             // accumulation (and haven't denoised it yet).
             self.maybe_run_oidn_denoise(w, h);
 
-            // Register/update texture with egui. The displayed view is
-            // either the raw PT target (`get_render_texture()`) or the OIDN
-            // result texture, depending on whether a denoise pass landed
-            // this frame.
-            let oidn_view: Option<wgpu::TextureView> =
-                if self.oidn_display_is_denoised {
-                    self.oidn_denoiser
-                        .as_ref()
-                        .and_then(|d| d.result_view().cloned())
-                } else {
-                    None
-                };
-            let raw_view: Option<wgpu::TextureView> = self
-                .renderer_3d
-                .as_ref()
-                .and_then(|r| r.get_render_texture())
-                .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
-            let display_view = oidn_view.or(raw_view);
-
-            if let Some(view) = display_view.as_ref() {
-                if let Some(tex_id) = self.render_texture_id {
-                    // `size_changed` covers viewport resize; we also force an
-                    // update whenever we swap between raw and denoised, since
-                    // those are different wgpu textures.
-                    let display_kind_changed =
-                        self.oidn_last_display_was_denoised != self.oidn_display_is_denoised;
-                    if size_changed || display_kind_changed {
-                        let mut renderer = render_state.renderer.write();
-                        renderer.update_egui_texture_from_wgpu_texture(
-                            &render_state.device,
-                            view,
-                            wgpu::FilterMode::Linear,
-                            tex_id,
-                        );
-                    }
-                } else {
-                    let mut renderer = render_state.renderer.write();
-                    self.render_texture_id = Some(renderer.register_native_texture(
-                        &render_state.device,
-                        view,
-                        wgpu::FilterMode::Linear,
-                    ));
+            // When OIDN landed this frame, blit its result back into the
+            // PT render target through the megakernel's ACES+gamma pipeline.
+            // This is intentionally *not* a native-egui texture swap —
+            // going through `blit_with_source` keeps hover/selection
+            // overlays and tone-mapping consistent between raw and
+            // denoised display.
+            if self.oidn_display_is_denoised {
+                if let (Some(r), Some(denoised_view)) = (
+                    self.renderer_3d.as_ref(),
+                    self.oidn_denoiser.as_ref().and_then(|d| d.result_view()),
+                ) {
+                    r.blit_oidn_result_into_render_target(denoised_view);
                 }
             }
             self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
+
+            // Register/update the PT render-target texture with egui. Same
+            // texture every frame regardless of denoise state — display
+            // source has been mutated in place by the (raw) blit + optional
+            // denoised re-blit above.
+            if let Some(r) = &self.renderer_3d {
+                if let Some(texture) = r.get_render_texture() {
+                    if let Some(tex_id) = self.render_texture_id {
+                        if size_changed {
+                            let mut renderer = render_state.renderer.write();
+                            renderer.update_egui_texture_from_wgpu_texture(
+                                &render_state.device,
+                                &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                                wgpu::FilterMode::Linear,
+                                tex_id,
+                            );
+                        }
+                    } else {
+                        let mut renderer = render_state.renderer.write();
+                        self.render_texture_id = Some(renderer.register_native_texture(
+                            &render_state.device,
+                            &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                            wgpu::FilterMode::Linear,
+                        ));
+                    }
+                }
+            }
             #[cfg(debug_assertions)]
             if let Some(err) = pollster::block_on(error_scope.pop()) {
                 log::error!("wgpu validation error after 3D render: {:?}", err);
@@ -1314,14 +1311,25 @@ impl App {
         if current_spp < self.oidn_last_frame_count {
             self.oidn_denoised_this_accumulation = false;
             self.oidn_display_is_denoised = false;
+            self.oidn_last_interval_spp = 0;
         }
         self.oidn_last_frame_count = current_spp;
 
         let manual = self.oidn_run_requested;
-        let auto = self.render_3d_opts.pt_oidn_auto
+        let auto_final = self.render_3d_opts.pt_oidn_auto
             && target_spp > 0
             && current_spp >= target_spp
             && !self.oidn_denoised_this_accumulation;
+        // Periodic re-run every N samples. Only when interval > 0 and PT
+        // hasn't yet reached the final target (otherwise `auto_final` will
+        // handle it). `current_spp - last_interval >= interval` keeps us
+        // from re-firing on every frame past a multiple of interval.
+        let interval = self.render_3d_opts.pt_oidn_interval;
+        let auto_interval = self.render_3d_opts.pt_oidn_auto
+            && interval > 0
+            && current_spp >= interval
+            && current_spp.saturating_sub(self.oidn_last_interval_spp) >= interval;
+        let auto = auto_final || auto_interval;
 
         log::trace!(
             "OIDN trigger result: manual={} auto={} → run={}",
@@ -1380,6 +1388,7 @@ impl App {
                 self.oidn_denoised_this_accumulation = true;
                 self.oidn_run_requested = false;
                 self.oidn_display_is_denoised = true;
+                self.oidn_last_interval_spp = current_spp;
             }
             Err(e) => {
                 log::warn!("OIDN denoise failed: {e}");

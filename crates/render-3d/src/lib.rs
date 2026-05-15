@@ -988,6 +988,34 @@ impl Renderer3D {
         &self.ctx
     }
 
+    /// Re-blit `denoised_view` (an Rgba32Float texture produced by OIDN)
+    /// into the same render-target the megakernel writes to, going through
+    /// the standard `blit_with_source` (ACES tonemap + gamma 2.2) pipeline.
+    /// This is how denoised output reaches the screen without bypassing
+    /// the tone-mapping chain. No-op when `targets` or `path_tracer` are
+    /// uninitialised.
+    pub fn blit_oidn_result_into_render_target(&self, denoised_view: &wgpu::TextureView) {
+        let Some(targets) = self.targets.as_ref() else {
+            return;
+        };
+        let Some(pt) = self.pt.path_tracer.as_ref() else {
+            return;
+        };
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("oidn_blit_to_render_target"),
+            });
+        pt.blit_with_source(
+            &self.ctx.device,
+            &mut encoder,
+            &targets.render_view,
+            Some(denoised_view),
+        );
+        self.ctx.queue.submit(std::iter::once(encoder.finish()));
+    }
+
     fn pt_frame_count_impl(&self) -> u32 {
         self.pt
             .path_tracer

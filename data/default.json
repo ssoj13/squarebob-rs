@@ -307,5 +307,6 @@
   "inertia_cutoff": 0.025,
   "pt_oidn_mode": "ColorAlbedoNormal",
   "pt_oidn_quality": "Base",
-  "pt_oidn_auto": true
+  "pt_oidn_auto": true,
+  "pt_oidn_interval": 128
 }

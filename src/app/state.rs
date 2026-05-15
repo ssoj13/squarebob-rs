@@ -263,6 +263,10 @@ pub struct App {
     /// to detect raw↔oidn transitions even when this frame chose the same
     /// state again.
     pub(super) oidn_last_display_was_denoised: bool,
+    /// `pt_frame_count` at the moment of the last periodic OIDN fire.
+    /// Used by the `pt_oidn_interval` trigger to space periodic re-runs
+    /// without firing every frame at multiples of the interval.
+    pub(super) oidn_last_interval_spp: u32,
     pub(super) wgpu_render_state: Option<egui_wgpu::RenderState>,
     pub(super) renderer_2d_gpu: Option<GpuRenderer2D>,
     pub(super) renderer_3d: Option<Renderer3D>,
@@ -433,6 +437,7 @@ impl Default for App {
             oidn_last_frame_count: 0,
             oidn_display_is_denoised: false,
             oidn_last_display_was_denoised: false,
+            oidn_last_interval_spp: 0,
             wgpu_render_state: None,
             renderer_2d_gpu: None,
             renderer_3d: None,

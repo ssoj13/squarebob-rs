@@ -121,35 +121,36 @@ pub mod gpu {
                     }
                 };
 
-            let adapter_limits = adapter.limits();
-            let mut required_limits = wgpu::Limits::default();
-            required_limits.max_storage_buffers_per_shader_stage = adapter_limits
-                .max_storage_buffers_per_shader_stage
-                .min(16)
-                .max(required_limits.max_storage_buffers_per_shader_stage);
-            // cubecl-wgpu (used by Burn-wgpu for OIDN) sizes its memory pool
-            // pages from `max_storage_buffer_binding_size` and then calls
-            // `device.create_buffer(page_size)`. wgpu's default
-            // `max_buffer_size` is only 256 MiB while discrete GPUs report
-            // `max_storage_buffer_binding_size` in the GiB range. The
-            // mismatch makes `Burn-cubecl` panic in `initialize_memory`
-            // ("can't allocate buffer of size: N"). Raise both limits to
-            // whatever the adapter actually supports, keeping the
-            // storage-binding size clamped to the buffer-size cap so the
-            // largest pool page is always a legal single buffer.
-            required_limits.max_buffer_size = adapter_limits.max_buffer_size;
-            required_limits.max_storage_buffer_binding_size = adapter_limits
-                .max_storage_buffer_binding_size
-                .min(adapter_limits.max_buffer_size);
+            // Burn-cubecl's `init_device(WgpuSetup::Existing(...))` does NOT
+            // re-check features or limits — it trusts our setup. When the
+            // shared device is missing features Burn would normally request
+            // (it asks for `adapter.features() - MAPPABLE_PRIMARY_BUFFERS`
+            // and full `adapter.limits()` plus `experimental_features =
+            // ExperimentalFeatures::enabled()` for SPIR-V passthrough on
+            // Vulkan), compute kernels silently no-op and tensors come back
+            // full of zeros. So we mirror Burn's own request here.
+            //
+            // Source: `cubecl-wgpu-0.10.0/src/backend/base.rs::request_device`.
+            let required_features = adapter
+                .features()
+                .difference(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+                | wgpu::Features::POLYGON_MODE_LINE; // also keep our wireframe need
+            let required_limits = adapter.limits();
 
             let (device, queue) =
                 match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                     label: Some("squarebob GPU Device"),
-                    required_features: wgpu::Features::POLYGON_MODE_LINE,
+                    required_features,
                     required_limits,
-                    memory_hints: Default::default(),
+                    memory_hints: wgpu::MemoryHints::MemoryUsage,
                     trace: Default::default(),
-                    experimental_features: Default::default(),
+                    // SAFETY: enables SPIR-V passthrough shaders used by
+                    // cubecl-wgpu's compute path on Vulkan. Without this
+                    // toggle Burn's compiled kernels do nothing and write
+                    // zeros to the output tensor.
+                    experimental_features: unsafe {
+                        wgpu::ExperimentalFeatures::enabled()
+                    },
                 })) {
                     Ok(pair) => pair,
                     Err(e) => {
