@@ -3360,6 +3360,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpu-mem"
+version = "0.1.0"
+
+[[package]]
 name = "h2"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5008,7 +5012,6 @@ dependencies = [
 [[package]]
 name = "oidn-model"
 version = "0.1.0"
-source = "git+https://github.com/ssoj13/oidn-rs.git#eeb9c3756d0b75ae937398acaf83f6b0950bc634"
 dependencies = [
  "burn",
  "half",
@@ -5019,12 +5022,12 @@ dependencies = [
 [[package]]
 name = "oidn-rs"
 version = "0.1.0"
-source = "git+https://github.com/ssoj13/oidn-rs.git#eeb9c3756d0b75ae937398acaf83f6b0950bc634"
 dependencies = [
  "burn",
  "burn-wgpu",
  "bytemuck",
  "half",
+ "log",
  "memmap2",
  "oidn-model",
  "oidn-tza",
@@ -5035,7 +5038,6 @@ dependencies = [
 [[package]]
 name = "oidn-tza"
 version = "0.1.0"
-source = "git+https://github.com/ssoj13/oidn-rs.git#eeb9c3756d0b75ae937398acaf83f6b0950bc634"
 dependencies = [
  "bytemuck",
  "half",

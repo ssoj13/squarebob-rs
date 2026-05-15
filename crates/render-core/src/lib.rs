@@ -127,6 +127,20 @@ pub mod gpu {
                 .max_storage_buffers_per_shader_stage
                 .min(16)
                 .max(required_limits.max_storage_buffers_per_shader_stage);
+            // cubecl-wgpu (used by Burn-wgpu for OIDN) sizes its memory pool
+            // pages from `max_storage_buffer_binding_size` and then calls
+            // `device.create_buffer(page_size)`. wgpu's default
+            // `max_buffer_size` is only 256 MiB while discrete GPUs report
+            // `max_storage_buffer_binding_size` in the GiB range. The
+            // mismatch makes `Burn-cubecl` panic in `initialize_memory`
+            // ("can't allocate buffer of size: N"). Raise both limits to
+            // whatever the adapter actually supports, keeping the
+            // storage-binding size clamped to the buffer-size cap so the
+            // largest pool page is always a legal single buffer.
+            required_limits.max_buffer_size = adapter_limits.max_buffer_size;
+            required_limits.max_storage_buffer_binding_size = adapter_limits
+                .max_storage_buffer_binding_size
+                .min(adapter_limits.max_buffer_size);
 
             let (device, queue) =
                 match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {

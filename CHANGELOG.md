@@ -12,27 +12,83 @@ Replaced the color-only à-trous denoiser with Intel Open Image Denoise
 running on the same wgpu device as the renderer via a Rust port (`oidn-rs`)
 on Burn + cubecl-wgpu.
 
+### Denoiser pipeline
 - **Added** `pt-denoise-oidn` workspace crate. Owns `OidnDenoiser` with three
   modes — Color, Color+Albedo, Color+Albedo+Normal — picking the corresponding
-  `rt_hdr` / `rt_hdr_alb` / `rt_hdr_alb_nrm` model. Quality selector maps to
-  OIDN's High / Balanced / Fast presets.
-- **Added** primary-hit AOV outputs in the wavefront PT shade pass: per-pixel
-  albedo and world-space normal storage buffers, race-write safe across samples.
-- **Added** shared `wgpu::Instance` / `Adapter` / `Device` / `Queue` setup in
-  `render-core::GpuContext`; eframe is initialised with `WgpuSetup::Existing`,
-  Burn-wgpu via `cubecl_wgpu::init_device` — every subsystem shares one device.
-- **Added** `OIDN_WEIGHTS_DIR` env var (overrides bundled `data/oidn-weights/`).
+  `rt_hdr` / `rt_hdr_alb` / `rt_hdr_alb_nrm` model automatically based on
+  which AOVs are wired up.
+- **Added** model-size selector: Small (`_small` weights) / Base / Large
+  (`_large` where available). `OidnDenoiser` consults the resolved model
+  registry and silently falls back to the base file if a size-specific
+  variant doesn't exist (e.g. main color-denoise networks have no `_large`).
+- **Added** graceful AOV downgrade — if a configured mode needs an AOV that
+  isn't available (PT not yet built, wavefront-only state, etc.), the
+  denoiser silently steps down to the richest mode the inputs support
+  instead of erroring.
+- **Added** primary-hit AOV outputs in **both** wavefront `shade.wgsl` and
+  megakernel `bvh_traverse.wgsl`: per-pixel albedo + world-space normal
+  storage buffers, race-write safe across samples (primary hits are
+  deterministic). `Renderer3D::pt_{albedo,normal}_buffer()` returns the
+  active backend's buffer transparently.
+- **Added** shared `wgpu::Instance` / `Adapter` / `Device` / `Queue` setup
+  in `render-core::GpuContext`; eframe is initialised with
+  `WgpuSetup::Existing`, Burn-wgpu via `cubecl_wgpu::init_device` — every
+  subsystem shares one device. No PCIe roundtrip in the OIDN path; the only
+  cross-system bridge is the `Image`-based CPU staging required by the
+  current `oidn-rs` API (lifted in a future `oidn-rs` Phase I).
+- **Added** `OIDN_WEIGHTS_DIR` env var (overrides bundled
+  `data/oidn-weights/`). Lookup order: env → exe_dir → cwd.
 - **Added** CLI flags `--oidn-mode <off|color|color_albedo|color_albedo_normal>`,
-  `--oidn-quality <high|balanced|fast>`, `--oidn-auto`, `--no-oidn-auto`.
-- **Added** vendored OIDN TZA weights at `data/oidn-weights/*.tza` (5 models,
-  ~9 MB). Bundled with the packager via the existing `data` resource.
+  `--oidn-quality <small|base|large>` (`fast`/`high` accepted as aliases),
+  `--oidn-auto`, `--no-oidn-auto`.
+- **Added** vendored OIDN TZA weights at `data/oidn-weights/*.tza` —
+  all 23 variants Intel ships, ~48 MB total. Bundled with the packager
+  through the existing `data` resource.
 - **Removed** à-trous filter (`crates/pt-megakernel/src/denoiser/`,
   `pt_denoise_*` state fields, `set_denoise_*` / `apply_denoiser` methods,
   `--pt-denoise*` CLI flags) — replaced wholesale, no compatibility shim.
-- **Changed** denoiser UI under Settings → Rendering: Mode / Quality / Auto
-  selectors and a "Denoise now" button with last-latency readout.
-- **Changed** factory render preset (`data/factory_render3d_options.json`):
-  `pt_oidn_mode = ColorAlbedoNormal`, `pt_oidn_quality = Balanced`,
+
+### Settings UI
+- **Changed** denoiser panel under Settings → Rendering: compact Mode +
+  Model-size dropdowns with per-option tooltips that explain which TZA file
+  each choice loads. Auto checkbox and "Denoise now" button share one row;
+  button auto-disables when Mode = Off.
+- **Added** colour-coded status indicator: green "Denoised (287 ms)" while
+  the OIDN result is displayed, amber "Waiting for target Samples" when
+  auto is armed, grey "Manual mode" / "Disabled" otherwise.
+- **Changed** sampling panel: SPP-range slider removed; adaptive min/max
+  SPP now derives from the global `Samples` knob
+  (`min = max(samples/16, 8)`, `max = samples`). A hint shows the derived
+  range under the progress bar.
+
+### Sampling unification
+- **Renamed** `pt_max_samples` → `pt_samples` everywhere
+  (`Render3DOptions`, factory JSON, CLI mapping, UI, PT internal field).
+  One V-Ray-style global knob drives target SPP, adaptive caps, and the
+  OIDN auto-trigger threshold.
+- **Removed** `pt_adaptive_min_spp` / `pt_adaptive_max_spp` fields and
+  preset switches that touched them. The adaptive preset selector now
+  only governs variance threshold and update interval.
+
+### Adaptive sampling correctness
+- **Fixed** Welford variance buffer (`adaptive.variance_buf`) was not
+  cleared on accumulation reset, so per-pixel mean/M2 mixed stale and
+  fresh samples across camera/scene changes. Now cleared together with
+  `accum_buffer` and `variance_buffer` when `frame_count == 0`, in both
+  megakernel and wavefront dispatch paths.
+- **Changed** `adaptive/allocate.wgsl` uses DMC-style relative noise
+  (`std_err / max(luminance(mean), eps)`) instead of raw luminance
+  variance, so a single `variance_threshold` works across the full HDR
+  range instead of clipping bright pixels to "too noisy" and dark pixels
+  to "too clean".
+
+### Factory preset
+- **Renamed** `data/factory_render3d_options.json` → `data/default.json`
+  to match the runtime-override filename convention. The compiled-in defaults
+  and the optional `<exe_dir>/default.json` override share one name; only the
+  location differs.
+- **Changed** `data/default.json`:
+  `pt_oidn_mode = ColorAlbedoNormal`, `pt_oidn_quality = Base`,
   `pt_oidn_auto = true` — production-grade denoise out of the box.
 
 ---

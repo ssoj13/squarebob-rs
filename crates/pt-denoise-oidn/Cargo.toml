@@ -24,4 +24,6 @@ burn-wgpu = { version = "0.21", default-features = false }
 cubecl-wgpu = "0.10"
 
 # Our fork of Intel OIDN (pure Rust, weights ship as plain git blobs).
-oidn-rs = { git = "https://github.com/ssoj13/oidn-rs.git" }
+# Pointing to the sibling working copy while debugging — switch back to the
+# git source once changes there are pushed.
+oidn-rs = { path = "../../../oidn-rs/crates/oidn-rs" }

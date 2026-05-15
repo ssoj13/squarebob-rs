@@ -19,6 +19,7 @@ members = [
     "crates/xtask",
     "crates/treemap",
     "crates/pt-denoise-oidn",
+    "crates/gpu-mem",
 ]
 resolver = "2"
 

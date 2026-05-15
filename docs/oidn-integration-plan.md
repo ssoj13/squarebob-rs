@@ -379,11 +379,11 @@ Drop all à-trous sliders/presets.
 `Render3DOptions::deserialize`: if old fields `pt_denoise_*` are present, ignore them (drop silently). Default-initialize new `pt_oidn_*` fields. Old preset files keep loading without panic.
 
 ### VII.3 — Factory preset
-Update `data/factory_render3d_options.json`:
+Update `data/default.json` (formerly `factory_render3d_options.json`):
 ```json
-"pt_oidn_mode": "Off",
-"pt_oidn_quality": "Balanced",
-"pt_oidn_auto": false
+"pt_oidn_mode": "ColorAlbedoNormal",
+"pt_oidn_quality": "Base",
+"pt_oidn_auto": true
 ```
 
 ### VII.4 — CLI
@@ -524,4 +524,18 @@ W5 (parallel, can start once W3 done):
 
 1. **Output color space:** OIDN writes **linear** Rgba32Float into `result_texture`. Tone-mapping stays in the existing blit pass (a dedicated tonemap crate already covers this). `pt-denoise-oidn` performs no display-gamma conversion.
 2. **Weight loading:** **Lazy.** TZA files are read from `data/oidn-weights/` the first time `denoise()` runs with a non-`Off` mode. First click pays the ~tens-of-ms load cost; subsequent clicks reuse the cached `RtFilter`.
-3. **Release default mode:** `pt_oidn_mode = ColorAlbedoNormal` (production target). `pt_oidn_auto = true`. Out-of-box behavior: user accumulates samples → at `target_spp` denoiser fires automatically and replaces the displayed frame. Factory preset in `data/factory_render3d_options.json` reflects this.
+3. **Release default mode:** `pt_oidn_mode = ColorAlbedoNormal` (production target). `pt_oidn_auto = true`. Out-of-box behavior: user accumulates samples → at `target_spp` denoiser fires automatically and replaces the displayed frame. Factory preset in `data/default.json` reflects this.
+
+---
+
+## 16. Post-merge work (after the initial OIDN landing)
+
+These items were tackled in follow-up sessions on top of the integration plan above. Kept here as part of the doc for context.
+
+- **Adaptive sampling bugfix.** Welford variance buffer in `adaptive::AdaptivePipeline` was not cleared on accumulation reset — Welford mean/M2 mixed stale samples with fresh ones across camera/scene changes. Fixed in both megakernel and wavefront `dispatch` paths.
+- **DMC-style noise threshold.** `adaptive/allocate.wgsl` switched from raw luminance variance to relative noise (`std_err / max(luminance(mean), eps)`), so a single `variance_threshold` works across the full HDR range.
+- **`pt_samples` unification.** Renamed `pt_max_samples` → `pt_samples` everywhere. Removed `pt_adaptive_min_spp` / `pt_adaptive_max_spp` — adaptive per-pixel range is now derived from `pt_samples` (`min = max(samples/16, 8)`, `max = samples`). One global samples knob; everything else derived.
+- **Full TZA bundle.** All 23 OIDN model variants Intel ships (~48 MB) are vendored to `data/oidn-weights/`, not just the 5 base models originally planned. Quality selector renamed to **Model size** (`Small` / `Base` / `Large`) — names match what user actually controls (which TZA file to load).
+- **Megakernel AOV.** Megakernel writes its own primary-hit `albedo` + `normal` AOV buffers (not only wavefront). `PathTraceCompute::albedo_buffer()` / `normal_buffer()` transparently return wavefront's buffer when wavefront is active, megakernel's otherwise — OIDN works in either mode.
+- **Denoiser UI polish.** Compact 3-row grid (Mode / Size / Trigger), wide ComboBoxes, colour-coded status indicator, per-option tooltips that name the TZA file. Auto checkbox shares the trigger row with the "Denoise now" button.
+- **`default.json` rename.** `data/factory_render3d_options.json` → `data/default.json` — same filename convention as the runtime override beside the executable.

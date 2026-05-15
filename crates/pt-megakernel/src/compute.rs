@@ -3622,7 +3622,12 @@ impl PathTraceCompute {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            // `COPY_SRC` is required by `pt-denoise-oidn`, which runs
+            // `copy_texture_to_buffer` on this texture every denoise call.
+            // STORAGE+TEXTURE alone caused MissingTextureUsage validation.
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());

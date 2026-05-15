@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 const BUNDLED_FACTORY_RENDER_3D_OPTIONS: &str =
-    include_str!("../../data/factory_render3d_options.json");
+    include_str!("../../data/default.json");
 const ADJACENT_DEFAULT_PRESET_FILENAME: &str = "default.json";
 
 /// Built-in preset name for default render options plus related UI state.
@@ -19,8 +19,9 @@ pub const DEFAULT_PRESET_NAME: &str = "defaults";
 
 /// Default 3D/render options.
 ///
-/// If `default.json` exists beside the executable it is used as the default preset. Otherwise the
-/// app uses the factory options compiled into the binary from `data/factory_render3d_options.json`.
+/// If `default.json` exists beside the executable it is used as the default
+/// preset (runtime override). Otherwise the app falls back to the
+/// `data/default.json` compiled into the binary.
 ///
 /// Animation clocks are zero and emissive motion is off so large light-cube counts stay cheaper
 /// until the user enables animation explicitly.
@@ -37,7 +38,7 @@ pub fn factory_render_3d_options() -> Render3DOptions {
 
 fn bundled_factory_render_3d_options() -> Render3DOptions {
     serde_json::from_str(BUNDLED_FACTORY_RENDER_3D_OPTIONS)
-        .expect("factory_render3d_options.json must match Render3DOptions schema")
+        .expect("data/default.json must match Render3DOptions schema")
 }
 
 fn load_adjacent_default_render_3d_options() -> Option<Render3DOptions> {

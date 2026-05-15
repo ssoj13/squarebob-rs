@@ -140,7 +140,17 @@ impl OidnDenoiser {
         albedo_buf: Option<&wgpu::Buffer>,
         normal_buf: Option<&wgpu::Buffer>,
     ) -> Result<()> {
+        log::debug!(
+            "OIDN denoise() enter: mode={:?} quality={:?} dims={}x{} albedo_in={} normal_in={}",
+            self.mode,
+            self.quality,
+            self.width,
+            self.height,
+            albedo_buf.is_some(),
+            normal_buf.is_some(),
+        );
         if matches!(self.mode, OidnMode::Off) {
+            log::debug!("OIDN denoise() early-return: mode=Off");
             return Ok(());
         }
 
@@ -168,6 +178,12 @@ impl OidnDenoiser {
             }
             other => other,
         };
+        log::debug!(
+            "OIDN effective_mode={:?} (use_albedo={} use_normal={})",
+            effective_mode,
+            matches!(effective_mode, OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal),
+            matches!(effective_mode, OidnMode::ColorAlbedoNormal),
+        );
         if effective_mode != self.mode {
             log::debug!(
                 "OIDN: mode {:?} downgraded to {:?} (AOV unavailable)",
@@ -267,10 +283,17 @@ impl OidnDenoiser {
             buf
         });
 
+        log::debug!(
+            "OIDN: encoder built — color_size={} aov_size={} (albedo={}, normal={})",
+            color_size, aov_size,
+            albedo_staging.is_some(), normal_staging.is_some(),
+        );
         ctx.queue.submit(std::iter::once(encoder.finish()));
+        log::trace!("OIDN: copy encoder submitted, mapping color staging");
 
         // Map everything and pull bytes back to host.
         let color_rgb = map_and_strip_rgba_padded(&ctx.device, &color_staging, w, h, padded_bpr)?;
+        log::trace!("OIDN: color readback done ({} f32 = {} bytes)", color_rgb.len(), color_rgb.len() * 4);
         let albedo_rgb = albedo_staging
             .as_ref()
             .map(|b| map_and_strip_rgba_tight(&ctx.device, b, n))
@@ -290,6 +313,10 @@ impl OidnDenoiser {
             OidnMode::Color | OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal
         );
 
+        log::debug!(
+            "OIDN: building RtFilter (hdr={}, quality={:?}, weights_dir={})",
+            hdr, self.quality, self.weights_dir.display()
+        );
         let mut filter = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
             burn_device,
             &self.weights_dir,
@@ -297,6 +324,14 @@ impl OidnDenoiser {
         .hdr(hdr)
         .quality(self.quality)
         .build();
+
+        // Sanity-trace the readback so it's obvious whether the input was
+        // actually populated or we're feeding OIDN a blank frame.
+        let in_stats = stats(&color_rgb);
+        log::info!(
+            "OIDN input color: min={:.4} max={:.4} mean={:.4} (n={} pixels)",
+            in_stats.0, in_stats.1, in_stats.2, n
+        );
 
         let color_img = oidn_rs::Image::from_rgb_f32(&color_rgb, w, h);
         filter.set_color(&color_img);
@@ -309,18 +344,49 @@ impl OidnDenoiser {
             filter.set_normal(&img);
         }
         filter.allocate_output(w, h, oidn_rs::PixelFormat::Rgb32f);
+        log::trace!("OIDN: filter.commit() begin");
         filter.commit().map_err(|e| anyhow::anyhow!("OIDN commit: {e:?}"))?;
+        log::debug!(
+            "OIDN: filter committed (model={:?})",
+            filter.model_key().map(|k| k.filename())
+        );
+        log::trace!("OIDN: filter.execute() begin");
         filter.execute().map_err(|e| anyhow::anyhow!("OIDN execute: {e:?}"))?;
-        let (out_bytes, _, _, _) = filter
+        log::trace!("OIDN: filter.execute() done");
+        let (out_bytes, ow, oh, ofmt) = filter
             .take_output()
             .ok_or_else(|| anyhow::anyhow!("OIDN take_output: empty"))?;
+        log::debug!(
+            "OIDN: take_output {}×{} fmt={:?} {} bytes (expected {} for Rgb32f)",
+            ow, oh, ofmt, out_bytes.len(), n * 12
+        );
 
-        // Repack Rgb32f → Rgba32Float for the wgpu storage texture (alpha=1).
+        // Repack Rgb32f → Rgba16Float. result_texture is Rgba16Float so egui
+        // can sample-filter it (Rgba32Float is unfilterable without an opt-in
+        // device feature). 8 bytes/pixel; alpha pinned to 1.0.
         let out_f32: &[f32] = bytemuck::cast_slice(&out_bytes);
         debug_assert_eq!(out_f32.len(), n * 3);
-        let mut rgba: Vec<f32> = Vec::with_capacity(n * 4);
+        let out_stats = stats(out_f32);
+        log::info!(
+            "OIDN output color: min={:.4} max={:.4} mean={:.4}",
+            out_stats.0, out_stats.1, out_stats.2
+        );
+        // Safety guard: if the network produced a fully black/NaN result,
+        // don't claim "denoised" — let the caller keep showing the raw PT
+        // output and surface a warning in the log so it's debuggable.
+        if !out_stats.1.is_finite() || out_stats.1 < 1e-6 {
+            anyhow::bail!(
+                "OIDN produced an empty result (max={:.6}). Keeping raw display.",
+                out_stats.1
+            );
+        }
+        let mut rgba: Vec<half::f16> = Vec::with_capacity(n * 4);
+        let one = half::f16::from_f32(1.0);
         for px in out_f32.chunks_exact(3) {
-            rgba.extend_from_slice(&[px[0], px[1], px[2], 1.0]);
+            rgba.push(half::f16::from_f32(px[0]));
+            rgba.push(half::f16::from_f32(px[1]));
+            rgba.push(half::f16::from_f32(px[2]));
+            rgba.push(one);
         }
 
         // Upload into the result texture. wgpu handles row padding for textures
@@ -338,7 +404,7 @@ impl OidnDenoiser {
             bytemuck::cast_slice(&rgba),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some((w * 16) as u32),
+                bytes_per_row: Some((w * 8) as u32),
                 rows_per_image: Some(self.height),
             },
             wgpu::Extent3d {
@@ -368,6 +434,17 @@ impl OidnDenoiser {
 /// `Adapter`/`Device`/`Queue` to `cubecl_wgpu::init_device`, Burn allocates
 /// its tensors on the *same* device.
 pub fn make_burn_device(ctx: &GpuContext) -> Result<burn_wgpu::WgpuDevice> {
+    // A/B test: when this env var is set, build a standalone Burn device
+    // (separate wgpu context) so we can isolate whether the all-zero output
+    // we're chasing is a `cubecl_wgpu::init_device(WgpuSetup)` bridge bug.
+    // Unset → production path (shared device).
+    if std::env::var("OIDN_STANDALONE_DEVICE").is_ok() {
+        log::warn!(
+            "OIDN_STANDALONE_DEVICE set — using non-shared Burn device (debug only)"
+        );
+        return Ok(burn_wgpu::WgpuDevice::default());
+    }
+
     let backend = ctx.adapter.get_info().backend;
     let setup = cubecl_wgpu::WgpuSetup {
         instance: (*ctx.instance).clone(),
@@ -415,6 +492,11 @@ fn create_result_texture(
     width: u32,
     height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
+    // `Rgba16Float` (not `Rgba32Float`) — egui registers this texture with
+    // `FilterMode::Linear`, which requires a *filterable* sample type. f32
+    // textures are not filterable without the `FLOAT32_FILTERABLE` device
+    // feature; f16 is filterable by default. f16 is plenty for display —
+    // OIDN's network output is full-precision Vec<f32>, we narrow on upload.
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("oidn_result"),
         size: wgpu::Extent3d {
@@ -425,7 +507,7 @@ fn create_result_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba32Float,
+        format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_SRC,
@@ -500,6 +582,29 @@ fn map_and_strip_rgba_tight(
     drop(mapped);
     buf.unmap();
     Ok(out)
+}
+
+/// Cheap min/max/mean over a flat HWC f32 slice — used to trace OIDN
+/// input/output magnitudes when diagnosing a black-frame display.
+fn stats(data: &[f32]) -> (f32, f32, f32) {
+    if data.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut sum = 0.0f64;
+    for &v in data {
+        if v.is_finite() {
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
+            sum += v as f64;
+        }
+    }
+    (min, max, (sum / data.len() as f64) as f32)
 }
 
 #[cfg(test)]

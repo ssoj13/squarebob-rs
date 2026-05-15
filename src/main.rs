@@ -53,6 +53,13 @@ fn main() -> eframe::Result<()> {
         _ => log::LevelFilter::Trace,
     };
     builder.filter_module("squarebob_rs", squarebob_level);
+    // OIDN denoiser: TRACE so every step is visible while we're debugging
+    // the bridge. Also bump the forked `oidn-rs` inner crates so per-tile
+    // forward/in/out stats land in the log.
+    builder.filter_module("pt_denoise_oidn", log::LevelFilter::Trace);
+    builder.filter_module("oidn_rs", log::LevelFilter::Debug);
+    builder.filter_module("oidn_model", log::LevelFilter::Debug);
+    builder.filter_module("oidn_tza", log::LevelFilter::Debug);
     if let Some(list) = &cli.log_modules {
         for item in list.split(',').map(|s| s.trim().to_lowercase()) {
             match item.as_str() {

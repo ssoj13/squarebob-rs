@@ -16,7 +16,7 @@ It is inspired by tools like SequoiaView, WinDirStat and KDirStat, but the rende
 - Optional NTFS MFT scanner on Windows for faster scans when permissions allow it.
 - Dockable `egui_dock` UI: tree, treemap, extensions, settings, and floating encode dialog.
 - Reusable `media-encoder` crate for video and image sequence export.
-- Built-in render defaults from `data/factory_render3d_options.json`, with optional runtime override via `default.json` next to the executable.
+- Built-in render defaults from `data/default.json`, with optional runtime override via a `default.json` placed next to the executable.
 - Cross-platform CI for Linux, Windows, and macOS, with manual packaging and tagged releases.
 
 ## Screens
@@ -203,7 +203,7 @@ Useful CLI groups include:
 The default 3D/render preset is compiled into the binary from:
 
 ```text
-data/factory_render3d_options.json
+data/default.json
 ```
 
 At runtime, Squarebob first looks for this file next to the executable:

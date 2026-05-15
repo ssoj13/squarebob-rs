@@ -1,0 +1,11 @@
+[package]
+name = "gpu-mem"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Query GPU video memory (VRAM) — zero unsafe, zero dependencies"
+keywords = ["gpu", "vram", "memory", "graphics"]
+categories = ["hardware-support", "os"]
+
+# No dependencies — pure std.
+[dependencies]

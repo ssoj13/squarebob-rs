@@ -1280,21 +1280,35 @@ impl App {
 
         // PT must be running and OIDN enabled, otherwise force raw display.
         let mode_opt = self.render_3d_opts.pt_oidn_mode;
+        log::trace!(
+            "maybe_run_oidn_denoise enter: path_tracing={} mode={:?} run_requested={} auto={}",
+            self.render_3d_opts.path_tracing,
+            mode_opt,
+            self.oidn_run_requested,
+            self.render_3d_opts.pt_oidn_auto,
+        );
         if !self.render_3d_opts.path_tracing || mode_opt == OidnModeOption::Off {
             self.oidn_display_is_denoised = false;
             // Honor any pending manual click only when PT comes back up.
             if !self.render_3d_opts.path_tracing {
                 self.oidn_run_requested = false;
             }
+            log::trace!("OIDN: skip (PT off or mode=Off)");
             return;
         }
 
         let Some(r) = self.renderer_3d.as_ref() else {
             self.oidn_display_is_denoised = false;
+            log::trace!("OIDN: skip (renderer_3d=None)");
             return;
         };
         let current_spp = r.pt_frame_count();
         let target_spp = r.pt_target_spp();
+        log::trace!(
+            "OIDN trigger eval: current_spp={} target_spp={} denoised_this_acc={} last_frame={}",
+            current_spp, target_spp,
+            self.oidn_denoised_this_accumulation, self.oidn_last_frame_count
+        );
 
         // Detect accumulation reset (camera / scene change).
         if current_spp < self.oidn_last_frame_count {
@@ -1309,6 +1323,10 @@ impl App {
             && current_spp >= target_spp
             && !self.oidn_denoised_this_accumulation;
 
+        log::trace!(
+            "OIDN trigger result: manual={} auto={} → run={}",
+            manual, auto, manual || auto
+        );
         if !(manual || auto) {
             return;
         }

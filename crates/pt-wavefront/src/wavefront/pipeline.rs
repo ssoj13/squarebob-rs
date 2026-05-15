@@ -231,8 +231,10 @@ impl WavefrontPipeline {
         self.ray_buf_a = Some(create_buf(device, "wf_ray_a", n * ray_sz));
         self.ray_buf_b = Some(create_buf(device, "wf_ray_b", n * ray_sz));
         self.hit_buf = Some(create_buf(device, "wf_hit", n * hit_sz));
-        self.albedo_buf = Some(create_buf(device, "wf_albedo_aov", n * aov_sz));
-        self.normal_buf = Some(create_buf(device, "wf_normal_aov", n * aov_sz));
+        // AOV buffers must add COPY_SRC — the OIDN denoiser reads them via
+        // `copy_buffer_to_buffer` into a mappable staging buffer each frame.
+        self.albedo_buf = Some(create_aov_buf(device, "wf_albedo_aov", n * aov_sz));
+        self.normal_buf = Some(create_aov_buf(device, "wf_normal_aov", n * aov_sz));
         self.cur_buf = 0;
     }
 
@@ -471,6 +473,17 @@ fn create_pipeline(
         cache: None,
     });
     (pipeline, bgl)
+}
+
+fn create_aov_buf(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: size.max(16),
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    })
 }
 
 fn create_buf(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
