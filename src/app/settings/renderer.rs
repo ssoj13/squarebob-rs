@@ -144,19 +144,23 @@ fn compact_section(
 }
 
 impl App {
-    /// Renderer section (2D/3D mode-specific settings)
+    /// Renderer settings. In 2D this is a small block; in 3D the
+    /// subsections (Geometry, Materials, Effects, Animation, Path
+    /// Tracer when active, Environment, Interaction, Camera) are
+    /// emitted as top-level siblings of the caller's Denoiser section
+    /// rather than nested inside a single "Renderer" collapsing
+    /// header — flatter, easier to scan, faster to drill into.
     pub(super) fn ui_settings_renderer(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(egui::RichText::new("Renderer").heading())
-            .default_open(true)
-            .show(ui, |ui| {
-                // Mode-specific settings
-                if self.render_mode == RenderMode::Mode2D {
+        if self.render_mode == RenderMode::Mode2D {
+            egui::CollapsingHeader::new(egui::RichText::new("Renderer").heading())
+                .default_open(true)
+                .show(ui, |ui| {
                     self.ui_2d_settings(ui);
-                }
-                if self.render_mode == RenderMode::Mode3D {
-                    self.ui_3d_settings(ui);
-                }
-            });
+                });
+        }
+        if self.render_mode == RenderMode::Mode3D {
+            self.ui_3d_settings(ui);
+        }
     }
 
     /// 2D renderer settings
@@ -173,36 +177,34 @@ impl App {
         }
     }
 
-    /// 3D renderer settings - reorganized with clear subsections
+    /// 3D renderer settings — flat layout. Each subsection is a
+    /// top-level `CollapsingHeader` sibling of the caller's Denoiser
+    /// section. The "Render" header at the top holds only the mode
+    /// picker (Shaded / Wireframe / Path Trace) and — when Path Trace
+    /// is active — the Path Tracer knobs nested under it (those don't
+    /// make sense in raster modes).
     fn ui_3d_settings(&mut self, ui: &mut egui::Ui) {
-        // Shading mode tabs at the top
-        self.ui_3d_shading_mode(ui);
+        egui::CollapsingHeader::new(egui::RichText::new("Render").heading())
+            .id_salt("render_section_top")
+            .default_open(true)
+            .show(ui, |ui| {
+                self.ui_3d_shading_mode(ui);
+                if self.render_3d_opts.path_tracing {
+                    self.ui_3d_pathtracer(ui);
+                }
+            });
 
-        ui.separator();
-
-        // Geometry settings
+        // Geometry / Materials / Effects / Animation / Env / Interaction
+        // / Camera are now siblings — same level as `Denoiser (OIDN)` in
+        // the parent settings panel.
         self.ui_3d_geometry(ui);
-
-        // Material assignment and raster/PTR-specific knobs (not wireframe).
         if !self.render_3d_opts.show_wireframe {
             self.ui_3d_materials(ui);
         }
-
-        // Effects settings
         self.ui_3d_effects(ui);
-
-        // Animation: master + per-timeline knobs in one place.
         self.ui_3d_animation(ui);
-
-        if self.render_3d_opts.path_tracing {
-            self.ui_3d_pathtracer(ui);
-        }
-
-        // Environment and interaction
         self.ui_3d_environment(ui);
         self.ui_3d_interaction(ui);
-
-        // Camera controls
         self.ui_3d_camera(ui);
     }
 
@@ -432,6 +434,74 @@ impl App {
                                     &mut self.render_3d_opts.lod_min_screen_size,
                                     0.5..=10.0,
                                 ))
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+
+                // --- Polar layout ----------------------------------------
+                // Remaps each cube's `(x, y)` to `(r·cosθ, r·sinθ)` around
+                // `world_center`. The treemap "wraps" into rings. Stacks
+                // with any hash effect (Ocean / Vortex / …) — that effect's
+                // offset is applied on top of the polar position.
+                egui::CollapsingHeader::new(section_header_text(
+                    "Polar",
+                    self.settings_panel_font_subheading,
+                ))
+                .id_salt("geom_polar_section")
+                .default_open(false)
+                .show(ui, |ui| {
+                    settings_grid(ui, "geom_polar_grid", |ui| {
+                        control_label(ui, "Enable");
+                        if ui
+                            .checkbox(&mut self.render_3d_opts.polar_layout, "")
+                            .on_hover_text(
+                                "Wrap the treemap into a polar (radial) layout. \
+                                 X axis maps to angle (0..360° per wrap_scale \
+                                 world units), Y axis maps to radius.",
+                            )
+                            .changed()
+                        {
+                            self.needs_layout = true;
+                        }
+                        ui.end_row();
+
+                        if self.render_3d_opts.polar_layout {
+                            control_label(ui, "Strength");
+                            if ui
+                                .add(
+                                    egui::Slider::new(
+                                        &mut self.render_3d_opts.polar_strength,
+                                        0.0..=1.0,
+                                    )
+                                    .text("lerp"),
+                                )
+                                .on_hover_text(
+                                    "0 = rectangular (no warp), 1 = fully polar.",
+                                )
+                                .changed()
+                            {
+                                self.needs_layout = true;
+                            }
+                            ui.end_row();
+
+                            control_label(ui, "Wrap (world)");
+                            if ui
+                                .add(
+                                    egui::Slider::new(
+                                        &mut self.render_3d_opts.polar_wrap_scale,
+                                        64.0..=8192.0,
+                                    )
+                                    .logarithmic(true),
+                                )
+                                .on_hover_text(
+                                    "World-space distance along the X axis that \
+                                     maps to one full 360° revolution.",
+                                )
                                 .changed()
                             {
                                 self.needs_layout = true;
@@ -1463,7 +1533,7 @@ impl App {
             *pt_changed |= ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_max_bounces,
-                    1..=64,
+                    1..=256,
                 ))
                 .changed();
             ui.end_row();
@@ -1472,7 +1542,7 @@ impl App {
             *pt_changed |= ui
                 .add(egui::Slider::new(
                     &mut self.render_3d_opts.pt_max_transmission_depth,
-                    1..=64,
+                    1..=256,
                 ))
                 .changed();
             ui.end_row();

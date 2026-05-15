@@ -519,6 +519,19 @@ pub struct Render3DOptions {
     /// each effect's own intensity.
     #[serde(default)]
     pub effects: EffectsState,
+    /// Polar-coords layout: when on, each cube's `(x, y)` is remapped
+    /// to `(r·cosθ, r·sinθ)` around `world_center`. `polar_strength` is
+    /// a 0..1 lerp between the original rectangular layout (0) and the
+    /// fully wrapped polar interpretation (1). `polar_wrap_scale` is
+    /// the world distance along the X axis that maps to one full
+    /// 360° revolution. Independent of `hash_effect`: any effect
+    /// (Ocean, Vortex, …) layers on top of the polar position.
+    #[serde(default = "default_false")]
+    pub polar_layout: bool,
+    #[serde(default = "default_polar_strength")]
+    pub polar_strength: f32,
+    #[serde(default = "default_polar_wrap_scale")]
+    pub polar_wrap_scale: f32,
     /// Object-side animation time (cube transforms, hash effects).
     /// Advances by `animation_speed * dt` when `animate` is true.
     pub animation_time: f32,
@@ -757,6 +770,12 @@ fn default_oidn_auto() -> bool {
 fn default_oidn_interval() -> u32 {
     128
 }
+fn default_polar_strength() -> f32 {
+    1.0
+}
+fn default_polar_wrap_scale() -> f32 {
+    1024.0
+}
 
 fn default_lod_min_size() -> f32 {
     2.0
@@ -905,6 +924,9 @@ impl Default for Render3DOptions {
             folder_ramps: Mapping::default(),
             hash_effect: HashTransformEffect::Pulse,
             effects: EffectsState::default(),
+            polar_layout: false,
+            polar_strength: default_polar_strength(),
+            polar_wrap_scale: default_polar_wrap_scale(),
             animation_time: 0.0,
             animation_speed: 3.0,
             env_time: 0.0,

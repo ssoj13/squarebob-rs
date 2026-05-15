@@ -266,7 +266,23 @@ impl Renderer3D {
             // every cube as long as `base_height / 2` stays under the camera
             // distance — works for typical scenes. Outliers (huge files) can
             // still poke into the camera; pending a global height clamp.
-            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
+            let mut pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
+            if opts.polar_layout && opts.polar_strength > 0.0 {
+                // Polar layout: treat the X axis relative to world_center
+                // as an angle (full wrap_scale = 360°), Y axis as radius.
+                // `polar_strength` lerps between the original rect layout
+                // and the fully polar interpretation. Effects (Ocean,
+                // Vortex, …) apply on top of the warped position via the
+                // hash_transform call below — they're additive offsets,
+                // not coordinate-system dependent.
+                let local = pos - world_center;
+                let theta = local.x * std::f32::consts::TAU
+                    / opts.polar_wrap_scale.max(1.0);
+                let r = local.y;
+                let polar_xy = Vec3::new(r * theta.cos(), r * theta.sin(), 0.0);
+                let blended = local.lerp(polar_xy, opts.polar_strength.clamp(0.0, 1.0));
+                pos = world_center + blended;
+            }
             let transform = hash_transform(
                 &node.name,
                 pos,

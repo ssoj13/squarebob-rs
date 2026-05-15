@@ -344,7 +344,10 @@ impl App {
                             self.ui_presets(ui);
                             ui.add_space(4.0);
                             self.ui_settings_renderer(ui);
-                            ui.separator();
+                            // Denoiser is just another section sibling
+                            // alongside Geometry / Materials / Effects /
+                            // etc. after the renderer flatten — no
+                            // visual divider needed.
                             self.ui_settings_denoiser(ui, &mut changed);
                         }
                         SettingsTab::Exclusions => {
