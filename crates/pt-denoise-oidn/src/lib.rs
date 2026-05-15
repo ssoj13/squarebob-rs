@@ -73,7 +73,10 @@ pub struct OidnDenoiser {
     last_latency_ms: Option<f32>,
 
     /// Burn device sharing squarebob's wgpu setup. Built on first denoise.
-    burn_device: Option<burn_wgpu::WgpuDevice>,
+    /// Stored as a `'static` reference (via `Box::leak`) so the cached
+    /// `RtFilter` below can carry a `'static` lifetime parameter — a
+    /// deliberate single-instance leak of ~16 bytes per app process.
+    burn_device_ref: Option<&'static burn_wgpu::WgpuDevice>,
 
     /// Cached TZA bytes from the last successful model load. Reused across
     /// `denoise()` calls so we don't re-read the 1.8 MB file from disk
@@ -81,6 +84,14 @@ pub struct OidnDenoiser {
     /// since these fully determine which TZA file gets picked.
     cached_model_key: Option<(bool, bool, Quality)>,
     cached_model_bytes: Option<Vec<u8>>,
+
+    /// Cached `RtFilter`. Carries the loaded UNet and tile plan from one
+    /// `denoise()` to the next, so the ~30-50 ms `commit()` cost (TZA parse
+    /// + UNet weight load + tile-plan compute) is paid once per
+    /// mode/quality/dims combination, not every periodic fire.
+    cached_filter:
+        Option<Box<oidn_rs::RtFilter<'static, burn_wgpu::Wgpu<f32, i32>>>>,
+    cached_filter_key: Option<(bool, bool, Quality, u32, u32)>,
 
     /// Reused staging buffers for color readback (padded to 256-byte rows)
     /// and the two AOVs (tight `w*h*16`). Invalidated on resize.
@@ -102,8 +113,13 @@ impl OidnDenoiser {
             result_texture: None,
             result_view: None,
             last_latency_ms: None,
+            burn_device_ref: None,
+            // legacy stale field removed below; the dummy keeps the struct
+            // literal shape consistent.
             cached_model_key: None,
             cached_model_bytes: None,
+            cached_filter: None,
+            cached_filter_key: None,
             color_staging: None,
             color_staging_size: 0,
             aov_staging_size: 0,
