@@ -1275,8 +1275,8 @@ impl App {
     /// that and clear `oidn_denoised_this_accumulation` so the next target-spp
     /// arrival fires OIDN again.
     pub(super) fn maybe_run_oidn_denoise(&mut self, w: u32, h: u32) {
-        use pt_denoise_oidn::{OidnDenoiser, OidnMode, Quality};
-        use render_shared::{OidnModeOption, OidnQualityOption};
+        use pt_denoise_oidn::OidnDenoiser;
+        use render_shared::OidnModeOption;
 
         // PT must be running and OIDN enabled, otherwise force raw display.
         let mode_opt = self.render_3d_opts.pt_oidn_mode;
@@ -1370,10 +1370,6 @@ impl App {
             }
         }
 
-        // Quiet the local `_` references introduced by `OidnMode` import path.
-        let _ = OidnMode::Off;
-        let _ = Quality::Balanced;
-        let _ = OidnQualityOption::Balanced;
     }
 }
 
@@ -1392,8 +1388,8 @@ fn map_quality(q: render_shared::OidnQualityOption) -> pt_denoise_oidn::Quality 
     use pt_denoise_oidn::Quality;
     use render_shared::OidnQualityOption;
     match q {
-        OidnQualityOption::High => Quality::High,
-        OidnQualityOption::Balanced => Quality::Balanced,
-        OidnQualityOption::Fast => Quality::Fast,
+        OidnQualityOption::Large => Quality::High,
+        OidnQualityOption::Base => Quality::Balanced,
+        OidnQualityOption::Small => Quality::Fast,
     }
 }

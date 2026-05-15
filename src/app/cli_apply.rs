@@ -48,9 +48,9 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
     }
     if let Some(ref q) = cli.pt_oidn_quality {
         opts.pt_oidn_quality = match q.to_ascii_lowercase().as_str() {
-            "high" => render_shared::OidnQualityOption::High,
-            "fast" => render_shared::OidnQualityOption::Fast,
-            _ => render_shared::OidnQualityOption::Balanced,
+            "large" | "high" => render_shared::OidnQualityOption::Large,
+            "small" | "fast" => render_shared::OidnQualityOption::Small,
+            _ => render_shared::OidnQualityOption::Base,
         };
     }
     if let Some(a) = cli.pt_oidn_auto {
@@ -380,7 +380,7 @@ mod tests {
         assert!(opts.pt_gpu_bvh);
         assert!(opts.pt_path_guiding);
         assert_eq!(opts.pt_oidn_mode, render_shared::OidnModeOption::ColorAlbedoNormal);
-        assert_eq!(opts.pt_oidn_quality, render_shared::OidnQualityOption::High);
+        assert_eq!(opts.pt_oidn_quality, render_shared::OidnQualityOption::Large);
         assert!(opts.pt_oidn_auto);
         assert!(opts.pt_restir_di);
         assert!(opts.pt_restir_gi);

@@ -306,6 +306,6 @@
   "inertia_friction": 4.0,
   "inertia_cutoff": 0.025,
   "pt_oidn_mode": "ColorAlbedoNormal",
-  "pt_oidn_quality": "Balanced",
+  "pt_oidn_quality": "Base",
   "pt_oidn_auto": true
 }

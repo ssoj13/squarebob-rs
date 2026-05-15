@@ -723,20 +723,28 @@ pub enum OidnModeOption {
     ColorAlbedoNormal,
 }
 
-/// String-serialised mirror of `oidn_rs::Quality`.
+/// Model-size selector for OIDN. Maps onto `oidn_rs::Quality` internally:
+/// - `Large`  → `Quality::High`  → try `_large` weights, fallback to base
+/// - `Base`   → `Quality::Balanced` → base weights only
+/// - `Small`  → `Quality::Fast`  → try `_small` weights, fallback to base
+///
+/// Names match what the user actually controls (which TZA size to load),
+/// not abstract "quality". `Large` only matters for prefilter / clean-aux
+/// models (Intel doesn't ship `_large` variants of the main color-denoise
+/// network); `Small` halves params on the main network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OidnQualityOption {
-    High,
+    Large,
     #[default]
-    Balanced,
-    Fast,
+    Base,
+    Small,
 }
 
 fn default_oidn_mode() -> OidnModeOption {
     OidnModeOption::ColorAlbedoNormal
 }
 fn default_oidn_quality() -> OidnQualityOption {
-    OidnQualityOption::Balanced
+    OidnQualityOption::Base
 }
 fn default_oidn_auto() -> bool {
     true
@@ -996,7 +1004,7 @@ impl Default for Render3DOptions {
             inertia_cutoff: 0.001,
             // OIDN denoiser defaults: production-grade out of the box.
             pt_oidn_mode: OidnModeOption::ColorAlbedoNormal,
-            pt_oidn_quality: OidnQualityOption::Balanced,
+            pt_oidn_quality: OidnQualityOption::Base,
             pt_oidn_auto: true,
         }
     }
