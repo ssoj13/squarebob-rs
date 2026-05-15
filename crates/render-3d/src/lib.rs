@@ -624,19 +624,28 @@ impl Renderer3D {
 
         q.write_buffer(&self.light_rig_buf, 0, bytemuck::bytes_of(&self.light_rig));
 
-        // Per-frame mat-global update. Cheap (16 bytes); enables live materialize_mix
-        // slider without rebuilding cube instances.
+        // Per-frame mat-global update. Cheap (16 bytes); carries both
+        // the materialize_mix slider and the live age recolour state
+        // (toggle + now-anchor + age range) so neither requires
+        // rebuilding the cube instance buffer.
         let mat_mix = if opts.materialize_mode != MaterializeMode::None {
             opts.materialize_mix.clamp(0.0, 1.0)
         } else {
             0.0
         };
+        let now_epoch_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as f32)
+            .unwrap_or(0.0);
+        let age_range_secs = (opts.age_range_years.max(1.0 / 365.0)) * 365.25 * 24.0 * 60.0 * 60.0;
         q.write_buffer(
             &self.mat_global_buf,
             0,
             bytemuck::bytes_of(&MatGlobalUniform {
                 materialize_mix: mat_mix,
-                _pad: [0.0; 3],
+                age_recolor_enabled: if opts.live_age_recolor { 1.0 } else { 0.0 },
+                now_epoch_secs,
+                age_range_secs,
             }),
         );
 

@@ -351,6 +351,40 @@ impl App {
                     ) {
                         self.needs_layout = true;
                     }
+
+                    // Shader-side age recolour. Doesn't trigger a relayout —
+                    // the toggle + range write straight into the MatGlobal
+                    // UBO each frame and the PBR vertex shader recolours
+                    // cubes from their per-instance `mtime` attribute.
+                    settings_grid(ui, "geom_age_recolor_grid", |ui| {
+                        control_label(ui, "Live age");
+                        ui.checkbox(
+                            &mut self.render_3d_opts.live_age_recolor,
+                            "Recolour by mtime",
+                        )
+                        .on_hover_text(
+                            "Replace per-cube colour with a live cyan→yellow→red \
+                             gradient driven by file modification time. Overrides \
+                             the colour-mode selection while enabled; cubes whose \
+                             scanner had no mtime keep their precomputed colour.",
+                        );
+                        ui.end_row();
+
+                        if self.render_3d_opts.live_age_recolor {
+                            control_label(ui, "Range (yrs)");
+                            ui.add(
+                                egui::DragValue::new(&mut self.render_3d_opts.age_range_years)
+                                    .speed(0.1)
+                                    .range(0.05..=50.0),
+                            )
+                            .on_hover_text(
+                                "Age in years that maps to full red. Smaller \
+                                 values stretch the gradient over recent files; \
+                                 larger values spread it across older trees.",
+                            );
+                            ui.end_row();
+                        }
+                    });
                 });
 
                 // --- Folder tint -----------------------------------------
