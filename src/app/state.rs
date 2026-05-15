@@ -108,7 +108,7 @@ pub(super) fn default_font_size() -> f32 {
     12.0
 }
 pub(super) fn default_settings_tint_mix() -> f32 {
-    0.05
+    0.12
 }
 
 pub(super) fn default_settings_section_header_height() -> f32 {

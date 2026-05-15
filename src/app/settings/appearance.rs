@@ -52,7 +52,7 @@ impl App {
                         ui.label("Tint Mix:");
                         if ui
                             .add(
-                                egui::Slider::new(&mut self.settings_tint_mix, 0.0..=0.2)
+                                egui::Slider::new(&mut self.settings_tint_mix, 0.0..=0.3)
                                     .show_value(true),
                             )
                             .changed()

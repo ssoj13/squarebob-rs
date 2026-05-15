@@ -177,35 +177,66 @@ impl App {
         }
     }
 
-    /// 3D renderer settings — flat layout. Each subsection is a
-    /// top-level `CollapsingHeader` sibling of the caller's Denoiser
-    /// section. The "Render" header at the top holds only the mode
-    /// picker (Shaded / Wireframe / Path Trace) and — when Path Trace
-    /// is active — the Path Tracer knobs nested under it (those don't
-    /// make sense in raster modes).
+    /// 3D renderer settings — flat layout in VFX production order:
+    ///
+    /// 1.  **Geometry** — shape, layout, height, color (incl. Polar).
+    /// 2.  **Effects** — geometric distortion (Ocean / Vortex / …).
+    /// 3.  **Animation** — global time master, per-timeline speeds.
+    /// 4.  **Lights** — *(planned, currently merged into Materials)*.
+    /// 5.  **Environment** — env map / sky / background.
+    /// 6.  **Materials** — material assignment & PBR/glass globals.
+    /// 7.  **Render** — mode picker + Path Tracer knobs.
+    /// 8.  **Samples** — *(planned, currently inside Path Tracer)*.
+    /// 9.  **Denoise** — owned by the caller (mod.rs), sibling of the
+    ///     sections above.
+    /// 10. **Camera** — viewer position/lens/inertia.
+    /// 11. **Interaction** — hover / selection / picking tools.
+    ///
+    /// Each section is a top-level `CollapsingHeader` so they collapse
+    /// independently and read like a build pipeline.
     fn ui_3d_settings(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(egui::RichText::new("Render").heading())
-            .id_salt("render_section_top")
-            .default_open(true)
-            .show(ui, |ui| {
+        // 1. Geometry — first thing the user defines.
+        self.ui_3d_geometry(ui);
+        // 2. Effects — distortion applied to that geometry.
+        self.ui_3d_effects(ui);
+        // 3. Animation — time control feeding into effects + env.
+        self.ui_3d_animation(ui);
+        // 4. Lights — emissive cube materials (PT-only).
+        if self.render_3d_opts.path_tracing {
+            self.ui_3d_lights(ui);
+        }
+        // 5. Environment — IBL + background (acts as ambient lighting).
+        self.ui_3d_environment(ui);
+        // 6. Materials — surface assignment + PBR globals.
+        //    Hidden in wireframe (cubes have no surface there).
+        if !self.render_3d_opts.show_wireframe {
+            self.ui_3d_materials(ui);
+        }
+        // 7. Render — mode picker + Path Tracer body.
+        //    Wrapped in `tinted_section` so it visually matches the other
+        //    top-level sections. Path Tracer knobs inside are PT-only.
+        tinted_section(
+            ui,
+            "Render",
+            true,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
                 self.ui_3d_shading_mode(ui);
                 if self.render_3d_opts.path_tracing {
                     self.ui_3d_pathtracer(ui);
                 }
-            });
-
-        // Geometry / Materials / Effects / Animation / Env / Interaction
-        // / Camera are now siblings — same level as `Denoiser (OIDN)` in
-        // the parent settings panel.
-        self.ui_3d_geometry(ui);
-        if !self.render_3d_opts.show_wireframe {
-            self.ui_3d_materials(ui);
+            },
+        );
+        // 8. Samples — sampling budget + adaptive (PT-only).
+        if self.render_3d_opts.path_tracing {
+            self.ui_3d_samples(ui);
         }
-        self.ui_3d_effects(ui);
-        self.ui_3d_animation(ui);
-        self.ui_3d_environment(ui);
-        self.ui_3d_interaction(ui);
+        // 9. Denoise — emitted by mod.rs after this function returns.
+        // 10. Camera — viewer setup.
         self.ui_3d_camera(ui);
+        // 11. Interaction — hover & selection tools.
+        self.ui_3d_interaction(ui);
     }
 
     /// Shading mode selection (Shaded/Wireframe/Path Tracing)
@@ -1039,67 +1070,52 @@ impl App {
         );
     }
 
-    /// Path tracer settings
+    /// Path tracer sub-sections (rendered inline inside the Render
+    /// `tinted_section` — no own tinted wrapper to avoid double nesting).
     fn ui_3d_pathtracer(&mut self, ui: &mut egui::Ui) {
-        tinted_section(
+        let mut pt_changed = false;
+
+        compact_section(
             ui,
-            "Path Tracer",
+            "Lighting",
             true,
-            self.settings_tint_mix,
             self.settings_section_header_height,
-            |ui| {
-                let mut pt_changed = false;
-
-                compact_section(
-                    ui,
-                    "Lighting",
-                    true,
-                    self.settings_section_header_height,
-                    |ui| self.ui_pt_lighting(ui, &mut pt_changed),
-                );
-                compact_section(
-                    ui,
-                    "Sampling",
-                    true,
-                    self.settings_section_header_height,
-                    |ui| self.ui_pt_sampling(ui, &mut pt_changed),
-                );
-                compact_section(
-                    ui,
-                    "Paths",
-                    false,
-                    self.settings_section_header_height,
-                    |ui| self.ui_pt_paths(ui, &mut pt_changed),
-                );
-                compact_section(
-                    ui,
-                    "Glass",
-                    false,
-                    self.settings_section_header_height,
-                    |ui| self.ui_pt_glass(ui, &mut pt_changed),
-                );
-                compact_section(
-                    ui,
-                    "Camera",
-                    false,
-                    self.settings_section_header_height,
-                    |ui| self.ui_pt_camera(ui, &mut pt_changed),
-                );
-                compact_section(
-                    ui,
-                    "Advanced",
-                    false,
-                    self.settings_section_header_height,
-                    |ui| self.ui_pt_advanced(ui, &mut pt_changed),
-                );
-
-                if pt_changed {
-                    if let Some(r) = &mut self.renderer_3d {
-                        r.reset_pt_accumulation();
-                    }
-                }
-            },
+            |ui| self.ui_pt_lighting(ui, &mut pt_changed),
         );
+        compact_section(
+            ui,
+            "Paths",
+            false,
+            self.settings_section_header_height,
+            |ui| self.ui_pt_paths(ui, &mut pt_changed),
+        );
+        compact_section(
+            ui,
+            "Glass",
+            false,
+            self.settings_section_header_height,
+            |ui| self.ui_pt_glass(ui, &mut pt_changed),
+        );
+        compact_section(
+            ui,
+            "Camera",
+            false,
+            self.settings_section_header_height,
+            |ui| self.ui_pt_camera(ui, &mut pt_changed),
+        );
+        compact_section(
+            ui,
+            "Advanced",
+            false,
+            self.settings_section_header_height,
+            |ui| self.ui_pt_advanced(ui, &mut pt_changed),
+        );
+
+        if pt_changed {
+            if let Some(r) = &mut self.renderer_3d {
+                r.reset_pt_accumulation();
+            }
+        }
     }
 
     fn mark_pt_scene_dirty(&mut self) {
@@ -1144,94 +1160,10 @@ impl App {
         }
     }
 
+    /// Glass-cube count row shown inside Materials (PT-only). Light cubes
+    /// moved to their own top-level `ui_3d_lights` section per VFX-order
+    /// layout.
     fn ui_pt_material_counts(&mut self, ui: &mut egui::Ui, total_cubes: u32) {
-        control_label(ui, "Light Cubes:");
-        ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut self.render_3d_opts.mat_allow_lights, "")
-                .on_hover_text("Enable PT light materials")
-                .changed()
-            {
-                self.mark_pt_scene_dirty();
-            }
-            if self.render_3d_opts.mat_allow_lights {
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut self.render_3d_opts.mat_light_count)
-                            .range(0..=Self::pt_count_drag_max(total_cubes))
-                            .clamp_existing_to_range(false)
-                            .speed(1.0)
-                            .suffix(" cubes"),
-                    )
-                    .on_hover_text("Number of cubes to receive a light material")
-                    .changed()
-                {
-                    let total = total_cubes.max(1) as f32;
-                    self.render_3d_opts.mat_light_prob =
-                        (self.render_3d_opts.mat_light_count as f32 / total).clamp(0.0, 1.0);
-                    self.mark_pt_scene_dirty();
-                }
-                if total_cubes > 0 {
-                    ui.small(format!(
-                        "/{} ({:.1}%)",
-                        total_cubes,
-                        self.render_3d_opts.mat_light_prob * 100.0
-                    ));
-                }
-            }
-        });
-        ui.end_row();
-
-        if self.render_3d_opts.mat_allow_lights {
-            control_label(ui, "Warm Bias:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.mat_light_warm,
-                    0.0..=1.0,
-                ))
-                .changed()
-            {
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Cool Bias:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.mat_light_cool,
-                    0.0..=1.0,
-                ))
-                .changed()
-            {
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Light Power:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.mat_light_intensity,
-                    0.0..=10.0,
-                ))
-                .changed()
-            {
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Light Rand:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.mat_light_color_randomness,
-                    0.0..=1.0,
-                ))
-                .changed()
-            {
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-        }
-
         control_label(ui, "Glass Cubes:");
         ui.horizontal(|ui| {
             if ui
@@ -1268,6 +1200,131 @@ impl App {
             }
         });
         ui.end_row();
+    }
+
+    /// Lights section — emissive cube materials. Top-level VFX section,
+    /// shown only when path tracing is active (PBR has no light cubes).
+    fn ui_3d_lights(&mut self, ui: &mut egui::Ui) {
+        let total_cubes = self.pt_total_cubes();
+        tinted_section(
+            ui,
+            "Lights",
+            true,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                settings_grid(ui, "lights_grid", |ui| {
+                    control_label(ui, "Light Cubes:");
+                    ui.horizontal(|ui| {
+                        if ui
+                            .checkbox(&mut self.render_3d_opts.mat_allow_lights, "")
+                            .on_hover_text("Enable PT light materials")
+                            .changed()
+                        {
+                            self.mark_pt_scene_dirty();
+                        }
+                        if self.render_3d_opts.mat_allow_lights {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut self.render_3d_opts.mat_light_count)
+                                        .range(0..=Self::pt_count_drag_max(total_cubes))
+                                        .clamp_existing_to_range(false)
+                                        .speed(1.0)
+                                        .suffix(" cubes"),
+                                )
+                                .on_hover_text("Number of cubes to receive a light material")
+                                .changed()
+                            {
+                                let total = total_cubes.max(1) as f32;
+                                self.render_3d_opts.mat_light_prob =
+                                    (self.render_3d_opts.mat_light_count as f32 / total)
+                                        .clamp(0.0, 1.0);
+                                self.mark_pt_scene_dirty();
+                            }
+                            if total_cubes > 0 {
+                                ui.small(format!(
+                                    "/{} ({:.1}%)",
+                                    total_cubes,
+                                    self.render_3d_opts.mat_light_prob * 100.0
+                                ));
+                            }
+                        }
+                    });
+                    ui.end_row();
+
+                    if self.render_3d_opts.mat_allow_lights {
+                        control_label(ui, "Warm Bias:");
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.render_3d_opts.mat_light_warm,
+                                0.0..=1.0,
+                            ))
+                            .changed()
+                        {
+                            self.mark_pt_scene_dirty();
+                        }
+                        ui.end_row();
+
+                        control_label(ui, "Cool Bias:");
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.render_3d_opts.mat_light_cool,
+                                0.0..=1.0,
+                            ))
+                            .changed()
+                        {
+                            self.mark_pt_scene_dirty();
+                        }
+                        ui.end_row();
+
+                        control_label(ui, "Light Power:");
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.render_3d_opts.mat_light_intensity,
+                                0.0..=10.0,
+                            ))
+                            .changed()
+                        {
+                            self.mark_pt_scene_dirty();
+                        }
+                        ui.end_row();
+
+                        control_label(ui, "Light Rand:");
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.render_3d_opts.mat_light_color_randomness,
+                                0.0..=1.0,
+                            ))
+                            .changed()
+                        {
+                            self.mark_pt_scene_dirty();
+                        }
+                        ui.end_row();
+                    }
+                });
+            },
+        );
+    }
+
+    /// Samples section — sampling budget + adaptive variance controls.
+    /// Top-level VFX section shown only when path tracing is active.
+    fn ui_3d_samples(&mut self, ui: &mut egui::Ui) {
+        tinted_section(
+            ui,
+            "Samples",
+            true,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                let mut pt_changed = false;
+                self.ui_pt_sampling(ui, &mut pt_changed);
+                if pt_changed {
+                    if let Some(r) = &mut self.renderer_3d {
+                        r.reset_pt_accumulation();
+                    }
+                }
+            },
+        );
     }
 
     fn ui_pt_lighting(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
