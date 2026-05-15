@@ -424,11 +424,7 @@ impl App {
                 if let Some(start) = self.marquee_start {
                     let rect = egui::Rect::from_two_pos(start, pos);
                     if rect.width() > 5.0 || rect.height() > 5.0 {
-                        if let Some(baseline) = self.marquee_baseline.as_ref() {
-                            self.selected_3d_ids = baseline.clone();
-                        }
-                        self.select_objects_in_rect(rect, &resp.rect, w, h, is_pt, true);
-                        self.refresh_selection_overlay(ctx);
+                        self.commit_marquee_at(rect, &resp.rect, w, h, is_pt, true, ctx);
                     }
                 }
                 // Egui doesn't auto-repaint inside a drag if nothing
@@ -450,11 +446,7 @@ impl App {
                 if let Some(end) = resp.interact_pointer_pos().or(resp.hover_pos()) {
                     let rect = egui::Rect::from_two_pos(start, end);
                     if rect.width() > 5.0 || rect.height() > 5.0 {
-                        if let Some(baseline) = self.marquee_baseline.as_ref() {
-                            self.selected_3d_ids = baseline.clone();
-                        }
-                        self.select_objects_in_rect(rect, &resp.rect, w, h, is_pt, shift_held);
-                        self.refresh_selection_overlay(ctx);
+                        self.commit_marquee_at(rect, &resp.rect, w, h, is_pt, shift_held, ctx);
                     }
                 }
             }
@@ -695,29 +687,48 @@ impl App {
             r.set_selected_ids(&self.selected_3d_ids);
         }
         if self.render_3d_opts.path_tracing {
-            // PT path: re-blit the accumulator (or denoised result) and
-            // re-draw the outline. Cheap — couple of fullscreen passes.
-            if self.oidn_display_is_denoised {
-                let denoised_view = self
-                    .oidn_denoiser
-                    .as_ref()
-                    .and_then(|d| d.result_view());
-                if let (Some(r), Some(view)) =
-                    (self.renderer_3d.as_ref(), denoised_view)
-                {
-                    r.blit_oidn_result_into_render_target(view);
-                }
-            } else if let Some(r) = self.renderer_3d.as_ref() {
-                r.refresh_pt_selection_overlay();
+            // PT path: re-composite render_view from the latest colour
+            // source (OIDN result if denoised, raw PT accumulator
+            // otherwise) plus the outline overlay. No fresh PT sample.
+            let source = if self.oidn_display_is_denoised {
+                self.oidn_denoiser.as_ref().and_then(|d| d.result_view())
+            } else {
+                None
+            };
+            if let Some(r) = self.renderer_3d.as_ref() {
+                r.composite_overlay(source);
             }
             ctx.request_repaint();
         } else {
             // PBR/wireframe: cube colours come from a full rasterisation
-            // pass, so a redraw is unavoidable. `needs_render_3d` (not
-            // `needs_layout`) keeps the instance cache intact and the
-            // PT accumulator untouched if PT is wired up.
+            // pass, and we don't keep a "no-outline" cache to re-blit
+            // from, so a redraw is unavoidable here. `needs_render_3d`
+            // (not `needs_layout`) keeps the instance cache intact and
+            // the PT accumulator untouched if PT is wired up.
             self.needs_render_3d = true;
         }
+    }
+
+    /// Commit a marquee selection at the given rectangle. Resets to
+    /// the pre-drag baseline (so cubes that left the rect during the
+    /// drag are correctly deselected), runs the cube-in-rect test, then
+    /// refreshes the outline overlay. Used by both the live preview
+    /// (each drag frame) and the final commit (on button release).
+    fn commit_marquee_at(
+        &mut self,
+        rect: egui::Rect,
+        view_rect: &egui::Rect,
+        w: u32,
+        h: u32,
+        is_pt: bool,
+        add_to_selection: bool,
+        ctx: &egui::Context,
+    ) {
+        if let Some(baseline) = self.marquee_baseline.as_ref() {
+            self.selected_3d_ids = baseline.clone();
+        }
+        self.select_objects_in_rect(rect, view_rect, w, h, is_pt, add_to_selection);
+        self.refresh_selection_overlay(ctx);
     }
 
     /// 2D mode interactions: selection highlight, hover, clicks, scroll zoom
@@ -1108,7 +1119,7 @@ impl App {
                     self.renderer_3d.as_ref(),
                     self.oidn_denoiser.as_ref().and_then(|d| d.result_view()),
                 ) {
-                    r.blit_oidn_result_into_render_target(denoised_view);
+                    r.composite_overlay(Some(denoised_view));
                 }
             }
             self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;

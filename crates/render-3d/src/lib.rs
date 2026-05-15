@@ -994,19 +994,6 @@ impl Renderer3D {
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    /// Thin wrapper: composite the denoised OIDN view into render_view.
-    /// Kept for call-site readability — the app layer doesn't need to
-    /// know that "OIDN blit" and "selection refresh" share a code path.
-    pub fn blit_oidn_result_into_render_target(&self, denoised_view: &wgpu::TextureView) {
-        self.composite_overlay(Some(denoised_view));
-    }
-
-    /// Thin wrapper: re-composite from PT's own accumulator (no fresh
-    /// sample). Used by the selection-change refresh path when OIDN is
-    /// not the currently-displayed source.
-    pub fn refresh_pt_selection_overlay(&self) {
-        self.composite_overlay(None);
-    }
 
     fn pt_frame_count_impl(&self) -> u32 {
         self.pt
