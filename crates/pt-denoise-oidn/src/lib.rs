@@ -114,8 +114,6 @@ impl OidnDenoiser {
             result_view: None,
             last_latency_ms: None,
             burn_device_ref: None,
-            // legacy stale field removed below; the dummy keeps the struct
-            // literal shape consistent.
             cached_model_key: None,
             cached_model_bytes: None,
             cached_filter: None,
@@ -125,7 +123,6 @@ impl OidnDenoiser {
             aov_staging_size: 0,
             albedo_staging: None,
             normal_staging: None,
-            burn_device: None,
         }
     }
 
@@ -240,10 +237,15 @@ impl OidnDenoiser {
         );
         let use_normal = matches!(effective_mode, OidnMode::ColorAlbedoNormal);
 
-        // Lazy init: Burn device + result texture.
-        if self.burn_device.is_none() {
-            self.burn_device = Some(make_burn_device(ctx)?);
-            log::info!("OIDN: Burn-wgpu device initialised on shared wgpu setup");
+        // Lazy init: Burn device + result texture. The device is built once
+        // and leaked to `'static` so the cached `RtFilter` (parameterised
+        // over `&'b WgpuDevice`) can survive across denoise calls — saves
+        // the UNet rebuild on every periodic fire.
+        if self.burn_device_ref.is_none() {
+            let dev = make_burn_device(ctx)?;
+            let leaked: &'static burn_wgpu::WgpuDevice = Box::leak(Box::new(dev));
+            self.burn_device_ref = Some(leaked);
+            log::info!("OIDN: Burn-wgpu device initialised on shared wgpu setup (leaked to 'static for filter caching)");
         }
         if self.result_texture.is_none() {
             let (tex, view) = create_result_texture(&ctx.device, self.width, self.height);
@@ -369,9 +371,8 @@ impl OidnDenoiser {
             .transpose()?;
 
         // Build the filter and run inference.
-        let burn_device = self
-            .burn_device
-            .as_ref()
+        let burn_device: &'static burn_wgpu::WgpuDevice = self
+            .burn_device_ref
             .expect("burn_device init guaranteed above");
         let hdr = matches!(
             self.mode,
@@ -432,23 +433,40 @@ impl OidnDenoiser {
             }
         };
 
-        log::debug!(
-            "OIDN: building RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, cached_weights={})",
-            hdr, self.quality, user_scale, cached_bytes.is_some()
+        // Cache the full filter (UNet + tile plan) by (mode/quality/dims).
+        // The filter survives between denoise calls — only the input/output
+        // images are reassigned, and `commit()` is now idempotent on
+        // unchanged shape, so the heavy UNet build cost is paid once.
+        let filter_key = (use_albedo, use_normal, self.quality, w as u32, h as u32);
+        if self.cached_filter_key != Some(filter_key) {
+            self.cached_filter = None;
+        }
+        let filter_was_cached = self.cached_filter.is_some();
+        let cached_bytes_for_build = cached_bytes.clone();
+        let filter = self.cached_filter.get_or_insert_with(|| {
+            log::debug!(
+                "OIDN: building RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, cached_weights={})",
+                hdr, self.quality, user_scale, cached_bytes_for_build.is_some()
+            );
+            let mut builder = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
+                burn_device,
+                &self.weights_dir,
+            )
+            .hdr(hdr)
+            .quality(self.quality);
+            if let Some(s) = user_scale {
+                builder = builder.input_scale(Some(s));
+            }
+            if let Some(bytes) = cached_bytes_for_build {
+                builder = builder.weights(bytes);
+            }
+            Box::new(builder.build())
+        });
+        self.cached_filter_key = Some(filter_key);
+        log::trace!(
+            "OIDN: filter cached={} (cache_key={:?})",
+            filter_was_cached, self.cached_filter_key
         );
-        let mut builder = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
-            burn_device,
-            &self.weights_dir,
-        )
-        .hdr(hdr)
-        .quality(self.quality);
-        if let Some(s) = user_scale {
-            builder = builder.input_scale(Some(s));
-        }
-        if let Some(bytes) = cached_bytes {
-            builder = builder.weights(bytes);
-        }
-        let mut filter = builder.build();
 
         // Sanity-trace the readback so it's obvious whether the input was
         // actually populated or we're feeding OIDN a blank frame.
@@ -458,17 +476,36 @@ impl OidnDenoiser {
             in_stats.0, in_stats.1, in_stats.2, n
         );
 
-        let color_img = oidn_rs::Image::from_rgb_f32(&color_rgb, w, h);
-        filter.set_color(&color_img);
+        // Build Burn tensors from the host-side colour/albedo/normal
+        // buffers. Phase I.5/I.6: feed the filter through the tensor API
+        // so it runs the pure on-device pipeline (no per-tile host
+        // roundtrip inside oidn-rs). The host upload here is the same
+        // work the legacy `run(Image)` wrapper used to do internally;
+        // a future follow-up will lift it onto a direct PT-buffer →
+        // Burn-buffer encoder copy to remove the host roundtrip entirely.
+        use burn::tensor::{Tensor, TensorData};
+        type Wgpu = burn_wgpu::Wgpu<f32, i32>;
+        let color_chw = chw_from_hwc_rgb(&color_rgb, w, h);
+        let color_t = Tensor::<Wgpu, 4>::from_data(
+            TensorData::new(color_chw, [1usize, 3, h, w]),
+            burn_device,
+        );
+        filter.set_color_tensor(color_t);
         if let Some(buf) = albedo_rgb.as_deref() {
-            let img = oidn_rs::Image::from_rgb_f32(buf, w, h);
-            filter.set_albedo(&img);
+            let chw = chw_from_hwc_rgb(buf, w, h);
+            filter.set_albedo_tensor(Tensor::<Wgpu, 4>::from_data(
+                TensorData::new(chw, [1usize, 3, h, w]),
+                burn_device,
+            ));
         }
         if let Some(buf) = normal_rgb.as_deref() {
-            let img = oidn_rs::Image::from_rgb_f32(buf, w, h);
-            filter.set_normal(&img);
+            let chw = chw_from_hwc_rgb(buf, w, h);
+            filter.set_normal_tensor(Tensor::<Wgpu, 4>::from_data(
+                TensorData::new(chw, [1usize, 3, h, w]),
+                burn_device,
+            ));
         }
-        filter.allocate_output(w, h, oidn_rs::PixelFormat::Rgb32f);
+        filter.allocate_output_tensor(w, h);
         log::trace!("OIDN: filter.commit() begin");
         filter.commit().map_err(|e| anyhow::anyhow!("OIDN commit: {e:?}"))?;
         log::debug!(
@@ -478,68 +515,21 @@ impl OidnDenoiser {
         log::trace!("OIDN: filter.execute() begin");
         filter.execute().map_err(|e| anyhow::anyhow!("OIDN execute: {e:?}"))?;
         log::trace!("OIDN: filter.execute() done");
-        let (out_bytes, ow, oh, ofmt) = filter
-            .take_output()
-            .ok_or_else(|| anyhow::anyhow!("OIDN take_output: empty"))?;
+        let out_chw3: Tensor<Wgpu, 4> = filter
+            .take_output_tensor()
+            .ok_or_else(|| anyhow::anyhow!("OIDN take_output_tensor: empty"))?;
         log::debug!(
-            "OIDN: take_output {}×{} fmt={:?} {} bytes (expected {} for Rgb32f)",
-            ow, oh, ofmt, out_bytes.len(), n * 12
+            "OIDN: take_output_tensor shape={:?}",
+            out_chw3.dims()
         );
 
-        // Repack Rgb32f → Rgba16Float. result_texture is Rgba16Float so egui
-        // can sample-filter it (Rgba32Float is unfilterable without an opt-in
-        // device feature). 8 bytes/pixel; alpha pinned to 1.0.
-        let out_f32: &[f32] = bytemuck::cast_slice(&out_bytes);
-        debug_assert_eq!(out_f32.len(), n * 3);
-        let out_stats = stats(out_f32);
-        log::info!(
-            "OIDN output color: min={:.4} max={:.4} mean={:.4}",
-            out_stats.0, out_stats.1, out_stats.2
-        );
-        // Safety guard: if the network produced a fully black/NaN result,
-        // don't claim "denoised" — let the caller keep showing the raw PT
-        // output and surface a warning in the log so it's debuggable.
-        if !out_stats.1.is_finite() || out_stats.1 < 1e-6 {
-            anyhow::bail!(
-                "OIDN produced an empty result (max={:.6}). Keeping raw display.",
-                out_stats.1
-            );
-        }
-        // Repack Rgb32f → Rgba32Float (alpha=1). Full f32 — display goes
-        // through `blit_with_source` (ACES + gamma) so the texture stays
-        // linear HDR right up to the screen.
-        let mut rgba: Vec<f32> = Vec::with_capacity(n * 4);
-        for px in out_f32.chunks_exact(3) {
-            rgba.push(px[0]);
-            rgba.push(px[1]);
-            rgba.push(px[2]);
-            rgba.push(1.0);
-        }
-
-        // Upload into the result texture. wgpu handles row padding for textures
-        // larger than the unpadded width; our width is whatever the viewport is,
-        // and `bytes_per_row` here is the *unpadded* row size — write_texture
-        // computes the padded copy internally.
+        // Bridge: convert the tensor-native CHW RGB output into a
+        // contiguous HWC RGBA buffer (alpha=1) on-device, then copy
+        // that buffer directly into `result_texture`. No host bytes;
+        // no `queue.write_texture` round-trip.
+        let out_hwc4 = chw_rgb_to_hwc_rgba_ones(out_chw3, burn_device);
         let result_tex = self.result_texture.as_ref().unwrap();
-        ctx.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: result_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            bytemuck::cast_slice(&rgba),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some((w * 16) as u32),
-                rows_per_image: Some(self.height),
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
+        copy_tensor_into_texture(&ctx.device, &ctx.queue, out_hwc4, result_tex, w, h)?;
 
         let elapsed = started.elapsed().as_secs_f32() * 1000.0;
         self.last_latency_ms = Some(elapsed);
@@ -710,6 +700,111 @@ fn map_and_strip_rgba_tight(
     drop(mapped);
     buf.unmap();
     Ok(out)
+}
+
+/// HWC RGB → CHW RGB layout conversion. `hwc` is `width*height*3` floats in
+/// `(r, g, b, r, g, b, ...)` order; output is `(r-plane, g-plane, b-plane)`
+/// laid out row-major, suitable for `Tensor::from_data` with shape
+/// `[1, 3, H, W]`.
+fn chw_from_hwc_rgb(hwc: &[f32], width: usize, height: usize) -> Vec<f32> {
+    debug_assert_eq!(hwc.len(), width * height * 3);
+    let plane = width * height;
+    let mut chw = vec![0.0f32; plane * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let src = (y * width + x) * 3;
+            let idx = y * width + x;
+            chw[idx] = hwc[src];
+            chw[plane + idx] = hwc[src + 1];
+            chw[2 * plane + idx] = hwc[src + 2];
+        }
+    }
+    chw
+}
+
+/// Convert a `[1, 3, H, W]` CHW RGB Burn tensor into a contiguous
+/// `[1, H, W, 4]` HWC RGBA tensor with alpha=1, on the same device.
+///
+/// Uses `permute` + `cat` so the conversion stays on-device — no host
+/// roundtrip. The result is contiguous (cat materialises a new tensor),
+/// which is what the subsequent `copy_buffer_to_texture` needs.
+fn chw_rgb_to_hwc_rgba_ones(
+    chw3: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+    device: &burn_wgpu::WgpuDevice,
+) -> burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4> {
+    let dims = chw3.dims();
+    debug_assert_eq!(dims[0], 1);
+    debug_assert_eq!(dims[1], 3);
+    let h = dims[2];
+    let w = dims[3];
+    // [1, 3, H, W] → [1, H, W, 3]
+    let hwc3 = chw3.permute([0, 2, 3, 1]);
+    let ones = burn::tensor::Tensor::<burn_wgpu::Wgpu<f32, i32>, 4>::ones([1, h, w, 1], device);
+    burn::tensor::Tensor::cat(vec![hwc3, ones], 3)
+}
+
+/// Extract the underlying `wgpu::Buffer` of a Burn tensor (allocated on
+/// the shared wgpu device), then issue a single `copy_buffer_to_texture`
+/// into `dst`. `dst` must be `Rgba32Float` with the same `(w, h)` shape
+/// the tensor was built for.
+///
+/// Width restriction: `w * 16` must be a multiple of 256 (wgpu's
+/// `COPY_BYTES_PER_ROW_ALIGNMENT`). Common viewport widths satisfy this
+/// (any multiple of 16 px). Otherwise we'd need an intermediate
+/// padded-row buffer; deferred until needed in practice.
+fn copy_tensor_into_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+    dst: &wgpu::Texture,
+    w: usize,
+    h: usize,
+) -> Result<()> {
+    let bytes_per_row = (w * 16) as u32;
+    if bytes_per_row % 256 != 0 {
+        anyhow::bail!(
+            "OIDN output texture copy requires width*16 to be 256-byte aligned (got w={w}, bpr={bytes_per_row})"
+        );
+    }
+
+    // Pull the inner CubeTensor so we can reach its ComputeClient + Handle.
+    let primitive = hwc4.into_primitive();
+    let cube = match primitive {
+        burn::tensor::TensorPrimitive::Float(c) => c,
+        _ => anyhow::bail!("OIDN bridge: expected Float tensor primitive"),
+    };
+    let managed = cube
+        .client
+        .get_resource(cube.handle.clone())
+        .map_err(|e| anyhow::anyhow!("OIDN get_resource: {e:?}"))?;
+    let res = managed.resource();
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("oidn_tensor_to_result_texture"),
+    });
+    encoder.copy_buffer_to_texture(
+        wgpu::TexelCopyBufferInfo {
+            buffer: &res.buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: res.offset,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(h as u32),
+            },
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture: dst,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::Extent3d {
+            width: w as u32,
+            height: h as u32,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(std::iter::once(encoder.finish()));
+    Ok(())
 }
 
 /// Cheap min/max/mean over a flat HWC f32 slice — used to trace OIDN
