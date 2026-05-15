@@ -12,35 +12,22 @@ pub struct CubeInstance {
     pub hash: u32,            //  4B: name hash for effects
     pub object_id: u32,       //  4B: unique ID for picking
     pub material_id: u32,     //  4B: index into MaterialLibrary
-    pub mtime: u32,           //  4B: file modification time (Unix epoch
-                              //       seconds, truncated to u32 — valid
-                              //       through 2106). `0` when the scanner
-                              //       didn't capture an mtime. Plumbed so
-                              //       a future shader-side age recolour
-                              //       can run live off a `now` uniform
-                              //       without rebuilding instances.
-} // Total: 96B (replaces the prior 4-byte pad — no size change).
+    pub _pad: u32,            //  4B: align to 16
+} // Total: 96B
 
 impl CubeInstance {
-    pub fn new(
-        model: Mat4,
-        color: [f32; 4],
-        hash: u32,
-        object_id: u32,
-        material_id: u32,
-        mtime: u32,
-    ) -> Self {
+    pub fn new(model: Mat4, color: [f32; 4], hash: u32, object_id: u32, material_id: u32) -> Self {
         Self {
             model: model.to_cols_array_2d(),
             color,
             hash,
             object_id,
             material_id,
-            mtime,
+            _pad: 0,
         }
     }
 
-    const ATTRIBS: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+    const ATTRIBS: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
         2 => Float32x4, // model col 0
         3 => Float32x4, // model col 1
         4 => Float32x4, // model col 2
@@ -49,7 +36,6 @@ impl CubeInstance {
         7 => Uint32,    // hash
         8 => Uint32,    // object_id
         9 => Uint32,    // material_id
-        10 => Uint32,   // mtime (Unix epoch seconds, truncated to u32)
     ];
 
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
