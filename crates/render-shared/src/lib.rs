@@ -1188,9 +1188,25 @@ impl OrbitCamera {
         Mat4::look_at_rh(self.position(), self.target, Vec3::Y)
     }
 
-    /// Get projection matrix
+    /// Get projection matrix.
+    ///
+    /// Uses **reversed-Z with infinite far plane**: near maps to NDC depth
+    /// 1.0, infinity maps to 0.0. This makes f32 depth-buffer precision
+    /// distribute logarithmically across the entire depth range instead of
+    /// piling up near 1.0. Eliminates z-fighting / strobing on the far
+    /// background (the previous near=0.1 / far=100000 ratio of 1e6 left
+    /// far values essentially indistinguishable in f32).
+    ///
+    /// Callers using this matrix:
+    /// * pipelines must clear depth to **0.0** (not 1.0) and use
+    ///   `CompareFunction::Greater(Equal)` (not `Less(Equal)`).
+    /// * ray-picking from NDC must place the near point at `ndc.z = 1.0`
+    ///   and the far point at `ndc.z = 0.0`.
+    ///
+    /// `self.far` is kept on the struct for backwards-compat with existing
+    /// serde presets but is ignored — there is no finite far plane.
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
-        Mat4::perspective_rh(self.fov, aspect, self.near, self.far)
+        Mat4::perspective_infinite_reverse_rh(self.fov, aspect, self.near)
     }
 
     /// Get combined view-projection matrix

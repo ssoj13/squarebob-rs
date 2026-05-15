@@ -74,6 +74,21 @@ pub struct OidnDenoiser {
 
     /// Burn device sharing squarebob's wgpu setup. Built on first denoise.
     burn_device: Option<burn_wgpu::WgpuDevice>,
+
+    /// Cached TZA bytes from the last successful model load. Reused across
+    /// `denoise()` calls so we don't re-read the 1.8 MB file from disk
+    /// on every interval-fire. Key = (use_albedo, use_normal, quality)
+    /// since these fully determine which TZA file gets picked.
+    cached_model_key: Option<(bool, bool, Quality)>,
+    cached_model_bytes: Option<Vec<u8>>,
+
+    /// Reused staging buffers for color readback (padded to 256-byte rows)
+    /// and the two AOVs (tight `w*h*16`). Invalidated on resize.
+    color_staging: Option<wgpu::Buffer>,
+    color_staging_size: u64,
+    aov_staging_size: u64,
+    albedo_staging: Option<wgpu::Buffer>,
+    normal_staging: Option<wgpu::Buffer>,
 }
 
 impl OidnDenoiser {
@@ -87,6 +102,13 @@ impl OidnDenoiser {
             result_texture: None,
             result_view: None,
             last_latency_ms: None,
+            cached_model_key: None,
+            cached_model_bytes: None,
+            color_staging: None,
+            color_staging_size: 0,
+            aov_staging_size: 0,
+            albedo_staging: None,
+            normal_staging: None,
             burn_device: None,
         }
     }
@@ -99,6 +121,12 @@ impl OidnDenoiser {
         self.height = height;
         self.result_texture = None;
         self.result_view = None;
+        // Staging dims change with viewport; drop reused buffers.
+        self.color_staging = None;
+        self.albedo_staging = None;
+        self.normal_staging = None;
+        self.color_staging_size = 0;
+        self.aov_staging_size = 0;
     }
 
     pub fn set_mode(&mut self, mode: OidnMode) {

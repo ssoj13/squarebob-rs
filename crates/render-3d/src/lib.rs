@@ -727,7 +727,7 @@ impl Renderer3D {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0), // reversed-Z: far = 0.0
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -821,7 +821,7 @@ impl Renderer3D {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0), // Fresh depth for correct picking
+                        load: wgpu::LoadOp::Clear(0.0), // reversed-Z: far = 0.0 // Fresh depth for correct picking
                         store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
@@ -1073,8 +1073,9 @@ impl Renderer3D {
         let ndc_x = rel_x * 2.0 - 1.0;
         let ndc_y = 1.0 - rel_y * 2.0;
 
-        let near = Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-        let far = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        // Reversed-Z: near maps to NDC depth 1.0, far to 0.0.
+        let near = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let far = Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
 
         let near_world4 = inv_view_proj * near;
         let far_world4 = inv_view_proj * far;

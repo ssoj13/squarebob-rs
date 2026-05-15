@@ -309,7 +309,7 @@ impl Pipelines {
                     cull: None, // TEMP: disabled culling for debugging
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_compare: wgpu::CompareFunction::Greater,
                 },
             ),
             pbr_double: create_cube_pipeline(
@@ -324,7 +324,7 @@ impl Pipelines {
                     cull: None,
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_compare: wgpu::CompareFunction::Greater,
                 },
             ),
             wireframe: create_cube_pipeline(
@@ -339,7 +339,7 @@ impl Pipelines {
                     cull: None,
                     polygon_mode: wgpu::PolygonMode::Line,
                     depth_write: true,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_compare: wgpu::CompareFunction::Greater,
                 },
             ),
             transparent: create_cube_pipeline(
@@ -354,7 +354,7 @@ impl Pipelines {
                     cull: None,
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: false,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_compare: wgpu::CompareFunction::Greater,
                 },
             ),
             object_id: create_cube_pipeline(
@@ -369,7 +369,7 @@ impl Pipelines {
                     cull: Some(wgpu::Face::Back),
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true, // Must write depth for proper occlusion (like alembic-rs)
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_compare: wgpu::CompareFunction::GreaterEqual,
                 },
             ),
             object_id_double: create_cube_pipeline(
@@ -384,7 +384,7 @@ impl Pipelines {
                     cull: None,
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true, // Must write depth for proper occlusion
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_compare: wgpu::CompareFunction::GreaterEqual,
                 },
             ),
             outline: create_fullscreen_pipeline(
@@ -401,7 +401,7 @@ impl Pipelines {
                 &skybox_layout,
                 &skybox_shader,
                 Some(wgpu::BlendState::REPLACE),
-                Some(depth_stencil(false, wgpu::CompareFunction::LessEqual)),
+                Some(depth_stencil(false, wgpu::CompareFunction::GreaterEqual)),
             ),
         }
     }
