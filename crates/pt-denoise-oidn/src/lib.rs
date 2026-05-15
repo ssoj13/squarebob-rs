@@ -250,17 +250,17 @@ impl OidnDenoiser {
         // I.5b input bridge: copy PT-side data directly into Burn-allocated
         // wgpu::Buffers, then wrap as on-device tensors. No host roundtrip.
         //
-        // Width constraint: `w * 16` must be a multiple of 256 (wgpu's
-        // `COPY_BYTES_PER_ROW_ALIGNMENT`). Common viewport widths satisfy
-        // this. Padded-row fallback is deferred until a non-aligned width
-        // shows up in the field.
+        // `copy_texture_to_buffer` requires `bytes_per_row` to be a multiple
+        // of 256. When `w * 16` already satisfies this, we use the tight
+        // path. Otherwise we allocate `[1, h, padded_w, 4]` (rounded up so
+        // `padded_w * 16` is 256-aligned), copy with the padded stride, and
+        // slice off the trailing padding columns on the Burn side before
+        // feeding the filter. The slice is a strided view — downstream
+        // ops handle it without an explicit `.contiguous()` call.
         let unpadded_bpr = (w as u64) * 16;
-        if unpadded_bpr % 256 != 0 {
-            anyhow::bail!(
-                "OIDN tensor bridge requires width*16 to be 256-byte aligned (got w={w}, bpr={unpadded_bpr}). \
-                 Use a width that's a multiple of 16 px, or extend the bridge with a padded-row fallback."
-            );
-        }
+        let padded_bpr = (unpadded_bpr + 255) & !255;
+        let padded_w = (padded_bpr / 16) as usize;
+        let pad_cols = padded_w - w;
 
         // Respect downgrade: drop AOV inputs we don't intend to consume so
         // we don't allocate / copy ~30 MB of AOV per side just to throw away.
@@ -271,11 +271,14 @@ impl OidnDenoiser {
             .burn_device_ref
             .expect("burn_device init guaranteed above");
 
-        // Allocate one [1, H, W, 4] HWC RGBA tensor per active input and
-        // grab the underlying wgpu::Buffer for the encoder copy below.
+        // Color uses `padded_w` so `copy_texture_to_buffer` is happy.
+        // AOVs are already tight `vec4<f32>` buffers — no alignment
+        // constraint on `copy_buffer_to_buffer`, so they get the natural
+        // [1, h, w, 4] shape.
         use burn::tensor::Tensor;
         type Wgpu = burn_wgpu::Wgpu<f32, i32>;
-        let (color_hwc4, color_buf, color_off) = alloc_hwc4_input(burn_device, w, h)?;
+        let (color_hwc4_padded, color_buf, color_off) =
+            alloc_hwc4_input(burn_device, padded_w, h)?;
         let albedo_bridge = albedo_buf.map(|src| -> Result<_> {
             let (t, buf, off) = alloc_hwc4_input(burn_device, w, h)?;
             Ok((t, buf, off, src))
@@ -286,7 +289,7 @@ impl OidnDenoiser {
         }).transpose()?;
 
         let mut encoder = encoder;
-        // Color: copy_texture_to_buffer with natural HWC RGBA layout.
+        // Color: copy_texture_to_buffer with (possibly padded) row stride.
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: color_tex,
@@ -298,7 +301,7 @@ impl OidnDenoiser {
                 buffer: &color_buf,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: color_off,
-                    bytes_per_row: Some(unpadded_bpr as u32),
+                    bytes_per_row: Some(padded_bpr as u32),
                     rows_per_image: Some(self.height),
                 },
             },
@@ -319,9 +322,17 @@ impl OidnDenoiser {
         }
         ctx.queue.submit(std::iter::once(encoder.finish()));
         log::trace!(
-            "OIDN: input bridge submitted ({} bytes color + 2×{} AOV)",
-            unpadded_bpr * (h as u64), aov_size,
+            "OIDN: input bridge submitted (color {} bytes padded@{} + 2×{} AOV)",
+            padded_bpr * (h as u64), padded_w, aov_size,
         );
+
+        // Trim padding columns from the colour tensor — yields a view of
+        // shape [1, h, w, 4] (strided when `pad_cols > 0`).
+        let color_hwc4: Tensor<Wgpu, 4> = if pad_cols == 0 {
+            color_hwc4_padded
+        } else {
+            color_hwc4_padded.slice([0..1, 0..h, 0..w, 0..4])
+        };
 
         // Convert HWC RGBA → CHW RGB on the same wgpu device via Burn ops.
         // permute is a strided view; downstream ops in run_tensors (slice,
@@ -457,8 +468,17 @@ impl OidnDenoiser {
         // that buffer directly into `result_texture`. No host bytes;
         // no `queue.write_texture` round-trip.
         let out_hwc4 = chw_rgb_to_hwc_rgba_ones(out_chw3, burn_device);
+        // Pad width axis if needed so the final buffer's bytes_per_row
+        // is 256-aligned for copy_buffer_to_texture. extent.width = w
+        // skips the padding columns when writing to the result texture.
+        let out_hwc4_padded: Tensor<Wgpu, 4> = if pad_cols == 0 {
+            out_hwc4
+        } else {
+            let zeros = Tensor::<Wgpu, 4>::zeros([1, h, pad_cols, 4], burn_device);
+            Tensor::cat(vec![out_hwc4, zeros], 2)
+        };
         let result_tex = self.result_texture.as_ref().unwrap();
-        copy_tensor_into_texture(&ctx.device, &ctx.queue, out_hwc4, result_tex, w, h)?;
+        copy_tensor_into_texture(&ctx.device, &ctx.queue, out_hwc4_padded, result_tex, w, h)?;
 
         let elapsed = started.elapsed().as_secs_f32() * 1000.0;
         self.last_latency_ms = Some(elapsed);
@@ -638,25 +658,32 @@ fn chw_rgb_to_hwc_rgba_ones(
 
 /// Extract the underlying `wgpu::Buffer` of a Burn tensor (allocated on
 /// the shared wgpu device), then issue a single `copy_buffer_to_texture`
-/// into `dst`. `dst` must be `Rgba32Float` with the same `(w, h)` shape
-/// the tensor was built for.
+/// into `dst`. `dst` must be `Rgba32Float`.
 ///
-/// Width restriction: `w * 16` must be a multiple of 256 (wgpu's
-/// `COPY_BYTES_PER_ROW_ALIGNMENT`). Common viewport widths satisfy this
-/// (any multiple of 16 px). Otherwise we'd need an intermediate
-/// padded-row buffer; deferred until needed in practice.
+/// The tensor's third axis is treated as the row stride in pixels
+/// (`padded_w`); `bytes_per_row = padded_w * 16` must be 256-aligned
+/// (wgpu's `COPY_BYTES_PER_ROW_ALIGNMENT`). `extent.width` is the
+/// caller-supplied `valid_w` — when the tensor was padded for alignment
+/// we copy only the first `valid_w` pixels per row and the trailing
+/// padding columns are discarded.
 fn copy_tensor_into_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
     dst: &wgpu::Texture,
-    w: usize,
+    valid_w: usize,
     h: usize,
 ) -> Result<()> {
-    let bytes_per_row = (w * 16) as u32;
+    let dims = hwc4.dims();
+    debug_assert_eq!(dims[0], 1);
+    debug_assert_eq!(dims[1], h);
+    debug_assert_eq!(dims[3], 4);
+    let padded_w = dims[2];
+    debug_assert!(padded_w >= valid_w, "output tensor must contain all valid pixels");
+    let bytes_per_row = (padded_w * 16) as u32;
     if bytes_per_row % 256 != 0 {
         anyhow::bail!(
-            "OIDN output texture copy requires width*16 to be 256-byte aligned (got w={w}, bpr={bytes_per_row})"
+            "OIDN output buffer bytes_per_row not 256-aligned (padded_w={padded_w}, bpr={bytes_per_row})"
         );
     }
 
@@ -691,7 +718,7 @@ fn copy_tensor_into_texture(
             aspect: wgpu::TextureAspect::All,
         },
         wgpu::Extent3d {
-            width: w as u32,
+            width: valid_w as u32,
             height: h as u32,
             depth_or_array_layers: 1,
         },
