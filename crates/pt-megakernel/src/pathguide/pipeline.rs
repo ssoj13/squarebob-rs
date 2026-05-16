@@ -22,8 +22,9 @@ pub struct PathGuidePipeline {
     update_bgl: wgpu::BindGroupLayout,
     sample_bgl: wgpu::BindGroupLayout,
 
-    // SVO buffer
-    svo_buf: Option<wgpu::Buffer>,
+    // SVO buffer — sized once at construction; resolution is fixed for this
+    // pipeline instance.
+    svo_buf: wgpu::Buffer,
 
     // Configuration
     resolution: u32,
@@ -55,48 +56,47 @@ impl PathGuidePipeline {
             ],
         );
 
-        let mut p = Self {
+        let svo_buf = Self::build_svo(device, resolution);
+        Self {
             update_pipeline,
             sample_pipeline,
             update_bgl,
             sample_bgl,
-            svo_buf: None,
+            svo_buf,
             resolution,
             frame_count: 0,
-        };
-        p.allocate_svo(device);
-        p
+        }
     }
 
-    fn allocate_svo(&mut self, device: &wgpu::Device) {
-        // Allocate enough nodes for full octree.
-        // Worst case: sum of 8^i for i=0..depth, where depth = log2(resolution).
+    /// Allocates the SVO buffer for `resolution`. The size formula is a
+    /// geometric series over octree depth, capped at 128 MB.
+    fn build_svo(device: &wgpu::Device, resolution: u32) -> wgpu::Buffer {
         let mut depth = 0u32;
-        let mut r = self.resolution.max(1);
+        let mut r = resolution.max(1);
         while r > 1 {
             r >>= 1;
             depth += 1;
         }
-        let max_nodes = (8u64.pow(depth) - 1) / 7; // Geometric series
+        let max_nodes = (8u64.pow(depth) - 1) / 7;
         let size = max_nodes * SvoNode::SIZE as u64;
 
         debug!(
-            "PathGuidePipeline::allocate_svo res={} depth={} max_nodes={} size={}MB",
-            self.resolution,
+            "PathGuidePipeline::build_svo res={} depth={} max_nodes={} size={}MB",
+            resolution,
             depth,
             max_nodes,
             (size as f64 / (1024.0 * 1024.0))
         );
-        self.svo_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+        device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pathguide_svo"),
-            size: size.min(128 * 1024 * 1024), // Cap at 128MB
+            size: size.min(128 * 1024 * 1024),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        }));
+        })
     }
 
     pub fn svo_buffer(&self) -> &wgpu::Buffer {
-        self.svo_buf.as_ref().unwrap()
+        &self.svo_buf
     }
 
     pub fn pipelines(&self) -> (&wgpu::ComputePipeline, &wgpu::ComputePipeline) {

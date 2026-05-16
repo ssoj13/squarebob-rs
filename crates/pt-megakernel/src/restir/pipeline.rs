@@ -17,6 +17,24 @@ pub const RESTIR_TEMPORAL_PARAMS_SIZE: u64 = 48;
 pub const RESTIR_SPATIAL_PARAMS_SIZE: u64 = 48;
 pub const RESTIR_SHADE_PARAMS_SIZE: u64 = 48;
 
+/// Frame-sized GPU resources for ReSTIR — recreated on resize. Bundled so
+/// the "are buffers ready?" question has one answer (we built them), not
+/// six independent `Option` slots that have to be re-checked at every read.
+struct ReSTIRBuffers {
+    /// Double-buffered reservoirs (temporal ping-pong).
+    reservoir_a: wgpu::Buffer,
+    reservoir_b: wgpu::Buffer,
+    /// Motion vectors for temporal reprojection.
+    motion: wgpu::Buffer,
+    /// G-buffer for visibility checks.
+    gbuf_depth: wgpu::Buffer,
+    gbuf_normal: wgpu::Buffer,
+    /// Per-pixel hit instance id (0xFFFFFFFF for miss). Lets ReSTIR shaders
+    /// look up materials and identify hit geometry without reading the
+    /// wavefront's tile-local rays/hits buffers.
+    gbuf_instance_id: wgpu::Buffer,
+}
+
 /// ReSTIR pipeline state.
 pub struct ReSTIRPipeline {
     // Pipelines
@@ -31,20 +49,8 @@ pub struct ReSTIRPipeline {
     spatial_bgl: wgpu::BindGroupLayout,
     shade_bgl: wgpu::BindGroupLayout,
 
-    // Double-buffered reservoirs (temporal ping-pong)
-    reservoir_a: Option<wgpu::Buffer>,
-    reservoir_b: Option<wgpu::Buffer>,
-
-    // Motion vectors for temporal reprojection
-    motion_buf: Option<wgpu::Buffer>,
-
-    // G-buffer for visibility checks
-    gbuf_depth: Option<wgpu::Buffer>,
-    gbuf_normal: Option<wgpu::Buffer>,
-    /// Per-pixel hit instance id (0xFFFFFFFF for miss). Lets ReSTIR shaders
-    /// look up materials and identify hit geometry without reading the
-    /// wavefront's tile-local rays/hits buffers.
-    gbuf_instance_id: Option<wgpu::Buffer>,
+    // Frame buffers — always populated, resized as one unit.
+    bufs: ReSTIRBuffers,
 
     // Dimensions
     width: u32,
@@ -121,7 +127,8 @@ impl ReSTIRPipeline {
             ],
         );
 
-        let mut p = Self {
+        let bufs = ReSTIRBuffers::build(device, width, height);
+        Self {
             initial_pipeline,
             temporal_pipeline,
             spatial_pipeline,
@@ -130,18 +137,11 @@ impl ReSTIRPipeline {
             temporal_bgl,
             spatial_bgl,
             shade_bgl,
-            reservoir_a: None,
-            reservoir_b: None,
-            motion_buf: None,
-            gbuf_depth: None,
-            gbuf_normal: None,
-            gbuf_instance_id: None,
-            width: 0,
-            height: 0,
+            bufs,
+            width,
+            height,
             cur_buf: 0,
-        };
-        p.resize(device, width, height);
-        p
+        }
     }
 
     /// Resize buffers for new dimensions.
@@ -151,24 +151,14 @@ impl ReSTIRPipeline {
         }
         self.width = width;
         self.height = height;
-
-        let n = (width * height) as u64;
-        let res_sz = Reservoir::SIZE as u64;
-        let mv_sz = std::mem::size_of::<MotionVector>() as u64;
-
-        self.reservoir_a = Some(create_buf(device, "restir_res_a", n * res_sz));
-        self.reservoir_b = Some(create_buf(device, "restir_res_b", n * res_sz));
-        self.motion_buf = Some(create_buf(device, "restir_motion", n * mv_sz));
-        self.gbuf_depth = Some(create_buf(device, "restir_depth", n * 4));
-        self.gbuf_normal = Some(create_buf(device, "restir_normal", n * 16));
-        self.gbuf_instance_id = Some(create_buf(device, "restir_instance_id", n * 4));
+        self.bufs = ReSTIRBuffers::build(device, width, height);
         self.cur_buf = 0;
     }
 
     /// Get current/previous reservoirs (ping-pong for temporal).
     pub fn reservoirs(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {
-        let a = self.reservoir_a.as_ref().unwrap();
-        let b = self.reservoir_b.as_ref().unwrap();
+        let a = &self.bufs.reservoir_a;
+        let b = &self.bufs.reservoir_b;
         if self.cur_buf == 0 {
             (a, b)
         } else {
@@ -216,19 +206,37 @@ impl ReSTIRPipeline {
     }
 
     pub fn motion_buffer(&self) -> &wgpu::Buffer {
-        self.motion_buf.as_ref().unwrap()
+        &self.bufs.motion
     }
 
     pub fn depth_buffer(&self) -> &wgpu::Buffer {
-        self.gbuf_depth.as_ref().unwrap()
+        &self.bufs.gbuf_depth
     }
 
     pub fn normal_buffer(&self) -> &wgpu::Buffer {
-        self.gbuf_normal.as_ref().unwrap()
+        &self.bufs.gbuf_normal
     }
 
     pub fn instance_id_buffer(&self) -> &wgpu::Buffer {
-        self.gbuf_instance_id.as_ref().unwrap()
+        &self.bufs.gbuf_instance_id
+    }
+}
+
+impl ReSTIRBuffers {
+    /// Allocates the full frame-buffer set for `width × height`. Used by
+    /// `ReSTIRPipeline::new` and `resize` so allocation lives in one place.
+    fn build(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let n = (width * height) as u64;
+        let res_sz = Reservoir::SIZE as u64;
+        let mv_sz = std::mem::size_of::<MotionVector>() as u64;
+        Self {
+            reservoir_a: create_buf(device, "restir_res_a", n * res_sz),
+            reservoir_b: create_buf(device, "restir_res_b", n * res_sz),
+            motion: create_buf(device, "restir_motion", n * mv_sz),
+            gbuf_depth: create_buf(device, "restir_depth", n * 4),
+            gbuf_normal: create_buf(device, "restir_normal", n * 16),
+            gbuf_instance_id: create_buf(device, "restir_instance_id", n * 4),
+        }
     }
 }
 

@@ -28,9 +28,9 @@ pub struct AdaptivePipeline {
     variance_bgl: wgpu::BindGroupLayout,
     allocate_bgl: wgpu::BindGroupLayout,
 
-    // Buffers
-    variance_buf: Option<wgpu::Buffer>,
-    sample_map: Option<wgpu::Buffer>, // SPP per pixel
+    // Buffers — always populated; `resize()` swaps them when dimensions change.
+    variance_buf: wgpu::Buffer,
+    sample_map: wgpu::Buffer, // SPP per pixel
 
     // Dimensions
     width: u32,
@@ -61,18 +61,28 @@ impl AdaptivePipeline {
             ],
         );
 
-        let mut p = Self {
+        let (variance_buf, sample_map) = Self::build_buffers(device, width, height);
+        Self {
             variance_pipeline,
             allocate_pipeline,
             variance_bgl,
             allocate_bgl,
-            variance_buf: None,
-            sample_map: None,
-            width: 0,
-            height: 0,
-        };
-        p.resize(device, width, height);
-        p
+            variance_buf,
+            sample_map,
+            width,
+            height,
+        }
+    }
+
+    /// Builds both per-pixel buffers for `width × height`. Used by `new()` and
+    /// `resize()` so the two paths cannot drift.
+    fn build_buffers(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Buffer, wgpu::Buffer) {
+        let n = (width * height) as u64;
+        let var_sz = std::mem::size_of::<VarianceData>() as u64;
+        (
+            create_buf(device, "adaptive_variance", n * var_sz),
+            create_buf(device, "adaptive_spp", n * 4), // u32 per pixel
+        )
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
@@ -81,20 +91,17 @@ impl AdaptivePipeline {
         }
         self.width = width;
         self.height = height;
-
-        let n = (width * height) as u64;
-        let var_sz = std::mem::size_of::<VarianceData>() as u64;
-
-        self.variance_buf = Some(create_buf(device, "adaptive_variance", n * var_sz));
-        self.sample_map = Some(create_buf(device, "adaptive_spp", n * 4)); // u32 per pixel
+        let (variance_buf, sample_map) = Self::build_buffers(device, width, height);
+        self.variance_buf = variance_buf;
+        self.sample_map = sample_map;
     }
 
     pub fn variance_buffer(&self) -> &wgpu::Buffer {
-        self.variance_buf.as_ref().unwrap()
+        &self.variance_buf
     }
 
     pub fn sample_map(&self) -> &wgpu::Buffer {
-        self.sample_map.as_ref().unwrap()
+        &self.sample_map
     }
 
     pub fn pipelines(&self) -> (&wgpu::ComputePipeline, &wgpu::ComputePipeline) {
