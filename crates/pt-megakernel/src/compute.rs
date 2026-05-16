@@ -1470,6 +1470,7 @@ impl PathTraceCompute {
     /// - megakernel writes its own buffer at `bounce == 0` inside the main
     ///   PT compute shader;
     /// - wavefront writes its own buffer inside `shade.wgsl` (also bounce 0).
+    ///
     /// In wavefront mode the wavefront buffer is authoritative; otherwise
     /// the megakernel buffer is returned. Consumers (OIDN) don't need to
     /// know which path is active.

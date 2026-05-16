@@ -93,8 +93,8 @@ pub struct OidnDenoiser {
     cached_model_bytes: Option<Vec<u8>>,
 
     /// Cached `RtFilter`. Carries the loaded UNet and tile plan from one
-    /// `denoise()` to the next, so the ~30-50 ms `commit()` cost (TZA parse
-    /// + UNet weight load + tile-plan compute) is paid once per
+    /// `denoise()` to the next, so the ~30-50 ms `commit()` cost (TZA parse,
+    /// UNet weight load, tile-plan compute) is paid once per
     /// mode/quality/dims combination, not every periodic fire.
     cached_filter:
         Option<Box<oidn_rs::RtFilter<'static, burn_wgpu::Wgpu<f32, i32>>>>,
@@ -419,7 +419,7 @@ impl OidnDenoiser {
                     /*hdr*/ true, /*srgb*/ false, /*directional*/ false,
                     /*clean_aux*/ false, self.quality,
                 );
-                let fallback_dir = self.weights_dir.as_ref().map(|p| p.as_path());
+                let fallback_dir = self.weights_dir.as_deref();
                 let loaded = base_key.as_ref().and_then(|key| {
                     oidn_rs::weights::resolve(key, self.quality, fallback_dir)
                 });
@@ -650,11 +650,21 @@ fn create_result_texture(
 /// tensor can be used by Burn ops as if its bytes were populated by
 /// Burn itself — the wgpu queue's FIFO ordering guarantees our writes
 /// land before any cubecl-side reads.
+/// `(burn tensor view, the underlying wgpu storage buffer, byte offset into it)`.
+/// Helper return type for [`alloc_hwc4_input`]; the wgpu side carries enough
+/// context for the caller to issue a direct `copy_buffer_to_buffer` into the
+/// tensor's backing storage without going through CubeCL.
+type HwC4Input = (
+    burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+    wgpu::Buffer,
+    u64,
+);
+
 fn alloc_hwc4_input(
     device: &burn_wgpu::WgpuDevice,
     w: usize,
     h: usize,
-) -> Result<(burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>, wgpu::Buffer, u64)> {
+) -> Result<HwC4Input> {
     let t = burn::tensor::Tensor::<burn_wgpu::Wgpu<f32, i32>, 4>::zeros(
         [1, h, w, 4],
         device,
@@ -740,7 +750,7 @@ fn copy_tensor_into_texture(
     let padded_w = dims[2];
     debug_assert!(padded_w >= valid_w, "output tensor must contain all valid pixels");
     let bytes_per_row = (padded_w * 16) as u32;
-    if bytes_per_row % 256 != 0 {
+    if !bytes_per_row.is_multiple_of(256) {
         anyhow::bail!(
             "OIDN output buffer bytes_per_row not 256-aligned (padded_w={padded_w}, bpr={bytes_per_row})"
         );

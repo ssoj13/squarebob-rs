@@ -714,6 +714,13 @@ impl App {
     /// drag are correctly deselected), runs the cube-in-rect test, then
     /// refreshes the outline overlay. Used by both the live preview
     /// (each drag frame) and the final commit (on button release).
+    ///
+    /// The 8-arg signature is intentional — this method exists *to*
+    /// deduplicate the parallel call sites at lines 427/449 that already
+    /// have these locals in scope; folding them into a struct would
+    /// add a constructor at each call site without removing the per-arg
+    /// thread-through inside `select_objects_in_rect` underneath.
+    #[allow(clippy::too_many_arguments)]
     fn commit_marquee_at(
         &mut self,
         rect: egui::Rect,

@@ -353,7 +353,7 @@ impl WavefrontPipeline {
     /// and the math goes through u64 so release builds never silently wrap.
     pub fn tile_offset(&self, idx: u32) -> u32 {
         debug_assert!(idx < self.tile_capacity, "tile_idx out of range");
-        let off = idx as u64 * TILE_SLOT_STRIDE as u64;
+        let off = idx as u64 * TILE_SLOT_STRIDE;
         debug_assert!(off <= u32::MAX as u64, "tile offset {off} overflows u32");
         off as u32
     }

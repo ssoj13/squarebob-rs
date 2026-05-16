@@ -307,7 +307,7 @@ fn windows_registry_query() -> Option<GpuMemInfo> {
 
         if best
             .as_ref()
-            .map_or(true, |b| info.dedicated_vram > b.dedicated_vram)
+            .is_none_or(|b| info.dedicated_vram > b.dedicated_vram)
         {
             best = Some(info);
         }
