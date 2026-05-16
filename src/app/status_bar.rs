@@ -93,6 +93,18 @@ impl App {
                         if self.last_samples_per_sec > 0.0 {
                             stats.push_str(&format!(" | {:.0} spp/s", self.last_samples_per_sec));
                         }
+                        // Sample progress: current / target. `oidn_last_frame_count`
+                        // mirrors `pt_frame_count()` and is refreshed every PT step
+                        // via `evaluate_oidn_trigger`, so it doubles as a current-spp
+                        // readout without re-borrowing `renderer_3d` here.
+                        if self.render_3d_opts.path_tracing
+                            && self.render_3d_opts.pt_samples > 0
+                        {
+                            stats.push_str(&format!(
+                                " | samples: {}/{}",
+                                self.oidn_last_frame_count, self.render_3d_opts.pt_samples,
+                            ));
+                        }
                         ui.label(stats);
                     }
                     // OIDN stats: surface here so the user can see the

@@ -283,6 +283,29 @@ fn sample_pixel_jitter(pixel_idx: u32, frame_count: u32, rng: ptr<function, u32>
     return vec2<f32>(rand(rng), rand(rng));
 }
 
+// Reconstruction-filter weight for a per-pixel sub-sample. Matches the
+// per-pixel Gaussian reconstruction used by V-Ray / Octane / Cycles
+// (without filter overlap into neighbouring pixels — that's Phase B).
+//
+// `jitter` is the sub-pixel position in `[0, 1)` returned by
+// `sample_pixel_jitter`. We centre it at the pixel midpoint (`jitter
+// - 0.5` → `[-0.5, +0.5]`) and apply a Gaussian with σ = 0.5 so that
+// samples near the pixel centre carry the most weight while corner
+// samples still contribute. The accumulator stores
+// `sum(radiance * weight)` in `.rgb` and `sum(weight)` in `.w`; the
+// final per-pixel colour is `accum.rgb / accum.w`.
+//
+// At σ = 0.5 the mean weight over the unit pixel is ≈ 0.73, so the
+// effective "noise budget" of N samples is comparable to N box-filter
+// samples but with the corner-sample variance suppressed — exactly the
+// behaviour that fixes 2-3-pixel-cube silhouette noise.
+fn pixel_filter_weight(jitter: vec2<f32>) -> f32 {
+    let d = jitter - vec2<f32>(0.5, 0.5);
+    let r2 = dot(d, d);
+    // σ = 0.5 → 2σ² = 0.5 → exp(-r² / 0.5) = exp(-2 r²)
+    return exp(-2.0 * r2);
+}
+
 // ---- Instance helpers ----
 
 // Reconstruct mat4 from 4 column vectors stored in Instance.
@@ -923,15 +946,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let pixel_idx = px.y * w + px.x;
     
-    // Check adaptive sampling limit using actual sample count from accum buffer
+    // Check adaptive sampling limit. The accumulator's `.w` is now the
+    // sum of reconstruction-filter weights (fractional), so we read the
+    // per-pixel integer sample count from the variance Welford counter
+    // instead — it gets `+= 1u` once per accepted dispatch (see
+    // `var_data.count` below).
     let spp_limit = sample_map[pixel_idx];
-    let current_samples = u32(accum[pixel_idx].w);
+    let current_samples = variance[pixel_idx].count;
     if spp_limit != 0u && current_samples >= spp_limit {
         return;
     }
     var rng = pcg_hash(pixel_idx * 1973u + camera.frame_count * 6133u + 1u);
 
     let pixel_jitter = sample_pixel_jitter(pixel_idx, camera.frame_count, &rng);
+    let pixel_weight = pixel_filter_weight(pixel_jitter);
     var ray = gen_ray(
         f32(px.x),
         f32(px.y),
@@ -953,10 +981,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if !hit.hit {
             if bounce == 0u {
                 // Primary miss: zero AOV contribution, but the sample
-                // still counts so the per-pixel running average stays at
-                // zero (instead of div-by-zero at ingest).
-                albedo_aov[pixel_idx] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
-                normal_aov[pixel_idx] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
+                // still adds its filter weight so the per-pixel running
+                // average stays at zero (instead of div-by-zero at
+                // ingest) and remains consistent with the colour
+                // reconstruction filter.
+                albedo_aov[pixel_idx] += vec4<f32>(0.0, 0.0, 0.0, pixel_weight);
+                normal_aov[pixel_idx] += vec4<f32>(0.0, 0.0, 0.0, pixel_weight);
             }
             radiance += throughput * sky_color(ray.dir);
             break;
@@ -988,8 +1018,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let primary_metallic = mat.params1.y;
             let primary_emission = mat.emission_color_weight.rgb * mat.emission_color_weight.a;
             let primary_albedo = base_color * (1.0 - primary_metallic) + primary_emission;
-            albedo_aov[pixel_idx] += vec4<f32>(primary_albedo, 1.0);
-            normal_aov[pixel_idx] += vec4<f32>(normal, 1.0);
+            // Weighted by the reconstruction-filter weight so AOVs share
+            // the same spatial filter as colour — the denoiser then sees
+            // matched spatial statistics on all three inputs.
+            albedo_aov[pixel_idx] += vec4<f32>(primary_albedo * pixel_weight, pixel_weight);
+            normal_aov[pixel_idx] += vec4<f32>(normal * pixel_weight, pixel_weight);
         }
 
         // Unpack material fields
@@ -1416,17 +1449,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         radiance *= tint;
     }
 
-    // Progressive accumulation (running sum approach).
-    // Clamp the incoming sample, not the running sum. Clamping accum.rgb would
-    // bias the average downward as sample_count grows.
+    // Progressive accumulation with per-pixel reconstruction-filter
+    // weights (Gaussian, σ = 0.5). The accumulator now stores
+    // `sum(radiance * w)` in `.rgb` and `sum(w)` in `.w`; the displayed
+    // colour is `.rgb / .w`, which gives proper filter integration and
+    // sharply suppresses silhouette-edge variance on tiny (2-3 pixel)
+    // geometry that box-filtering cannot resolve.
+    //
+    // Firefly clamp stays on the per-sample radiance (not on the
+    // running sum) — clamping the sum would bias the average downward
+    // as more samples land.
     let sample_radiance = clamp_firefly(radiance);
 
-    // Add current sample to accumulator: rgb = sum of radiance, w = sample count
     let prev = accum[pixel_idx];
-    let new_accum = prev + vec4<f32>(sample_radiance, 1.0);
+    let new_accum = prev + vec4<f32>(sample_radiance * pixel_weight, pixel_weight);
 
-    // Track variance from the actual per-dispatch radiance sample. This feeds adaptive SPP
-    // allocation; using the accumulated sum here would make the variance estimate diverge.
+    // Welford on raw radiance (no weighting): variance estimates per
+    // sample of underlying signal, what adaptive sampling needs. Also
+    // doubles as our integer sample-count source for the adaptive cap
+    // at the top of this entry point.
     var var_data = variance[pixel_idx];
     var_data.count += 1u;
     let var_n = f32(var_data.count);
@@ -1438,8 +1479,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     accum[pixel_idx] = new_accum;
 
-    // Write normalized color to output (divide by sample count)
-    let sample_count = max(new_accum.w, 1.0);
-    let avg_color = new_accum.rgb / sample_count;
+    // Filter-normalised output: divide by sum of weights, not sample
+    // count. `max(...,1e-6)` keeps the first-sample case finite for
+    // pixels whose first jitter happened to land exactly at a corner.
+    let weight_sum = max(new_accum.w, 1e-6);
+    let avg_color = new_accum.rgb / weight_sum;
     textureStore(output, vec2<i32>(px), vec4<f32>(avg_color, 1.0));
 }

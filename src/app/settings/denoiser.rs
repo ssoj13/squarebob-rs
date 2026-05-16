@@ -153,14 +153,17 @@ impl App {
                             .clamping(egui::SliderClamping::Never),
                         )
                         .on_hover_text(
-                            "Per-channel HDR clamp applied to the OIDN colour input \
-                             before the denoiser sees it. Suppresses fireflies (rare \
-                             extreme samples — typically env→specular hits) that \
-                             OIDN's albedo+normal-guided UNet would otherwise smear \
-                             into splotchy halos. 10.0 is the VFX default (matches \
-                             Arnold indirect_clamp / V-Ray secondary GI clamp); set \
-                             to 0 to disable for physically uncapped output. Doesn't \
-                             touch the raw PT accumulator — only what OIDN reads.",
+                            "Luminance-preserving HDR clamp applied to the OIDN \
+                             colour input before the denoiser sees it. Caps per-\
+                             pixel Rec.709 luminance; all three channels scale by \
+                             the same factor so hue is preserved exactly (matches \
+                             the WGSL clamp_firefly on the PT side). Suppresses \
+                             fireflies — rare extreme samples that OIDN's albedo+\
+                             normal-guided UNet would otherwise smear into \
+                             splotchy halos. 10.0 is a reasonable default; lower \
+                             values clamp more aggressively. Set to 0 to disable \
+                             for physically uncapped output. Doesn't touch the \
+                             raw PT accumulator — only what OIDN reads.",
                         );
                     if clamp_resp.changed() {
                         *changed = true;

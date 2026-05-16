@@ -2157,10 +2157,13 @@ impl App {
                             if self.render_3d_opts.pt_dof_enabled {
                                 control_label(ui, "Aperture:");
                                 pt_changed |= ui
-                                    .add(egui::Slider::new(
-                                        &mut self.render_3d_opts.pt_aperture,
-                                        0.01..=2.0,
-                                    ))
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut self.render_3d_opts.pt_aperture,
+                                            0.0001..=5.0,
+                                        )
+                                        .logarithmic(true),
+                                    )
                                     .changed();
                                 ui.end_row();
 

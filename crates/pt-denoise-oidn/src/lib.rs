@@ -371,16 +371,19 @@ impl OidnDenoiser {
             color_hwc4_padded.slice([0..1, 0..h, 0..w, 0..4])
         };
 
-        // Firefly clamp before OIDN. The PT accumulator can carry rare
-        // extreme samples that OIDN's albedo+normal-guided UNet keeps
-        // as "high-frequency content", smearing each spike into a halo
-        // and producing splotchy noise that grows with samples. Capping
-        // each channel here suppresses the spikes without touching the
-        // raw PT image displayed when the denoiser is off. `0.0` (or
-        // non-finite) means disabled — handy if the caller wants a
-        // physically uncapped run.
+        // Firefly clamp before OIDN, luminance-preserving. The PT
+        // accumulator can carry rare extreme samples that OIDN's
+        // albedo+normal-guided UNet keeps as "high-frequency content",
+        // smearing each spike into a halo. Per-channel clamping would
+        // distort hue (saturated lights with one dominant channel would
+        // desaturate), causing the network to see hue jitter across
+        // neighbouring pixels — that surfaces as colour noise on bright
+        // surfaces. The luminance-based variant scales all three
+        // channels by the same factor so hue is preserved exactly,
+        // matching the WGSL-side `clamp_firefly` in the path tracer.
+        // `0.0` (or non-finite) means disabled.
         let color_hwc4 = if self.input_clamp.is_finite() && self.input_clamp > 0.0 {
-            color_hwc4.clamp_max(self.input_clamp)
+            clamp_firefly_luminance(color_hwc4, self.input_clamp)
         } else {
             color_hwc4
         };
@@ -724,6 +727,59 @@ fn hwc4_to_chw3(
     let hwc3 = hwc4.slice([0..1, 0..h, 0..w, 0..3]);
     // [1, H, W, 3] -> [1, 3, H, W]
     hwc3.permute([0, 3, 1, 2])
+}
+
+/// Luminance-preserving firefly clamp on a `[1, H, W, 4]` HWC RGBA
+/// Burn tensor. Matches the WGSL-side `clamp_firefly` in
+/// `pt-megakernel/src/bvh_traverse.wgsl`: compute per-pixel Rec.709
+/// luminance, derive `scale = min(1, max_lum / max(lum, eps))`, then
+/// multiply all three colour channels by the same per-pixel scale so
+/// hue is preserved exactly. Alpha is passed through untouched.
+///
+/// Without hue preservation a saturated emissive pixel like
+/// `(2, 80, 1)` (vivid green) clamped per-channel at 10 becomes
+/// `(2, 10, 1)` — washed-out muddy green. Neighbouring pixels each
+/// pick up *different* hue shifts depending on their per-channel
+/// distribution, and the denoiser then sees that hue jitter as noise
+/// it can't smooth.
+fn clamp_firefly_luminance(
+    hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+    max_lum: f32,
+) -> burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4> {
+    use burn::tensor::Tensor;
+    type Wgpu = burn_wgpu::Wgpu<f32, i32>;
+
+    let dims = hwc4.dims();
+    debug_assert_eq!(dims[0], 1);
+    debug_assert_eq!(dims[3], 4);
+    let h = dims[1];
+    let w = dims[2];
+
+    let rgb = hwc4.clone().slice([0..1, 0..h, 0..w, 0..3]);
+    let alpha = hwc4.slice([0..1, 0..h, 0..w, 3..4]);
+
+    // Per-pixel Rec.709 luminance → shape [1, H, W, 1].
+    let r = rgb.clone().slice([0..1, 0..h, 0..w, 0..1]);
+    let g = rgb.clone().slice([0..1, 0..h, 0..w, 1..2]);
+    let b = rgb.clone().slice([0..1, 0..h, 0..w, 2..3]);
+    let lum: Tensor<Wgpu, 4> = r
+        .mul_scalar(0.2126_f32)
+        .add(g.mul_scalar(0.7152_f32))
+        .add(b.mul_scalar(0.0722_f32));
+
+    // scale = min(1, max_lum / max(lum, eps)). clamp_min keeps the
+    // reciprocal finite for dark pixels; clamp_max caps the brightening
+    // factor at 1.0 so we only ever scale *down* bright outliers.
+    let scale = lum
+        .clamp_min(1e-6_f32)
+        .recip()
+        .mul_scalar(max_lum)
+        .clamp_max(1.0_f32);
+
+    // Broadcast: rgb [1,H,W,3] * scale [1,H,W,1] → [1,H,W,3].
+    let rgb_clamped = rgb.mul(scale);
+
+    Tensor::cat(vec![rgb_clamped, alpha], 3)
 }
 
 /// Same shape conversion as [`hwc4_to_chw3`], but treats `.w` as a
