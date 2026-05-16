@@ -389,10 +389,14 @@ impl OidnDenoiser {
         // permute is a strided view; downstream ops in run_tensors (slice,
         // reflect_pad, transfer, cat) handle non-contiguous tensors.
         let color_chw3_t: Tensor<Wgpu, 4> = hwc4_to_chw3(color_hwc4);
+        // AOV buffers carry a running sum in `.rgb` and a sample count in
+        // `.w` (the shaders accumulate per primary hit). Divide before
+        // dropping alpha so the network sees per-pixel averages, which is
+        // what the OIDN model was trained against.
         let albedo_chw3_t: Option<Tensor<Wgpu, 4>> =
-            albedo_bridge.map(|(t, _, _, _)| hwc4_to_chw3(t));
+            albedo_bridge.map(|(t, _, _, _)| hwc4_normalize_by_w_to_chw3(t));
         let normal_chw3_t: Option<Tensor<Wgpu, 4>> =
-            normal_bridge.map(|(t, _, _, _)| hwc4_to_chw3(t));
+            normal_bridge.map(|(t, _, _, _)| hwc4_normalize_by_w_to_chw3(t));
         log::trace!(
             "OIDN pass#{pass_id}: tensors ready color_dims={:?} albedo_dims={:?} normal_dims={:?} color_clamped={} user_scale_env={:?}",
             color_chw3_t.dims(),
@@ -720,6 +724,31 @@ fn hwc4_to_chw3(
     let hwc3 = hwc4.slice([0..1, 0..h, 0..w, 0..3]);
     // [1, H, W, 3] -> [1, 3, H, W]
     hwc3.permute([0, 3, 1, 2])
+}
+
+/// Same shape conversion as [`hwc4_to_chw3`], but treats `.w` as a
+/// per-pixel sample count and divides `.rgb` by it before dropping the
+/// alpha channel. Used for AOV buffers (`albedo_aov` / `normal_aov`),
+/// which the path-tracer accumulates as `sum_rgb` in `.rgb` and
+/// `sample_count` in `.w`. `clamp_min(1.0)` on the divisor keeps pixels
+/// with zero accumulated samples (shouldn't happen after frame 0, but
+/// the clear-then-execute window allows it) at zero instead of NaN.
+fn hwc4_normalize_by_w_to_chw3(
+    hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+) -> burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4> {
+    let dims = hwc4.dims();
+    debug_assert_eq!(dims[0], 1);
+    debug_assert_eq!(dims[3], 4);
+    let h = dims[1];
+    let w = dims[2];
+    // Pull RGB (running sum) and W (sample count) as separate views.
+    let rgb = hwc4.clone().slice([0..1, 0..h, 0..w, 0..3]);
+    let count = hwc4
+        .slice([0..1, 0..h, 0..w, 3..4])
+        .clamp_min(1.0_f32);
+    // Broadcast divide [1,H,W,3] / [1,H,W,1] → [1,H,W,3], then to CHW.
+    let avg_hwc3 = rgb.div(count);
+    avg_hwc3.permute([0, 3, 1, 2])
 }
 
 /// Convert a `[1, 3, H, W]` CHW RGB Burn tensor into a contiguous

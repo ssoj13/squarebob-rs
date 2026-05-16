@@ -175,9 +175,12 @@ struct AliasEntry {
     alt: u32,
 };
 @group(0) @binding(18) var<storage, read> emissive_alias: array<AliasEntry>;
-// Primary-hit AOVs for the OIDN denoiser. Written exactly once per pixel
-// per sample on `bounce == 0`. Race writes across samples are safe because
-// primary hits are deterministic per pixel.
+// Primary-hit AOVs for the OIDN denoiser. Accumulated across samples on
+// `bounce == 0`: `.rgb` is the running sum of per-sample primary albedo /
+// normal, `.w` is the sample count. The denoiser bridge divides at ingest.
+// Without accumulation, sub-pixel jitter on edges leaves the AOV equal to
+// whichever last sample landed there, while colour is averaged — that
+// inconsistency makes OIDN paint false-edge artefacts.
 @group(0) @binding(19) var<storage, read_write> albedo_aov: array<vec4<f32>>;
 @group(0) @binding(20) var<storage, read_write> normal_aov: array<vec4<f32>>;
 
@@ -949,9 +952,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         if !hit.hit {
             if bounce == 0u {
-                // Primary miss: zero AOVs so OIDN sees a flat "no surface".
-                albedo_aov[pixel_idx] = vec4<f32>(0.0);
-                normal_aov[pixel_idx] = vec4<f32>(0.0);
+                // Primary miss: zero AOV contribution, but the sample
+                // still counts so the per-pixel running average stays at
+                // zero (instead of div-by-zero at ingest).
+                albedo_aov[pixel_idx] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
+                normal_aov[pixel_idx] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
             }
             radiance += throughput * sky_color(ray.dir);
             break;
@@ -969,11 +974,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
 
         if bounce == 0u {
-            // Primary-hit AOVs for OIDN. Albedo = pre-shading base colour;
-            // normal = ray-facing world-space normal (consistent with what
-            // OIDN expects from the prefilter weights).
-            albedo_aov[pixel_idx] = vec4<f32>(base_color, 1.0);
-            normal_aov[pixel_idx] = vec4<f32>(normal, 1.0);
+            // Primary-hit AOVs for OIDN, accumulated across samples.
+            // `.w` carries the per-pixel sample count; divide in the
+            // denoiser bridge.
+            albedo_aov[pixel_idx] += vec4<f32>(base_color, 1.0);
+            normal_aov[pixel_idx] += vec4<f32>(normal, 1.0);
         }
 
         // Unpack material fields

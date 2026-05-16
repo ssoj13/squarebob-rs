@@ -2595,6 +2595,12 @@ impl PathTraceCompute {
             self.fill_sample_map(queue);
             encoder.clear_buffer(&self.accum_buffer, 0, None);
             encoder.clear_buffer(&self.variance_buffer, 0, None);
+            // AOV running-sum buffers (primary-hit albedo / normal) live
+            // alongside `accum_buffer` and must reset on the same trigger
+            // — otherwise a camera move bakes the previous scene's
+            // averaged AOVs into the next denoise pass.
+            encoder.clear_buffer(self.albedo_buffer(), 0, None);
+            encoder.clear_buffer(self.normal_buffer(), 0, None);
             if let Some(ad) = &self.adaptive {
                 encoder.clear_buffer(ad.variance_buffer(), 0, None);
             }
@@ -4465,6 +4471,12 @@ impl PathTraceCompute {
             self.fill_sample_map(queue);
             encoder.clear_buffer(&self.accum_buffer, 0, None);
             encoder.clear_buffer(&self.variance_buffer, 0, None);
+            // AOV running-sum buffers (primary-hit albedo / normal) live
+            // alongside `accum_buffer` and must reset on the same trigger
+            // — otherwise a camera move bakes the previous scene's
+            // averaged AOVs into the next denoise pass.
+            encoder.clear_buffer(self.albedo_buffer(), 0, None);
+            encoder.clear_buffer(self.normal_buffer(), 0, None);
             if let Some(ad) = &self.adaptive {
                 encoder.clear_buffer(ad.variance_buffer(), 0, None);
             }
