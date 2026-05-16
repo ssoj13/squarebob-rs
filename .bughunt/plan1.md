@@ -162,3 +162,40 @@ Candidate worth verifying once gitnexus works:
 6. **HIGH #7**: picking channel recv.
 7. **MED**: SAFETY comment renames, slot.insert tidy, prepare_tiles signature.
 8. Optional: dedup readback boilerplate after #1 is done.
+
+---
+
+## Status — what landed on `bughunt/plan1-fixes`
+
+| Phase | Commit | Crate / files | Effect |
+|------:|--------|---------------|--------|
+| 1 | `7e93470` | 10 files (mixed) | Surgical fixes — CRITICAL #1 (bvh-gpu readback Result), HIGH #2 (tile_offset overflow), HIGH #3 (ffmpeg SAFETY x2), HIGH #6 (material_cache sum-type), HIGH #7 (picking recv), MED (SAFETY: renames, slot.insert tidy) |
+| 2 | `ab05f70` | pt-megakernel adaptive/pathguide/restir | Removed 9 fake-`Option<Buffer>` slots; ReSTIR's 6 frame buffers collapsed into one `ReSTIRBuffers` bundle |
+| 3 | `13e1755` | pt-wavefront | 5 fake-`Option<Buffer>` slots collapsed into one `WfBuffers` bundle |
+| 4 | `70e845e` | pt-denoise-oidn, treemap_view | `result_texture` / `result_view` built up-front (was lazy via `_ctx`), `burn_device_ref` collapsed into match-binding (1 expect removed); 2 callers in treemap_view updated to `.map` |
+| 5 | `c171bef` | render-3d (4 files) | Bundle `RenderState { targets, dyn_bgs }`; 9 `"targets not built"`/`"dyn_bgs not built"` expects collapsed into one bundle access; `on_env_map_changed` rebuilds bind groups in place on existing targets |
+| 6 | `d496bf0` | bvh-gpu | Bundle `BvhBuffers` (7 fields); 15 `.as_ref().unwrap()` sites consolidated; dead is-none branch in `update_aabbs` removed |
+| 7 | `7a1013e` | pt-megakernel/compute.rs, pathguide | Bundle `GbufferStack { pipeline, bgl }`; eliminates one of the two unwraps via `Option::get_or_insert_with`; unused `resolution` field on PathGuide dropped |
+
+Each commit verified individually with `cargo check -p <crate>` (exit 0). Workspace-wide cargo check after the chain is green.
+
+## What still needs typestate work
+
+**`pt-megakernel/src/compute.rs` — 7 remaining `.as_ref().unwrap()` calls:**
+* lines 2633, 2700, 2869 on `self.wavefront` (`Option<WavefrontPipeline>`)
+* lines 2872, 3445 on `self.wavefront_bind_groups` (`Option<WavefrontBindGroups>`)
+* line 3024 on `self.restir`
+* line 3025 on `self.restir_bind_groups`
+
+These encode a real caller invariant — *"if this dispatch path is entered, the matching feature is enabled and its bind groups have been (re)built this frame"*. Three sub-problems make the bundle pattern that worked for `RenderState` and `BvhBuffers` not quite drop-in here:
+
+1. The pipelines (`wavefront`, `restir`) and their bind groups have **independent invalidation triggers**. `wavefront_bind_groups = None` happens on its own at line 1658 when the scene buffers aren't ready, even though `wavefront` itself stays `Some`. To bundle them you'd want eager rebuild on every condition that currently clears just the bind groups.
+2. The feature toggle (`wavefront_config.enabled: bool`) is separate from the data (`wavefront.is_some()`), and the dispatch path currently trusts they're in sync. Collapsing to "Some ⇔ enabled" needs an audit of every place that flips the config flag.
+3. Dispatch is `&mut self` and intermixes immutable reads of `self.wavefront`/`self.wavefront_bind_groups` with mutable updates of other fields (`self.frame_count`, encoder operations through `&self.ctx.queue`). A clean fix is to change dispatch helpers to take `&WavefrontPipeline, &WavefrontBindGroups` as parameters and have the caller do the let-Some once at the top — but that's a signature change rippling through many internal pass-encoder methods inside the 4525-LOC file.
+
+The recommended follow-up is one of:
+* **A.** Bundle `WavefrontStack { pipeline, bind_groups }` and `ReSTIRStack { pipeline, bind_groups, gbuffer_stack }`; make rebuild_*_bind_groups always rebuild the whole stack atomically (no independent `bind_groups = None`); collapse the feature flag into `Option::is_some`. Touches ~30 sites.
+* **B.** Restructure dispatch helpers to take resolved refs as parameters. The caller (`dispatch` entry point) extracts via `let Some((wf, bgs)) = self.wavefront_ready() else { return; };` once, then passes refs down. Touches dispatch method signatures + their internal callers; safer than A because it doesn't change rebuild semantics.
+
+Either is a dedicated session of work with `cargo check` verification at each step; neither is safe to do inline alongside the other changes here.
+
