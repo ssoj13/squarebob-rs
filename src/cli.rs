@@ -131,7 +131,7 @@ OPTIONS:
     --log-pt                Force PT module to TRACE
     --log-wf                Force wavefront module to TRACE
     --log-pg                Force pathguide module to TRACE
-    --log-modules <LIST>    Force TRACE for modules: pt,wf,pg (csv)
+    --log-modules <LIST>    Force TRACE for modules: pt,wf,pg,oidn (csv)
     --log-ptwf              Alias for --log-modules pt,wf
     --log-ptall             Alias for --log-modules pt,wf,pg
     -h, --help              Print this help message

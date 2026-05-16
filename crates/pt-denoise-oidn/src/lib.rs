@@ -78,6 +78,10 @@ pub struct OidnDenoiser {
     /// Last successful execute() wallclock for UI display.
     last_latency_ms: Option<f32>,
 
+    /// Monotonic denoise call counter used only to correlate logs across the
+    /// squarebob bridge and oidn-rs U-Net runner.
+    pass_id: u64,
+
     /// Burn device sharing squarebob's wgpu setup. Built on first denoise.
     /// Stored as a `'static` reference (via `Box::leak`) so committed OIDN
     /// models can be cached across denoise passes.
@@ -117,6 +121,7 @@ impl OidnDenoiser {
             result_texture,
             result_view,
             last_latency_ms: None,
+            pass_id: 0,
             burn_device_ref: None,
             cached_model_key: None,
             cached_model_bytes: None,
@@ -185,17 +190,22 @@ impl OidnDenoiser {
         albedo_buf: Option<&wgpu::Buffer>,
         normal_buf: Option<&wgpu::Buffer>,
     ) -> Result<()> {
+        self.pass_id = self.pass_id.wrapping_add(1);
+        let pass_id = self.pass_id;
+        let trace_tensors = tensor_diagnostics_enabled();
         log::debug!(
-            "OIDN denoise() enter: mode={:?} quality={:?} dims={}x{} albedo_in={} normal_in={}",
+            "OIDN pass#{pass_id}: denoise() enter mode={:?} quality={:?} dims={}x{} albedo_in={} normal_in={} clamp={} tensor_stats={}",
             self.mode,
             self.quality,
             self.width,
             self.height,
             albedo_buf.is_some(),
             normal_buf.is_some(),
+            self.input_clamp,
+            trace_tensors,
         );
         if matches!(self.mode, OidnMode::Off) {
-            log::debug!("OIDN denoise() early-return: mode=Off");
+            log::debug!("OIDN pass#{pass_id}: denoise() early-return mode=Off");
             return Ok(());
         }
 
@@ -224,7 +234,7 @@ impl OidnDenoiser {
             other => other,
         };
         log::debug!(
-            "OIDN effective_mode={:?} (use_albedo={} use_normal={})",
+            "OIDN pass#{pass_id}: effective_mode={:?} (use_albedo={} use_normal={})",
             effective_mode,
             matches!(
                 effective_mode,
@@ -234,7 +244,7 @@ impl OidnDenoiser {
         );
         if effective_mode != self.mode {
             log::debug!(
-                "OIDN: mode {:?} downgraded to {:?} (AOV unavailable)",
+                "OIDN pass#{pass_id}: mode {:?} downgraded to {:?} (AOV unavailable)",
                 self.mode,
                 effective_mode
             );
@@ -284,6 +294,7 @@ impl OidnDenoiser {
         let padded_bpr = (unpadded_bpr + 255) & !255;
         let padded_w = (padded_bpr / 16) as usize;
         let pad_cols = padded_w - w;
+        let aov_count = u8::from(use_albedo) + u8::from(use_normal);
 
         // Respect downgrade: drop AOV inputs we don't intend to consume so
         // we don't allocate / copy ~30 MB of AOV per side just to throw away.
@@ -344,9 +355,11 @@ impl OidnDenoiser {
         }
         ctx.queue.submit(std::iter::once(encoder.finish()));
         log::trace!(
-            "OIDN: input bridge submitted (color {} bytes padded@{} + 2×{} AOV)",
+            "OIDN pass#{pass_id}: input bridge submitted color_bytes={} padded_w={} pad_cols={} aov_count={} aov_bytes_each={}",
             padded_bpr * (h as u64),
             padded_w,
+            pad_cols,
+            aov_count,
             aov_size,
         );
 
@@ -380,6 +393,14 @@ impl OidnDenoiser {
             albedo_bridge.map(|(t, _, _, _)| hwc4_to_chw3(t));
         let normal_chw3_t: Option<Tensor<Wgpu, 4>> =
             normal_bridge.map(|(t, _, _, _)| hwc4_to_chw3(t));
+        log::trace!(
+            "OIDN pass#{pass_id}: tensors ready color_dims={:?} albedo_dims={:?} normal_dims={:?} color_clamped={} user_scale_env={:?}",
+            color_chw3_t.dims(),
+            albedo_chw3_t.as_ref().map(|t| t.dims()),
+            normal_chw3_t.as_ref().map(|t| t.dims()),
+            self.input_clamp.is_finite() && self.input_clamp > 0.0,
+            std::env::var("OIDN_INPUT_SCALE").ok(),
+        );
 
         // Build the filter and run inference. `burn_device` was acquired
         // above for the input bridge; reuse the same reference here.
@@ -449,7 +470,7 @@ impl OidnDenoiser {
         );
         if self.cached_filter_key != Some(filter_key) {
             log::debug!(
-                "OIDN: building committed RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, cached_weights={})",
+                "OIDN pass#{pass_id}: building committed RtFilter hdr={} quality={:?} input_scale_override={:?} cached_weights={}",
                 hdr, self.quality, user_scale, cached_bytes.is_some()
             );
             // weights_dir is only consulted by RtFilter::commit when the
@@ -477,23 +498,25 @@ impl OidnDenoiser {
                 .commit_tensor_model(w, h, true, use_albedo, use_normal)
                 .map_err(|e| anyhow::anyhow!("OIDN commit_tensor_model: {e:?}"))?;
             log::debug!(
-                "OIDN: committed filter built (model={})",
+                "OIDN pass#{pass_id}: committed filter built model={}",
                 committed.model_key().filename()
             );
             self.cached_filter = Some(Box::new(committed));
             self.cached_filter_key = Some(filter_key);
+        } else {
+            log::trace!("OIDN pass#{pass_id}: reusing committed RtFilter");
         }
 
         let filter = self
             .cached_filter
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("OIDN committed filter cache missing"))?;
-        log::trace!("OIDN: committed filter execute_tensors() begin");
+        log::trace!("OIDN pass#{pass_id}: committed filter execute_tensors() begin");
         let out_chw3: Tensor<Wgpu, 4> = filter
             .execute_tensors(Some(color_chw3_t), albedo_chw3_t, normal_chw3_t, None)
             .map_err(|e| anyhow::anyhow!("OIDN execute_tensors: {e:?}"))?;
-        log::trace!("OIDN: committed filter execute_tensors() done");
-        log::debug!("OIDN: take_output_tensor shape={:?}", out_chw3.dims());
+        log::trace!("OIDN pass#{pass_id}: committed filter execute_tensors() done");
+        log::debug!("OIDN pass#{pass_id}: output tensor shape={:?}", out_chw3.dims());
 
         // Bridge: convert the tensor-native CHW RGB output into a
         // contiguous HWC RGBA buffer (alpha=1) on-device, then copy
@@ -541,11 +564,12 @@ impl OidnDenoiser {
         let elapsed = started.elapsed().as_secs_f32() * 1000.0;
         self.last_latency_ms = Some(elapsed);
         log::info!(
-            "OIDN: denoise {}×{} mode={:?} quality={:?} -> {:.1} ms",
+            "OIDN pass#{pass_id}: denoise {}×{} mode={:?} quality={:?} effective={:?} -> {:.1} ms",
             self.width,
             self.height,
             self.mode,
             self.quality,
+            effective_mode,
             elapsed
         );
 
@@ -791,6 +815,15 @@ fn copy_tensor_into_texture(
     );
     queue.submit(std::iter::once(encoder.finish()));
     Ok(())
+}
+
+fn tensor_diagnostics_enabled() -> bool {
+    if log::log_enabled!(log::Level::Trace) {
+        return true;
+    }
+    std::env::var("OIDN_TRACE_TENSORS")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

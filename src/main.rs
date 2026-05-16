@@ -46,20 +46,20 @@ fn main() -> eframe::Result<()> {
     };
 
     let mut builder = env_logger::Builder::new();
-    let squarebob_level = match log_level {
+    let app_level = match log_level {
         "warn" => log::LevelFilter::Warn,
         "info" => log::LevelFilter::Info,
         "debug" => log::LevelFilter::Debug,
         _ => log::LevelFilter::Trace,
     };
-    builder.filter_module("squarebob_rs", squarebob_level);
-    // OIDN denoiser: TRACE so every step is visible while we're debugging
-    // the bridge. Also bump the forked `oidn-rs` inner crates so per-tile
-    // forward/in/out stats land in the log.
-    builder.filter_module("pt_denoise_oidn", log::LevelFilter::Trace);
-    builder.filter_module("oidn_rs", log::LevelFilter::Debug);
-    builder.filter_module("oidn_model", log::LevelFilter::Debug);
-    builder.filter_module("oidn_tza", log::LevelFilter::Debug);
+    builder.filter_module("squarebob_rs", app_level);
+    // Keep first-party OIDN diagnostics on the same -v/-vv/-vvv scale as the
+    // app. INFO is pass summaries, DEBUG is the denoise contract, TRACE is
+    // heavy tensor diagnostics/readback.
+    builder.filter_module("pt_denoise_oidn", app_level);
+    builder.filter_module("oidn_rs", app_level);
+    builder.filter_module("oidn_model", app_level);
+    builder.filter_module("oidn_tza", app_level);
     if let Some(list) = &cli.log_modules {
         for item in list.split(',').map(|s| s.trim().to_lowercase()) {
             match item.as_str() {
@@ -74,6 +74,12 @@ fn main() -> eframe::Result<()> {
                 }
                 "pg" => {
                     builder.filter_module("pt_megakernel::pathguide", log::LevelFilter::Trace);
+                }
+                "oidn" => {
+                    builder.filter_module("pt_denoise_oidn", log::LevelFilter::Trace);
+                    builder.filter_module("oidn_rs", log::LevelFilter::Trace);
+                    builder.filter_module("oidn_model", log::LevelFilter::Trace);
+                    builder.filter_module("oidn_tza", log::LevelFilter::Trace);
                 }
                 "" => {}
                 other => {
