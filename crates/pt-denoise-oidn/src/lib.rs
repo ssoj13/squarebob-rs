@@ -98,6 +98,13 @@ pub struct OidnDenoiser {
         Option<Box<oidn_rs::RtFilter<'static, burn_wgpu::Wgpu<f32, i32>>>>,
     cached_filter_key: Option<(bool, bool, Quality, u32, u32)>,
 
+    /// Per-channel HDR clamp applied to the colour input tensor before
+    /// it reaches the UNet. `0.0` (or non-finite) disables clamping;
+    /// any positive value caps each `f32` colour channel to that value.
+    /// Set by callers via [`Self::set_input_clamp`]. Lives only on the
+    /// OIDN input path — the underlying PT accumulator is untouched, so
+    /// the raw display stays physically correct.
+    input_clamp: f32,
 }
 
 impl OidnDenoiser {
@@ -121,7 +128,15 @@ impl OidnDenoiser {
             cached_model_bytes: None,
             cached_filter: None,
             cached_filter_key: None,
+            input_clamp: 0.0,
         }
+    }
+
+    /// Set the per-channel HDR firefly clamp applied to the colour
+    /// input before OIDN. `0.0` or non-finite disables. See the
+    /// `input_clamp` field doc for rationale.
+    pub fn set_input_clamp(&mut self, max: f32) {
+        self.input_clamp = max;
     }
 
     pub fn resize(&mut self, _ctx: &GpuContext, width: u32, height: u32) {
@@ -342,6 +357,20 @@ impl OidnDenoiser {
             color_hwc4_padded
         } else {
             color_hwc4_padded.slice([0..1, 0..h, 0..w, 0..4])
+        };
+
+        // Firefly clamp before OIDN. The PT accumulator can carry rare
+        // extreme samples that OIDN's albedo+normal-guided UNet keeps
+        // as "high-frequency content", smearing each spike into a halo
+        // and producing splotchy noise that grows with samples. Capping
+        // each channel here suppresses the spikes without touching the
+        // raw PT image displayed when the denoiser is off. `0.0` (or
+        // non-finite) means disabled — handy if the caller wants a
+        // physically uncapped run.
+        let color_hwc4 = if self.input_clamp.is_finite() && self.input_clamp > 0.0 {
+            color_hwc4.clamp_max(self.input_clamp)
+        } else {
+            color_hwc4
         };
 
         // Convert HWC RGBA → CHW RGB on the same wgpu device via Burn ops.

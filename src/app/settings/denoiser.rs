@@ -138,6 +138,34 @@ impl App {
                         }
                     });
                     ui.end_row();
+
+                    // Row 5 — HDR firefly clamp on the OIDN input. Caps
+                    // each channel before the UNet sees it; the raw PT
+                    // accumulator stays unclamped. `0.0` = off.
+                    control_label(ui, "Clamp:");
+                    let clamp_resp = ui
+                        .add(
+                            egui::Slider::new(
+                                &mut self.render_3d_opts.pt_oidn_clamp,
+                                0.0..=100.0,
+                            )
+                            .logarithmic(true)
+                            .clamp_existing_to_range(false),
+                        )
+                        .on_hover_text(
+                            "Per-channel HDR clamp applied to the OIDN colour input \
+                             before the denoiser sees it. Suppresses fireflies (rare \
+                             extreme samples — typically env→specular hits) that \
+                             OIDN's albedo+normal-guided UNet would otherwise smear \
+                             into splotchy halos. 10.0 is the VFX default (matches \
+                             Arnold indirect_clamp / V-Ray secondary GI clamp); set \
+                             to 0 to disable for physically uncapped output. Doesn't \
+                             touch the raw PT accumulator — only what OIDN reads.",
+                        );
+                    if clamp_resp.changed() {
+                        *changed = true;
+                    }
+                    ui.end_row();
                 });
 
                 ui.add_space(6.0);

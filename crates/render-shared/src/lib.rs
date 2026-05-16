@@ -727,6 +727,26 @@ pub struct Render3DOptions {
     /// the final-spp fire remains.
     #[serde(default = "default_oidn_interval")]
     pub pt_oidn_interval: u32,
+    /// Firefly clamp applied to the OIDN color input. Each RGB channel
+    /// is clamped to this value before the input bridge feeds OIDN.
+    /// `0.0` disables clamping (raw HDR input).
+    ///
+    /// Why this exists: PT path-tracing produces rare extreme samples
+    /// (a glancing specular bounce that catches the brightest part of
+    /// the env map) that survive sample-normalization and end up in
+    /// the accumulator as fireflies. OIDN's albedo+normal-guided UNet
+    /// keeps high-frequency content intact, which means it smears each
+    /// firefly across a halo of pixels instead of suppressing it —
+    /// the splotchy "noise that grows with samples" everyone gets to
+    /// hate at low SPP. Clamping just the OIDN input (not the PT
+    /// accumulator) gives the denoiser a temperate signal while the
+    /// underlying PT mean stays physically correct.
+    ///
+    /// Production default `10.0` matches Arnold's `indirect_clamp` /
+    /// V-Ray's secondary GI clamp — bright enough to keep area-light
+    /// + skybox contributions, low enough to suppress fireflies.
+    #[serde(default = "default_oidn_clamp")]
+    pub pt_oidn_clamp: f32,
 }
 
 /// String-serialised mirror of `pt_denoise_oidn::OidnMode`. Default is the
@@ -769,6 +789,9 @@ fn default_oidn_auto() -> bool {
 }
 fn default_oidn_interval() -> u32 {
     128
+}
+fn default_oidn_clamp() -> f32 {
+    10.0
 }
 fn default_polar_strength() -> f32 {
     1.0
@@ -1037,6 +1060,7 @@ impl Default for Render3DOptions {
             pt_oidn_quality: OidnQualityOption::Base,
             pt_oidn_auto: true,
             pt_oidn_interval: 128,
+            pt_oidn_clamp: 10.0,
         }
     }
 }

@@ -1468,6 +1468,7 @@ impl App {
         denoiser.resize(&gpu_ctx, pt_w, pt_h);
         denoiser.set_mode(map_mode(mode_opt));
         denoiser.set_quality(map_quality(self.render_3d_opts.pt_oidn_quality));
+        denoiser.set_input_clamp(self.render_3d_opts.pt_oidn_clamp);
 
         let encoder = gpu_ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("oidn_denoise_encoder"),
