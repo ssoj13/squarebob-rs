@@ -1117,15 +1117,8 @@ impl App {
             self.settings_section_header_height,
             |ui| self.ui_pt_paths(ui, &mut pt_changed),
         );
-        // Glass BSDF lives under Materials → Glass now — it is a
-        // material override, not a path-tracer algorithm knob.
-        compact_section(
-            ui,
-            "Camera",
-            false,
-            self.settings_section_header_height,
-            |ui| self.ui_pt_camera(ui, &mut pt_changed),
-        );
+        // Glass BSDF lives under Materials → Glass; Camera/defocus
+        // moved up to the top-level Camera section.
         compact_section(
             ui,
             "Advanced",
@@ -1757,36 +1750,6 @@ impl App {
         });
     }
 
-    fn ui_pt_camera(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
-        settings_grid(ui, "pt_camera_grid", |ui| {
-            control_label(ui, "DOF:");
-            *pt_changed |= ui
-                .checkbox(&mut self.render_3d_opts.pt_dof_enabled, "")
-                .changed();
-            ui.end_row();
-
-            if self.render_3d_opts.pt_dof_enabled {
-                control_label(ui, "Aperture:");
-                *pt_changed |= ui
-                    .add(egui::Slider::new(
-                        &mut self.render_3d_opts.pt_aperture,
-                        0.01..=2.0,
-                    ))
-                    .changed();
-                ui.end_row();
-
-                control_label(ui, "Focus:");
-                *pt_changed |= ui
-                    .add(
-                        egui::Slider::new(&mut self.render_3d_opts.pt_focus_distance, 0.1..=500.0)
-                            .logarithmic(true),
-                    )
-                    .changed();
-                ui.end_row();
-            }
-        });
-    }
-
     fn ui_pt_advanced(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_backend_grid", |ui| {
             control_label(ui, "Backend:");
@@ -2136,8 +2099,12 @@ impl App {
             });
     }
 
-    /// Camera controls
+    /// Camera controls — viewer interaction (inertia) and path-tracer
+    /// defocus (DOF). DOF lives here so it sits next to focal-length /
+    /// orbit reset; it only affects the path tracer, so the rows are
+    /// hidden unless `path_tracing` is on.
     fn ui_3d_camera(&mut self, ui: &mut egui::Ui) {
+        let mut pt_changed = false;
         tinted_section(
             ui,
             "Camera",
@@ -2175,6 +2142,41 @@ impl App {
                             .on_hover_text("Stop inertia when speed drops below this threshold");
                             ui.end_row();
                         }
+
+                        // Defocus / DOF — only meaningful with the path
+                        // tracer enabled. Lived under Render → Path
+                        // Tracer → Camera previously; promoted here so
+                        // all camera-lens controls sit together.
+                        if self.render_3d_opts.path_tracing {
+                            control_label(ui, "DOF:");
+                            pt_changed |= ui
+                                .checkbox(&mut self.render_3d_opts.pt_dof_enabled, "")
+                                .changed();
+                            ui.end_row();
+
+                            if self.render_3d_opts.pt_dof_enabled {
+                                control_label(ui, "Aperture:");
+                                pt_changed |= ui
+                                    .add(egui::Slider::new(
+                                        &mut self.render_3d_opts.pt_aperture,
+                                        0.01..=2.0,
+                                    ))
+                                    .changed();
+                                ui.end_row();
+
+                                control_label(ui, "Focus:");
+                                pt_changed |= ui
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut self.render_3d_opts.pt_focus_distance,
+                                            0.1..=500.0,
+                                        )
+                                        .logarithmic(true),
+                                    )
+                                    .changed();
+                                ui.end_row();
+                            }
+                        }
                     });
 
                 ui.horizontal(|ui| {
@@ -2186,5 +2188,11 @@ impl App {
                 });
             },
         );
+
+        if pt_changed {
+            if let Some(r) = &mut self.renderer_3d {
+                r.reset_pt_accumulation();
+            }
+        }
     }
 }

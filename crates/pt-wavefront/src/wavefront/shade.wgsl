@@ -326,17 +326,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Primary-hit AOVs for OIDN, accumulated across samples. `.w` carries
     // the per-pixel sample count; the denoiser bridge divides at ingest.
-    // base_color * instance tint = surface albedo before any tone curve.
     // World-space normal goes through unchanged; OIDN accepts both view-
     // and world-space as long as it's consistent.
+    //
+    // Albedo contract per Intel OIDN: diffuse base for reflective
+    // surfaces plus emission for emissive surfaces. Without emission
+    // included, lit pixels look like "noisy bright spots on a dark
+    // surface" to the network, which then over-smooths them into
+    // splotchy colored blocks. Metallic surfaces have no diffuse
+    // component, so they fall through to pure emission when self-lit.
+    let emission = mat.emission_color_weight.rgb * mat.emission_color_weight.a;
     if ray.bounce == 0u {
-        let primary_albedo = mat.base_color_weight.rgb * inst.color.rgb;
+        let primary_metallic = mat.params1.y;
+        let primary_base = mat.base_color_weight.rgb * inst.color.rgb;
+        let primary_albedo = primary_base * (1.0 - primary_metallic) + emission;
         albedo_aov[pixel_id] += vec4<f32>(primary_albedo, 1.0);
         normal_aov[pixel_id] += vec4<f32>(hit.normal, 1.0);
     }
 
     // Accumulate emission (if any)
-    let emission = mat.emission_color_weight.rgb * mat.emission_color_weight.a;
     if length(emission) > 0.0 {
         let tint = spectral_tint(&seed, params.spectral_mode, params.spectral_samples, params.spectral_dispersion, ray.bounce);
         accum[pixel_id] += vec4<f32>(ray.throughput * emission * tint, 0.0);  // don't add to sample count yet

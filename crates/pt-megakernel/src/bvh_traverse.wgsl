@@ -977,7 +977,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // Primary-hit AOVs for OIDN, accumulated across samples.
             // `.w` carries the per-pixel sample count; divide in the
             // denoiser bridge.
-            albedo_aov[pixel_idx] += vec4<f32>(base_color, 1.0);
+            //
+            // Albedo contract per Intel OIDN: diffuse base for reflective
+            // surfaces plus emission for emissive surfaces. Without the
+            // emission term, lit pixels look like "noisy bright spots on
+            // a dark surface" to the network, which then over-smooths
+            // them into splotchy colored blocks. Metallic surfaces have
+            // no diffuse component, so they fall through to pure
+            // emission when self-lit.
+            let primary_metallic = mat.params1.y;
+            let primary_emission = mat.emission_color_weight.rgb * mat.emission_color_weight.a;
+            let primary_albedo = base_color * (1.0 - primary_metallic) + primary_emission;
+            albedo_aov[pixel_idx] += vec4<f32>(primary_albedo, 1.0);
             normal_aov[pixel_idx] += vec4<f32>(normal, 1.0);
         }
 
