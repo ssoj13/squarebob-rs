@@ -3831,7 +3831,12 @@ impl PathTraceCompute {
                 mapped_at_creation: false,
             }));
         }
-        let buf = slot.as_ref().expect("buffer just ensured");
+        // `slot` is Some here by structure: either the if-block above just
+        // populated it, or the existing Some(_) survived the size check.
+        let buf = match slot {
+            Some(b) => b,
+            None => unreachable!("slot populated by ensure path above"),
+        };
         queue.write_buffer(buf, 0, bytes);
         too_small
     }

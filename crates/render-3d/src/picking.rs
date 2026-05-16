@@ -193,10 +193,20 @@ impl PickingState {
             let _ = tx.send(result);
         });
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        if let Err(e) = rx.recv().unwrap() {
-            log::warn!("picking::poll_result - map_async failed: {e:?}");
-            self.pending_px = None;
-            return;
+        // Outer recv fails if the callback was dropped (device lost); inner Err
+        // reports map_async failure. Either way, bail without panicking.
+        match rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                log::warn!("picking::poll_result - map_async failed: {e:?}");
+                self.pending_px = None;
+                return;
+            }
+            Err(e) => {
+                log::warn!("picking::poll_result - map callback dropped: {e}");
+                self.pending_px = None;
+                return;
+            }
         }
 
         let data = buffer_slice.get_mapped_range();

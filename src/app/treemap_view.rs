@@ -1084,10 +1084,13 @@ impl App {
                 None => return,
             };
 
-            // Render to texture (safe: root_ptr valid for this scope)
+            // Render to texture (root_ptr valid for this scope; see SAFETY below)
             if let Some(r) = &mut self.renderer_3d {
                 // Sync selected IDs for outline rendering
                 r.set_selected_ids(&self.selected_3d_ids);
+                // SAFETY: `root_ptr` aliases self.tree (DirEntry storage owned by
+                // `self`) and is not invalidated for this scope — `set_selected_ids`
+                // mutates a separate field (`selected_3d_ids`), not the tree.
                 let root = unsafe { &*root_ptr };
                 r.render_to_view(
                     root,

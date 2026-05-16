@@ -150,7 +150,7 @@ impl App {
                                 0.0..=100.0,
                             )
                             .logarithmic(true)
-                            .clamp_existing_to_range(false),
+                            .clamp_to_range(false),
                         )
                         .on_hover_text(
                             "Per-channel HDR clamp applied to the OIDN colour input \

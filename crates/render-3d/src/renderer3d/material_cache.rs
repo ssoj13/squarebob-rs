@@ -298,10 +298,14 @@ pub(crate) fn expand_pt_materials_and_ids(
                 } else {
                     let hash = name_hash(&path.to_string_lossy());
                     let base_id = mat_cache.classify_or_get(path, size, 0, opts, true);
-                    let class_opt = MaterialClass::from_id(base_id);
-                    let is_light = class_opt.map(|c| c.is_light()).unwrap_or(false);
-                    if is_light && (light_intensity != 1.0 || light_color_rand > 0.0) {
-                        let class = class_opt.expect("is_light implies class_opt is Some");
+                    // Single source of truth: `light_class = Some(c)` only when the
+                    // material classifies as a light. Branches that need the class
+                    // pattern-match on this Option directly instead of carrying a
+                    // parallel `is_light: bool` whose invariant has to be re-checked.
+                    let light_class = MaterialClass::from_id(base_id).filter(|c| c.is_light());
+                    if let Some(class) =
+                        light_class.filter(|_| light_intensity != 1.0 || light_color_rand > 0.0)
+                    {
                         let bucket = if light_variants > 1 {
                             hash % light_variants
                         } else {
@@ -338,7 +342,7 @@ pub(crate) fn expand_pt_materials_and_ids(
                             light_variant_ids.insert(vkey, new_id);
                             new_id
                         }
-                    } else if is_light && light_intensity != 1.0 {
+                    } else if light_class.is_some() && light_intensity != 1.0 {
                         let mut m = materials[base_id as usize];
                         m.emission_color_weight[3] *= light_intensity;
                         materials.push(m);
@@ -397,12 +401,13 @@ pub(crate) fn prepare_pt_expanded_materials(
     let (materials, material_ids) =
         expand_pt_materials_and_ids(library, mat_cache, picking, instances, opts);
     let arc = Arc::new(materials);
-    *cache_slot = Some(PtExpandCacheEntry {
+    // `Option::insert` writes Some(_) and hands back `&mut T` in one step —
+    // no `as_ref().expect("just inserted")` panic-path needed.
+    let entry = cache_slot.insert(PtExpandCacheEntry {
         key,
         materials: Arc::clone(&arc),
         material_ids,
     });
-    let entry = cache_slot.as_ref().expect("just inserted");
     let pt_instances = build_pt_instances(instances, &entry.material_ids);
     (arc, pt_instances)
 }

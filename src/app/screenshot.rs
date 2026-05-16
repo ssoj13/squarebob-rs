@@ -69,7 +69,9 @@ impl App {
                             Some(root) => root as *const _,
                             None => return Vec::new(),
                         };
-                        // Safe: root lives in self for duration of this call.
+                        // SAFETY: `root_ptr` aliases self.tree (held by `self`)
+                        // and is not invalidated for the duration of this call —
+                        // we hold &mut self but never mutate self.tree here.
                         let root = unsafe { &*root_ptr };
                         renderer::cpu::render(root, &self.viewport, &self.opts)
                     }
@@ -80,7 +82,8 @@ impl App {
                         };
                         let mut renderer = self.renderer_2d_gpu.take();
                         let pixels = if let Some(r) = &mut renderer {
-                            // Safe: root lives in self for duration of this call.
+                            // SAFETY: same invariant — `root_ptr` aliases self.tree;
+                            // `renderer.render` does not mutate self.tree.
                             let root = unsafe { &*root_ptr };
                             r.render(root, &self.viewport, &self.opts)
                         } else {
@@ -105,7 +108,8 @@ impl App {
                     None => return Vec::new(),
                 };
                 if let Some(r) = &mut self.renderer_3d {
-                    // Safe: root lives in self for duration of this call.
+                    // SAFETY: `root_ptr` aliases self.tree; the 3D renderer
+                    // reads-only from `root` and does not touch self.tree.
                     let root = unsafe { &*root_ptr };
                     r.render_to_view(
                         root,

@@ -357,10 +357,16 @@ impl WavefrontPipeline {
     }
 
     /// Dynamic offset (bytes) for tile `idx` into the per-tile dims/counts buffers.
+    ///
+    /// Overflow analysis: at `TILE_SLOT_STRIDE = 256` u32 wraps near ~16M tiles —
+    /// far above any realistic resolution × tile-size combination. The invariant
+    /// is debug-asserted (so failures fire in tests before wgpu validation does)
+    /// and the math goes through u64 so release builds never silently wrap.
     pub fn tile_offset(&self, idx: u32) -> u32 {
         debug_assert!(idx < self.tile_capacity, "tile_idx out of range");
-        idx.checked_mul(TILE_SLOT_STRIDE as u32)
-            .expect("tile offset overflow")
+        let off = idx as u64 * TILE_SLOT_STRIDE as u64;
+        debug_assert!(off <= u32::MAX as u64, "tile offset {off} overflows u32");
+        off as u32
     }
 
     /// Upload all per-tile dims and the per-tile count-init source for one frame's

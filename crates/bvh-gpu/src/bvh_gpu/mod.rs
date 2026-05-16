@@ -1475,7 +1475,21 @@ fn read_buffer_vec<T: Pod>(
     });
     // Must wait for map_async callback before rx.recv()
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    rx.recv().unwrap().unwrap();
+    // Outer recv fails if the callback was dropped without sending (device lost);
+    // inner Err reports the map_async outcome. Either failure: log and return
+    // empty so callers see no data and skip CPU-side verification paths instead
+    // of panicking mid-frame.
+    match rx.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            log::warn!("bvh_readback: map_async failed: {e:?}");
+            return Vec::new();
+        }
+        Err(e) => {
+            log::warn!("bvh_readback: map callback dropped (device lost?): {e}");
+            return Vec::new();
+        }
+    }
     let data = slice.get_mapped_range();
     let out = bytemuck::cast_slice(&data[..(size as usize)]).to_vec();
     drop(data);

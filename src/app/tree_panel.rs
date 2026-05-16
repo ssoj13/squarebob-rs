@@ -111,7 +111,7 @@ impl App {
         let mut flat_nodes: Vec<FlatNode> = Vec::new();
         let root_ptr = self.display_root().map(|r| r as *const DirEntry);
         if let Some(ptr) = root_ptr {
-            // Safety: the DirEntry lives in self.tree / self.display_tree_cache
+            // SAFETY: the DirEntry lives in self.tree / self.display_tree_cache
             // which are not modified until after flat_nodes is consumed.
             let root = unsafe { &*ptr };
             flatten_tree(

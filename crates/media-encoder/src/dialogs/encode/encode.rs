@@ -1399,6 +1399,9 @@ pub fn encode_sequence_from_comp(
     }
 
     // Initialize FFmpeg (suppress logging)
+    // SAFETY: `av_log_set_level` is a thread-safe scalar setter in the FFmpeg C
+    // API — no pointer args, no allocation, idempotent. Safe to call repeatedly
+    // from any thread per libavutil/log.c.
     unsafe {
         ffmpeg::ffi::av_log_set_level(ffmpeg::ffi::AV_LOG_QUIET);
     }
@@ -1655,6 +1658,11 @@ pub fn encode_sequence_from_comp(
         && matches!(settings.container, Container::MP4 | Container::MOV)
     {
         // Set codec tag via stream parameters
+        // SAFETY: `ost.parameters().as_mut_ptr()` returns a valid `*mut AVCodecParameters`
+        // owned by the output stream `ost`, which is borrowed from `octx` and outlives
+        // this scope. We mutate a single POD scalar field (`codec_tag`); no aliasing
+        // because no other reference into this struct exists between `parameters()`
+        // and the write.
         unsafe {
             // FFmpeg codec tag for HEVC: fourcc 'hvc1'
             (*ost.parameters().as_mut_ptr()).codec_tag = u32::from_le_bytes(*b"hvc1");
