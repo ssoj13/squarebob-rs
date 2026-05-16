@@ -80,9 +80,8 @@ pub struct OidnDenoiser {
     last_latency_ms: Option<f32>,
 
     /// Burn device sharing squarebob's wgpu setup. Built on first denoise.
-    /// Stored as a `'static` reference (via `Box::leak`) so the cached
-    /// `RtFilter` below can carry a `'static` lifetime parameter — a
-    /// deliberate single-instance leak of ~16 bytes per app process.
+    /// Stored as a `'static` reference (via `Box::leak`) so committed OIDN
+    /// models can be cached across denoise passes.
     burn_device_ref: Option<&'static burn_wgpu::WgpuDevice>,
 
     /// Cached TZA bytes from the last successful model load. Reused across
@@ -92,13 +91,11 @@ pub struct OidnDenoiser {
     cached_model_key: Option<(bool, bool, Quality)>,
     cached_model_bytes: Option<Vec<u8>>,
 
-    /// Cached `RtFilter`. Carries the loaded UNet and tile plan from one
-    /// `denoise()` to the next, so the ~30-50 ms `commit()` cost (TZA parse,
-    /// UNet weight load, tile-plan compute) is paid once per
-    /// mode/quality/dims combination, not every periodic fire.
-    cached_filter:
-        Option<Box<oidn_rs::RtFilter<'static, burn_wgpu::Wgpu<f32, i32>>>>,
-    cached_filter_key: Option<(bool, bool, Quality, u32, u32)>,
+    /// Cached immutable OIDN state: model weights + tile plan, but no
+    /// per-pass input/output tensor handles. This keeps repeated denoise
+    /// passes fast without retaining stale mutable GPU state between them.
+    cached_filter: Option<Box<oidn_rs::CommittedRtFilter<'static, burn_wgpu::Wgpu<f32, i32>>>>,
+    cached_filter_key: Option<(bool, bool, Quality, u32, u32, Option<u32>)>,
 
     /// Per-channel HDR clamp applied to the colour input tensor before
     /// it reaches the UNet. `0.0` (or non-finite) disables clamping;
@@ -110,12 +107,7 @@ pub struct OidnDenoiser {
 }
 
 impl OidnDenoiser {
-    pub fn new(
-        ctx: &GpuContext,
-        width: u32,
-        height: u32,
-        weights_dir: Option<PathBuf>,
-    ) -> Self {
+    pub fn new(ctx: &GpuContext, width: u32, height: u32, weights_dir: Option<PathBuf>) -> Self {
         let (result_texture, result_view) = create_result_texture(&ctx.device, width, height);
         Self {
             weights_dir,
@@ -151,11 +143,8 @@ impl OidnDenoiser {
         let (tex, view) = create_result_texture(&ctx.device, width, height);
         self.result_texture = tex;
         self.result_view = view;
-        // Filter cache is keyed on (mode, quality, w, h) — when dims change
-        // the cached filter is invalidated lazily on the next denoise call
-        // (see filter_key check there). Burn input tensors are allocated
-        // per-call by the I.5b bridge, so there's nothing dimension-tied
-        // to drop here aside from the result texture above.
+        // The committed filter cache is keyed by dimensions and invalidated
+        // lazily on the next denoise call.
     }
 
     pub fn set_mode(&mut self, mode: OidnMode) {
@@ -238,13 +227,17 @@ impl OidnDenoiser {
         log::debug!(
             "OIDN effective_mode={:?} (use_albedo={} use_normal={})",
             effective_mode,
-            matches!(effective_mode, OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal),
+            matches!(
+                effective_mode,
+                OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal
+            ),
             matches!(effective_mode, OidnMode::ColorAlbedoNormal),
         );
         if effective_mode != self.mode {
             log::debug!(
                 "OIDN: mode {:?} downgraded to {:?} (AOV unavailable)",
-                self.mode, effective_mode
+                self.mode,
+                effective_mode
             );
         }
         let use_albedo = matches!(
@@ -266,7 +259,7 @@ impl OidnDenoiser {
                 let dev = make_burn_device(ctx)?;
                 let leaked: &'static burn_wgpu::WgpuDevice = Box::leak(Box::new(dev));
                 self.burn_device_ref = Some(leaked);
-                log::info!("OIDN: Burn-wgpu device initialised on shared wgpu setup (leaked to 'static for filter caching)");
+                log::info!("OIDN: Burn-wgpu device initialised on shared wgpu setup (leaked to 'static for committed filter caching)");
                 leaked
             }
         };
@@ -304,16 +297,19 @@ impl OidnDenoiser {
         // [1, h, w, 4] shape.
         use burn::tensor::Tensor;
         type Wgpu = burn_wgpu::Wgpu<f32, i32>;
-        let (color_hwc4_padded, color_buf, color_off) =
-            alloc_hwc4_input(burn_device, padded_w, h)?;
-        let albedo_bridge = albedo_buf.map(|src| -> Result<_> {
-            let (t, buf, off) = alloc_hwc4_input(burn_device, w, h)?;
-            Ok((t, buf, off, src))
-        }).transpose()?;
-        let normal_bridge = normal_buf.map(|src| -> Result<_> {
-            let (t, buf, off) = alloc_hwc4_input(burn_device, w, h)?;
-            Ok((t, buf, off, src))
-        }).transpose()?;
+        let (color_hwc4_padded, color_buf, color_off) = alloc_hwc4_input(burn_device, padded_w, h)?;
+        let albedo_bridge = albedo_buf
+            .map(|src| -> Result<_> {
+                let (t, buf, off) = alloc_hwc4_input(burn_device, w, h)?;
+                Ok((t, buf, off, src))
+            })
+            .transpose()?;
+        let normal_bridge = normal_buf
+            .map(|src| -> Result<_> {
+                let (t, buf, off) = alloc_hwc4_input(burn_device, w, h)?;
+                Ok((t, buf, off, src))
+            })
+            .transpose()?;
 
         let mut encoder = encoder;
         // Color: copy_texture_to_buffer with (possibly padded) row stride.
@@ -350,7 +346,9 @@ impl OidnDenoiser {
         ctx.queue.submit(std::iter::once(encoder.finish()));
         log::trace!(
             "OIDN: input bridge submitted (color {} bytes padded@{} + 2×{} AOV)",
-            padded_bpr * (h as u64), padded_w, aov_size,
+            padded_bpr * (h as u64),
+            padded_w,
+            aov_size,
         );
 
         // Trim padding columns from the colour tensor — yields a view of
@@ -415,14 +413,19 @@ impl OidnDenoiser {
                 // (resolved via env / exe-relative / cwd; missing dir is
                 // fine — embedded path covers the standard modes alone).
                 let base_key = oidn_rs::registry::select_rt(
-                    true, use_albedo, use_normal,
-                    /*hdr*/ true, /*srgb*/ false, /*directional*/ false,
-                    /*clean_aux*/ false, self.quality,
+                    true,
+                    use_albedo,
+                    use_normal,
+                    /*hdr*/ true,
+                    /*srgb*/ false,
+                    /*directional*/ false,
+                    /*clean_aux*/ false,
+                    self.quality,
                 );
                 let fallback_dir = self.weights_dir.as_deref();
-                let loaded = base_key.as_ref().and_then(|key| {
-                    oidn_rs::weights::resolve(key, self.quality, fallback_dir)
-                });
+                let loaded = base_key
+                    .as_ref()
+                    .and_then(|key| oidn_rs::weights::resolve(key, self.quality, fallback_dir));
                 if let Some((stem, b)) = loaded {
                     log::debug!("OIDN: weights resolved stem={} ({} bytes)", stem, b.len());
                     self.cached_model_bytes = Some(b.clone());
@@ -434,20 +437,21 @@ impl OidnDenoiser {
             }
         };
 
-        // Cache the full filter (UNet + tile plan) by (mode/quality/dims).
-        // The filter survives between denoise calls — only the input/output
-        // images are reassigned, and `commit()` is now idempotent on
-        // unchanged shape, so the heavy UNet build cost is paid once.
-        let filter_key = (use_albedo, use_normal, self.quality, w as u32, h as u32);
+        // Cache immutable committed OIDN state only. The cached object owns
+        // the loaded UNet + tile plan, but each execute call receives fresh
+        // per-pass tensors and keeps no references after returning.
+        let filter_key = (
+            use_albedo,
+            use_normal,
+            self.quality,
+            w as u32,
+            h as u32,
+            user_scale.map(f32::to_bits),
+        );
         if self.cached_filter_key != Some(filter_key) {
-            self.cached_filter = None;
-        }
-        let filter_was_cached = self.cached_filter.is_some();
-        let cached_bytes_for_build = cached_bytes.clone();
-        let filter = self.cached_filter.get_or_insert_with(|| {
             log::debug!(
-                "OIDN: building RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, cached_weights={})",
-                hdr, self.quality, user_scale, cached_bytes_for_build.is_some()
+                "OIDN: building committed RtFilter (hdr={}, quality={:?}, input_scale_override={:?}, cached_weights={})",
+                hdr, self.quality, user_scale, cached_bytes.is_some()
             );
             // weights_dir is only consulted by RtFilter::commit when the
             // builder wasn't given pre-loaded bytes via `.weights(...)`.
@@ -455,10 +459,8 @@ impl OidnDenoiser {
             // `oidn_rs::weights::resolve`), so the path here is a
             // formality — empty string keeps the type happy without
             // requiring the dir to exist.
-            let weights_dir_placeholder: &Path = self
-                .weights_dir
-                .as_deref()
-                .unwrap_or(Path::new(""));
+            let weights_dir_placeholder: &Path =
+                self.weights_dir.as_deref().unwrap_or(Path::new(""));
             let mut builder = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
                 burn_device,
                 weights_dir_placeholder,
@@ -468,40 +470,31 @@ impl OidnDenoiser {
             if let Some(s) = user_scale {
                 builder = builder.input_scale(Some(s));
             }
-            if let Some(bytes) = cached_bytes_for_build {
+            if let Some(bytes) = cached_bytes.clone() {
                 builder = builder.weights(bytes);
             }
-            Box::new(builder.build())
-        });
-        self.cached_filter_key = Some(filter_key);
-        log::trace!(
-            "OIDN: filter cached={} (cache_key={:?})",
-            filter_was_cached, self.cached_filter_key
-        );
+            let filter = builder.build();
+            let committed = filter
+                .commit_tensor_model(w, h, true, use_albedo, use_normal)
+                .map_err(|e| anyhow::anyhow!("OIDN commit_tensor_model: {e:?}"))?;
+            log::debug!(
+                "OIDN: committed filter built (model={})",
+                committed.model_key().filename()
+            );
+            self.cached_filter = Some(Box::new(committed));
+            self.cached_filter_key = Some(filter_key);
+        }
 
-        // Tensor handoff to the filter. All three inputs already live on
-        // the shared wgpu device — the bridge above wrote PT pixels
-        // directly into each tensor's wgpu::Buffer, no host roundtrip.
-        filter.set_color_tensor(color_chw3_t);
-        if let Some(t) = albedo_chw3_t { filter.set_albedo_tensor(t); }
-        if let Some(t) = normal_chw3_t { filter.set_normal_tensor(t); }
-        filter.allocate_output_tensor(w, h);
-        log::trace!("OIDN: filter.commit() begin");
-        filter.commit().map_err(|e| anyhow::anyhow!("OIDN commit: {e:?}"))?;
-        log::debug!(
-            "OIDN: filter committed (model={:?})",
-            filter.model_key().map(|k| k.filename())
-        );
-        log::trace!("OIDN: filter.execute() begin");
-        filter.execute().map_err(|e| anyhow::anyhow!("OIDN execute: {e:?}"))?;
-        log::trace!("OIDN: filter.execute() done");
+        let filter = self
+            .cached_filter
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("OIDN committed filter cache missing"))?;
+        log::trace!("OIDN: committed filter execute_tensors() begin");
         let out_chw3: Tensor<Wgpu, 4> = filter
-            .take_output_tensor()
-            .ok_or_else(|| anyhow::anyhow!("OIDN take_output_tensor: empty"))?;
-        log::debug!(
-            "OIDN: take_output_tensor shape={:?}",
-            out_chw3.dims()
-        );
+            .execute_tensors(Some(color_chw3_t), albedo_chw3_t, normal_chw3_t, None)
+            .map_err(|e| anyhow::anyhow!("OIDN execute_tensors: {e:?}"))?;
+        log::trace!("OIDN: committed filter execute_tensors() done");
+        log::debug!("OIDN: take_output_tensor shape={:?}", out_chw3.dims());
 
         // Bridge: convert the tensor-native CHW RGB output into a
         // contiguous HWC RGBA buffer (alpha=1) on-device, then copy
@@ -517,7 +510,14 @@ impl OidnDenoiser {
             let zeros = Tensor::<Wgpu, 4>::zeros([1, h, pad_cols, 4], burn_device);
             Tensor::cat(vec![out_hwc4, zeros], 2)
         };
-        copy_tensor_into_texture(&ctx.device, &ctx.queue, out_hwc4_padded, &self.result_texture, w, h)?;
+        copy_tensor_into_texture(
+            &ctx.device,
+            &ctx.queue,
+            out_hwc4_padded,
+            &self.result_texture,
+            w,
+            h,
+        )?;
 
         // Drain all GPU work this pass submitted before returning.
         //
@@ -543,7 +543,11 @@ impl OidnDenoiser {
         self.last_latency_ms = Some(elapsed);
         log::info!(
             "OIDN: denoise {}×{} mode={:?} quality={:?} -> {:.1} ms",
-            self.width, self.height, self.mode, self.quality, elapsed
+            self.width,
+            self.height,
+            self.mode,
+            self.quality,
+            elapsed
         );
 
         Ok(())
@@ -564,9 +568,7 @@ pub fn make_burn_device(ctx: &GpuContext) -> Result<burn_wgpu::WgpuDevice> {
     // we're chasing is a `cubecl_wgpu::init_device(WgpuSetup)` bridge bug.
     // Unset → production path (shared device).
     if std::env::var("OIDN_STANDALONE_DEVICE").is_ok() {
-        log::warn!(
-            "OIDN_STANDALONE_DEVICE set — using non-shared Burn device (debug only)"
-        );
+        log::warn!("OIDN_STANDALONE_DEVICE set — using non-shared Burn device (debug only)");
         return Ok(burn_wgpu::WgpuDevice::default());
     }
 
@@ -660,15 +662,8 @@ type HwC4Input = (
     u64,
 );
 
-fn alloc_hwc4_input(
-    device: &burn_wgpu::WgpuDevice,
-    w: usize,
-    h: usize,
-) -> Result<HwC4Input> {
-    let t = burn::tensor::Tensor::<burn_wgpu::Wgpu<f32, i32>, 4>::zeros(
-        [1, h, w, 4],
-        device,
-    );
+fn alloc_hwc4_input(device: &burn_wgpu::WgpuDevice, w: usize, h: usize) -> Result<HwC4Input> {
+    let t = burn::tensor::Tensor::<burn_wgpu::Wgpu<f32, i32>, 4>::zeros([1, h, w, 4], device);
     // Reach the underlying CubeTensor via the public Tensor::into_primitive +
     // TensorPrimitive::Float route. All fields on CubeTensor are pub
     // (burn-cubecl-0.21.0/src/tensor/base.rs).
@@ -748,7 +743,10 @@ fn copy_tensor_into_texture(
     debug_assert_eq!(dims[1], h);
     debug_assert_eq!(dims[3], 4);
     let padded_w = dims[2];
-    debug_assert!(padded_w >= valid_w, "output tensor must contain all valid pixels");
+    debug_assert!(
+        padded_w >= valid_w,
+        "output tensor must contain all valid pixels"
+    );
     let bytes_per_row = (padded_w * 16) as u32;
     if !bytes_per_row.is_multiple_of(256) {
         anyhow::bail!(

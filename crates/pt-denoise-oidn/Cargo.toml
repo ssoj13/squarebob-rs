@@ -35,6 +35,6 @@ cubecl-wgpu = "0.10"
 # Disable with `default-features = false` if shipping external
 # weights instead.
 #
-# Pinned to a specific commit on `main` so builds stay reproducible.
-# Bump the `rev` when you want a fresh oidn-rs.
-oidn-rs = { git = "https://github.com/ssoj13/oidn-rs", rev = "3ba6679d3bf682430c2ac5cdf80c663510fbe816", features = ["embed-all"] }
+# Local sibling checkout while developing squarebob and oidn-rs together.
+# Before publishing, commit/push oidn-rs and switch this back to a pinned git rev.
+oidn-rs = { path = "../../../oidn-rs/crates/oidn-rs", features = ["embed-all"] }
