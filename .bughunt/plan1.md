@@ -179,23 +179,43 @@ Candidate worth verifying once gitnexus works:
 
 Each commit verified individually with `cargo check -p <crate>` (exit 0). Workspace-wide cargo check after the chain is green.
 
-## What still needs typestate work
+## Status of the compute.rs panic class — DONE via Path B variant
 
-**`pt-megakernel/src/compute.rs` — 7 remaining `.as_ref().unwrap()` calls:**
-* lines 2633, 2700, 2869 on `self.wavefront` (`Option<WavefrontPipeline>`)
-* lines 2872, 3445 on `self.wavefront_bind_groups` (`Option<WavefrontBindGroups>`)
-* line 3024 on `self.restir`
-* line 3025 on `self.restir_bind_groups`
+Earlier draft of this doc listed 7 remaining `.as_ref().unwrap()` calls
+in `dispatch_wavefront` as "not safe to do inline." Commit `ecbfa0e`
+landed Path B in a lighter form than originally described:
 
-These encode a real caller invariant — *"if this dispatch path is entered, the matching feature is enabled and its bind groups have been (re)built this frame"*. Three sub-problems make the bundle pattern that worked for `RenderState` and `BvhBuffers` not quite drop-in here:
+* Each of the 7 sites now uses `let Some(x) = ... else { log + return false }`
+  (or the `match` equivalent for the `as_mut` site). The function's
+  existing `bool` return signals "false ⇒ nothing dispatched", so a
+  drift between the entry check and a downstream access degrades into
+  a logged skip instead of a frame-time panic.
+* Each site logs an `error!` describing *which* slot drifted and *which*
+  pass would have failed — far better debug signal than a bare unwrap
+  panic site.
 
-1. The pipelines (`wavefront`, `restir`) and their bind groups have **independent invalidation triggers**. `wavefront_bind_groups = None` happens on its own at line 1658 when the scene buffers aren't ready, even though `wavefront` itself stays `Some`. To bundle them you'd want eager rebuild on every condition that currently clears just the bind groups.
-2. The feature toggle (`wavefront_config.enabled: bool`) is separate from the data (`wavefront.is_some()`), and the dispatch path currently trusts they're in sync. Collapsing to "Some ⇔ enabled" needs an audit of every place that flips the config flag.
-3. Dispatch is `&mut self` and intermixes immutable reads of `self.wavefront`/`self.wavefront_bind_groups` with mutable updates of other fields (`self.frame_count`, encoder operations through `&self.ctx.queue`). A clean fix is to change dispatch helpers to take `&WavefrontPipeline, &WavefrontBindGroups` as parameters and have the caller do the let-Some once at the top — but that's a signature change rippling through many internal pass-encoder methods inside the 4525-LOC file.
+What this commit did **not** do (and why):
+* The field types are still `Option<WavefrontPipeline>` etc. They have
+  to be — the feature toggles at runtime.
+* Dispatch helpers still take `&mut self`. Threading resolved refs
+  through every internal pass helper in the 4525-LOC file would be the
+  "full" Path B and remains a follow-up. The let-Some pattern at each
+  site captures the same intent locally — at the cost of a few extra
+  early-return checks the compiler can see don't fire when the entry
+  check still proves the invariant.
 
-The recommended follow-up is one of:
-* **A.** Bundle `WavefrontStack { pipeline, bind_groups }` and `ReSTIRStack { pipeline, bind_groups, gbuffer_stack }`; make rebuild_*_bind_groups always rebuild the whole stack atomically (no independent `bind_groups = None`); collapse the feature flag into `Option::is_some`. Touches ~30 sites.
-* **B.** Restructure dispatch helpers to take resolved refs as parameters. The caller (`dispatch` entry point) extracts via `let Some((wf, bgs)) = self.wavefront_ready() else { return; };` once, then passes refs down. Touches dispatch method signatures + their internal callers; safer than A because it doesn't change rebuild semantics.
+Three sub-problems still motivate a future signature-threading pass:
+1. Pipelines and their bind groups have **independent invalidation
+   triggers** — `wavefront_bind_groups = None` at line 1658 when scene
+   buffers aren't ready, even though `wavefront` stays `Some`. Bundle-
+   then-eager-rebuild would make this go away.
+2. The feature toggle (`wavefront_config.enabled`) lives next to the
+   data (`wavefront: Option<_>`); a desync is a code-logic bug, not
+   one the type system catches.
+3. Dispatch is `&mut self` and intermixes immutable reads of resolved
+   slots with mutable updates of other fields. Splitting the
+   dispatch body into helpers that take resolved refs would lift the
+   let-Some pattern out of the hot path entirely.
 
-Either is a dedicated session of work with `cargo check` verification at each step; neither is safe to do inline alongside the other changes here.
+Tracked but not blocking.
 
