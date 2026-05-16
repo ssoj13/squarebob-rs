@@ -26,7 +26,6 @@ use std::time::Instant;
 use anyhow::Result;
 use render_core::gpu::GpuContext;
 
-use oidn_rs::filter::Filter;
 pub use oidn_rs::Quality;
 
 // ---------- Public API ----------
