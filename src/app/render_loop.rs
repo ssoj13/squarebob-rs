@@ -44,19 +44,55 @@ impl App {
         }
     }
 
-    /// Sync dock tabs visibility with settings visibility flag.
-    /// Rebuilds dock_state if visibility changed.
+    /// Sync dock tab presence with the App visibility flags.
+    ///
+    /// - **On→off** (toolbar toggles a tab off or the user clicks the X):
+    ///   remove the tab from `dock_state`. `dock_layout` is **not**
+    ///   touched, so the tab keeps its remembered slot for next time.
+    /// - **Off→on**: rebuild `dock_state` from `dock_layout` minus the
+    ///   tabs that are still hidden. The restored tab lands in the
+    ///   exact column/row the user (or the default layout) put it in
+    ///   — not glued to the first leaf.
+    ///
+    /// Doing the rebuild on restore (rather than per-tab insertion)
+    /// also keeps the other visible tabs at their `dock_layout`
+    /// positions, which is what `dock_layout` was last snapshotted as.
     fn sync_dock_tabs_visibility(&mut self) {
-        let current_tabs: Vec<dock::DockTab> = self
-            .dock_state
-            .iter_all_tabs()
-            .map(|(_, tab)| tab.clone())
-            .collect();
+        let visibility = [
+            (dock::DockTab::FileView, self.show_outliner),
+            (dock::DockTab::QuadTreeView, self.show_viewport),
+            (dock::DockTab::Settings, self.show_settings),
+        ];
 
-        let has_settings = current_tabs.contains(&dock::DockTab::Settings);
-        let has_ext = current_tabs.contains(&dock::DockTab::Extensions);
-        if has_ext || self.show_settings != has_settings {
-            self.dock_state = dock::build_dock_state(self.show_settings);
+        let mut needs_restore = false;
+        for (tab, want) in &visibility {
+            let has = dock::dock_contains(&self.dock_state, tab);
+            match (*want, has) {
+                (true, false) => needs_restore = true,
+                (false, true) => {
+                    dock::dock_remove(&mut self.dock_state, tab);
+                }
+                _ => {}
+            }
+        }
+
+        if needs_restore {
+            let visible: Vec<dock::DockTab> = visibility
+                .iter()
+                .filter(|(_, want)| *want)
+                .map(|(tab, _)| tab.clone())
+                .collect();
+            self.dock_state = dock::rebuild_from_layout(&self.dock_layout, &visible);
+        }
+    }
+
+    /// Snapshot the current dock state into `dock_layout` whenever every
+    /// panel is visible. This is the only safe moment to capture user
+    /// drag-rearrangements without losing the remembered positions of
+    /// currently-hidden tabs.
+    fn snapshot_dock_layout(&mut self) {
+        if self.show_outliner && self.show_viewport && self.show_settings {
+            self.dock_layout = self.dock_state.clone();
         }
     }
 
@@ -289,6 +325,11 @@ impl App {
             }
             self.dock_state = dock_state;
         });
+
+        // Capture user drag-rearrangements into the memory layout.
+        // Runs only when every tab is currently visible — see the
+        // method docs.
+        self.snapshot_dock_layout();
 
         self.ui_encode_dialog_window(&ctx);
         self.ui_trash_confirmation(&ctx);

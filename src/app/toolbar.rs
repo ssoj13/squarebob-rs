@@ -86,8 +86,32 @@ impl App {
 
                 ui.separator();
 
-                // === VIEW OPTIONS ===
-                ui.checkbox(&mut self.show_settings, "Settings");
+                // === PANEL VISIBILITY TOGGLES ===
+                // Two-way bound to dock tabs: pressing a button
+                // adds/removes the corresponding tab; closing the tab
+                // via its "x" un-presses the button. See dock.rs
+                // `on_close` for the reverse direction.
+                if ui
+                    .add(egui::Button::new("Outliner").selected(self.show_outliner))
+                    .on_hover_text("Toggle Outliner panel")
+                    .clicked()
+                {
+                    self.show_outliner = !self.show_outliner;
+                }
+                if ui
+                    .add(egui::Button::new("Viewport").selected(self.show_viewport))
+                    .on_hover_text("Toggle Viewport panel")
+                    .clicked()
+                {
+                    self.show_viewport = !self.show_viewport;
+                }
+                if ui
+                    .add(egui::Button::new("Settings").selected(self.show_settings))
+                    .on_hover_text("Toggle Settings panel")
+                    .clicked()
+                {
+                    self.show_settings = !self.show_settings;
+                }
 
                 // === RIGHT-ALIGNED: 2D/3D + CPU/GPU + Dark/Light toggle buttons ===
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

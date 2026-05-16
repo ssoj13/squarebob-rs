@@ -35,7 +35,6 @@ pub enum ScannerMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SettingsTab {
     #[default]
-    General,
     Rendering,
     Exclusions,
     Extensions,
@@ -46,6 +45,10 @@ pub enum SettingsTab {
 pub(super) struct PersistState {
     pub scan_path: String,
     pub show_settings: bool,
+    #[serde(default = "default_true")]
+    pub show_outliner: bool,
+    #[serde(default = "default_true")]
+    pub show_viewport: bool,
     pub dark_mode: bool,
     pub scanner_mode: ScannerMode,
     pub filter_auto_rebuild: bool,
@@ -65,6 +68,12 @@ pub(super) struct PersistState {
     pub render_3d_opts: Render3DOptions,
     #[serde(default = "crate::app::dock::default_dock_state")]
     pub dock_state: DockState<DockTab>,
+    /// Persistent "memory" layout that always holds every tab in its
+    /// last-known position. Used to restore a tab to where it was when
+    /// the user reopens it via the toolbar — without it the panel
+    /// would snap onto the first leaf and end up in the wrong column.
+    #[serde(default = "crate::app::dock::default_dock_state")]
+    pub dock_layout: DockState<DockTab>,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
     #[serde(default)]
@@ -104,6 +113,10 @@ pub(super) fn default_autosave_interval() -> f32 {
     5.0
 }
 
+pub(super) fn default_true() -> bool {
+    true
+}
+
 pub(super) fn default_font_size() -> f32 {
     12.0
 }
@@ -112,7 +125,7 @@ pub(super) fn default_settings_tint_mix() -> f32 {
 }
 
 pub(super) fn default_settings_section_header_height() -> f32 {
-    15.0
+    18.0
 }
 
 pub(super) fn default_settings_panel_font_body() -> f32 {
@@ -120,15 +133,15 @@ pub(super) fn default_settings_panel_font_body() -> f32 {
 }
 
 pub(super) fn default_settings_panel_font_heading() -> f32 {
-    11.0
+    12.0
 }
 
 pub(super) fn default_settings_panel_font_subheading() -> f32 {
-    9.0
+    10.0
 }
 
 pub(super) fn default_settings_panel_font_small() -> f32 {
-    8.0
+    9.0
 }
 
 pub(super) fn default_settings_panel_font_button() -> f32 {
@@ -174,6 +187,8 @@ pub struct App {
     pub(super) selected_path: Option<PathBuf>,
     pub(super) scroll_to_selected: bool,
     pub(super) show_settings: bool,
+    pub(super) show_outliner: bool,
+    pub(super) show_viewport: bool,
     pub(super) expanded: std::collections::HashSet<PathBuf>,
     pub(super) needs_layout: bool,
     pub(super) needs_render_3d: bool,
@@ -219,6 +234,8 @@ pub struct App {
     /// Settings sidebar — `TextStyle::Monospace`.
     pub(super) settings_panel_font_monospace: f32,
     pub(super) dock_state: DockState<DockTab>,
+    /// Parallel "memory" layout — see `PersistedSettings::dock_layout`.
+    pub(super) dock_layout: DockState<DockTab>,
     pub(super) tree_panel_width: f32,
     pub(super) settings_panel_width: f32,
     pub(super) cache_age: Option<u64>,
@@ -380,6 +397,8 @@ impl Default for App {
             selected_path: None,
             scroll_to_selected: false,
             show_settings: true,
+            show_outliner: true,
+            show_viewport: true,
             expanded: std::collections::HashSet::new(),
             needs_layout: false,
             needs_render_3d: false,
@@ -416,6 +435,7 @@ impl Default for App {
             settings_panel_font_button: default_settings_panel_font_button(),
             settings_panel_font_monospace: default_settings_panel_font_monospace(),
             dock_state: crate::app::dock::default_dock_state(),
+            dock_layout: crate::app::dock::default_dock_state(),
             tree_panel_width: 200.0,
             settings_panel_width: 280.0,
             cache_age: None,

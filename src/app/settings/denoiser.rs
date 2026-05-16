@@ -105,23 +105,38 @@ impl App {
 
                     // Row 4 — Periodic re-run interval. 0 disables the
                     // periodic fire and leaves only the final-spp trigger.
+                    // Quick-pick buttons sit inline so the user can jump
+                    // to common cadences without dragging the value.
                     control_label(ui, "Interval:");
-                    let interval_resp = ui
-                        .add(
-                            egui::DragValue::new(&mut self.render_3d_opts.pt_oidn_interval)
-                                .range(0..=10_000)
-                                .speed(1)
-                                .suffix(" spp"),
-                        )
-                        .on_hover_text(
-                            "Re-run OIDN every N accumulated samples during the \
-                             render, on top of the final-spp fire. 0 disables \
-                             periodic re-runs. Default 128 — gives smoothed \
-                             intermediate previews without hammering inference.",
-                        );
-                    if interval_resp.changed() {
-                        *changed = true;
-                    }
+                    ui.horizontal(|ui| {
+                        let interval_resp = ui
+                            .add(
+                                egui::DragValue::new(&mut self.render_3d_opts.pt_oidn_interval)
+                                    .range(0..=10_000)
+                                    .speed(1)
+                                    .suffix(" spp"),
+                            )
+                            .on_hover_text(
+                                "Re-run OIDN every N accumulated samples during the \
+                                 render, on top of the final-spp fire. 0 disables \
+                                 periodic re-runs. Default 128 — gives smoothed \
+                                 intermediate previews without hammering inference.",
+                            );
+                        if interval_resp.changed() {
+                            *changed = true;
+                        }
+                        for preset in [32_u32, 64, 128, 256, 512, 1024] {
+                            let selected = self.render_3d_opts.pt_oidn_interval == preset;
+                            if ui
+                                .selectable_label(selected, preset.to_string())
+                                .on_hover_text(format!("Set interval to {preset} spp"))
+                                .clicked()
+                            {
+                                self.render_3d_opts.pt_oidn_interval = preset;
+                                *changed = true;
+                            }
+                        }
+                    });
                     ui.end_row();
                 });
 

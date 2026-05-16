@@ -37,4 +37,4 @@ cubecl-wgpu = "0.10"
 #
 # Pinned to a specific commit on `main` so builds stay reproducible.
 # Bump the `rev` when you want a fresh oidn-rs.
-oidn-rs = { git = "https://github.com/ssoj13/oidn-rs", rev = "a0c32f2a2a1feb1bd635dba0218c354b3ea80526", features = ["embed-all"] }
+oidn-rs = { git = "https://github.com/ssoj13/oidn-rs", rev = "3ba6679d3bf682430c2ac5cdf80c663510fbe816", features = ["embed-all"] }

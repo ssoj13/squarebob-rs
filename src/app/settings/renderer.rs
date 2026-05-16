@@ -122,7 +122,7 @@ fn renderer_control_tooltip(label: &str) -> &'static str {
 /// to the header line only (the body uses the parent ui style) and force
 /// the click strip to span the available width so the chevron + label
 /// align with the rest of the panel.
-fn compact_section(
+pub(super) fn compact_section(
     ui: &mut egui::Ui,
     title: &'static str,
     default_open: bool,
@@ -150,7 +150,7 @@ impl App {
     /// emitted as top-level siblings of the caller's Denoiser section
     /// rather than nested inside a single "Renderer" collapsing
     /// header — flatter, easier to scan, faster to drill into.
-    pub(super) fn ui_settings_renderer(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn ui_settings_renderer(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
         if self.render_mode == RenderMode::Mode2D {
             egui::CollapsingHeader::new(egui::RichText::new("Renderer").heading())
                 .default_open(true)
@@ -159,7 +159,7 @@ impl App {
                 });
         }
         if self.render_mode == RenderMode::Mode3D {
-            self.ui_3d_settings(ui);
+            self.ui_3d_settings(ui, changed);
         }
     }
 
@@ -179,39 +179,41 @@ impl App {
 
     /// 3D renderer settings — flat layout in VFX production order:
     ///
-    /// 1.  **Geometry** — shape, layout, height, color (incl. Polar).
-    /// 2.  **Effects** — geometric distortion (Ocean / Vortex / …).
-    /// 3.  **Animation** — global time master, per-timeline speeds.
-    /// 4.  **Lights** — *(planned, currently merged into Materials)*.
-    /// 5.  **Environment** — env map / sky / background.
-    /// 6.  **Materials** — material assignment & PBR/glass globals.
-    /// 7.  **Render** — mode picker + Path Tracer knobs.
-    /// 8.  **Samples** — *(planned, currently inside Path Tracer)*.
-    /// 9.  **Denoise** — owned by the caller (mod.rs), sibling of the
-    ///     sections above.
-    /// 10. **Camera** — viewer position/lens/inertia.
-    /// 11. **Interaction** — hover / selection / picking tools.
+    /// 1. **Geometry** — shape, layout, height, color (incl. Polar).
+    /// 2. **Animation** — global time master, per-timeline speeds.
+    /// 3. **FX** — geometric distortion (Ocean / Vortex / …).
+    /// 4. **Materials** — material assignment & PBR/glass globals,
+    ///    including the PT-only `Glass` and `Lights` material-override
+    ///    subsections.
+    /// 5. **Environment** — env map / sky / background.
+    /// 6. **Camera** — viewer position/lens/inertia. Sits right
+    ///    before Render so the user "finds the shot" before turning
+    ///    on the path tracer.
+    /// 7. **Render** — mode picker + Path Tracer knobs.
+    /// 8. **Samples** — *(currently inside Path Tracer body)*.
+    /// 9. **Denoise** — emitted right after Samples; the denoiser
+    ///    consumes the sample budget produced by it.
     ///
-    /// Each section is a top-level `CollapsingHeader` so they collapse
-    /// independently and read like a build pipeline.
-    fn ui_3d_settings(&mut self, ui: &mut egui::Ui) {
-        // 1. Geometry — first thing the user defines.
+    /// `Interaction` (hover/selection) lives as a sub-band of the
+    /// General section in `mod.rs` — it's a UX preference, not a
+    /// production-pipeline step.
+    fn ui_3d_settings(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+        // 1. Geometry.
         self.ui_3d_geometry(ui);
-        // 2. Effects — distortion applied to that geometry.
-        self.ui_3d_effects(ui);
-        // 3. Animation — time control feeding into effects + env.
+        // 2. Animation — time master feeding FX + env.
         self.ui_3d_animation(ui);
-        // 4. Lights — emissive cube materials (PT-only).
-        if self.render_3d_opts.path_tracing {
-            self.ui_3d_lights(ui);
-        }
-        // 5. Environment — IBL + background (acts as ambient lighting).
-        self.ui_3d_environment(ui);
-        // 6. Materials — surface assignment + PBR globals.
-        //    Hidden in wireframe (cubes have no surface there).
+        // 3. FX — distortion applied to the geometry over time.
+        self.ui_3d_effects(ui);
+        // 4. Materials — surface assignment + PBR globals + PT
+        //    Glass/Lights override subsections. Hidden in wireframe.
         if !self.render_3d_opts.show_wireframe {
             self.ui_3d_materials(ui);
         }
+        // 5. Environment — IBL + background.
+        self.ui_3d_environment(ui);
+        // 6. Camera — viewer setup. Before Render so the shot is
+        //    framed before the user enables the path tracer.
+        self.ui_3d_camera(ui);
         // 7. Render — mode picker + Path Tracer body.
         //    Wrapped in `tinted_section` so it visually matches the other
         //    top-level sections. Path Tracer knobs inside are PT-only.
@@ -232,11 +234,10 @@ impl App {
         if self.render_3d_opts.path_tracing {
             self.ui_3d_samples(ui);
         }
-        // 9. Denoise — emitted by mod.rs after this function returns.
-        // 10. Camera — viewer setup.
-        self.ui_3d_camera(ui);
-        // 11. Interaction — hover & selection tools.
-        self.ui_3d_interaction(ui);
+        // 9. Denoise — sits next to Samples because it consumes the
+        //    same sample budget. Always rendered (status is informative
+        //    even in PBR mode where OIDN never fires).
+        self.ui_settings_denoiser(ui, changed);
     }
 
     /// Shading mode selection (Shaded/Wireframe/Path Tracing)
@@ -545,11 +546,12 @@ impl App {
         );
     }
 
-    /// Effects settings (hash transforms, animation)
+    /// FX settings (hash transforms, animation). Section labelled "FX"
+    /// in the panel — shorter, fits next to its neighbours.
     fn ui_3d_effects(&mut self, ui: &mut egui::Ui) {
         tinted_section(
             ui,
-            "Effects",
+            "FX",
             false,
             self.settings_tint_mix,
             self.settings_section_header_height,
@@ -997,10 +999,6 @@ impl App {
                                 }
                             }
                             ui.end_row();
-
-                            if path_tracing {
-                                self.ui_pt_material_counts(ui, total_cubes);
-                            }
                         }
 
                         if !path_tracing {
@@ -1066,6 +1064,36 @@ impl App {
                             ui.end_row();
                         });
                 }
+
+                // PT-only material overrides. Each is a self-contained
+                // subsection that groups every knob affecting that
+                // material class — count, percentage, and BSDF
+                // parameters — instead of scattering them across
+                // Materials grid + path-tracer body.
+                if path_tracing {
+                    let header_h = self.settings_section_header_height;
+                    compact_section(ui, "Glass", false, header_h, |ui| {
+                        settings_grid(ui, "material_glass_cubes_grid", |ui| {
+                            self.ui_pt_material_counts(ui, total_cubes);
+                        });
+                        // BSDF params — transparency, preset, IoR,
+                        // dispersion, etc. Used to live under
+                        // Render → Path Tracer → Glass; promoted here
+                        // because they are conceptually material
+                        // overrides applied to the glass-assigned
+                        // cubes above.
+                        let mut pt_changed = false;
+                        self.ui_pt_glass(ui, &mut pt_changed);
+                        if pt_changed {
+                            if let Some(r) = &mut self.renderer_3d {
+                                r.reset_pt_accumulation();
+                            }
+                        }
+                    });
+                    compact_section(ui, "Lights", false, header_h, |ui| {
+                        self.ui_material_light_cubes(ui, total_cubes);
+                    });
+                }
             },
         );
     }
@@ -1089,13 +1117,8 @@ impl App {
             self.settings_section_header_height,
             |ui| self.ui_pt_paths(ui, &mut pt_changed),
         );
-        compact_section(
-            ui,
-            "Glass",
-            false,
-            self.settings_section_header_height,
-            |ui| self.ui_pt_glass(ui, &mut pt_changed),
-        );
+        // Glass BSDF lives under Materials → Glass now — it is a
+        // material override, not a path-tracer algorithm knob.
         compact_section(
             ui,
             "Camera",
@@ -1202,18 +1225,12 @@ impl App {
         ui.end_row();
     }
 
-    /// Lights section — emissive cube materials. Top-level VFX section,
-    /// shown only when path tracing is active (PBR has no light cubes).
-    fn ui_3d_lights(&mut self, ui: &mut egui::Ui) {
-        let total_cubes = self.pt_total_cubes();
-        tinted_section(
-            ui,
-            "Lights",
-            true,
-            self.settings_tint_mix,
-            self.settings_section_header_height,
-            |ui| {
-                settings_grid(ui, "lights_grid", |ui| {
+    /// Light Cubes assignment grid — emissive cube counts plus warm/cool
+    /// tinting and intensity. Lives as a subsection of `Materials` (no
+    /// own tinted wrapper) so all PT material-assignment knobs are
+    /// grouped together.
+    fn ui_material_light_cubes(&mut self, ui: &mut egui::Ui, total_cubes: u32) {
+        settings_grid(ui, "material_light_cubes_grid", |ui| {
                     control_label(ui, "Light Cubes:");
                     ui.horizontal(|ui| {
                         if ui
@@ -1302,8 +1319,6 @@ impl App {
                         ui.end_row();
                     }
                 });
-            },
-        );
     }
 
     /// Samples section — sampling budget + adaptive variance controls.
@@ -2067,65 +2082,58 @@ impl App {
         );
     }
 
-    /// Interaction settings (hover highlight)
-    fn ui_3d_interaction(&mut self, ui: &mut egui::Ui) {
-        tinted_section(
-            ui,
-            "Interaction",
-            false,
-            self.settings_tint_mix,
-            self.settings_section_header_height,
-            |ui| {
-                egui::Grid::new("interaction_grid")
-                    .num_columns(2)
-                    .spacing([8.0, 4.0])
-                    .min_col_width(SETTINGS_LABEL_WIDTH)
-                    .show(ui, |ui| {
-                        control_label(ui, "Hover:");
-                        multibutton_exclusive(
-                            ui,
-                            &mut self.render_3d_opts.hover_mode,
-                            &[
-                                (HoverMode::None, "None"),
-                                (HoverMode::Outline, "Outline"),
-                                (HoverMode::Tint, "Tint"),
-                                (HoverMode::Both, "Both"),
-                            ],
-                            MultiButtonAxis::Horizontal,
-                        );
-                        ui.end_row();
+    /// Interaction controls (hover mode + outline params). Bare grid —
+    /// no tinted wrapper — so the caller can host it as a sub-band
+    /// inside another tinted section (e.g. General).
+    pub(super) fn ui_interaction_grid(&mut self, ui: &mut egui::Ui) {
+        egui::Grid::new("interaction_grid")
+            .num_columns(2)
+            .spacing([8.0, 4.0])
+            .min_col_width(SETTINGS_LABEL_WIDTH)
+            .show(ui, |ui| {
+                control_label(ui, "Hover:");
+                multibutton_exclusive(
+                    ui,
+                    &mut self.render_3d_opts.hover_mode,
+                    &[
+                        (HoverMode::None, "None"),
+                        (HoverMode::Outline, "Outline"),
+                        (HoverMode::Tint, "Tint"),
+                        (HoverMode::Both, "Both"),
+                    ],
+                    MultiButtonAxis::Horizontal,
+                );
+                ui.end_row();
 
-                        if matches!(
-                            self.render_3d_opts.hover_mode,
-                            HoverMode::Outline | HoverMode::Both
-                        ) {
-                            control_label(ui, "Width:");
-                            if ui
-                                .add(egui::Slider::new(
-                                    &mut self.render_3d_opts.hover_outline_width,
-                                    0.5..=5.0,
-                                ))
-                                .changed()
-                            {
-                                self.needs_layout = true;
-                            }
-                            ui.end_row();
+                if matches!(
+                    self.render_3d_opts.hover_mode,
+                    HoverMode::Outline | HoverMode::Both
+                ) {
+                    control_label(ui, "Width:");
+                    if ui
+                        .add(egui::Slider::new(
+                            &mut self.render_3d_opts.hover_outline_width,
+                            0.5..=5.0,
+                        ))
+                        .changed()
+                    {
+                        self.needs_layout = true;
+                    }
+                    ui.end_row();
 
-                            control_label(ui, "Alpha:");
-                            if ui
-                                .add(egui::Slider::new(
-                                    &mut self.render_3d_opts.hover_outline_alpha,
-                                    0.1..=1.0,
-                                ))
-                                .changed()
-                            {
-                                self.needs_layout = true;
-                            }
-                            ui.end_row();
-                        }
-                    });
-            },
-        );
+                    control_label(ui, "Alpha:");
+                    if ui
+                        .add(egui::Slider::new(
+                            &mut self.render_3d_opts.hover_outline_alpha,
+                            0.1..=1.0,
+                        ))
+                        .changed()
+                    {
+                        self.needs_layout = true;
+                    }
+                    ui.end_row();
+                }
+            });
     }
 
     /// Camera controls
@@ -2160,7 +2168,7 @@ impl App {
                             ui.add(
                                 egui::Slider::new(
                                     &mut self.render_3d_opts.inertia_cutoff,
-                                    0.0001..=0.05,
+                                    0.0001..=0.2,
                                 )
                                 .logarithmic(true),
                             )

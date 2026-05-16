@@ -78,6 +78,8 @@ impl App {
                 if let Ok(s) = serde_json::from_str::<PersistState>(&json) {
                     app.scan_path = s.scan_path;
                     app.show_settings = s.show_settings;
+                    app.show_outliner = s.show_outliner;
+                    app.show_viewport = s.show_viewport;
                     app.dark_mode = s.dark_mode;
                     app.scanner_mode = s.scanner_mode;
                     app.filter_auto_rebuild = s.filter_auto_rebuild;
@@ -89,6 +91,7 @@ impl App {
                     app.render_mode = s.render_mode;
                     app.render_3d_opts = s.render_3d_opts;
                     app.dock_state = s.dock_state;
+                    app.dock_layout = s.dock_layout;
                     app.font_size = s.font_size;
                     app.settings_tab = s.settings_tab;
                     app.ext_filter = s.ext_filter;
@@ -682,6 +685,8 @@ impl eframe::App for App {
         let state = PersistState {
             scan_path: self.scan_path.clone(),
             show_settings: self.show_settings,
+            show_outliner: self.show_outliner,
+            show_viewport: self.show_viewport,
             dark_mode: self.dark_mode,
             scanner_mode: self.scanner_mode,
             filter_auto_rebuild: self.filter_auto_rebuild,
@@ -706,6 +711,7 @@ impl eframe::App for App {
             render_mode: self.render_mode,
             render_3d_opts: self.render_3d_opts.clone(),
             dock_state: self.dock_state.clone(),
+            dock_layout: self.dock_layout.clone(),
             font_size: self.font_size,
             settings_tab: self.settings_tab,
             ext_filter: self.ext_filter.clone(),

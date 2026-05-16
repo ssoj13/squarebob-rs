@@ -1,30 +1,42 @@
 //! Render presets: save/load render settings as named presets.
 //!
-//! Presets are stored as JSON files in the app data directory under `presets/`.
+//! Presets are stored as a single JSON file. Lookup order:
+//! 1. `presets.json` next to the binary (portable / shipped overrides).
+//! 2. `~/.squarebob/presets.json` (per-user). Created on first save.
+//!
+//! The built-in "defaults" preset is embedded from `data/default.json`
+//! and is always present in the in-memory map: if the on-disk file is
+//! missing the preset (or the file doesn't exist yet) we inject it.
+//! Once a `presets.json` exists the user is free to overwrite or even
+//! delete the "defaults" entry — on next load it will be re-injected
+//! from the embedded copy.
 
-use directories::ProjectDirs;
+use directories::BaseDirs;
 use render_shared::Render3DOptions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-const BUNDLED_FACTORY_RENDER_3D_OPTIONS: &str =
-    include_str!("../../data/default.json");
+const BUNDLED_FACTORY_RENDER_3D_OPTIONS: &str = include_str!("../../data/default.json");
 const ADJACENT_DEFAULT_PRESET_FILENAME: &str = "default.json";
+const PRESETS_FILENAME: &str = "presets.json";
+const USER_DIR_NAME: &str = ".squarebob";
 
-/// Built-in preset name for default render options plus related UI state.
-/// Not persisted as a JSON file under `presets/`.
+/// Built-in preset name. Always materialized in the in-memory map; can
+/// be overwritten by saving, and re-injected from the embedded copy if
+/// missing on next load.
 pub const DEFAULT_PRESET_NAME: &str = "defaults";
 
-/// Default 3D/render options.
+/// Default 3D/render options (immutable factory baseline).
 ///
-/// If `default.json` exists beside the executable it is used as the default
-/// preset (runtime override). Otherwise the app falls back to the
-/// `data/default.json` compiled into the binary.
+/// Resolution order:
+/// 1. `default.json` adjacent to the executable (portable override of
+///    the *baseline*, before any user customization).
+/// 2. Compiled-in `data/default.json` (always available).
 ///
-/// Animation clocks are zero and emissive motion is off so large light-cube counts stay cheaper
-/// until the user enables animation explicitly.
+/// This is the source for `apply_factory_render_defaults` (Reset button)
+/// and the initial seed for the "defaults" preset.
 #[inline]
 pub fn factory_render_3d_options() -> Render3DOptions {
     static PARSED: OnceLock<Render3DOptions> = OnceLock::new();
@@ -83,11 +95,6 @@ fn default_preset_path_for_exe(exe: &Path) -> Option<PathBuf> {
         .map(|dir| dir.join(ADJACENT_DEFAULT_PRESET_FILENAME))
 }
 
-#[inline]
-pub fn is_builtin_default_preset(name: &str) -> bool {
-    name == DEFAULT_PRESET_NAME
-}
-
 /// A render preset containing all render settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderPreset {
@@ -95,118 +102,117 @@ pub struct RenderPreset {
     pub render_3d: Render3DOptions,
 }
 
-/// Get presets directory path
-pub fn presets_dir() -> Option<PathBuf> {
-    ProjectDirs::from("", "", "squarebob-rs").map(|dirs| dirs.data_local_dir().join("presets"))
+/// On-disk container for all presets. Serialized to a single JSON file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct PresetsFile {
+    presets: Vec<RenderPreset>,
 }
 
-/// Ensure presets directory exists
-pub fn ensure_presets_dir() -> std::io::Result<PathBuf> {
-    let dir = presets_dir().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Cannot find app data directory",
-        )
-    })?;
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+/// Per-user presets path: `~/.squarebob/presets.json`.
+fn user_presets_path() -> Option<PathBuf> {
+    BaseDirs::new().map(|b| b.home_dir().join(USER_DIR_NAME).join(PRESETS_FILENAME))
 }
 
-/// Load all presets from disk
-pub fn load_all_presets() -> HashMap<String, RenderPreset> {
-    let mut presets = HashMap::new();
+/// Adjacent presets path: `<exe-dir>/presets.json`.
+fn adjacent_presets_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.parent().map(|d| d.join(PRESETS_FILENAME))
+}
 
-    let Some(dir) = presets_dir() else {
-        log::warn!("Cannot find presets directory");
-        return presets;
-    };
-
-    if !dir.exists() {
-        return presets;
+/// Resolve the on-disk presets path used for both read and write.
+/// Adjacent-binary path wins if the file already exists (portable mode);
+/// otherwise we use the per-user path.
+fn resolved_presets_path() -> Option<PathBuf> {
+    if let Some(adj) = adjacent_presets_path() {
+        if adj.is_file() {
+            return Some(adj);
+        }
     }
+    user_presets_path()
+}
 
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        log::warn!("Cannot read presets directory");
-        return presets;
-    };
+/// Materialize the built-in "defaults" preset in the map if missing.
+fn ensure_builtin_default(presets: &mut HashMap<String, RenderPreset>) {
+    if !presets.contains_key(DEFAULT_PRESET_NAME) {
+        presets.insert(
+            DEFAULT_PRESET_NAME.to_string(),
+            RenderPreset {
+                name: DEFAULT_PRESET_NAME.to_string(),
+                render_3d: factory_render_3d_options(),
+            },
+        );
+    }
+}
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "json") {
-            match load_preset_from_file(&path) {
-                Ok(preset) => {
-                    if is_builtin_default_preset(&preset.name) {
-                        log::warn!(
-                            "Ignoring preset file with reserved name {} — use built-in \"{}\" in the UI",
-                            path.display(),
-                            DEFAULT_PRESET_NAME
-                        );
-                        continue;
+/// Load all presets from disk into a `name -> preset` map.
+///
+/// Always ensures the embedded "defaults" preset is present in the map.
+/// If neither adjacent nor user file exists, the map contains just
+/// "defaults" (file is not created until the user saves).
+pub fn load_all_presets() -> HashMap<String, RenderPreset> {
+    let mut presets: HashMap<String, RenderPreset> = HashMap::new();
+
+    let paths: Vec<PathBuf> = [adjacent_presets_path(), user_presets_path()]
+        .into_iter()
+        .flatten()
+        .collect();
+
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str::<PresetsFile>(&content) {
+                Ok(file) => {
+                    for preset in file.presets {
+                        presets.insert(preset.name.clone(), preset);
                     }
-                    log::debug!("Loaded preset: {}", preset.name);
-                    presets.insert(preset.name.clone(), preset);
+                    log::info!(
+                        "Loaded {} presets from {}",
+                        presets.len(),
+                        path.display()
+                    );
+                    break;
                 }
-                Err(e) => {
-                    log::warn!("Failed to load preset {:?}: {}", path, e);
-                }
-            }
+                Err(e) => log::warn!("Failed to parse {}: {}", path.display(), e),
+            },
+            Err(e) => log::warn!("Failed to read {}: {}", path.display(), e),
         }
     }
 
-    log::info!("Loaded {} presets", presets.len());
+    ensure_builtin_default(&mut presets);
     presets
 }
 
-/// Load a single preset from file
-fn load_preset_from_file(path: &PathBuf) -> Result<RenderPreset, Box<dyn std::error::Error>> {
-    let content = std::fs::read_to_string(path)?;
-    let preset: RenderPreset = serde_json::from_str(&content)?;
-    Ok(preset)
-}
-
-/// Save a preset to disk
-pub fn save_preset(preset: &RenderPreset) -> std::io::Result<PathBuf> {
-    let dir = ensure_presets_dir()?;
-    let filename = sanitize_filename(&preset.name);
-    let path = dir.join(format!("{}.json", filename));
-
-    let json = serde_json::to_string_pretty(preset)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-    std::fs::write(&path, json)?;
-    log::info!("Saved preset '{}' to {:?}", preset.name, path);
-    Ok(path)
-}
-
-/// Delete a preset from disk
-pub fn delete_preset(name: &str) -> std::io::Result<()> {
-    let dir = presets_dir().ok_or_else(|| {
+/// Persist the full preset map to disk. Path is chosen by
+/// `resolved_presets_path` (adjacent file wins if present, else
+/// per-user `~/.squarebob/presets.json`). Parent dirs are created.
+pub fn save_all_presets(presets: &HashMap<String, RenderPreset>) -> std::io::Result<PathBuf> {
+    let path = resolved_presets_path().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "Cannot find presets directory",
+            "Cannot determine presets file location",
         )
     })?;
-    let filename = sanitize_filename(name);
-    let path = dir.join(format!("{}.json", filename));
 
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-        log::info!("Deleted preset '{}' from {:?}", name, path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-    Ok(())
-}
 
-/// Sanitize preset name for use as filename
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    let mut list: Vec<RenderPreset> = presets.values().cloned().collect();
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    let file = PresetsFile { presets: list };
+
+    let json = serde_json::to_string_pretty(&file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(&path, json)?;
+
+    log::info!(
+        "Saved {} presets to {}",
+        file.presets.len(),
+        path.display()
+    );
+    Ok(path)
 }
 
 /// Create a preset from current render settings
@@ -243,5 +249,28 @@ mod tests {
             default_preset_path_for_exe(&exe),
             Some(Path::new("bin").join("default.json"))
         );
+    }
+
+    #[test]
+    fn builtin_default_is_injected_when_missing() {
+        let mut map: HashMap<String, RenderPreset> = HashMap::new();
+        ensure_builtin_default(&mut map);
+        assert!(map.contains_key(DEFAULT_PRESET_NAME));
+    }
+
+    #[test]
+    fn builtin_default_is_not_overwritten_when_present() {
+        let mut map: HashMap<String, RenderPreset> = HashMap::new();
+        let mut custom = factory_render_3d_options();
+        custom.animate = true; // distinguishable from bundled.
+        map.insert(
+            DEFAULT_PRESET_NAME.to_string(),
+            RenderPreset {
+                name: DEFAULT_PRESET_NAME.to_string(),
+                render_3d: custom,
+            },
+        );
+        ensure_builtin_default(&mut map);
+        assert!(map[DEFAULT_PRESET_NAME].render_3d.animate);
     }
 }

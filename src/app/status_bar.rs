@@ -95,6 +95,25 @@ impl App {
                         }
                         ui.label(stats);
                     }
+                    // OIDN stats: surface here so the user can see the
+                    // last denoise cost without opening the Denoiser
+                    // section. Only shown when OIDN is enabled and has
+                    // produced at least one pass.
+                    if self.render_3d_opts.pt_oidn_mode
+                        != render_shared::OidnModeOption::Off
+                    {
+                        if let Some(ms) = self.oidn_last_latency_ms {
+                            let state = if self.oidn_display_is_denoised {
+                                "shown"
+                            } else {
+                                "stale"
+                            };
+                            ui.label(format!(
+                                "OIDN: {:.0} ms @ {} spp ({})",
+                                ms, self.oidn_last_interval_spp, state
+                            ));
+                        }
+                    }
                     if let Some(hover) = &self.hovered {
                         ui.label(format!("{} ({})", hover.path, fmt_size(hover.size)));
                     }

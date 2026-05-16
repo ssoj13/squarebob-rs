@@ -189,26 +189,16 @@ impl App {
                 ));
         });
 
-        // Dropdown popup: built-in defaults + saved presets
+        // Dropdown popup: list every preset from the map (the built-in
+        // "defaults" is always present after `load_all_presets`, so no
+        // separate row is needed).
         if self.preset_dropdown_open {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let mut selected: Option<&'static str> = None;
                 let mut selected_user: Option<String> = None;
-
-                let builtin = super::presets::DEFAULT_PRESET_NAME;
-                if ui
-                    .selectable_label(self.preset_name == builtin, builtin)
-                    .clicked()
-                {
-                    selected = Some(builtin);
-                }
 
                 let mut names: Vec<_> = self.presets.keys().cloned().collect();
                 names.sort();
                 for name in &names {
-                    if super::presets::is_builtin_default_preset(name) {
-                        continue;
-                    }
                     if ui
                         .selectable_label(self.preset_name == *name, name)
                         .clicked()
@@ -217,10 +207,7 @@ impl App {
                     }
                 }
 
-                if selected.is_some() {
-                    self.apply_factory_render_defaults();
-                    self.preset_dropdown_open = false;
-                } else if let Some(name) = selected_user {
+                if let Some(name) = selected_user {
                     self.load_preset(&name);
                     self.preset_dropdown_open = false;
                 }
@@ -233,22 +220,24 @@ impl App {
         }
     }
 
-    /// Save current render settings as preset
+    /// Save current render settings as preset.
+    ///
+    /// The full preset map is rewritten to `presets.json`. Any name is
+    /// allowed (including "defaults" — the embedded copy will be
+    /// re-injected on next load only if the user later removes it).
     pub(super) fn save_current_preset(&mut self) {
-        if super::presets::is_builtin_default_preset(self.preset_name.trim()) {
-            log::info!(
-                "Preset {:?} is built-in (shipped defaults); it is not saved over — use another name for a custom preset.",
-                super::presets::DEFAULT_PRESET_NAME
-            );
+        let name = self.preset_name.trim().to_string();
+        if name.is_empty() {
+            log::info!("Refusing to save preset with empty name");
             return;
         }
-        let preset = super::presets::create_preset(&self.preset_name, &self.render_3d_opts);
-        match super::presets::save_preset(&preset) {
+        let preset = super::presets::create_preset(&name, &self.render_3d_opts);
+        self.presets.insert(name.clone(), preset);
+        match super::presets::save_all_presets(&self.presets) {
             Ok(_) => {
-                self.presets.insert(preset.name.clone(), preset);
                 self.preset_dirty = false;
                 self.preset_last_save = std::time::Instant::now();
-                log::info!("Saved preset: {}", self.preset_name);
+                log::info!("Saved preset: {}", name);
             }
             Err(e) => {
                 log::error!("Failed to save preset: {}", e);
@@ -256,37 +245,38 @@ impl App {
         }
     }
 
-    /// Load a preset by name
+    /// Load a preset by name from the in-memory map (which already
+    /// includes the embedded "defaults" entry).
     fn load_preset(&mut self, name: &str) {
-        if super::presets::is_builtin_default_preset(name) {
-            self.apply_factory_render_defaults();
-            return;
-        }
         if let Some(preset) = self.presets.get(name).cloned() {
             self.render_3d_opts = preset.render_3d;
             self.preset_name = name.to_string();
             self.needs_layout = true;
-            self.preset_dirty = false; // Just loaded, not dirty
+            self.preset_dirty = false;
             self.preset_last_save = std::time::Instant::now();
             log::info!("Loaded preset: {}", name);
         }
     }
 
-    /// Delete current preset
+    /// Delete current preset from the map and persist. Deleting the
+    /// built-in "defaults" preset is allowed: it will be re-injected
+    /// from the embedded copy on next launch.
     fn delete_current_preset(&mut self) {
-        if super::presets::is_builtin_default_preset(self.preset_name.trim()) {
-            log::warn!(
-                "Cannot delete built-in \"{}\"",
-                super::presets::DEFAULT_PRESET_NAME
-            );
+        let name = self.preset_name.trim().to_string();
+        if name.is_empty() {
             return;
         }
-        if let Err(e) = super::presets::delete_preset(&self.preset_name) {
-            log::error!("Failed to delete preset: {}", e);
-        } else {
-            self.presets.remove(&self.preset_name);
-            self.preset_name.clear();
-            log::info!("Deleted preset");
+        if self.presets.remove(&name).is_none() {
+            return;
+        }
+        match super::presets::save_all_presets(&self.presets) {
+            Ok(_) => {
+                self.preset_name.clear();
+                log::info!("Deleted preset: {}", name);
+            }
+            Err(e) => {
+                log::error!("Failed to persist presets after delete: {}", e);
+            }
         }
     }
 
@@ -296,8 +286,9 @@ impl App {
         ui.scope(|ui| {
             self.apply_settings_panel_text_styles(ui);
 
+            // General has been folded into Rendering as the first
+            // section, so it no longer has its own tab button.
             let tab_labels = [
-                (SettingsTab::General, "General"),
                 (SettingsTab::Rendering, "Rendering"),
                 (SettingsTab::Exclusions, "Exclusions"),
                 (SettingsTab::Extensions, "Extensions"),
@@ -331,24 +322,58 @@ impl App {
                     let mut changed = false;
 
                     match self.settings_tab {
-                        SettingsTab::General => {
-                            self.ui_settings_scanner(ui);
-                            ui.separator();
-                            self.ui_settings_view(ui, &ctx, &mut changed);
-                            ui.separator();
-                            self.ui_settings_appearance(ui, &mut changed);
-                            ui.separator();
-                            self.ui_settings_panel_chrome(ui, &mut changed);
-                        }
                         SettingsTab::Rendering => {
+                            // Preset row sits above all sections so the
+                            // active preset is the first thing the user
+                            // sees and can switch from.
                             self.ui_presets(ui);
                             ui.add_space(4.0);
-                            self.ui_settings_renderer(ui);
-                            // Denoiser is just another section sibling
-                            // alongside Geometry / Materials / Effects /
-                            // etc. after the renderer flatten — no
-                            // visual divider needed.
-                            self.ui_settings_denoiser(ui, &mut changed);
+
+                            // General sub-sections (scanner/view/
+                            // appearance/panel chrome/interaction)
+                            // follow as the first collapsible block,
+                            // matching the rest of the panel styling
+                            // (tinted band, font).
+                            let header_h = self.settings_section_header_height;
+                            let tint_mix = self.settings_tint_mix;
+                            let in_3d = self.render_mode
+                                == crate::renderer::RenderMode::Mode3D;
+                            tinted_section(
+                                ui,
+                                "General",
+                                false,
+                                tint_mix,
+                                header_h,
+                                |ui| {
+                                    self.ui_settings_scanner(ui);
+                                    ui.separator();
+                                    self.ui_settings_view(ui, &ctx, &mut changed);
+                                    ui.separator();
+                                    self.ui_settings_appearance(ui, &mut changed);
+                                    ui.separator();
+                                    self.ui_settings_panel_chrome(ui, &mut changed);
+                                    // Interaction lives here as a UX
+                                    // preference. Only meaningful in
+                                    // 3D mode — hover outline/tint is
+                                    // a 3D-only feature.
+                                    if in_3d {
+                                        ui.separator();
+                                        renderer::compact_section(
+                                            ui,
+                                            "Interaction",
+                                            false,
+                                            header_h,
+                                            |ui| self.ui_interaction_grid(ui),
+                                        );
+                                    }
+                                },
+                            );
+
+                            // Denoiser is emitted INSIDE
+                            // `ui_settings_renderer`, right after the
+                            // Samples section — see the section-order
+                            // doc on `ui_3d_settings`.
+                            self.ui_settings_renderer(ui, &mut changed);
                         }
                         SettingsTab::Exclusions => {
                             self.ui_settings_exclusions(ui, &mut changed);

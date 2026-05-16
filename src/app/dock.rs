@@ -1,6 +1,7 @@
 //! Dock layout and tab rendering for the main panels.
 
 use eframe::egui;
+use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockState, NodeIndex, TabViewer};
 
 use super::App;
@@ -40,6 +41,44 @@ pub fn build_dock_state(show_settings: bool) -> DockState<DockTab> {
     dock_state
 }
 
+/// `true` iff the given tab is currently present anywhere in the dock.
+pub fn dock_contains(state: &DockState<DockTab>, tab: &DockTab) -> bool {
+    state.iter_all_tabs().any(|(_, t)| t == tab)
+}
+
+/// Remove the first occurrence of `tab` from the dock. Returns `true` if
+/// something was actually removed.
+pub fn dock_remove(state: &mut DockState<DockTab>, tab: &DockTab) -> bool {
+    if let Some(loc) = state.find_tab(tab) {
+        state.remove_tab(loc);
+        true
+    } else {
+        false
+    }
+}
+
+/// Rebuild a visible dock state from a "memory" layout that holds every
+/// known tab, by cloning the layout and stripping the tabs that should
+/// be hidden.
+///
+/// This is the restore path for the toolbar toggles: the user closed a
+/// panel, kept its column geometry stored in `layout`, and now wants it
+/// back exactly where it was — not jammed onto the first leaf.
+pub fn rebuild_from_layout(layout: &DockState<DockTab>, visible: &[DockTab]) -> DockState<DockTab> {
+    let mut out = layout.clone();
+    let hidden: Vec<DockTab> = out
+        .iter_all_tabs()
+        .map(|(_, t)| t.clone())
+        .filter(|t| !visible.contains(t))
+        .collect();
+    for tab in &hidden {
+        if let Some(loc) = out.find_tab(tab) {
+            out.remove_tab(loc);
+        }
+    }
+    out
+}
+
 /// Wrapper struct for egui_dock TabViewer implementation.
 pub struct DockTabs<'a> {
     pub app: &'a mut App,
@@ -64,5 +103,25 @@ impl<'a> TabViewer for DockTabs<'a> {
             DockTab::Extensions => self.app.ui_ext_stats(ui),
             DockTab::Settings => self.app.ui_settings(ui),
         }
+    }
+
+    /// Every panel can be closed via the tab "x" button. The toolbar's
+    /// matching toggle un-presses thanks to the flag update in
+    /// `on_close`.
+    fn closeable(&mut self, _tab: &mut DockTab) -> bool {
+        true
+    }
+
+    /// Mirror the close action to the App visibility flags so the
+    /// toolbar toggles stay in sync. Returning `Close` lets egui_dock
+    /// actually remove the tab.
+    fn on_close(&mut self, tab: &mut DockTab) -> OnCloseResponse {
+        match tab {
+            DockTab::FileView => self.app.show_outliner = false,
+            DockTab::QuadTreeView => self.app.show_viewport = false,
+            DockTab::Settings => self.app.show_settings = false,
+            DockTab::Extensions => {}
+        }
+        OnCloseResponse::Close
     }
 }

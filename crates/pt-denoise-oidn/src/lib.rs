@@ -489,6 +489,26 @@ impl OidnDenoiser {
         let result_tex = self.result_texture.as_ref().unwrap();
         copy_tensor_into_texture(&ctx.device, &ctx.queue, out_hwc4_padded, result_tex, w, h)?;
 
+        // Drain all GPU work this pass submitted before returning.
+        //
+        // Why: CubeCL submits kernels lazily and the wgpu buffer pool
+        // recycles buffers as soon as their owning Tensor is dropped.
+        // Between successive `denoise()` calls, that recycling can
+        // race the previous pass's UNet reads — the buffer leaves the
+        // pool, gets a fresh `Tensor::zeros` fill on the next call,
+        // and the still-pending UNet kernel can witness the zero
+        // overwrite. The visible symptom is speckle that grows with
+        // each denoise (each pass eats a partially-corrupted input).
+        //
+        // The matching upstream change in `oidn-rs::RtFilter::execute`
+        // clears the cached input tensors so the caller's buffers
+        // can be recycled immediately; this poll closes the GPU-side
+        // of the same race by guaranteeing the kernels reading those
+        // buffers have completed before we return. Cost ~ a few ms
+        // per pass, which is fine because OIDN already runs once
+        // every `pt_oidn_interval` samples.
+        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
+
         let elapsed = started.elapsed().as_secs_f32() * 1000.0;
         self.last_latency_ms = Some(elapsed);
         log::info!(
