@@ -256,6 +256,16 @@ pub struct App {
     pub(super) preset_dirty: bool,
     pub(super) preset_last_save: std::time::Instant,
     pub(super) orbit_camera: OrbitCamera,
+    /// In-memory camera-view bookmark slots, exposed under the Presets
+    /// row in Settings. LMB on a slot recalls its stored
+    /// [`OrbitCamera`] state into [`Self::orbit_camera`]; RMB saves the
+    /// current view into the slot. Slots default to
+    /// [`OrbitCamera::default`] (origin, distance 500, identity
+    /// rotation) so an un-set slot reads as "reset to origin" — that's
+    /// the "по дефолту 0,0,0" behaviour. Transient — not persisted to
+    /// disk with presets (these are quick view bookmarks, not full
+    /// scene snapshots).
+    pub(super) camera_slots: [OrbitCamera; 6],
     pub(super) gpu_context: Option<Arc<GpuContext>>,
     /// Lazy-built OIDN denoiser. Replaces the previous à-trous filter.
     /// Materialised the first time the render loop sees a non-`Off` mode
@@ -342,6 +352,12 @@ pub struct App {
     pub(super) wgpu_error_flag: Arc<AtomicBool>,
     pub(super) pt_auto_spp_tick: std::time::Instant,
     pub(super) show_encode_panel: bool,
+    /// User toggle for the inline Settings → Rendering → Output
+    /// section. `true` reveals the encoder UI as an inline section in
+    /// the right panel; `false` hides it. Independent of
+    /// [`Self::show_encode_panel`] which controls the legacy floating
+    /// window (F12 shortcut).
+    pub(super) show_output_section: bool,
     pub(super) encode_dialog: media_encoder::EncodeDialog,
     pub(super) encode_source: Option<media_encoder::Comp>,
     pub(super) encode_sequence_source: Option<Arc<crate::app::image_sequence::SquarebobEncodeSource>>,
@@ -455,6 +471,7 @@ impl Default for App {
             preset_dirty: false,
             preset_last_save: std::time::Instant::now(),
             orbit_camera: OrbitCamera::default(),
+            camera_slots: core::array::from_fn(|_| OrbitCamera::default()),
             gpu_context: None,
             oidn_denoiser: None,
             oidn_run_requested: false,
@@ -506,6 +523,7 @@ impl Default for App {
             wgpu_error_flag: Arc::new(AtomicBool::new(false)),
             pt_auto_spp_tick: std::time::Instant::now(),
             show_encode_panel: false,
+            show_output_section: false,
             encode_dialog: media_encoder::EncodeDialog::load_from_settings(
                 &media_encoder::EncodeDialogSettings::default(),
             ),

@@ -187,6 +187,19 @@ impl App {
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.show_search = !self.show_search;
         }
+        // F12 toggles the legacy floating-window encoder. The encoder
+        // also lives as an inline section under Settings → Rendering →
+        // Output; this shortcut keeps the window-based UI accessible
+        // for users who prefer a free-floating dialog. Mirrors the
+        // bookkeeping the old toolbar "E" button did on open.
+        if ctx.input(|i| i.key_pressed(egui::Key::F12)) {
+            self.show_encode_panel = !self.show_encode_panel;
+            if self.show_encode_panel {
+                self.encode_source = None;
+                self.encode_sequence_source = None;
+                self.encode_source_size = (0, 0);
+            }
+        }
         if kb_ok
             && ctx.input(|i| i.key_pressed(egui::Key::F5))
             && !self.progress.scanning

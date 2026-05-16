@@ -135,18 +135,10 @@ impl App {
                         });
                     }
 
-                    if ui
-                        .add(egui::Button::new("E").selected(self.show_encode_panel))
-                        .on_hover_text("Toggle encoder")
-                        .clicked()
-                    {
-                        self.show_encode_panel = !self.show_encode_panel;
-                        if self.show_encode_panel {
-                            self.encode_source = None;
-                            self.encode_sequence_source = None;
-                            self.encode_source_size = (0, 0);
-                        }
-                    }
+                    // (Encoder "E" button removed — encoder UI now lives
+                    // as an inline section in Settings → Rendering →
+                    // Output. The legacy window remains available via
+                    // the F12 keyboard shortcut.)
 
                     // 2D/3D toggle
                     let mode_label = match self.render_mode {

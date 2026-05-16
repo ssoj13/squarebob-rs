@@ -238,6 +238,10 @@ impl App {
         //    same sample budget. Always rendered (status is informative
         //    even in PBR mode where OIDN never fires).
         self.ui_settings_denoiser(ui, changed);
+        // 10. Output — inline video/sequence encoder, peer of Denoise.
+        //     Body is gated by `show_output_section`; the section
+        //     header is always present so the user can opt in.
+        self.ui_settings_output(ui, changed);
     }
 
     /// Shading mode selection (Shaded/Wireframe/Path Tracing)
@@ -2151,6 +2155,13 @@ impl App {
                             control_label(ui, "DOF:");
                             pt_changed |= ui
                                 .checkbox(&mut self.render_3d_opts.pt_dof_enabled, "")
+                                .on_hover_text(
+                                    "Enable physically-based depth of field. \
+                                     Pick a focus target from the viewport with \
+                                     Ctrl+Left Click or Middle Mouse Button — \
+                                     the focus distance updates to the surface \
+                                     under the cursor.",
+                                )
                                 .changed();
                             ui.end_row();
 
@@ -2160,9 +2171,13 @@ impl App {
                                     .add(
                                         egui::Slider::new(
                                             &mut self.render_3d_opts.pt_aperture,
-                                            0.0001..=5.0,
+                                            0.0001..=20.0,
                                         )
                                         .logarithmic(true),
+                                    )
+                                    .on_hover_text(
+                                        "Lens aperture radius — larger values \
+                                         widen the blur for out-of-focus regions.",
                                     )
                                     .changed();
                                 ui.end_row();
@@ -2172,9 +2187,15 @@ impl App {
                                     .add(
                                         egui::Slider::new(
                                             &mut self.render_3d_opts.pt_focus_distance,
-                                            0.1..=500.0,
+                                            0.1..=1000.0,
                                         )
                                         .logarithmic(true),
+                                    )
+                                    .on_hover_text(
+                                        "Focus distance from the camera. Use \
+                                         Ctrl+Left Click or MMB on the viewport \
+                                         to set it from the surface under the \
+                                         cursor.",
                                     )
                                     .changed();
                                 ui.end_row();

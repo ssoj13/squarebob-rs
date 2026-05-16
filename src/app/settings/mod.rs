@@ -3,6 +3,7 @@
 mod appearance;
 mod denoiser;
 mod exclusions;
+mod output;
 mod ramp_widget;
 mod renderer;
 mod scanner;
@@ -159,16 +160,6 @@ impl App {
                 self.save_current_preset();
             }
 
-            // Delete button (only if preset exists)
-            if self.presets.contains_key(&self.preset_name)
-                && ui
-                    .small_button(icons::TRASH)
-                    .on_hover_text("Delete preset")
-                    .clicked()
-            {
-                self.delete_current_preset();
-            }
-
             if ui
                 .small_button("Reset")
                 .on_hover_text(
@@ -187,6 +178,53 @@ impl App {
                     "Auto-save preset every {:.0}s when changed",
                     self.autosave_interval_secs
                 ));
+
+            // Delete sits at the far-right edge so it's spatially
+            // separate from the constructive buttons (save / reset).
+            // `right_to_left` consumes the remaining row width and
+            // anchors the trash icon to the trailing edge regardless
+            // of label/text-input width.
+            if self.presets.contains_key(&self.preset_name) {
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .small_button(icons::TRASH)
+                            .on_hover_text("Delete preset")
+                            .clicked()
+                        {
+                            self.delete_current_preset();
+                        }
+                    },
+                );
+            }
+        });
+
+        // Camera view bookmarks: six in-memory slots. LMB stores the
+        // current orbit-camera state into the slot; RMB recalls the
+        // stored state into the live camera. Empty slots default to
+        // `OrbitCamera::default()`, so an un-set slot effectively
+        // "reset to origin" on recall. Bookmarks are transient (not
+        // serialised with presets) — they're quick scratch buffers
+        // for camera framing.
+        ui.horizontal(|ui| {
+            ui.label("Views:");
+            for i in 0..self.camera_slots.len() {
+                let resp = ui.small_button(format!("{}", i + 1)).on_hover_text(
+                    format!(
+                        "Camera view {}\nLeft-click: save current view  Right-click: recall",
+                        i + 1
+                    ),
+                );
+                if resp.clicked() {
+                    self.camera_slots[i] = self.orbit_camera.clone();
+                }
+                if resp.secondary_clicked() {
+                    self.orbit_camera = self.camera_slots[i].clone();
+                    self.orbit_camera.cancel_animation();
+                    self.needs_layout = true;
+                }
+            }
         });
 
         // Dropdown popup: list every preset from the map (the built-in

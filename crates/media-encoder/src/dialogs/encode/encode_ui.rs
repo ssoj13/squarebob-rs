@@ -341,21 +341,43 @@ impl EncodeDialog {
         project: &Project,
         active_comp: Option<&Comp>,
     ) -> bool {
-        let mut should_close = false;
+        self.poll_encoding_state(ctx);
 
-        // Poll progress updates
+        let window_title = match self.export_mode {
+            ExportMode::Video => "Video Encoder",
+            ExportMode::Sequence => "Image Sequence Export",
+        };
+        let mut should_close = false;
+        egui::Window::new(window_title)
+            .id(egui::Id::new("encode_dialog"))
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.set_width(600.0);
+                if self.render_inline(ui, project, active_comp) {
+                    should_close = true;
+                }
+            });
+
+        // Return true if window should stay open
+        !should_close
+    }
+
+    /// Drain any pending progress updates and request repaints while
+    /// encoding is active. Shared by both [`Self::render`] (window
+    /// presentation) and any inline embedding so the caller doesn't
+    /// have to remember to drain progress before drawing the UI.
+    pub fn poll_encoding_state(&mut self, ctx: &egui::Context) {
         if let Some(rx) = &self.progress_rx {
             while let Ok(progress) = rx.try_recv() {
                 self.progress = Some(progress);
             }
         }
 
-        // Request continuous repaint while encoding (progress bar updates)
         if self.is_encoding {
             ctx.request_repaint();
         }
 
-        // Check if encoding completed (only process once while encoding)
         if self.is_encoding
             && let Some(ref progress) = self.progress
         {
@@ -371,19 +393,27 @@ impl EncodeDialog {
                 _ => {}
             }
         }
+    }
 
-        let window_title = match self.export_mode {
-            ExportMode::Video => "Video Encoder",
-            ExportMode::Sequence => "Image Sequence Export",
-        };
-        egui::Window::new(window_title)
-            .id(egui::Id::new("encode_dialog"))
-            .resizable(false)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                ui.set_width(600.0);
-
-                // === Output Path ===
+    /// Render the encoder UI body directly into `ui`. Use this when
+    /// embedding the encoder inline inside another panel (e.g., the
+    /// Settings → Output section). The window-presented
+    /// [`Self::render`] is a thin wrapper around this; both share
+    /// behaviour.
+    ///
+    /// Returns `true` if the user requested a close (clicked the
+    /// "Close" button). Inline callers can ignore this if the panel
+    /// has its own visibility toggle. Width is not forced here — the
+    /// inline section uses whatever width the parent `Ui` provides.
+    pub fn render_inline(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &Project,
+        active_comp: Option<&Comp>,
+    ) -> bool {
+        let mut should_close = false;
+        {
+            // === Output Path ===
                 ui.horizontal(|ui| {
                     ui.label("Output:");
                     ui.add_enabled_ui(!self.is_encoding, |ui| {
@@ -723,10 +753,8 @@ impl EncodeDialog {
                         });
                     }
                 });
-            });
-
-        // Return true if window should stay open
-        !should_close
+        }
+        should_close
     }
 
     /// Start encoding process
