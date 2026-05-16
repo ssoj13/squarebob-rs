@@ -354,7 +354,7 @@ impl EncodeDialog {
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.set_width(600.0);
-                if self.render_inline(ui, project, active_comp) {
+                if self.render_inline(ui, project, active_comp, true) {
                     should_close = true;
                 }
             });
@@ -401,15 +401,22 @@ impl EncodeDialog {
     /// [`Self::render`] is a thin wrapper around this; both share
     /// behaviour.
     ///
-    /// Returns `true` if the user requested a close (clicked the
-    /// "Close" button). Inline callers can ignore this if the panel
-    /// has its own visibility toggle. Width is not forced here — the
-    /// inline section uses whatever width the parent `Ui` provides.
+    /// `with_close_button` controls the bottom button row:
+    /// * `true` (window mode): renders the [Close] [Encode/Stop] pair
+    ///   side-by-side. The Close button signals "close window" via the
+    ///   `bool` return.
+    /// * `false` (inline mode): suppresses Close (the section has its
+    ///   own collapse) and stretches Encode/Stop to fill the row width.
+    ///
+    /// Returns `true` if the user requested a close (only meaningful
+    /// when `with_close_button` is `true`). Width is not forced here —
+    /// the inline section uses whatever width the parent `Ui` provides.
     pub fn render_inline(
         &mut self,
         ui: &mut egui::Ui,
         project: &Project,
         active_comp: Option<&Comp>,
+        with_close_button: bool,
     ) -> bool {
         let mut should_close = false;
         {
@@ -444,8 +451,6 @@ impl EncodeDialog {
                     });
                 });
 
-                ui.add_space(8.0);
-
                 // === Framerate ===
                 ui.horizontal(|ui| {
                     ui.label("Framerate:");
@@ -454,9 +459,7 @@ impl EncodeDialog {
                     });
                 });
 
-                ui.add_space(12.0);
                 ui.separator();
-                ui.add_space(4.0);
 
                 // === Export Mode Tabs (Video / Sequence) ===
                 ui.horizontal(|ui| {
@@ -647,37 +650,30 @@ impl EncodeDialog {
                     }
                 }
 
-                ui.add_space(12.0);
-
                 // === Frame Range ===
+                // Per-field labels (`Start`, `End`) sit OUTSIDE the
+                // DragValue widgets instead of being baked into the
+                // numeric prefix — matches the rest of the settings
+                // panel's label conventions and avoids the "Start 0"
+                // typed-into-the-field look.
                 ui.horizontal(|ui| {
                     ui.label("Frame Range:");
                     ui.add_enabled_ui(!self.is_encoding, |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.frame_start)
-                                .speed(1.0)
-                                .prefix("Start "),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut self.frame_end)
-                                .speed(1.0)
-                                .prefix("End "),
-                        );
+                        ui.label("Start");
+                        ui.add(egui::DragValue::new(&mut self.frame_start).speed(1.0));
+                        ui.label("End");
+                        ui.add(egui::DragValue::new(&mut self.frame_end).speed(1.0));
                     });
                 });
                 if self.frame_end < self.frame_start {
                     self.frame_end = self.frame_start;
                 }
 
-                ui.add_space(12.0);
+                ui.separator();
 
                 // === Progress (always visible to prevent dialog size jumping) ===
-                ui.separator();
-                ui.heading("Progress");
-
                 if self.is_encoding {
                     if let Some(ref progress) = self.progress {
-                        // Stage description
                         let stage_text = match &progress.stage {
                             EncodeStage::Validating => "Validating frame sizes...",
                             EncodeStage::Opening => "Opening encoder...",
@@ -687,8 +683,6 @@ impl EncodeDialog {
                             EncodeStage::Error(msg) => msg.as_str(),
                         };
                         ui.label(stage_text);
-
-                        // Progress bar
                         self.progress_bar.set_progress(
                             progress.current_frame.max(0) as usize,
                             progress.total_frames.max(0) as usize,
@@ -696,7 +690,8 @@ impl EncodeDialog {
                         self.progress_bar.render(ui);
                     }
                 } else {
-                    // Not encoding: show empty progress bar to maintain dialog size
+                    // Idle: keep the slot occupied (label + bar) so the
+                    // section height doesn't jump when encoding starts.
                     ui.label("Ready to encode");
                     let planned_total = active_comp
                         .map(|c| {
@@ -706,10 +701,7 @@ impl EncodeDialog {
                         .unwrap_or(0);
                     self.progress_bar.set_progress(0, planned_total);
                     self.progress_bar.render(ui);
-                    ui.label(""); // Empty label for encoder name spacing
                 }
-
-                ui.add_space(8.0);
 
                 ui.separator();
 
@@ -724,35 +716,63 @@ impl EncodeDialog {
                 }
 
                 // === Buttons ===
-                ui.horizontal(|ui| {
-                    // Close button (stops encoding if running, then closes window)
-                    if ui.button("Close").clicked() {
-                        if self.is_encoding {
-                            self.stop_encoding_and_close();
+                // Window mode (`with_close_button`): [Close] [Encode/Stop]
+                // side-by-side. Inline mode: single full-width Encode/Stop
+                // toggle — the host panel owns visibility, Close is moot.
+                if with_close_button {
+                    ui.horizontal(|ui| {
+                        if ui.button("Close").clicked() {
+                            if self.is_encoding {
+                                self.stop_encoding_and_close();
+                            }
+                            should_close = true;
                         }
-                        should_close = true;
-                    }
 
-                    // Encode/Stop button (toggles between Encode and Stop)
+                        if self.is_encoding {
+                            if ui.button("Stop").clicked() {
+                                self.stop_encoding_keep_window();
+                            }
+                        } else {
+                            ui.add_enabled_ui(ready_to_encode, |ui| {
+                                let mut button = ui.button("Encode");
+                                if !ready_to_encode {
+                                    button = button.on_disabled_hover_text("No active comp");
+                                }
+                                if button.clicked()
+                                    && let Some(comp) = active_comp
+                                {
+                                    self.start_encoding(comp, project);
+                                }
+                            });
+                        }
+                    });
+                } else {
+                    // Inline: full-width action button. `min_size` with
+                    // `ui.available_width()` stretches it across the
+                    // section without forcing a layout dance.
+                    let row_w = ui.available_width();
                     if self.is_encoding {
-                        // During encoding: show "Stop" button
-                        if ui.button("Stop").clicked() {
+                        let stop_btn = egui::Button::new("Stop")
+                            .min_size(egui::vec2(row_w, 0.0));
+                        if ui.add(stop_btn).clicked() {
                             self.stop_encoding_keep_window();
                         }
                     } else {
-                        // Not encoding: show "Encode" button
                         ui.add_enabled_ui(ready_to_encode, |ui| {
-                            let mut button = ui.button("Encode");
+                            let encode_btn = egui::Button::new("Encode")
+                                .min_size(egui::vec2(row_w, 0.0));
+                            let mut resp = ui.add(encode_btn);
                             if !ready_to_encode {
-                                button = button.on_disabled_hover_text("No active comp");
+                                resp = resp.on_disabled_hover_text("No active comp");
                             }
-                            if button.clicked()
-                                && let Some(comp) = active_comp {
-                                    self.start_encoding(comp, project);
-                                }
+                            if resp.clicked()
+                                && let Some(comp) = active_comp
+                            {
+                                self.start_encoding(comp, project);
+                            }
                         });
                     }
-                });
+                }
         }
         should_close
     }

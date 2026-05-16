@@ -2168,13 +2168,10 @@ impl App {
                             if self.render_3d_opts.pt_dof_enabled {
                                 control_label(ui, "Aperture:");
                                 pt_changed |= ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.render_3d_opts.pt_aperture,
-                                            0.0001..=20.0,
-                                        )
-                                        .logarithmic(true),
-                                    )
+                                    .add(egui::Slider::new(
+                                        &mut self.render_3d_opts.pt_aperture,
+                                        0.0..=128.0,
+                                    ))
                                     .on_hover_text(
                                         "Lens aperture radius — larger values \
                                          widen the blur for out-of-focus regions.",
@@ -2187,7 +2184,7 @@ impl App {
                                     .add(
                                         egui::Slider::new(
                                             &mut self.render_3d_opts.pt_focus_distance,
-                                            0.1..=1000.0,
+                                            0.1..=10000.0,
                                         )
                                         .logarithmic(true),
                                     )

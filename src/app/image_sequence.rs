@@ -152,7 +152,7 @@ impl App {
         }
     }
 
-    fn refresh_encode_source(&mut self) {
+    pub(super) fn refresh_encode_source(&mut self) {
         if self.encode_dialog.is_encoding {
             return;
         }

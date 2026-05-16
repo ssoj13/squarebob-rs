@@ -352,12 +352,6 @@ pub struct App {
     pub(super) wgpu_error_flag: Arc<AtomicBool>,
     pub(super) pt_auto_spp_tick: std::time::Instant,
     pub(super) show_encode_panel: bool,
-    /// User toggle for the inline Settings → Rendering → Output
-    /// section. `true` reveals the encoder UI as an inline section in
-    /// the right panel; `false` hides it. Independent of
-    /// [`Self::show_encode_panel`] which controls the legacy floating
-    /// window (F12 shortcut).
-    pub(super) show_output_section: bool,
     pub(super) encode_dialog: media_encoder::EncodeDialog,
     pub(super) encode_source: Option<media_encoder::Comp>,
     pub(super) encode_sequence_source: Option<Arc<crate::app::image_sequence::SquarebobEncodeSource>>,
@@ -523,7 +517,6 @@ impl Default for App {
             wgpu_error_flag: Arc::new(AtomicBool::new(false)),
             pt_auto_spp_tick: std::time::Instant::now(),
             show_encode_panel: false,
-            show_output_section: false,
             encode_dialog: media_encoder::EncodeDialog::load_from_settings(
                 &media_encoder::EncodeDialogSettings::default(),
             ),
