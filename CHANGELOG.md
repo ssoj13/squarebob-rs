@@ -6,6 +6,38 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-05-16 — OIDN denoise regression diagnostics
+
+Stabilised the denoise debugging surface after repeated OIDN passes were
+observed to become noisier around bright lights. The corresponding
+`oidn-rs` change fixes signed normal AOV handling in the shared U-Net
+runner; squarebob now exposes enough pass-level logging to verify the
+full input contract from the app side.
+
+### squarebob `pt-denoise-oidn`
+- **Added** monotonic OIDN `pass#` logging to correlate bridge events,
+  model execution, output tensor shape, and final latency for the same
+  denoise invocation.
+- **Added** denoise contract diagnostics: requested/effective mode,
+  AOV availability, clamp value, input tensor dimensions, padded row
+  geometry, model cache reuse/build, user input-scale override, and
+  effective mode in the INFO latency line.
+- **Changed** OIDN logging to follow the existing CLI verbosity ladder:
+  `-v` emits INFO pass summaries, `-vv` emits DEBUG contract details,
+  and `-vvv` emits TRACE bridge/tensor diagnostics.
+- **Added** `--log-modules oidn` so OIDN can be forced to TRACE without
+  enabling trace output for the whole application.
+- **Kept** `OIDN_TRACE_TENSORS=1` as an explicit override for heavy tensor
+  stats, but normal operation now uses the unified `-vvv` path.
+
+### oidn-rs dependency impact
+- `oidn-rs::filters::unet_runner` now treats all RT normal AOV inputs as
+  signed `[-1, 1]` direction vectors. This avoids destroying negative
+  normal components when running `Color + Albedo + Normal` models.
+- Under TRACE, OIDN tensor diagnostics now include input/output shape,
+  finite/NaN/Inf counts, negative-value count, `> 1.0` count, and
+  min/max/mean for color, albedo, normal, and final accumulator tensors.
+
 ## 2026-05-15 — OIDN Phase I: zero host roundtrip on the denoise hot path
 
 Lifted the entire OIDN forward pass onto the shared wgpu device. Pixel
