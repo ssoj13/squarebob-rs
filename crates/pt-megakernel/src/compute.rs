@@ -490,8 +490,11 @@ pub struct PathTraceCompute {
     restir: Option<ReSTIRPipeline>,
     #[allow(dead_code)]
     restir_config: ReSTIRConfig,
-    gbuffer_pipeline: Option<wgpu::ComputePipeline>,
-    gbuffer_bgl: Option<wgpu::BindGroupLayout>,
+    /// ReSTIR's G-buffer compute stage. `pipeline` and `bgl` are bundled
+    /// because they are created in lock-step inside
+    /// `rebuild_restir_bind_groups` and consumed together (pipeline binds
+    /// the layout). Lazy: `None` until first ReSTIR rebuild.
+    gbuffer_stack: Option<GbufferStack>,
     restir_bind_groups: Option<ReSTIRBindGroups>,
 
     // Adaptive sampling (optional)
@@ -581,6 +584,16 @@ struct PathGuideBindGroups {
     sample_bg: wgpu::BindGroup,
     update_params_buf: wgpu::Buffer,
     sample_params_buf: wgpu::Buffer,
+}
+
+/// G-buffer compute pipeline + its bind-group layout. Bundled so the two
+/// halves cannot drift — they are constructed together (the pipeline is
+/// laid out against the layout) and read at separate sites (the bgl is
+/// used to build per-frame bind groups in `rebuild_restir_bind_groups`,
+/// the pipeline is bound during the ReSTIR dispatch loop).
+struct GbufferStack {
+    pipeline: wgpu::ComputePipeline,
+    bgl: wgpu::BindGroupLayout,
 }
 
 impl PathTraceCompute {
@@ -1149,8 +1162,7 @@ impl PathTraceCompute {
             wavefront_rr_enabled: true,
             restir: None,
             restir_config: ReSTIRConfig::default(),
-            gbuffer_pipeline: None,
-            gbuffer_bgl: None,
+            gbuffer_stack: None,
             restir_bind_groups: None,
             adaptive: None,
             adaptive_config: AdaptiveConfig::default(),
@@ -2063,8 +2075,12 @@ impl PathTraceCompute {
         let hit_buf = wf.hit_buf();
         let (ray_a, ray_b) = wf.ray_bufs_raw();
 
-        // Ensure gbuffer pipeline/layout
-        if self.gbuffer_pipeline.is_none() || self.gbuffer_bgl.is_none() {
+        // Ensure gbuffer pipeline + layout exist as a single bundle. The two
+        // halves are constructed against each other (pipeline layout binds
+        // the bgl), so they must never drift; `get_or_insert_with` enforces
+        // that structurally and hands back `&mut GbufferStack` so we can
+        // read `bgl` without an additional unwrap below.
+        let gbuffer_stack = self.gbuffer_stack.get_or_insert_with(|| {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("wf_gbuffer_shader"),
                 source: wgpu::ShaderSource::Wgsl(GBUFFER_WGSL.into()),
@@ -2094,9 +2110,8 @@ impl PathTraceCompute {
                 compilation_options: Default::default(),
                 cache: None,
             });
-            self.gbuffer_pipeline = Some(pipeline);
-            self.gbuffer_bgl = Some(bgl);
-        }
+            GbufferStack { pipeline, bgl }
+        });
 
         // Per-tile gbuffer params: N TILE_SLOT_STRIDE slots, populated each
         // frame via pack_tile_slots + a single queue.write_buffer.
@@ -2107,7 +2122,7 @@ impl PathTraceCompute {
             mapped_at_creation: false,
         });
 
-        let gbuffer_bgl = self.gbuffer_bgl.as_ref().unwrap();
+        let gbuffer_bgl = &gbuffer_stack.bgl;
         let gbuffer_bg_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wf_gbuffer_bg_a"),
             layout: gbuffer_bgl,
@@ -2740,7 +2755,7 @@ impl PathTraceCompute {
         let restir_active = (self.restir_config.di_enabled || self.restir_config.gi_enabled)
             && self.restir.is_some()
             && self.restir_bind_groups.is_some()
-            && self.gbuffer_pipeline.is_some();
+            && self.gbuffer_stack.is_some();
         if restir_active {
             if let Some(restir_bgs) = self.restir_bind_groups.as_ref() {
                 let frame = self.frame_count;
@@ -2928,7 +2943,7 @@ impl PathTraceCompute {
         let restir_enabled = (self.restir_config.di_enabled || self.restir_config.gi_enabled)
             && self.restir.is_some()
             && self.restir_bind_groups.is_some()
-            && self.gbuffer_pipeline.is_some();
+            && self.gbuffer_stack.is_some();
         let pathguide_enabled = self.pathguide_config.enabled;
         let adaptive_enabled = self.adaptive_config.enabled;
         // All advanced subsystems are now tile-safe:
@@ -3023,7 +3038,15 @@ impl PathTraceCompute {
                 if restir_enabled {
                     let rs = self.restir.as_ref().unwrap();
                     let restir_bgs = self.restir_bind_groups.as_ref().unwrap();
-                    let gbuffer_pl = self.gbuffer_pipeline.as_ref().unwrap();
+                    // `gbuffer_stack` is populated by `rebuild_restir_bind_groups`,
+                    // which the ReSTIR-enabled dispatch path already requires to
+                    // have run. Bundle invariant gives us one Some-check instead
+                    // of a parallel unwrap on the bgl.
+                    let gbuffer_pl = &self
+                        .gbuffer_stack
+                        .as_ref()
+                        .expect("gbuffer_stack: rebuild_restir_bind_groups must run before ReSTIR dispatch")
+                        .pipeline;
 
                     // Per-tile ReSTIR + gbuffer params were pre-packed into
                     // dynamic-offset buffers before the tile loop; the bind

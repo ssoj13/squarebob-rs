@@ -22,12 +22,11 @@ pub struct PathGuidePipeline {
     update_bgl: wgpu::BindGroupLayout,
     sample_bgl: wgpu::BindGroupLayout,
 
-    // SVO buffer — sized once at construction; resolution is fixed for this
-    // pipeline instance.
+    // SVO buffer — sized once at construction from the constructor's
+    // resolution arg; this pipeline instance has fixed dimensions.
     svo_buf: wgpu::Buffer,
 
     // Configuration
-    resolution: u32,
     frame_count: u32,
 }
 
@@ -63,7 +62,6 @@ impl PathGuidePipeline {
             update_bgl,
             sample_bgl,
             svo_buf,
-            resolution,
             frame_count: 0,
         }
     }
