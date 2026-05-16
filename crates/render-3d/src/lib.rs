@@ -110,17 +110,19 @@ pub struct Renderer3D {
     env_bg: wgpu::BindGroup,     // Env map + sampler + params
     obj_id_bg0: wgpu::BindGroup, // Camera only
 
-    // Dynamic bind groups (recreated on resize or env map change)
-    dyn_bgs: Option<DynamicBindGroups>,
-
     // Layouts (kept for recreating dynamic bind groups)
     layouts: BindGroupLayouts,
 
     // Pipelines
     pipes: Pipelines,
 
-    // Render targets
-    targets: Option<RenderTargets>,
+    /// Resize-scoped render state: targets and the bind groups that depend on
+    /// them. Bundled so the "do we have targets ready to render into?" question
+    /// has a single answer — once Some, both halves are guaranteed populated
+    /// and valid for the current `targets.size`. `None` only between
+    /// construction and the first `ensure_targets` call (or after an explicit
+    /// `reset_render_targets`).
+    render_state: Option<RenderState>,
 
     // Environment map
     pub env: env_map::EnvMap,
@@ -160,6 +162,16 @@ pub struct Renderer3D {
     selected_ids: std::collections::HashSet<u32>,
 }
 
+/// Bundle of resize-scoped GPU state: the colour/depth/object-id render
+/// targets and the dynamic bind groups that reference them. They are
+/// always created and dropped together — when env-map changes invalidate
+/// only the bind groups, [`Renderer3D::on_env_map_changed`] rebuilds them
+/// in place from the existing targets rather than tearing the bundle down.
+pub(crate) struct RenderState {
+    pub(crate) targets: RenderTargets,
+    pub(crate) dyn_bgs: DynamicBindGroups,
+}
+
 /// Result of a CPU pick query
 pub struct CpuPickHit {
     pub path: std::path::PathBuf,
@@ -180,8 +192,7 @@ impl Renderer3D {
     pub fn reset_render_targets(&mut self) {
         // Must wait before dropping GPU resources
         let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        self.targets = None;
-        self.dyn_bgs = None;
+        self.render_state = None;
         self.instance_buffer = None;
         self.instance_count = 0;
         // Clear instance cache to force rebuild
@@ -354,10 +365,9 @@ impl Renderer3D {
             pbr_bg0,
             env_bg,
             obj_id_bg0,
-            dyn_bgs: None,
             layouts,
             pipes,
-            targets: None,
+            render_state: None,
             env,
             picking: picking::PickingState::new(),
             mouse_pos: None,
@@ -441,7 +451,7 @@ impl Renderer3D {
 
     /// Get render texture for egui registration (zero-copy path)
     pub fn get_render_texture(&self) -> Option<&wgpu::Texture> {
-        self.targets.as_ref().map(|t| &t.render_texture)
+        self.render_state.as_ref().map(|s| &s.targets.render_texture)
     }
 
     /// Render to GPU texture without CPU readback (zero-copy)
@@ -479,8 +489,21 @@ impl Renderer3D {
             &self.env,
             &self.env_params_buf,
         );
-        // Force dynamic bind group recreation (skybox references env)
-        self.dyn_bgs = None;
+        // Skybox references env, so its bind groups must be rebuilt. We
+        // keep the existing render targets (env-map change doesn't invalidate
+        // them) and rebuild dyn_bgs in place from the same targets.
+        if let Some(state) = self.render_state.as_mut() {
+            state.dyn_bgs = DynamicBindGroups::new(
+                &self.ctx.device,
+                &self.layouts,
+                &state.targets,
+                &self.camera_buf,
+                &self.hover_params_buf,
+                &self.env.view,
+                &self.env.sampler,
+                &self.env_params_buf,
+            );
+        }
         self.pt.pt_env_dirty = true;
     }
 
@@ -489,8 +512,8 @@ impl Renderer3D {
     // ========================================================================
 
     fn ensure_targets(&mut self, w: u32, h: u32) {
-        let needs_resize = match &self.targets {
-            Some(t) => t.size != (w, h),
+        let needs_resize = match &self.render_state {
+            Some(s) => s.targets.size != (w, h),
             None => true,
         };
 
@@ -499,7 +522,7 @@ impl Renderer3D {
             let targets = RenderTargets::new(device, w, h);
             self.picking.ensure_readback(device, w);
 
-            self.dyn_bgs = Some(DynamicBindGroups::new(
+            let dyn_bgs = DynamicBindGroups::new(
                 device,
                 &self.layouts,
                 &targets,
@@ -508,26 +531,14 @@ impl Renderer3D {
                 &self.env.view,
                 &self.env.sampler,
                 &self.env_params_buf,
-            ));
+            );
 
-            self.targets = Some(targets);
-        } else if self.dyn_bgs.is_none() {
-            // Recreate dynamic bind groups (e.g. after env map change)
-            let targets = self
-                .targets
-                .as_ref()
-                .expect("targets not built — call ensure_render_targets before render");
-            self.dyn_bgs = Some(DynamicBindGroups::new(
-                &self.ctx.device,
-                &self.layouts,
-                targets,
-                &self.camera_buf,
-                &self.hover_params_buf,
-                &self.env.view,
-                &self.env.sampler,
-                &self.env_params_buf,
-            ));
+            self.render_state = Some(RenderState { targets, dyn_bgs });
         }
+        // Note: env-map changes used to clear `dyn_bgs` independently and
+        // rebuild here; the bundled `RenderState` now keeps targets and
+        // bind groups in lock-step, with `on_env_map_changed` rebuilding
+        // `dyn_bgs` in place. So no second branch needed here.
     }
 
     /// Compute cube height based on node properties and render options.
@@ -886,7 +897,8 @@ impl Renderer3D {
     /// Readback a pixel from the existing object_id texture without re-rendering.
     /// Use when only the mouse moved but the scene (camera, geometry, options) is unchanged.
     pub fn pick_from_existing(&mut self) {
-        let Some(targets) = &self.targets else { return };
+        let Some(state) = &self.render_state else { return };
+        let targets = &state.targets;
         if self.instance_count == 0 {
             return;
         }
@@ -976,7 +988,7 @@ impl Renderer3D {
     /// from the previous full `render_to_view` so we don't pay for a
     /// per-instance pass here.
     pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>) {
-        let Some(targets) = self.targets.as_ref() else { return; };
+        let Some(state) = self.render_state.as_ref() else { return; };
         let Some(pt) = self.pt.path_tracer.as_ref() else { return; };
         let mut encoder = self
             .ctx
@@ -984,12 +996,10 @@ impl Renderer3D {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("composite_overlay"),
             });
-        pt.blit_with_source(&self.ctx.device, &mut encoder, &targets.render_view, source);
+        pt.blit_with_source(&self.ctx.device, &mut encoder, &state.targets.render_view, source);
         let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
         if has_active {
-            if let Some(dyn_bgs) = self.dyn_bgs.as_ref() {
-                self.encode_outline_pass(&mut encoder, targets, dyn_bgs);
-            }
+            self.encode_outline_pass(&mut encoder, &state.targets, &state.dyn_bgs);
         }
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
     }
@@ -1005,9 +1015,10 @@ impl Renderer3D {
 
     /// Read back current render texture pixels (for screenshots)
     pub fn readback_render_texture(&self) -> Vec<u8> {
-        let Some(targets) = &self.targets else {
+        let Some(state) = &self.render_state else {
             return Vec::new();
         };
+        let targets = &state.targets;
         let (width, height) = targets.size;
         if width == 0 || height == 0 {
             return Vec::new();
@@ -1302,36 +1313,25 @@ impl Renderer3D {
             );
         }
 
-        // We need targets and dyn_bgs — borrow them safely
+        // `ensure_targets` ran above, so render_state is Some. Bind once;
+        // the bundle guarantees both halves are valid for the same size.
+        let state = self
+            .render_state
+            .as_ref()
+            .expect("render_state not built — call ensure_render_targets before render");
         let passes_start = std::time::Instant::now();
-        let targets = self
-            .targets
-            .as_ref()
-            .expect("targets not built — call ensure_render_targets before render");
-        let dyn_bgs = self
-            .dyn_bgs
-            .as_ref()
-            .expect("dyn_bgs not built — call ensure_render_targets before render");
-        self.encode_passes(&mut encoder, targets, dyn_bgs, opts, hovered_id);
+        self.encode_passes(&mut encoder, &state.targets, &state.dyn_bgs, opts, hovered_id);
         let passes_ms = passes_start.elapsed().as_secs_f64() * 1000.0;
         debug!("render_passes: {:.2}ms", passes_ms);
 
         // Submit picking readback
-        let targets = self
-            .targets
-            .as_ref()
-            .expect("targets not built — call ensure_render_targets before render");
         self.picking
-            .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
+            .submit_readback(&mut encoder, &state.targets.object_id_texture, state.targets.size);
 
-        let targets = self
-            .targets
-            .as_ref()
-            .expect("targets not built — call ensure_render_targets before render");
         let output_buffer = gpu::readback_texture(
             &self.ctx,
             &mut encoder,
-            &targets.render_texture,
+            &state.targets.render_texture,
             width,
             height,
         );

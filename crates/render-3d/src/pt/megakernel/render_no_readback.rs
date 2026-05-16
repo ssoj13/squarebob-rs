@@ -388,10 +388,11 @@ pub(crate) fn render_path_traced_no_readback(
         pt.update_adaptive_sample_map(&mut encoder, &renderer.ctx.queue);
     }
 
-    let targets = renderer
-        .targets
+    let state = renderer
+        .render_state
         .as_ref()
-        .expect("targets not built — call ensure_render_targets before render");
+        .expect("render_state not built — call ensure_render_targets before render");
+    let targets = &state.targets;
     // OIDN denoise is invoked from the app layer (`pt-denoise-oidn`),
     // not from the megakernel render path.
     pt.blit(&mut encoder, &targets.render_view);

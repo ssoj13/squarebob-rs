@@ -449,10 +449,11 @@ pub(crate) fn render_path_traced(
     );
 
     let blit_start = std::time::Instant::now();
-    let targets = renderer
-        .targets
+    let state = renderer
+        .render_state
         .as_ref()
-        .expect("targets not built — call ensure_render_targets before render");
+        .expect("render_state not built — call ensure_render_targets before render");
+    let targets = &state.targets;
     // Denoising (OIDN) is now invoked from the app layer, after PT output is
     // sample-normalized — see `pt-denoise-oidn`. The raw blit always uses
     // the PT accumulator; if OIDN is active, the app blits its result texture

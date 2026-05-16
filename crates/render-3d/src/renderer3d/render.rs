@@ -219,14 +219,10 @@ impl Renderer3D {
             // silhouettes of the hovered/selected IDs.
             let has_active_overlay = !self.selected_ids.is_empty() || hovered_id != 0;
             if opts.hover_mode != HoverMode::None && has_active_overlay {
-                let targets = self
-                    .targets
+                let state = self
+                    .render_state
                     .as_ref()
-                    .expect("targets not built — call ensure_render_targets before render");
-                let dyn_bgs = self
-                    .dyn_bgs
-                    .as_ref()
-                    .expect("dyn_bgs not built — call ensure_render_targets before render");
+                    .expect("render_state not built — call ensure_render_targets before render");
                 let ib = self.instance_buffer.as_ref().expect(
                     "instance_buffer not built — collect_cubes must upload before encode_passes",
                 );
@@ -238,8 +234,8 @@ impl Renderer3D {
                             label: Some("PT Outline Encoder"),
                         });
 
-                self.encode_object_id_pass(&mut enc, targets, ib, opts.double_sided);
-                self.encode_outline_pass(&mut enc, targets, dyn_bgs);
+                self.encode_object_id_pass(&mut enc, &state.targets, ib, opts.double_sided);
+                self.encode_outline_pass(&mut enc, &state.targets, &state.dyn_bgs);
 
                 self.ctx.queue.submit(std::iter::once(enc.finish()));
             }
@@ -252,29 +248,22 @@ impl Renderer3D {
             return;
         }
 
-        // Encode PBR/wireframe passes
-        let targets = self
-            .targets
+        // Encode PBR/wireframe passes — bundle guarantees both halves valid
+        // for the same size, so one Some-check covers both reads.
+        let state = self
+            .render_state
             .as_ref()
-            .expect("targets not built — call ensure_render_targets before render");
-        let dyn_bgs = self
-            .dyn_bgs
-            .as_ref()
-            .expect("dyn_bgs not built — call ensure_render_targets before render");
+            .expect("render_state not built — call ensure_render_targets before render");
         info!(
             "render_to_view: calling encode_passes, targets {:?}",
-            targets.size
+            state.targets.size
         );
-        self.encode_passes(&mut encoder, targets, dyn_bgs, opts, hovered_id);
+        self.encode_passes(&mut encoder, &state.targets, &state.dyn_bgs, opts, hovered_id);
         info!("render_to_view: encode_passes done, submitting");
 
         // Submit picking readback (uses pending_pick set by set_mouse_pos)
-        let targets = self
-            .targets
-            .as_ref()
-            .expect("targets not built — call ensure_render_targets before render");
         self.picking
-            .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
+            .submit_readback(&mut encoder, &state.targets.object_id_texture, state.targets.size);
 
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
 
