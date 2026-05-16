@@ -70,9 +70,11 @@ pub struct OidnDenoiser {
     width: u32,
     height: u32,
 
-    /// Linear `Rgba32Float` result texture, same dims as input. Lazily allocated.
-    result_texture: Option<wgpu::Texture>,
-    result_view: Option<wgpu::TextureView>,
+    /// Linear `Rgba32Float` result texture, same dims as input. Allocated
+    /// up-front in `new()` and replaced on `resize()` so we never observe a
+    /// half-initialised denoiser at run-time.
+    result_texture: wgpu::Texture,
+    result_view: wgpu::TextureView,
 
     /// Last successful execute() wallclock for UI display.
     last_latency_ms: Option<f32>,
@@ -109,19 +111,20 @@ pub struct OidnDenoiser {
 
 impl OidnDenoiser {
     pub fn new(
-        _ctx: &GpuContext,
+        ctx: &GpuContext,
         width: u32,
         height: u32,
         weights_dir: Option<PathBuf>,
     ) -> Self {
+        let (result_texture, result_view) = create_result_texture(&ctx.device, width, height);
         Self {
             weights_dir,
             mode: OidnMode::default(),
             quality: Quality::Balanced,
             width,
             height,
-            result_texture: None,
-            result_view: None,
+            result_texture,
+            result_view,
             last_latency_ms: None,
             burn_device_ref: None,
             cached_model_key: None,
@@ -139,14 +142,15 @@ impl OidnDenoiser {
         self.input_clamp = max;
     }
 
-    pub fn resize(&mut self, _ctx: &GpuContext, width: u32, height: u32) {
+    pub fn resize(&mut self, ctx: &GpuContext, width: u32, height: u32) {
         if self.width == width && self.height == height {
             return;
         }
         self.width = width;
         self.height = height;
-        self.result_texture = None;
-        self.result_view = None;
+        let (tex, view) = create_result_texture(&ctx.device, width, height);
+        self.result_texture = tex;
+        self.result_view = view;
         // Filter cache is keyed on (mode, quality, w, h) — when dims change
         // the cached filter is invalidated lazily on the next denoise call
         // (see filter_key check there). Burn input tensors are allocated
@@ -170,8 +174,8 @@ impl OidnDenoiser {
         self.quality
     }
 
-    pub fn result_view(&self) -> Option<&wgpu::TextureView> {
-        self.result_view.as_ref()
+    pub fn result_view(&self) -> &wgpu::TextureView {
+        &self.result_view
     }
 
     pub fn last_latency_ms(&self) -> Option<f32> {
@@ -249,21 +253,23 @@ impl OidnDenoiser {
         );
         let use_normal = matches!(effective_mode, OidnMode::ColorAlbedoNormal);
 
-        // Lazy init: Burn device + result texture. The device is built once
-        // and leaked to `'static` so the cached `RtFilter` (parameterised
-        // over `&'b WgpuDevice`) can survive across denoise calls — saves
-        // the UNet rebuild on every periodic fire.
-        if self.burn_device_ref.is_none() {
-            let dev = make_burn_device(ctx)?;
-            let leaked: &'static burn_wgpu::WgpuDevice = Box::leak(Box::new(dev));
-            self.burn_device_ref = Some(leaked);
-            log::info!("OIDN: Burn-wgpu device initialised on shared wgpu setup (leaked to 'static for filter caching)");
-        }
-        if self.result_texture.is_none() {
-            let (tex, view) = create_result_texture(&ctx.device, self.width, self.height);
-            self.result_texture = Some(tex);
-            self.result_view = Some(view);
-        }
+        // Lazy init: Burn device (fallible — `make_burn_device` returns
+        // `Result`, so it can't run in `new`). The device is built once and
+        // leaked to `'static` so the cached `RtFilter` (parameterised over
+        // `&'b WgpuDevice`) can survive across denoise calls — saves the
+        // UNet rebuild on every periodic fire. The result texture itself
+        // is allocated up-front in `new()`, so there's no separate slot
+        // to ensure here.
+        let burn_device: &'static burn_wgpu::WgpuDevice = match self.burn_device_ref {
+            Some(d) => d,
+            None => {
+                let dev = make_burn_device(ctx)?;
+                let leaked: &'static burn_wgpu::WgpuDevice = Box::leak(Box::new(dev));
+                self.burn_device_ref = Some(leaked);
+                log::info!("OIDN: Burn-wgpu device initialised on shared wgpu setup (leaked to 'static for filter caching)");
+                leaked
+            }
+        };
 
         let started = Instant::now();
         // From here on use `effective_mode` rather than `self.mode` so the
@@ -291,10 +297,6 @@ impl OidnDenoiser {
         // we don't allocate / copy ~30 MB of AOV per side just to throw away.
         let albedo_buf = if use_albedo { albedo_buf } else { None };
         let normal_buf = if use_normal { normal_buf } else { None };
-
-        let burn_device: &'static burn_wgpu::WgpuDevice = self
-            .burn_device_ref
-            .expect("burn_device init guaranteed above");
 
         // Color uses `padded_w` so `copy_texture_to_buffer` is happy.
         // AOVs are already tight `vec4<f32>` buffers — no alignment
@@ -515,8 +517,7 @@ impl OidnDenoiser {
             let zeros = Tensor::<Wgpu, 4>::zeros([1, h, pad_cols, 4], burn_device);
             Tensor::cat(vec![out_hwc4, zeros], 2)
         };
-        let result_tex = self.result_texture.as_ref().unwrap();
-        copy_tensor_into_texture(&ctx.device, &ctx.queue, out_hwc4_padded, result_tex, w, h)?;
+        copy_tensor_into_texture(&ctx.device, &ctx.queue, out_hwc4_padded, &self.result_texture, w, h)?;
 
         // Drain all GPU work this pass submitted before returning.
         //

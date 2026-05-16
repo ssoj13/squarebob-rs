@@ -691,7 +691,7 @@ impl App {
             // source (OIDN result if denoised, raw PT accumulator
             // otherwise) plus the outline overlay. No fresh PT sample.
             let source = if self.oidn_display_is_denoised {
-                self.oidn_denoiser.as_ref().and_then(|d| d.result_view())
+                self.oidn_denoiser.as_ref().map(|d| d.result_view())
             } else {
                 None
             };
@@ -1120,7 +1120,7 @@ impl App {
             if self.oidn_display_is_denoised {
                 if let (Some(r), Some(denoised_view)) = (
                     self.renderer_3d.as_ref(),
-                    self.oidn_denoiser.as_ref().and_then(|d| d.result_view()),
+                    self.oidn_denoiser.as_ref().map(|d| d.result_view()),
                 ) {
                     r.composite_overlay(Some(denoised_view));
                 }
