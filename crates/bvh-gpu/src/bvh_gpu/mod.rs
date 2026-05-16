@@ -10,7 +10,6 @@ use log::{debug, info, trace, warn};
 use std::sync::mpsc;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use pt_core::bvh::{BvhNode, GpuAabb, Instance};
 
@@ -107,14 +106,11 @@ pub struct GpuBvhBuilder {
     aabb_refit_pipeline: wgpu::ComputePipeline,
     aabb_bgl: wgpu::BindGroupLayout,
 
-    // Buffers
-    aabb_buffer: Option<wgpu::Buffer>,
-    morton_a: Option<wgpu::Buffer>,
-    morton_b: Option<wgpu::Buffer>,
-    block_hist: Option<wgpu::Buffer>,
-    block_offsets: Option<wgpu::Buffer>,
-    lbvh_nodes: Option<wgpu::Buffer>,
-    leaf_parents: Option<wgpu::Buffer>,
+    /// Capacity-scoped GPU scratch buffers. `None` only between construction
+    /// and the first `ensure_capacity` call; once Some, the whole bundle is
+    /// guaranteed valid and sized for `self.capacity`. Recreated as one unit
+    /// when capacity grows (see [`GpuBvhBuilder::ensure_capacity`]).
+    bufs: Option<BvhBuffers>,
     sorted_in_a: bool,
     /// LBVH scratch output (`output_nodes` in `aabb_compute.wgsl`); persists
     /// between frames so `refit_leaves` can update AABBs before CPU linearize.
@@ -129,6 +125,22 @@ pub struct GpuBvhBuilder {
     capacity: usize,
     last_build_count: usize,
     has_valid_structure: bool,
+}
+
+/// Capacity-scoped GPU buffers used by the LBVH build pipeline. All seven
+/// fields share lifecycle: they are allocated together by
+/// [`GpuBvhBuilder::ensure_capacity`] and recreated as a unit whenever the
+/// builder grows past its current capacity. Bundling them eliminates the
+/// "is each one of seven slots Some?" question that older code answered
+/// with seven independent `.as_ref().unwrap()` calls at every access site.
+pub(crate) struct BvhBuffers {
+    pub(crate) aabb: wgpu::Buffer,
+    pub(crate) morton_a: wgpu::Buffer,
+    pub(crate) morton_b: wgpu::Buffer,
+    pub(crate) block_hist: wgpu::Buffer,
+    pub(crate) block_offsets: wgpu::Buffer,
+    pub(crate) lbvh_nodes: wgpu::Buffer,
+    pub(crate) leaf_parents: wgpu::Buffer,
 }
 
 const MORTON_WGSL: &str = include_str!("morton.wgsl");
@@ -310,13 +322,7 @@ impl GpuBvhBuilder {
             aabb_internal_pipeline,
             aabb_refit_pipeline,
             aabb_bgl,
-            aabb_buffer: None,
-            morton_a: None,
-            morton_b: None,
-            block_hist: None,
-            block_offsets: None,
-            lbvh_nodes: None,
-            leaf_parents: None,
+            bufs: None,
             sorted_in_a: true,
             output_nodes_buf: None,
             bounds_buffer,
@@ -384,14 +390,15 @@ impl GpuBvhBuilder {
             }),
         );
 
-        let aabb_buf = self.aabb_buffer.as_ref()?;
+        let bufs = self.bufs.as_ref()?;
+        let aabb_buf = &bufs.aabb;
         let sorted_buf = if self.sorted_in_a {
-            self.morton_a.as_ref()?
+            &bufs.morton_a
         } else {
-            self.morton_b.as_ref()?
+            &bufs.morton_b
         };
-        let lbvh_buf = self.lbvh_nodes.as_ref()?;
-        let leaf_parents = self.leaf_parents.as_ref()?;
+        let lbvh_buf = &bufs.lbvh_nodes;
+        let leaf_parents = &bufs.leaf_parents;
         let out_buf = self.output_nodes_buf.as_ref()?;
 
         let aabb_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -525,14 +532,18 @@ impl GpuBvhBuilder {
             }),
         );
 
-        let aabb_buf = self.aabb_buffer.as_ref().unwrap();
-        let sorted_buf = if self.sorted_in_a {
-            self.morton_a.as_ref().unwrap()
-        } else {
-            self.morton_b.as_ref().unwrap()
+        let Some(bufs) = self.bufs.as_ref() else {
+            warn!("refit: bvh buffers not allocated — call build() first");
+            return false;
         };
-        let lbvh_buf = self.lbvh_nodes.as_ref().unwrap();
-        let leaf_parents = self.leaf_parents.as_ref().unwrap();
+        let aabb_buf = &bufs.aabb;
+        let sorted_buf = if self.sorted_in_a {
+            &bufs.morton_a
+        } else {
+            &bufs.morton_b
+        };
+        let lbvh_buf = &bufs.lbvh_nodes;
+        let leaf_parents = &bufs.leaf_parents;
 
         let aabb_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bvh_aabb_refit_bg"),
@@ -597,13 +608,17 @@ impl GpuBvhBuilder {
         self.update_bounds(queue, instances);
         self.ensure_output_nodes_buffer(device, n);
 
-        let aabb_buf = self.aabb_buffer.as_ref().unwrap();
-        let morton_a = self.morton_a.as_ref().unwrap();
-        let morton_b = self.morton_b.as_ref().unwrap();
-        let block_hist = self.block_hist.as_ref().unwrap();
-        let block_offsets = self.block_offsets.as_ref().unwrap();
-        let lbvh_nodes = self.lbvh_nodes.as_ref().unwrap();
-        let leaf_parents = self.leaf_parents.as_ref().unwrap();
+        let bufs = self
+            .bufs
+            .as_ref()
+            .ok_or_else(|| "bvh buffers not allocated".to_string())?;
+        let aabb_buf = &bufs.aabb;
+        let morton_a = &bufs.morton_a;
+        let morton_b = &bufs.morton_b;
+        let block_hist = &bufs.block_hist;
+        let block_offsets = &bufs.block_offsets;
+        let lbvh_nodes = &bufs.lbvh_nodes;
+        let leaf_parents = &bufs.leaf_parents;
 
         queue.write_buffer(
             &self.build_params_buffer,
@@ -742,7 +757,7 @@ impl GpuBvhBuilder {
         }
 
         let sorted = input;
-        self.sorted_in_a = std::ptr::eq(sorted, self.morton_a.as_ref().unwrap());
+        self.sorted_in_a = std::ptr::eq(sorted, morton_a);
 
         let output_nodes_buf = self.output_nodes_buf.as_ref().unwrap();
 
@@ -844,11 +859,10 @@ impl GpuBvhBuilder {
             warn!("GpuBvhBuilder::build_gpu: GPU radix produced unsorted Morton codes ({}), retrying with CPU sort", err);
             sorted_morton
                 .sort_unstable_by(|a, b| a.code.cmp(&b.code).then_with(|| a.index.cmp(&b.index)));
-            let cpu_sorted_buf = self.morton_a.as_ref().unwrap();
-            queue.write_buffer(cpu_sorted_buf, 0, bytemuck::cast_slice(&sorted_morton));
+            queue.write_buffer(morton_a, 0, bytemuck::cast_slice(&sorted_morton));
             self.sorted_in_a = true;
             used_cpu_sort = true;
-            run_lbvh(cpu_sorted_buf, output_nodes_buf);
+            run_lbvh(morton_a, output_nodes_buf);
         } else {
             run_lbvh(sorted, output_nodes_buf);
         }
@@ -876,10 +890,9 @@ impl GpuBvhBuilder {
             warn!("GpuBvhBuilder::build_gpu: LBVH invalid after GPU radix ({}), retrying with CPU-sorted Morton codes", err);
             sorted_morton
                 .sort_unstable_by(|a, b| a.code.cmp(&b.code).then_with(|| a.index.cmp(&b.index)));
-            let cpu_sorted_buf = self.morton_a.as_ref().unwrap();
-            queue.write_buffer(cpu_sorted_buf, 0, bytemuck::cast_slice(&sorted_morton));
+            queue.write_buffer(morton_a, 0, bytemuck::cast_slice(&sorted_morton));
             self.sorted_in_a = true;
-            run_lbvh(cpu_sorted_buf, output_nodes_buf);
+            run_lbvh(morton_a, output_nodes_buf);
 
             output_nodes = read_buffer_vec(device, queue, output_nodes_buf, node_count);
             lbvh_cpu = read_buffer_vec(device, queue, lbvh_nodes, n.saturating_sub(1));
@@ -928,73 +941,38 @@ impl GpuBvhBuilder {
             lbvh_size / 1024
         );
 
-        self.aabb_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_aabb_buffer"),
-            size: aabb_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        self.morton_a = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_morton_a"),
-            size: morton_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        self.morton_b = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_morton_b"),
-            size: morton_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        self.block_hist = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_block_hist"),
-            size: block_hist_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        }));
-        self.block_offsets = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_block_offsets"),
-            size: block_hist_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        self.lbvh_nodes = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_lbvh_nodes"),
-            size: lbvh_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        }));
-        self.leaf_parents = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_leaf_parents"),
-            size: leaf_parents_size.max(16),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        }));
+        // Build the whole bundle atomically — never expose a half-initialised
+        // state where some slots are Some and others None.
+        let make_buf = |label: &str, size: u64, extra_usage: wgpu::BufferUsages| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: size.max(16),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra_usage,
+                mapped_at_creation: false,
+            })
+        };
+        self.bufs = Some(BvhBuffers {
+            aabb: make_buf("bvh_aabb_buffer", aabb_size, wgpu::BufferUsages::empty()),
+            morton_a: make_buf("bvh_morton_a", morton_size, wgpu::BufferUsages::COPY_SRC),
+            morton_b: make_buf("bvh_morton_b", morton_size, wgpu::BufferUsages::COPY_SRC),
+            block_hist: make_buf("bvh_block_hist", block_hist_size, wgpu::BufferUsages::COPY_SRC),
+            block_offsets: make_buf("bvh_block_offsets", block_hist_size, wgpu::BufferUsages::empty()),
+            lbvh_nodes: make_buf("bvh_lbvh_nodes", lbvh_size, wgpu::BufferUsages::COPY_SRC),
+            leaf_parents: make_buf("bvh_leaf_parents", leaf_parents_size, wgpu::BufferUsages::COPY_SRC),
+        });
     }
 
-    fn update_aabbs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, instances: &[Instance]) {
+    fn update_aabbs(&mut self, _device: &wgpu::Device, queue: &wgpu::Queue, instances: &[Instance]) {
+        // Both call sites (`refit` and `build_gpu`) guarantee the bundle is
+        // allocated by calling `ensure_capacity` / passing `can_refit` first.
+        // If somehow we land here without buffers, skip — never panic on the
+        // dispatch path.
+        let Some(bufs) = self.bufs.as_ref() else {
+            warn!("update_aabbs: bvh buffers not allocated — skipping");
+            return;
+        };
         let aabbs: Vec<GpuAabb> = instances.iter().map(|i| i.aabb_to_gpu()).collect();
-        if self.aabb_buffer.is_none() {
-            self.aabb_buffer = Some(
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("bvh_aabb_buffer"),
-                    contents: bytemuck::cast_slice(&aabbs),
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                }),
-            );
-        } else if let Some(buf) = &self.aabb_buffer {
-            queue.write_buffer(buf, 0, bytemuck::cast_slice(&aabbs));
-        }
+        queue.write_buffer(&bufs.aabb, 0, bytemuck::cast_slice(&aabbs));
     }
 
     fn update_bounds(&self, queue: &wgpu::Queue, instances: &[Instance]) {
