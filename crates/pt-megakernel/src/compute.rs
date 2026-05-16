@@ -2643,9 +2643,15 @@ impl PathTraceCompute {
         }
 
         // Read current ray-buffer dims in a tiny scope so the shared borrow drops
-        // before we may need a mutable borrow to upload tile params.
+        // before we may need a mutable borrow to upload tile params. The entry
+        // check at the top of `dispatch_wavefront` already proved this Some;
+        // the let-else converts any future invariant break into a graceful
+        // early-return rather than a frame-time panic.
         let (wf_w, wf_h) = {
-            let wf_ref = self.wavefront.as_ref().unwrap();
+            let Some(wf_ref) = self.wavefront.as_ref() else {
+                log::error!("dispatch_wavefront: wavefront cleared mid-frame");
+                return false;
+            };
             wf_ref.dimensions()
         };
 
@@ -2711,13 +2717,16 @@ impl PathTraceCompute {
             }
         }
 
-        // One bulk upload of all tile params (mutable borrow scope).
-        let realloc = self.wavefront.as_mut().unwrap().prepare_tiles(
-            device,
-            queue,
-            &tiles_meta,
-            &tile_count_inits,
-        );
+        // One bulk upload of all tile params (mutable borrow scope). Entry
+        // check proved wavefront Some; let-Some pattern converts any drift
+        // into a graceful exit rather than a per-frame panic.
+        let realloc = match self.wavefront.as_mut() {
+            Some(wf) => wf.prepare_tiles(device, queue, &tiles_meta, &tile_count_inits),
+            None => {
+                log::error!("dispatch_wavefront: wavefront cleared before prepare_tiles");
+                return false;
+            }
+        };
         if realloc {
             self.rebuild_wavefront_bind_groups(device);
         }
@@ -2881,10 +2890,17 @@ impl PathTraceCompute {
             }
         }
 
-        let wf = self.wavefront.as_ref().unwrap();
-
-        // Get current bind group set (will swap between bounces)
-        let bgs = self.wavefront_bind_groups.as_ref().unwrap();
+        // Resolve wavefront + bind groups once; both proven Some by the entry
+        // check. Pairing the let-elses preserves the "they move as a unit"
+        // intent and produces a single error log on any drift.
+        let Some(wf) = self.wavefront.as_ref() else {
+            log::error!("dispatch_wavefront: wavefront cleared before pass loop");
+            return false;
+        };
+        let Some(bgs) = self.wavefront_bind_groups.as_ref() else {
+            log::error!("dispatch_wavefront: wavefront_bind_groups cleared before pass loop");
+            return false;
+        };
         let cur_set = bgs.cur_set;
 
         // Update shade params with current frame and time
@@ -3036,8 +3052,19 @@ impl PathTraceCompute {
                 }
 
                 if restir_enabled {
-                    let rs = self.restir.as_ref().unwrap();
-                    let restir_bgs = self.restir_bind_groups.as_ref().unwrap();
+                    // `restir_enabled` is computed from the config flag earlier in
+                    // this function and pairs with both Options being Some — if
+                    // somehow they desync (e.g. async config change), bail rather
+                    // than panic. The two unwraps were the parallel-Option
+                    // anti-pattern documented in `.bughunt/plan1.md`.
+                    let Some(rs) = self.restir.as_ref() else {
+                        log::error!("dispatch_wavefront: restir_enabled but restir cleared");
+                        return false;
+                    };
+                    let Some(restir_bgs) = self.restir_bind_groups.as_ref() else {
+                        log::error!("dispatch_wavefront: restir_enabled but bind groups cleared");
+                        return false;
+                    };
                     // `gbuffer_stack` is populated by `rebuild_restir_bind_groups`,
                     // which the ReSTIR-enabled dispatch path already requires to
                     // have run. Bundle invariant gives us one Some-check instead
@@ -3465,7 +3492,10 @@ impl PathTraceCompute {
 
         // Pass 4: Finalize - copy accum to output texture
         {
-            let bgs = self.wavefront_bind_groups.as_ref().unwrap();
+            let Some(bgs) = self.wavefront_bind_groups.as_ref() else {
+                log::error!("dispatch_wavefront: wavefront_bind_groups cleared before finalize");
+                return false;
+            };
 
             // Update finalize params with current frame count
             queue.write_buffer(
