@@ -304,17 +304,22 @@ pub fn classify_to_index(
 }
 
 /// Get normalised value (0.0-1.0) from the selected source.
+///
+/// Note on `Path` source: the classifier always uses the *flat* path
+/// hash, never `path_hierarchical_value`. The hierarchical value
+/// concentrates everyone in a real file tree on a narrow band —
+/// component weights decay 1.0, 0.4, 0.16, ... so a shared root
+/// prefix collapses the source value, and the weighted CDF then
+/// dumps the whole tree into a single material slot. The
+/// hierarchical signal is useful for *color ramps* (smooth gradient
+/// across siblings) but breaks material *bucketing*, which needs to
+/// span the full [0, 1) range to spread across slots. Use the
+/// `path_hierarchical` setting upstream for ramps only.
 fn source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     match settings.source {
         MaterialSource::None => 0.5,
         MaterialSource::Extension => hash_to_float(input.name_hash),
-        MaterialSource::Path => {
-            if settings.path_hierarchical && input.path_hierarchical_value > 0.0 {
-                input.path_hierarchical_value.clamp(0.0, 1.0)
-            } else {
-                hash_to_float(input.path_hash)
-            }
-        }
+        MaterialSource::Path => hash_to_float(input.path_hash),
         MaterialSource::Size => {
             if input.max_size == 0 {
                 0.5
