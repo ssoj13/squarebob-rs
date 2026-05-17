@@ -288,11 +288,20 @@ pub fn classify_to_index(
     }
 
     let raw = source_value(input, settings);
-    let seeded = apply_seed(raw, input.name_hash, settings.seed);
-    let distributed = apply_distribution(seeded, input, settings).clamp(0.0, 1.0);
-    debug_assert!(distributed.is_finite(), "distribution returned non-finite value");
-
-    let target = distributed * total;
+    let seeded = apply_seed(raw, input.name_hash, settings.seed).clamp(0.0, 1.0);
+    debug_assert!(seeded.is_finite(), "seeded source returned non-finite value");
+    // Distribution shaping (Bands / Quantized / Gradient / Spatial)
+    // is intentionally NOT applied here. Quantising the source before
+    // the CDF lookup makes narrow weight slots unreachable whenever
+    // the quantisation step exceeds a slot's width: e.g. weights
+    // `[1, 1, 1, 1, 0.42, 1, 1]` (sum 6.42) with `Bands(14)` produce
+    // a target step of 0.459 — larger than the 0.42 window assigned
+    // to slot 4, which is therefore never picked. The shaping enum
+    // is a *color ramp* visual control (see
+    // `render-3d/.../instance_collect::sample_color_ramp`); per-slot
+    // material picking always uses the raw seeded value so the
+    // weighted distribution stays mathematically proportional.
+    let target = seeded * total;
     let mut cum = 0.0f32;
     for (i, &w) in weights.iter().enumerate() {
         cum += w.max(0.0);
@@ -510,21 +519,54 @@ mod tests {
     }
 
     #[test]
-    fn distribution_quantized_uses_quant_levels() {
-        let s = MaterializeSettings {
+    fn distribution_shaping_does_not_affect_slot_picking() {
+        // Distribution shaping (Quantized / Bands / etc.) is now a
+        // color-ramp concern only; it must NOT change material slot
+        // assignment vs the default (Direct). Same inputs + same
+        // weights + different `distribution` → same slot per cube.
+        let mut s_direct = MaterializeSettings {
             source: MaterialSource::Extension,
-            distribution: MaterialDistribution::Quantized,
-            quant_levels: 3,
+            distribution: MaterialDistribution::Direct,
             ..Default::default()
         };
-        let w = uniform(64);
-        let mut seen = std::collections::HashSet::new();
-        for h in 0..1000u32 {
+        let mut s_bands = s_direct;
+        s_bands.distribution = MaterialDistribution::Bands;
+        s_bands.band_count = 14;
+        let w = uniform(7);
+        for h in 0..200u32 {
             let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
-            seen.insert(classify_to_index(&i, &s, &w));
+            let a = classify_to_index(&i, &s_direct, &w);
+            let b = classify_to_index(&i, &s_bands, &w);
+            assert_eq!(a, b, "shaping should not affect slot for hash {h}");
         }
-        // 3 quantisation levels → at most 3 distinct output indices.
-        assert!(seen.len() <= 3, "quantised distribution produced {} distinct indices", seen.len());
+        // Suppress unused-mut lint without changing the assertion above.
+        s_direct.quant_levels = s_direct.quant_levels.max(1);
+    }
+
+    #[test]
+    fn narrow_weight_still_reachable_with_bands() {
+        // The exact case the user reported: 7 slots, one with a
+        // narrow weight (~0.07 of total), Bands distribution at 14.
+        // Slot 4 must still receive a non-trivial share of cubes.
+        let s = MaterializeSettings {
+            source: MaterialSource::Extension,
+            distribution: MaterialDistribution::Bands,
+            band_count: 14,
+            ..Default::default()
+        };
+        let w = vec![1.0, 1.0, 1.0, 1.0, 0.42, 1.0, 1.0];
+        let mut hits = 0u32;
+        for h in 0..10_000u32 {
+            let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
+            if classify_to_index(&i, &s, &w) == 4 {
+                hits += 1;
+            }
+        }
+        // Expected 6.5% — accept anything in [3%, 12%] for hash bias.
+        assert!(
+            (300..1200).contains(&hits),
+            "expected slot 4 to receive ~6.5% of cubes, got {hits} of 10000"
+        );
     }
 
     #[test]
