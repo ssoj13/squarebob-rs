@@ -5,6 +5,15 @@
 @group(0) @binding(0) var pt_texture: texture_2d<f32>;
 @group(0) @binding(1) var pt_sampler: sampler;
 
+// Exposure / display parameters pushed each frame from CPU.
+//   x = scene-linear exposure multiplier (1.0 = passthrough)
+//   y..w = reserved for future display-pipeline knobs (vignette,
+//   chromatic aberration radius, tonemap selector index, etc.)
+struct BlitParams {
+    exposure: vec4<f32>,
+}
+@group(0) @binding(2) var<uniform> blit_params: BlitParams;
+
 struct VsOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -37,8 +46,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let px = vec2<i32>(vec2<f32>(f32(dims.x), f32(dims.y)) * in.uv);
     let color = textureLoad(pt_texture, px, 0);
 
+    // Physical-camera exposure: scale scene-linear radiance before
+    // tonemap. `exposure.x == 1.0` (Manual mode default) is bit-exact
+    // passthrough.
+    let exposed = color.rgb * blit_params.exposure.x;
+
     // Tone map HDR -> LDR
-    let mapped = aces_tonemap(color.rgb);
+    let mapped = aces_tonemap(exposed);
 
     // Gamma correction (linear -> sRGB)
     let gamma = pow(mapped, vec3<f32>(1.0 / 2.2));

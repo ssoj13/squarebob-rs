@@ -61,7 +61,6 @@ pub(super) fn tinted_section<R>(
     // Thin tinted band that spans the full settings panel width.
     // - `inner_margin` collapsed to 1px top/bottom (was 6×6, too fat) and
     //   3px horizontal so the chevron/title don't kiss the rounded edge.
-    // - The Frame is drawn at full available width below.
     let frame = egui::Frame::NONE
         .fill(tint)
         .corner_radius(egui::CornerRadius::same(4))
@@ -72,21 +71,59 @@ pub(super) fn tinted_section<R>(
             bottom: 1,
         });
     let header_row_height = header_row_height.clamp(8.0, 40.0);
-    frame
-        .show(ui, |ui| {
-            // Tighten the click strip so the title row is one compact line
-            // and stretches to the panel edge.
-            let spacing = ui.spacing_mut();
-            spacing.interact_size.y = header_row_height;
-            spacing.item_spacing.y = 1.0;
-            spacing.button_padding = egui::vec2(2.0, 1.0);
-            ui.set_min_width(ui.available_width());
-            egui::CollapsingHeader::new(egui::RichText::new(title).heading())
-                .default_open(default_open)
-                .show(ui, add_contents)
-                .body_returned
-        })
-        .inner
+
+    // Manual `CollapsingState` so the WHOLE tinted band toggles the
+    // section, not just the small chevron+label hit-strip that
+    // `egui::CollapsingHeader` exposes by default. Persistent id is
+    // derived from the title so the open/closed state survives across
+    // frames and panel rebuilds.
+    let id = ui.make_persistent_id(("tinted_section", title));
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        id,
+        default_open,
+    );
+
+    let header_inner = frame.show(ui, |ui| {
+        let spacing = ui.spacing_mut();
+        spacing.interact_size.y = header_row_height;
+        spacing.item_spacing.y = 1.0;
+        spacing.button_padding = egui::vec2(2.0, 1.0);
+        ui.set_min_width(ui.available_width());
+
+        // Custom chevron + title row. The chevron rotates with the
+        // collapsing-state openness so it matches the look of the
+        // standard `CollapsingHeader`.
+        ui.horizontal(|ui| {
+            let icon_size = egui::Vec2::splat(ui.spacing().icon_width);
+            let (_icon_rect, icon_resp) =
+                ui.allocate_exact_size(icon_size, egui::Sense::hover());
+            let openness = state.openness(ui.ctx());
+            // `paint_default_icon` expects a `Response` for the icon
+            // rect — we feed it a hover-only one so it can read hover
+            // state but the band-level click below owns the toggle.
+            let _ = &icon_resp;
+            egui::collapsing_header::paint_default_icon(ui, openness, &icon_resp);
+            ui.label(egui::RichText::new(title).heading());
+        });
+    });
+
+    // Re-interact over the FULL tinted band rect with `Sense::click`.
+    // egui happily stacks click-sensors at the same area, so the
+    // chevron / label inside still draw correctly while the entire
+    // bar becomes the toggle target.
+    let band_response = ui.interact(
+        header_inner.response.rect,
+        id.with("__band_toggle"),
+        egui::Sense::click(),
+    );
+    if band_response.clicked() {
+        state.toggle(ui);
+    }
+
+    state
+        .show_body_indented(&band_response, ui, add_contents)
+        .map(|r| r.inner)
 }
 
 fn tint_for_name(ui: &egui::Ui, name: &str, mix: f32) -> egui::Color32 {
@@ -217,11 +254,27 @@ impl App {
                     ),
                 );
                 if resp.clicked() {
-                    self.camera_slots[i] = self.orbit_camera.clone();
+                    // Save: snapshot camera + DoF triple
+                    self.camera_slots[i] = super::state::CameraBookmark {
+                        camera: self.orbit_camera.clone(),
+                        dof_enabled: self.render_3d_opts.pt_dof_enabled,
+                        aperture: self.render_3d_opts.pt_aperture,
+                        focus_distance: self.render_3d_opts.pt_focus_distance,
+                    };
                 }
                 if resp.secondary_clicked() {
-                    self.orbit_camera = self.camera_slots[i].clone();
+                    // Recall: restore camera + DoF triple. DoF affects
+                    // ray gen, so reset PT accumulation to avoid mixing
+                    // pre/post-recall samples.
+                    let bm = self.camera_slots[i].clone();
+                    self.orbit_camera = bm.camera;
                     self.orbit_camera.cancel_animation();
+                    self.render_3d_opts.pt_dof_enabled = bm.dof_enabled;
+                    self.render_3d_opts.pt_aperture = bm.aperture;
+                    self.render_3d_opts.pt_focus_distance = bm.focus_distance;
+                    if let Some(r) = &mut self.renderer_3d {
+                        r.reset_pt_accumulation();
+                    }
                     self.needs_layout = true;
                 }
             }

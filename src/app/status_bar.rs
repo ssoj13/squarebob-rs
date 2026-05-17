@@ -93,19 +93,28 @@ impl App {
                         if self.last_samples_per_sec > 0.0 {
                             stats.push_str(&format!(" | {:.0} spp/s", self.last_samples_per_sec));
                         }
-                        // Sample progress: current / target. `oidn_last_frame_count`
-                        // mirrors `pt_frame_count()` and is refreshed every PT step
-                        // via `evaluate_oidn_trigger`, so it doubles as a current-spp
-                        // readout without re-borrowing `renderer_3d` here.
+                        ui.label(stats);
+
+                        // Sample progress: current / target rendered as
+                        // a `ProgressBar` with the `samples: N/M` text
+                        // overlaid on the fill. `oidn_last_frame_count`
+                        // mirrors `pt_frame_count()` (refreshed every
+                        // PT step via `evaluate_oidn_trigger`), so it
+                        // doubles as a current-spp readout without re-
+                        // borrowing `renderer_3d` here.
                         if self.render_3d_opts.path_tracing
                             && self.render_3d_opts.pt_samples > 0
                         {
-                            stats.push_str(&format!(
-                                " | samples: {}/{}",
-                                self.oidn_last_frame_count, self.render_3d_opts.pt_samples,
-                            ));
+                            let current = self.oidn_last_frame_count;
+                            let target = self.render_3d_opts.pt_samples.max(1);
+                            let fraction =
+                                (current as f32 / target as f32).clamp(0.0, 1.0);
+                            ui.add(
+                                egui::ProgressBar::new(fraction)
+                                    .desired_width(140.0)
+                                    .text(format!("samples: {}/{}", current, target)),
+                            );
                         }
-                        ui.label(stats);
                     }
                     // OIDN stats: surface here so the user can see the
                     // last denoise cost without opening the Denoiser

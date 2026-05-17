@@ -140,32 +140,67 @@ impl App {
                     ui.end_row();
 
                     // Row 5 — HDR firefly clamp on the OIDN input. Caps
-                    // each channel before the UNet sees it; the raw PT
+                    // luminance before the UNet sees it; the raw PT
                     // accumulator stays unclamped. `0.0` = off.
                     control_label(ui, "Clamp:");
-                    let clamp_resp = ui
-                        .add(
-                            egui::Slider::new(
-                                &mut self.render_3d_opts.pt_oidn_clamp,
-                                0.0..=100.0,
+                    ui.horizontal(|ui| {
+                        let clamp_resp = ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut self.render_3d_opts.pt_oidn_clamp,
+                                    0.0..=100.0,
+                                )
+                                .logarithmic(true)
+                                .clamping(egui::SliderClamping::Never),
                             )
-                            .logarithmic(true)
-                            .clamping(egui::SliderClamping::Never),
+                            .on_hover_text(
+                                "Luminance-preserving HDR clamp on the \
+                                 OIDN colour input. Hue-preserving \
+                                 (scales all 3 channels by the same \
+                                 factor). 10.0 is the production \
+                                 default; set to 0 to disable. Doesn't \
+                                 touch the raw PT accumulator.",
+                            );
+                        if clamp_resp.changed() {
+                            *changed = true;
+                        }
+                        let adaptive_resp = ui
+                            .checkbox(
+                                &mut self.render_3d_opts.pt_oidn_adaptive_clamp,
+                                "Adaptive",
+                            )
+                            .on_hover_text(
+                                "Smoothly tighten the clamp ceiling at low \
+                                 sample counts (smooth-step 0..256 spp), \
+                                 then relax to the slider value. Suppresses \
+                                 halos around lights in early previews \
+                                 without robbing the converged image of \
+                                 dynamic range.",
+                            );
+                        if adaptive_resp.changed() {
+                            *changed = true;
+                        }
+                    });
+                    ui.end_row();
+
+                    // Row 6 — NaN/Inf protect. Mirrors reference C++
+                    // `nan_to_zero` pre-step in every input kernel.
+                    control_label(ui, "NaN protect:");
+                    let nan_resp = ui
+                        .checkbox(
+                            &mut self.render_3d_opts.pt_oidn_nan_protect,
+                            "",
                         )
                         .on_hover_text(
-                            "Luminance-preserving HDR clamp applied to the OIDN \
-                             colour input before the denoiser sees it. Caps per-\
-                             pixel Rec.709 luminance; all three channels scale by \
-                             the same factor so hue is preserved exactly (matches \
-                             the WGSL clamp_firefly on the PT side). Suppresses \
-                             fireflies — rare extreme samples that OIDN's albedo+\
-                             normal-guided UNet would otherwise smear into \
-                             splotchy halos. 10.0 is a reasonable default; lower \
-                             values clamp more aggressively. Set to 0 to disable \
-                             for physically uncapped output. Doesn't touch the \
-                             raw PT accumulator — only what OIDN reads.",
+                            "Replace non-finite (NaN / ±Inf) samples on \
+                             colour / albedo / normal inputs with 0 \
+                             before clamp + transfer. Matches the \
+                             reference C++ OIDN contract. Without this, \
+                             a single bad path-tracer sample can poison \
+                             the entire denoised output through the \
+                             PU/exp expansion in the inverse transfer.",
                         );
-                    if clamp_resp.changed() {
+                    if nan_resp.changed() {
                         *changed = true;
                     }
                     ui.end_row();

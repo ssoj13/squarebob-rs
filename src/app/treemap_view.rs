@@ -696,7 +696,7 @@ impl App {
                 None
             };
             if let Some(r) = self.renderer_3d.as_ref() {
-                r.composite_overlay(source);
+                r.composite_overlay(source, self.render_3d_opts.effective_exposure_multiplier());
             }
             ctx.request_repaint();
         } else {
@@ -1129,7 +1129,10 @@ impl App {
                     self.renderer_3d.as_ref(),
                     self.oidn_denoiser.as_ref().map(|d| d.result_view()),
                 ) {
-                    r.composite_overlay(Some(denoised_view));
+                    r.composite_overlay(
+                        Some(denoised_view),
+                        self.render_3d_opts.effective_exposure_multiplier(),
+                    );
                 }
             }
             self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
@@ -1479,11 +1482,31 @@ impl App {
         denoiser.set_mode(map_mode(mode_opt));
         denoiser.set_quality(map_quality(self.render_3d_opts.pt_oidn_quality));
         denoiser.set_input_clamp(self.render_3d_opts.pt_oidn_clamp);
+        denoiser.set_nan_protect(self.render_3d_opts.pt_oidn_nan_protect);
+        denoiser.set_adaptive_clamp(self.render_3d_opts.pt_oidn_adaptive_clamp);
+        // Physical-camera exposure: when in `Physical` mode we pin
+        // OIDN's input_scale to the same multiplier the display
+        // shader will apply, so OIDN's internal PU transfer is
+        // calibrated to the post-exposure intensity. `Manual` mode
+        // passes `None` → OIDN's autoexposure runs as before.
+        denoiser.set_external_input_scale(match self.render_3d_opts.pt_camera_type {
+            render_shared::CameraType::Physical => {
+                Some(self.render_3d_opts.effective_exposure_multiplier())
+            }
+            render_shared::CameraType::Manual => None,
+        });
 
         let encoder = gpu_ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("oidn_denoise_encoder"),
         });
-        match denoiser.denoise(&gpu_ctx, encoder, &output_tex, albedo.as_ref(), normal.as_ref()) {
+        match denoiser.denoise(
+            &gpu_ctx,
+            encoder,
+            &output_tex,
+            albedo.as_ref(),
+            normal.as_ref(),
+            current_spp,
+        ) {
             Ok(()) => {
                 self.oidn_last_latency_ms = denoiser.last_latency_ms();
                 self.oidn_denoised_this_accumulation = true;

@@ -28,6 +28,18 @@ use render_core::gpu::GpuContext;
 
 pub use oidn_rs::Quality;
 
+/// Sample count over which the adaptive firefly clamp ramps from
+/// `EARLY_CLAMP_FLOOR` up to the user-set ceiling. 256 samples is
+/// enough for the OIDN-visible preview to converge past the
+/// firefly-dominated phase on typical PT scenes.
+pub const ADAPTIVE_CLAMP_SPP: u32 = 256;
+
+/// Lower bound for the adaptive firefly clamp ceiling at spp=1. Tight
+/// enough to throw away single-sample 1000-lumen spikes (which OIDN
+/// otherwise smears into halos) but loose enough to let small
+/// emissive surfaces register from the first frame.
+pub const EARLY_CLAMP_FLOOR: f32 = 2.0;
+
 // ---------- Public API ----------
 
 /// Inputs the denoiser feeds into OIDN. Higher modes pick a richer model:
@@ -107,6 +119,27 @@ pub struct OidnDenoiser {
     /// OIDN input path — the underlying PT accumulator is untouched, so
     /// the raw display stays physically correct.
     input_clamp: f32,
+
+    /// Replace non-finite (NaN / ±Inf) input samples with `0` before
+    /// the OIDN UNet sees them. Mirrors reference C++ `nan_to_zero`.
+    /// Default `true`; flip with [`Self::set_nan_protect`].
+    nan_protect: bool,
+
+    /// Smooth-step low-spp clamp tightening. When `true`, the
+    /// effective input clamp is scaled by
+    /// `smoothstep(0, ADAPTIVE_CLAMP_SPP, current_spp)` so early
+    /// previews suppress fireflies aggressively and the clamp relaxes
+    /// to the user-set value as samples accumulate. Default `true`.
+    adaptive_clamp: bool,
+
+    /// Explicit OIDN `input_scale` override pushed by the caller.
+    /// `Some(s)` disables OIDN's autoexposure and forces scale `s` —
+    /// the physical-camera path passes `exposure_multiplier` here so
+    /// OIDN and the display tonemap agree on intensity. `None`
+    /// returns control to OIDN's built-in autoexposure (manual /
+    /// pre-physical-camera default). The `OIDN_INPUT_SCALE` env var
+    /// still overrides this for debugging.
+    external_input_scale: Option<f32>,
 }
 
 impl OidnDenoiser {
@@ -128,6 +161,9 @@ impl OidnDenoiser {
             cached_filter: None,
             cached_filter_key: None,
             input_clamp: 0.0,
+            nan_protect: true,
+            adaptive_clamp: true,
+            external_input_scale: None,
         }
     }
 
@@ -136,6 +172,27 @@ impl OidnDenoiser {
     /// `input_clamp` field doc for rationale.
     pub fn set_input_clamp(&mut self, max: f32) {
         self.input_clamp = max;
+    }
+
+    /// Toggle NaN/Inf input sanitisation. See [`Self::nan_protect`]
+    /// for rationale. Applied on every denoise pass — no cache rebuild.
+    pub fn set_nan_protect(&mut self, v: bool) {
+        self.nan_protect = v;
+    }
+
+    /// Toggle adaptive firefly clamp tightening (smooth-step over the
+    /// first `ADAPTIVE_CLAMP_SPP` samples). See [`Self::adaptive_clamp`].
+    pub fn set_adaptive_clamp(&mut self, v: bool) {
+        self.adaptive_clamp = v;
+    }
+
+    /// Push an explicit `input_scale` override. `Some(s)` disables
+    /// OIDN's autoexposure and uses `s` directly — the physical
+    /// camera path feeds `exposure_multiplier` here. `None` returns
+    /// control to OIDN's built-in autoexposure. The `OIDN_INPUT_SCALE`
+    /// env var, if set, still wins (kept for debugging).
+    pub fn set_external_input_scale(&mut self, scale: Option<f32>) {
+        self.external_input_scale = scale;
     }
 
     pub fn resize(&mut self, ctx: &GpuContext, width: u32, height: u32) {
@@ -189,6 +246,7 @@ impl OidnDenoiser {
         color_tex: &wgpu::Texture,
         albedo_buf: Option<&wgpu::Buffer>,
         normal_buf: Option<&wgpu::Buffer>,
+        current_spp: u32,
     ) -> Result<()> {
         self.pass_id = self.pass_id.wrapping_add(1);
         let pass_id = self.pass_id;
@@ -382,11 +440,33 @@ impl OidnDenoiser {
         // channels by the same factor so hue is preserved exactly,
         // matching the WGSL-side `clamp_firefly` in the path tracer.
         // `0.0` (or non-finite) means disabled.
-        let color_hwc4 = if self.input_clamp.is_finite() && self.input_clamp > 0.0 {
-            clamp_firefly_luminance(color_hwc4, self.input_clamp)
+        //
+        // Adaptive tightening: with `adaptive_clamp`, the effective
+        // ceiling smooth-steps from a very tight `early_clamp` at
+        // spp=1 up to the user-set value at `ADAPTIVE_CLAMP_SPP`. Cuts
+        // splotchy halos in early previews without robbing the final
+        // image of dynamic range around emissive surfaces.
+        let effective_clamp = if self.input_clamp.is_finite() && self.input_clamp > 0.0 {
+            if self.adaptive_clamp {
+                let t = (current_spp as f32 / ADAPTIVE_CLAMP_SPP as f32).clamp(0.0, 1.0);
+                let s = t * t * (3.0 - 2.0 * t); // smoothstep
+                let early = EARLY_CLAMP_FLOOR.min(self.input_clamp);
+                early + (self.input_clamp - early) * s
+            } else {
+                self.input_clamp
+            }
+        } else {
+            0.0
+        };
+        let color_hwc4 = if effective_clamp > 0.0 {
+            clamp_firefly_luminance(color_hwc4, effective_clamp)
         } else {
             color_hwc4
         };
+        log::trace!(
+            "OIDN pass#{pass_id}: clamp user={} adaptive={} spp={} effective={:.3}",
+            self.input_clamp, self.adaptive_clamp, current_spp, effective_clamp
+        );
 
         // Convert HWC RGBA → CHW RGB on the same wgpu device via Burn ops.
         // permute is a strided view; downstream ops in run_tensors (slice,
@@ -416,13 +496,15 @@ impl OidnDenoiser {
             OidnMode::Color | OidnMode::ColorAlbedo | OidnMode::ColorAlbedoNormal
         );
 
-        // Diagnostic override: `OIDN_INPUT_SCALE=1.0` (or any number) skips
-        // OIDN's autoexposure and uses the value as a hard input_scale. Use
-        // 1.0 to test "no scaling at all" — quickly tells us whether the
-        // dark output is autoexposure-driven.
-        let user_scale: Option<f32> = std::env::var("OIDN_INPUT_SCALE")
+        // Resolve the OIDN `input_scale` override:
+        //   1. `OIDN_INPUT_SCALE` env var wins (debugging tap).
+        //   2. Caller-supplied value (e.g. physical-camera
+        //      `exposure_multiplier`).
+        //   3. `None` → OIDN runs its built-in autoexposure.
+        let env_scale: Option<f32> = std::env::var("OIDN_INPUT_SCALE")
             .ok()
             .and_then(|s| s.parse::<f32>().ok());
+        let user_scale: Option<f32> = env_scale.or(self.external_input_scale);
 
         // Cache TZA bytes across denoise calls. Key = (use_albedo, use_normal,
         // quality) since hdr is always true for our pipeline. When the user
@@ -493,7 +575,8 @@ impl OidnDenoiser {
                 weights_dir_placeholder,
             )
             .hdr(hdr)
-            .quality(self.quality);
+            .quality(self.quality)
+            .nan_to_zero(self.nan_protect);
             if let Some(s) = user_scale {
                 builder = builder.input_scale(Some(s));
             }
@@ -514,6 +597,14 @@ impl OidnDenoiser {
             log::trace!("OIDN pass#{pass_id}: reusing committed RtFilter");
         }
 
+        // Apply runtime toggles on the cached filter — these are
+        // single-field flips, no model rebuild needed. Lets the user
+        // change NaN-protect / physical-exposure between passes
+        // without invalidating the committed model cache.
+        if let Some(f) = self.cached_filter.as_mut() {
+            f.set_nan_to_zero(self.nan_protect);
+            f.set_input_scale(user_scale);
+        }
         let filter = self
             .cached_filter
             .as_ref()

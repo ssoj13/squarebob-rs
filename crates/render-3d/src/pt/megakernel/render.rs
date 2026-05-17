@@ -224,8 +224,8 @@ pub(crate) fn render_path_traced(
         max_bounces: opts.pt_max_bounces,
         max_transmission_depth: opts.pt_max_transmission_depth,
         dof_enabled: if opts.pt_dof_enabled { 1 } else { 0 },
-        aperture: opts.pt_aperture,
-        focus_distance: opts.pt_focus_distance,
+        aperture: opts.effective_aperture(),
+        focus_distance: opts.effective_focus_distance(),
         _pad1: [0; 2],
         slice_enabled: if opts.slice_enabled { 1.0 } else { 0.0 },
         slice_position: compute_slice_position(opts),
@@ -458,6 +458,7 @@ pub(crate) fn render_path_traced(
     // sample-normalized — see `pt-denoise-oidn`. The raw blit always uses
     // the PT accumulator; if OIDN is active, the app blits its result texture
     // separately on top.
+    pt.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
     pt.blit(&mut encoder, &targets.render_view);
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);

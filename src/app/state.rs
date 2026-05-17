@@ -16,6 +16,29 @@ use super::presets::RenderPreset;
 use crate::events::EventBus;
 use crate::exclusions::Exclusions;
 use crate::renderer::{OrbitCamera, Render3DOptions, RenderBackend, RenderMode};
+
+/// Snapshot of camera framing + depth-of-field parameters held by a
+/// single bookmark slot under Presets → Views. LMB save populates all
+/// four fields from current state; RMB recall pushes them back into
+/// the live [`State::orbit_camera`] and [`Render3DOptions`].
+#[derive(Debug, Clone)]
+pub(super) struct CameraBookmark {
+    pub camera: OrbitCamera,
+    pub dof_enabled: bool,
+    pub aperture: f32,
+    pub focus_distance: f32,
+}
+
+impl Default for CameraBookmark {
+    fn default() -> Self {
+        Self {
+            camera: OrbitCamera::default(),
+            dof_enabled: false,
+            aperture: 0.0,
+            focus_distance: 1.0,
+        }
+    }
+}
 use crate::scanner::ScanMsg;
 use squarebob_core::DirEntry;
 use render_3d::Renderer3D;
@@ -265,7 +288,7 @@ pub struct App {
     /// the "по дефолту 0,0,0" behaviour. Transient — not persisted to
     /// disk with presets (these are quick view bookmarks, not full
     /// scene snapshots).
-    pub(super) camera_slots: [OrbitCamera; 6],
+    pub(super) camera_slots: [CameraBookmark; 6],
     pub(super) gpu_context: Option<Arc<GpuContext>>,
     /// Lazy-built OIDN denoiser. Replaces the previous à-trous filter.
     /// Materialised the first time the render loop sees a non-`Off` mode
@@ -465,7 +488,7 @@ impl Default for App {
             preset_dirty: false,
             preset_last_save: std::time::Instant::now(),
             orbit_camera: OrbitCamera::default(),
-            camera_slots: core::array::from_fn(|_| OrbitCamera::default()),
+            camera_slots: core::array::from_fn(|_| CameraBookmark::default()),
             gpu_context: None,
             oidn_denoiser: None,
             oidn_run_requested: false,

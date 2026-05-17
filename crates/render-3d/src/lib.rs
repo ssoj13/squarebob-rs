@@ -987,7 +987,7 @@ impl Renderer3D {
     /// highlight (selection or hover); the object_id texture is reused
     /// from the previous full `render_to_view` so we don't pay for a
     /// per-instance pass here.
-    pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>) {
+    pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>, exposure: f32) {
         let Some(state) = self.render_state.as_ref() else { return; };
         let Some(pt) = self.pt.path_tracer.as_ref() else { return; };
         let mut encoder = self
@@ -996,6 +996,10 @@ impl Renderer3D {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("composite_overlay"),
             });
+        // Push physical-camera exposure into the blit shader before
+        // drawing. `1.0` reproduces legacy behaviour for callers that
+        // don't care.
+        pt.set_blit_exposure(&self.ctx.queue, exposure);
         pt.blit_with_source(&self.ctx.device, &mut encoder, &state.targets.render_view, source);
         let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
         if has_active {

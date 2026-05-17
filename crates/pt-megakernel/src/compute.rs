@@ -471,6 +471,11 @@ pub struct PathTraceCompute {
     blit_bind_group_layout: wgpu::BindGroupLayout,
     blit_bind_group: Option<wgpu::BindGroup>,
     blit_sampler: wgpu::Sampler,
+    /// 16-byte uniform buffer feeding the blit shader.
+    /// Layout (vec4<f32>): `[exposure_multiplier, _, _, _]`. The last
+    /// three lanes are reserved for upcoming display knobs
+    /// (vignette / chromatic aberration / tonemap selector).
+    blit_uniform_buffer: wgpu::Buffer,
 
     // GPU BVH builder with refit support for animation
     bvh_builder: GpuBvhBuilder,
@@ -969,6 +974,20 @@ impl PathTraceCompute {
             source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
         });
 
+        // Blit-time uniforms (currently exposure_mult in `.x`; the
+        // other three lanes are reserved for follow-up display knobs:
+        // vignette intensity, chromatic-aberration radius, tonemap-
+        // operator selector index).
+        let blit_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pt_blit_uniforms"),
+            size: 16, // vec4<f32>
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // Initialise to identity (exposure = 1.0) so first frame in
+        // Manual mode reproduces the previous bit-exact behaviour.
+        queue.write_buffer(&blit_uniform_buffer, 0, bytemuck::cast_slice(&[1.0_f32, 0.0, 0.0, 0.0]));
+
         let blit_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("pt_blit_bgl"),
@@ -987,6 +1006,16 @@ impl PathTraceCompute {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
                         count: None,
                     },
                 ],
@@ -1054,6 +1083,10 @@ impl PathTraceCompute {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&blit_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: blit_uniform_buffer.as_entire_binding(),
                 },
             ],
         }));
@@ -1152,6 +1185,7 @@ impl PathTraceCompute {
             blit_bind_group_layout,
             blit_bind_group,
             blit_sampler,
+            blit_uniform_buffer,
             bvh_builder: GpuBvhBuilder::new(device),
             bvh_config: GpuBvhConfig::default(),
             bvh_refit_preferred: true,
@@ -4221,6 +4255,10 @@ impl PathTraceCompute {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.blit_uniform_buffer.as_entire_binding(),
+                },
             ],
         }));
 
@@ -4512,6 +4550,17 @@ impl PathTraceCompute {
     }
 
     /// Convenience wrapper — blit the raw PT output (no override).
+    /// Push the scene-linear exposure multiplier into the blit
+    /// uniform buffer. Call once per frame before [`Self::blit`] /
+    /// [`Self::blit_with_source`]. `1.0` reproduces the legacy
+    /// behaviour (manual / no physical-camera scaling).
+    pub fn set_blit_exposure(&self, queue: &wgpu::Queue, exposure: f32) {
+        // Layout matches BlitParams in blit.wgsl: vec4<f32> with the
+        // multiplier in .x. Other lanes reserved for future knobs.
+        let params: [f32; 4] = [exposure, 0.0, 0.0, 0.0];
+        queue.write_buffer(&self.blit_uniform_buffer, 0, bytemuck::cast_slice(&params));
+    }
+
     pub fn blit(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         if let Some(bg) = &self.blit_bind_group {
             self.blit_inner(encoder, target, bg);
@@ -4546,6 +4595,10 @@ impl PathTraceCompute {
                         wgpu::BindGroupEntry {
                             binding: 1,
                             resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.blit_uniform_buffer.as_entire_binding(),
                         },
                     ],
                 });

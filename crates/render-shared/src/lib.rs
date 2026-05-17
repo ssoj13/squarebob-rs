@@ -10,6 +10,12 @@ pub use viz::{
     N_COLOR_MODES, N_FOLDER_COLOR_MODES, N_HASH_EFFECTS, N_HEIGHT_MODES,
 };
 
+pub mod physical_camera;
+pub use physical_camera::{
+    CameraType, PhysicalCamera, FOCAL_LENGTH_PRESETS_MM, F_NUMBER_PRESETS,
+    SENSOR_WIDTH_PRESETS_MM,
+};
+
 /// Available rendering backends
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum RenderBackend {
@@ -747,6 +753,79 @@ pub struct Render3DOptions {
     /// + skybox contributions, low enough to suppress fireflies.
     #[serde(default = "default_oidn_clamp")]
     pub pt_oidn_clamp: f32,
+
+    /// Replace non-finite (`NaN` / ±`Inf`) samples on the colour /
+    /// albedo / normal inputs to OIDN with `0` before clamp +
+    /// transfer. Mirrors the reference C++ OIDN `nan_to_zero`
+    /// pre-step in every input kernel. Default `true` — strongly
+    /// recommended: without it, a single bad path-tracer sample can
+    /// poison the entire denoised output through the PU/exp
+    /// expansion in the inverse transfer.
+    #[serde(default = "default_oidn_nan_protect")]
+    pub pt_oidn_nan_protect: bool,
+
+    /// Adaptive firefly clamp: when on, the effective clamp ceiling
+    /// smooth-steps from a tight `EARLY_CLAMP_FLOOR` at spp=1 up to
+    /// `pt_oidn_clamp` at `ADAPTIVE_CLAMP_SPP` (currently 256). Cuts
+    /// halos around lights in early previews without sacrificing
+    /// dynamic range on the converged image. Default `true`.
+    #[serde(default = "default_oidn_adaptive_clamp")]
+    pub pt_oidn_adaptive_clamp: bool,
+
+    /// Camera model selector: `Manual` reads the legacy raw-aperture
+    /// + orbit-fov pair; `Physical` swaps in derived values from
+    /// [`Self::pt_physical_camera`] (F-stop, focal length, sensor
+    /// width, ISO, shutter).
+    #[serde(default)]
+    pub pt_camera_type: CameraType,
+
+    /// Photographer-style camera parameters. Read when
+    /// [`Self::pt_camera_type`] is `Physical`. See
+    /// [`PhysicalCamera`] for the full field semantics.
+    #[serde(default)]
+    pub pt_physical_camera: PhysicalCamera,
+}
+
+impl Render3DOptions {
+    /// World-space aperture radius the renderer should use this
+    /// frame — derived from the physical camera in `Physical` mode,
+    /// or the raw `pt_aperture` slider in `Manual` mode.
+    pub fn effective_aperture(&self) -> f32 {
+        match self.pt_camera_type {
+            CameraType::Manual => self.pt_aperture,
+            CameraType::Physical => self.pt_physical_camera.aperture_world(),
+        }
+    }
+
+    /// Focus distance shared by both camera models. Kept as a single
+    /// field on `Render3DOptions` because Ctrl-click DoF pick writes
+    /// here directly, and the value's meaning is identical across
+    /// modes (world-space distance from camera).
+    pub fn effective_focus_distance(&self) -> f32 {
+        self.pt_focus_distance
+    }
+
+    /// Horizontal field-of-view in radians. `Physical` mode derives
+    /// from focal length + sensor width; `Manual` mode returns
+    /// `None` so the caller falls back to its own FOV source (the
+    /// orbit camera).
+    pub fn effective_fov_override(&self) -> Option<f32> {
+        match self.pt_camera_type {
+            CameraType::Manual => None,
+            CameraType::Physical => Some(self.pt_physical_camera.fov_radians()),
+        }
+    }
+
+    /// Scene-linear exposure multiplier applied at display + as the
+    /// OIDN `input_scale` override. `1.0` in `Manual` mode so the
+    /// existing autoexposure / display behaviour is preserved bit-
+    /// exactly.
+    pub fn effective_exposure_multiplier(&self) -> f32 {
+        match self.pt_camera_type {
+            CameraType::Manual => 1.0,
+            CameraType::Physical => self.pt_physical_camera.exposure_multiplier(),
+        }
+    }
 }
 
 /// String-serialised mirror of `pt_denoise_oidn::OidnMode`. Default is the
@@ -792,6 +871,12 @@ fn default_oidn_interval() -> u32 {
 }
 fn default_oidn_clamp() -> f32 {
     10.0
+}
+fn default_oidn_nan_protect() -> bool {
+    true
+}
+fn default_oidn_adaptive_clamp() -> bool {
+    true
 }
 fn default_polar_strength() -> f32 {
     1.0
@@ -1007,7 +1092,7 @@ impl Default for Render3DOptions {
             pt_samples: 3500,
             pt_samples_per_update: 25,
             pt_max_transmission_depth: 8,
-            pt_dof_enabled: false,
+            pt_dof_enabled: true,
             pt_aperture: 2.0,
             pt_focus_distance: 500.0,
             pt_env_importance_sampling: true,
@@ -1061,6 +1146,10 @@ impl Default for Render3DOptions {
             pt_oidn_auto: true,
             pt_oidn_interval: 128,
             pt_oidn_clamp: 10.0,
+            pt_oidn_nan_protect: true,
+            pt_oidn_adaptive_clamp: true,
+            pt_camera_type: CameraType::Physical,
+            pt_physical_camera: PhysicalCamera::default(),
         }
     }
 }

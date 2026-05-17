@@ -2103,6 +2103,324 @@ impl App {
             });
     }
 
+    /// Camera type + lens/exposure controls. Branches on
+    /// [`Render3DOptions::pt_camera_type`]:
+    /// * `Manual` — legacy DoF triple (Aperture / Focus / DoF toggle)
+    /// * `Physical` — F-stop, focal length, sensor width, ISO,
+    ///   shutter, exposure compensation, plus the shared focus
+    ///   distance + read-only derived values (world aperture, FOV,
+    ///   EV100, exposure multiplier).
+    ///
+    /// Renders the Mode dropdown inline, then dispatches to compact
+    /// subsections (Lens / Exposure / Depth of Field / Derived) so
+    /// the section visually matches Denoiser / Materials and a user
+    /// can collapse blocks they aren't tweaking.
+    fn ui_camera_physical_block(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
+        use render_shared::CameraType;
+
+        // Mode selector — its own row so it isn't trapped inside the
+        // inertia grid.
+        ui.horizontal(|ui| {
+            ui.label("Camera:");
+            let prev_mode = self.render_3d_opts.pt_camera_type;
+            egui::ComboBox::from_id_salt("camera_type_cb")
+                .selected_text(match self.render_3d_opts.pt_camera_type {
+                    CameraType::Manual => "Manual",
+                    CameraType::Physical => "Physical",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.render_3d_opts.pt_camera_type,
+                        CameraType::Manual,
+                        "Manual",
+                    )
+                    .on_hover_text(
+                        "Raw aperture radius + orbit FOV. Legacy controls.",
+                    );
+                    ui.selectable_value(
+                        &mut self.render_3d_opts.pt_camera_type,
+                        CameraType::Physical,
+                        "Physical",
+                    )
+                    .on_hover_text(
+                        "Photographer-style: F-stop, focal length, sensor \
+                         width, ISO, shutter. Exposure multiplier drives \
+                         both display tonemap and OIDN input_scale.",
+                    );
+                });
+            if prev_mode != self.render_3d_opts.pt_camera_type {
+                *pt_changed = true;
+                if self.render_3d_opts.pt_camera_type == CameraType::Physical {
+                    self.orbit_camera.fov =
+                        self.render_3d_opts.pt_physical_camera.fov_radians();
+                }
+            }
+        });
+
+        let header_h = self.settings_section_header_height;
+        match self.render_3d_opts.pt_camera_type {
+            CameraType::Manual => {
+                compact_section(ui, "Depth of Field", true, header_h, |ui| {
+                    self.ui_camera_manual_dof(ui, pt_changed);
+                });
+            }
+            CameraType::Physical => {
+                compact_section(ui, "Lens", true, header_h, |ui| {
+                    self.ui_camera_physical_lens(ui, pt_changed);
+                });
+                compact_section(ui, "Exposure", true, header_h, |ui| {
+                    self.ui_camera_physical_exposure(ui, pt_changed);
+                });
+                compact_section(ui, "Depth of Field", true, header_h, |ui| {
+                    self.ui_camera_physical_dof(ui, pt_changed);
+                });
+                compact_section(ui, "Derived", false, header_h, |ui| {
+                    self.ui_camera_physical_derived(ui);
+                });
+            }
+        }
+    }
+
+    /// Manual-mode DoF: DoF toggle + Aperture + Focus.
+    fn ui_camera_manual_dof(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
+        settings_grid(ui, "camera_manual_dof_grid", |ui| {
+            control_label(ui, "DoF:");
+            *pt_changed |= ui
+                .checkbox(&mut self.render_3d_opts.pt_dof_enabled, "")
+                .on_hover_text(
+                    "Enable depth of field. Pick focus from the viewport \
+                     with Ctrl+LMB or MMB.",
+                )
+                .changed();
+            ui.end_row();
+
+            if self.render_3d_opts.pt_dof_enabled {
+                control_label(ui, "Aperture:");
+                *pt_changed |= ui
+                    .add(egui::Slider::new(
+                        &mut self.render_3d_opts.pt_aperture,
+                        0.0..=256.0,
+                    ))
+                    .on_hover_text(
+                        "Lens aperture radius (raw units) — larger values \
+                         widen the blur.",
+                    )
+                    .changed();
+                ui.end_row();
+
+                control_label(ui, "Focus:");
+                *pt_changed |= ui
+                    .add(
+                        egui::Slider::new(
+                            &mut self.render_3d_opts.pt_focus_distance,
+                            0.1..=10000.0,
+                        )
+                        .logarithmic(true),
+                    )
+                    .on_hover_text(
+                        "Focus distance from the camera. Ctrl+LMB or MMB \
+                         picks from the viewport.",
+                    )
+                    .changed();
+                ui.end_row();
+            }
+        });
+    }
+
+    /// Physical-mode Lens subsection: F-stop / focal length / sensor.
+    fn ui_camera_physical_lens(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
+        use render_shared::{
+            FOCAL_LENGTH_PRESETS_MM, F_NUMBER_PRESETS, SENSOR_WIDTH_PRESETS_MM,
+        };
+        let pc = &mut self.render_3d_opts.pt_physical_camera;
+        let mut lens_changed = false;
+
+        settings_grid(ui, "camera_phys_lens_grid", |ui| {
+            control_label(ui, "F-stop:");
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::Slider::new(&mut pc.f_number, 0.7..=64.0)
+                        .logarithmic(true),
+                );
+                if resp.changed() {
+                    *pt_changed = true;
+                }
+                for preset in F_NUMBER_PRESETS {
+                    let selected = (pc.f_number - preset).abs() < 0.05;
+                    if ui
+                        .selectable_label(selected, format!("f/{}", preset))
+                        .clicked()
+                    {
+                        pc.f_number = *preset;
+                        *pt_changed = true;
+                    }
+                }
+            });
+            ui.end_row();
+
+            control_label(ui, "Focal length:");
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::Slider::new(&mut pc.focal_length_mm, 8.0..=400.0)
+                        .logarithmic(true)
+                        .suffix(" mm"),
+                );
+                if resp.changed() {
+                    *pt_changed = true;
+                    lens_changed = true;
+                }
+                for preset in FOCAL_LENGTH_PRESETS_MM {
+                    let selected = (pc.focal_length_mm - preset).abs() < 0.5;
+                    if ui
+                        .selectable_label(selected, format!("{}", *preset as i32))
+                        .clicked()
+                    {
+                        pc.focal_length_mm = *preset;
+                        *pt_changed = true;
+                        lens_changed = true;
+                    }
+                }
+            });
+            ui.end_row();
+
+            control_label(ui, "Sensor:");
+            egui::ComboBox::from_id_salt("sensor_width_cb")
+                .selected_text(format!("{:.1} mm", pc.sensor_width_mm))
+                .show_ui(ui, |ui| {
+                    for (w, label) in SENSOR_WIDTH_PRESETS_MM {
+                        if ui
+                            .selectable_label(
+                                (pc.sensor_width_mm - *w).abs() < 0.05,
+                                format!("{} ({} mm)", label, w),
+                            )
+                            .clicked()
+                        {
+                            pc.sensor_width_mm = *w;
+                            *pt_changed = true;
+                            lens_changed = true;
+                        }
+                    }
+                });
+            ui.end_row();
+        });
+
+        // Drop the &mut borrow before touching orbit_camera.
+        if lens_changed {
+            self.orbit_camera.fov =
+                self.render_3d_opts.pt_physical_camera.fov_radians();
+        }
+    }
+
+    /// Physical-mode Exposure subsection: ISO / Shutter / EC.
+    fn ui_camera_physical_exposure(
+        &mut self,
+        ui: &mut egui::Ui,
+        pt_changed: &mut bool,
+    ) {
+        let pc = &mut self.render_3d_opts.pt_physical_camera;
+        settings_grid(ui, "camera_phys_exposure_grid", |ui| {
+            control_label(ui, "ISO:");
+            if ui
+                .add(
+                    egui::Slider::new(&mut pc.iso, 25.0..=25600.0)
+                        .logarithmic(true),
+                )
+                .changed()
+            {
+                *pt_changed = true;
+            }
+            ui.end_row();
+
+            control_label(ui, "Shutter:");
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut pc.shutter_seconds,
+                        1.0 / 8000.0..=60.0,
+                    )
+                    .logarithmic(true)
+                    .suffix(" s"),
+                )
+                .changed()
+            {
+                *pt_changed = true;
+            }
+            ui.end_row();
+
+            control_label(ui, "EC:");
+            if ui
+                .add(
+                    egui::Slider::new(&mut pc.exposure_compensation_ev, -8.0..=8.0)
+                        .suffix(" EV"),
+                )
+                .changed()
+            {
+                *pt_changed = true;
+            }
+            ui.end_row();
+        });
+    }
+
+    /// Physical-mode DoF subsection: enable toggle + Focus distance
+    /// (aperture is derived from F-stop + focal length so no raw
+    /// Aperture slider here).
+    fn ui_camera_physical_dof(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
+        settings_grid(ui, "camera_phys_dof_grid", |ui| {
+            control_label(ui, "DoF:");
+            *pt_changed |= ui
+                .checkbox(&mut self.render_3d_opts.pt_dof_enabled, "")
+                .on_hover_text(
+                    "Enable depth of field. With Physical camera the \
+                     aperture radius is derived from F-stop + focal \
+                     length; no raw Aperture slider needed.",
+                )
+                .changed();
+            ui.end_row();
+
+            if self.render_3d_opts.pt_dof_enabled {
+                control_label(ui, "Focus:");
+                *pt_changed |= ui
+                    .add(
+                        egui::Slider::new(
+                            &mut self.render_3d_opts.pt_focus_distance,
+                            0.1..=10000.0,
+                        )
+                        .logarithmic(true)
+                        .suffix(" m"),
+                    )
+                    .on_hover_text(
+                        "Focus distance from the camera, world units. \
+                         Ctrl+LMB or MMB on the viewport picks from the \
+                         surface under the cursor.",
+                    )
+                    .changed();
+                ui.end_row();
+            }
+        });
+    }
+
+    /// Read-only summary: world aperture, FOV, EV100, exposure mult.
+    fn ui_camera_physical_derived(&self, ui: &mut egui::Ui) {
+        let pc = &self.render_3d_opts.pt_physical_camera;
+        settings_grid(ui, "camera_phys_derived_grid", |ui| {
+            ui.label("Aperture:");
+            ui.label(format!("{:.3} mm", pc.aperture_world() * 1000.0));
+            ui.end_row();
+
+            ui.label("FOV:");
+            ui.label(format!("{:.1}°", pc.fov_radians().to_degrees()));
+            ui.end_row();
+
+            ui.label("EV100:");
+            ui.label(format!("{:.2}", pc.ev100()));
+            ui.end_row();
+
+            ui.label("Multiplier:");
+            ui.label(format!("×{:.4}", pc.exposure_multiplier()));
+            ui.end_row();
+        });
+    }
+
     /// Camera controls — viewer interaction (inertia) and path-tracer
     /// defocus (DOF). DOF lives here so it sits next to focal-length /
     /// orbit reset; it only affects the path tracer, so the rows are
@@ -2147,58 +2465,15 @@ impl App {
                             ui.end_row();
                         }
 
-                        // Defocus / DOF — only meaningful with the path
-                        // tracer enabled. Lived under Render → Path
-                        // Tracer → Camera previously; promoted here so
-                        // all camera-lens controls sit together.
-                        if self.render_3d_opts.path_tracing {
-                            control_label(ui, "DOF:");
-                            pt_changed |= ui
-                                .checkbox(&mut self.render_3d_opts.pt_dof_enabled, "")
-                                .on_hover_text(
-                                    "Enable physically-based depth of field. \
-                                     Pick a focus target from the viewport with \
-                                     Ctrl+Left Click or Middle Mouse Button — \
-                                     the focus distance updates to the surface \
-                                     under the cursor.",
-                                )
-                                .changed();
-                            ui.end_row();
-
-                            if self.render_3d_opts.pt_dof_enabled {
-                                control_label(ui, "Aperture:");
-                                pt_changed |= ui
-                                    .add(egui::Slider::new(
-                                        &mut self.render_3d_opts.pt_aperture,
-                                        0.0..=128.0,
-                                    ))
-                                    .on_hover_text(
-                                        "Lens aperture radius — larger values \
-                                         widen the blur for out-of-focus regions.",
-                                    )
-                                    .changed();
-                                ui.end_row();
-
-                                control_label(ui, "Focus:");
-                                pt_changed |= ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut self.render_3d_opts.pt_focus_distance,
-                                            0.1..=10000.0,
-                                        )
-                                        .logarithmic(true),
-                                    )
-                                    .on_hover_text(
-                                        "Focus distance from the camera. Use \
-                                         Ctrl+Left Click or MMB on the viewport \
-                                         to set it from the surface under the \
-                                         cursor.",
-                                    )
-                                    .changed();
-                                ui.end_row();
-                            }
-                        }
                     });
+                // Lens / Exposure / DoF / Derived live OUTSIDE the
+                // inertia grid so each one can be its own
+                // collapsible `compact_section`. Inertia stays inline
+                // above because it's three rows and pre-existing
+                // muscle memory.
+                if self.render_3d_opts.path_tracing {
+                    self.ui_camera_physical_block(ui, &mut pt_changed);
+                }
 
                 ui.horizontal(|ui| {
                     ui.small("LMB: Orbit  MMB: Pan  RMB: Zoom");
