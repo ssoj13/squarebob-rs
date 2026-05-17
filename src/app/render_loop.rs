@@ -9,7 +9,7 @@ use egui_dock::DockArea;
 
 use crate::events::{
     downcast, LayoutDirtyEvent, NavigateIntoEvent, NavigateUpEvent, RenderTick3DEvent,
-    SelectPathEvent, SettingsChangedEvent, ZoomResetEvent,
+    MaterialsChangedEvent, SelectPathEvent, SettingsChangedEvent, ZoomResetEvent,
 };
 use crate::renderer::{HashTransformEffect, RenderMode};
 
@@ -35,6 +35,18 @@ impl App {
                 self.select(e.0.clone());
             } else if downcast::<SettingsChangedEvent>(&event).is_some() {
                 self.needs_layout = true;
+                ctx.request_repaint();
+            } else if downcast::<MaterialsChangedEvent>(&event).is_some() {
+                // Material params / weights changed → PT samples are
+                // stale (light transport depends on materials), and
+                // PBR needs a fresh frame to show the re-uploaded
+                // material storage. Skip the layout rebuild — cube
+                // positions don't depend on materials.
+                self.needs_render_3d = true;
+                if let Some(r) = &mut self.renderer_3d {
+                    r.mark_pt_scene_dirty();
+                    r.reset_pt_accumulation();
+                }
                 ctx.request_repaint();
             } else if downcast::<LayoutDirtyEvent>(&event).is_some() {
                 self.needs_layout = true;

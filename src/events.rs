@@ -60,6 +60,14 @@ pub fn downcast<E: Event>(event: &BoxedEvent) -> Option<&E> {
 #[derive(Clone, Debug)]
 pub struct SettingsChangedEvent;
 
+/// Material library mutated (params, variance, weight, add / remove /
+/// rename / reorder / load). Distinct from `SettingsChangedEvent` so
+/// callers can react with the minimum work needed — for materials
+/// that's a PT accumulation reset + a forced 3D re-render, without
+/// the full layout rebuild a general settings change would imply.
+#[derive(Clone, Debug)]
+pub struct MaterialsChangedEvent;
+
 /// Navigation: go into directory
 #[derive(Clone, Debug)]
 pub struct NavigateIntoEvent(pub std::path::PathBuf);

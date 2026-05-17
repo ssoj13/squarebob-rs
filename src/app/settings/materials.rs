@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use super::super::App;
+use crate::events::MaterialsChangedEvent;
 
 // ============================================================================
 // Material schema for the Attribute Editor — drives row order + UI hints
@@ -220,6 +221,11 @@ impl App {
         let changed = playa_ae::render(ui, &mut attrs, &mut self.materials_ae_state, "Material");
         if changed {
             attrs_to_material(&attrs, &mut mat.params);
+            // Borrow on `lib`/`mat` ends here (the if-block scope
+            // closes via the function); emit the change event so the
+            // render loop resets PT accumulation and forces a fresh
+            // viewport frame.
+            self.events.emit(MaterialsChangedEvent);
         }
     }
 }
@@ -229,8 +235,11 @@ impl App {
 // ============================================================================
 
 /// Toolbar row: slot ops + file I/O. Scopes the library borrow before
-/// the rfd dialog calls so `app` isn't borrowed twice.
+/// the rfd dialog calls so `app` isn't borrowed twice. Any mutation
+/// that changes the library contents emits a `MaterialsChangedEvent`
+/// so the renderer resets PT accumulation and forces a fresh frame.
 fn materials_toolbar(ui: &mut egui::Ui, app: &mut App) {
+    let mut library_dirty = false;
     ui.horizontal(|ui| {
         {
             let lib = &mut app.render_3d_opts.material_library;
@@ -244,6 +253,7 @@ fn materials_toolbar(ui: &mut egui::Ui, app: &mut App) {
                 let name = format!("material_{}", lib.materials.len());
                 let idx = lib.push(Material::new(name, StandardSurfaceParams::default()));
                 lib.set_active(idx);
+                library_dirty = true;
             }
 
             ui.add_enabled_ui(has_active, |ui| {
@@ -254,6 +264,7 @@ fn materials_toolbar(ui: &mut egui::Ui, app: &mut App) {
                     && let Some(idx) = lib.duplicate(lib.active)
                 {
                     lib.set_active(idx);
+                    library_dirty = true;
                 }
                 if ui
                     .button("Remove")
@@ -261,6 +272,7 @@ fn materials_toolbar(ui: &mut egui::Ui, app: &mut App) {
                     .clicked()
                 {
                     lib.remove(lib.active);
+                    library_dirty = true;
                 }
             });
         }
@@ -277,6 +289,7 @@ fn materials_toolbar(ui: &mut egui::Ui, app: &mut App) {
                 Ok(loaded) => {
                     app.render_3d_opts.material_library = loaded;
                     app.materials_last_save_path = Some(path);
+                    library_dirty = true;
                 }
                 Err(e) => log::error!("Failed to load library: {e}"),
             }
@@ -305,15 +318,17 @@ fn materials_toolbar(ui: &mut egui::Ui, app: &mut App) {
             log::error!("Failed to save library: {e}");
         }
     });
+    if library_dirty {
+        app.events.emit(MaterialsChangedEvent);
+    }
 }
 
-/// Slot list: per row — colour swatch + name (or rename text-edit) +
-/// selected highlight + weight slider. Single-click selects,
-/// double-click starts in-place rename. The trailing weight slider
-/// (0.0..=10.0, default 1.0) drives the per-cube material distribution
-/// — slots with higher weight claim a larger share of the cube
-/// population. Values normalise to sum=1.0 at classification time, so
-/// the absolute scale doesn't matter — only ratios.
+/// Slot list — `egui::Grid` keeps 3 columns aligned across rows even
+/// when slider widths fluctuate: [swatch | name | weight].
+/// Single-click name selects, double-click starts in-place rename.
+/// Trailing weight slider (0.0..=10.0, default 1.0) drives the
+/// per-cube distribution — values normalise to sum=1.0 at classify
+/// time, so the absolute scale doesn't matter, only ratios.
 fn materials_list(ui: &mut egui::Ui, app: &mut App) {
     let mut to_select: Option<usize> = None;
     let mut to_start_rename: Option<(uuid::Uuid, String)> = None;
@@ -321,82 +336,103 @@ fn materials_list(ui: &mut egui::Ui, app: &mut App) {
     let mut to_cancel_rename = false;
     let mut to_set_weight: Option<(uuid::Uuid, f32)> = None;
 
+    // Three fixed columns; trailing space goes to the slider so it
+    // stretches to the available width without pushing the label out
+    // of view. The label column shrinks to its content (selectable
+    // labels auto-size in egui), keeping rows compact.
+    let total_w = ui.available_width();
+    let swatch_w = 18.0;
+    let name_min_w: f32 = 120.0;
+    let gap = 6.0;
+    let slider_w = (total_w - swatch_w - name_min_w - gap * 3.0).clamp(80.0, 220.0);
+
     let lib = &mut app.render_3d_opts.material_library;
     let active = lib.active;
 
-    for (i, mat) in lib.materials.iter().enumerate() {
-        let selected = i == active;
-        let base = mat.params.base_color_weight;
-        let swatch = egui::Color32::from_rgb(
-            (base.x.clamp(0.0, 1.0) * 255.0) as u8,
-            (base.y.clamp(0.0, 1.0) * 255.0) as u8,
-            (base.z.clamp(0.0, 1.0) * 255.0) as u8,
-        );
-
-        ui.horizontal(|ui| {
-            let (rect, _resp) =
-                ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::hover());
-            ui.painter()
-                .rect_filled(rect, egui::CornerRadius::same(2), swatch);
-
-            // Name / rename cell takes the rest of the row width
-            // minus the trailing weight slider.
-            let weight_width = 100.0;
-            let name_width = (ui.available_width() - weight_width - 6.0).max(80.0);
-
-            ui.scope(|ui| {
-                ui.set_width(name_width);
-                let in_rename = matches!(
-                    &app.materials_rename_buffer,
-                    Some((uuid, _)) if *uuid == mat.uuid
+    egui::Grid::new("materials_list_grid")
+        .num_columns(3)
+        .spacing([gap, 2.0])
+        .show(ui, |ui| {
+            for (i, mat) in lib.materials.iter().enumerate() {
+                let selected = i == active;
+                let base = mat.params.base_color_weight;
+                let swatch = egui::Color32::from_rgb(
+                    (base.x.clamp(0.0, 1.0) * 255.0) as u8,
+                    (base.y.clamp(0.0, 1.0) * 255.0) as u8,
+                    (base.z.clamp(0.0, 1.0) * 255.0) as u8,
                 );
-                if in_rename {
-                    if let Some((_, text)) = &mut app.materials_rename_buffer {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(text)
-                                .desired_width(name_width - 4.0)
-                                .id_salt(("materials_rename", mat.uuid)),
-                        );
-                        resp.request_focus();
-                        if resp.lost_focus() {
-                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                to_cancel_rename = true;
-                            } else {
-                                to_commit_rename = Some((mat.uuid, text.clone()));
+
+                // Col 1: swatch
+                let (rect, _resp) = ui.allocate_exact_size(
+                    egui::Vec2::new(swatch_w - 4.0, 14.0),
+                    egui::Sense::hover(),
+                );
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::same(2), swatch);
+
+                // Col 2: name / rename — natural-width selectable
+                // label (auto-shrinks to text). The min-width column
+                // hint on the grid keeps short names from collapsing
+                // the column completely.
+                ui.scope(|ui| {
+                    ui.set_min_width(name_min_w);
+                    let in_rename = matches!(
+                        &app.materials_rename_buffer,
+                        Some((uuid, _)) if *uuid == mat.uuid
+                    );
+                    if in_rename {
+                        if let Some((_, text)) = &mut app.materials_rename_buffer {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(text)
+                                    .desired_width(name_min_w - 4.0)
+                                    .id_salt(("materials_rename", mat.uuid)),
+                            );
+                            resp.request_focus();
+                            if resp.lost_focus() {
+                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    to_cancel_rename = true;
+                                } else {
+                                    to_commit_rename = Some((mat.uuid, text.clone()));
+                                }
                             }
                         }
+                    } else {
+                        let resp = ui.selectable_label(selected, &mat.name);
+                        if resp.clicked() {
+                            to_select = Some(i);
+                        }
+                        if resp.double_clicked() {
+                            to_start_rename = Some((mat.uuid, mat.name.clone()));
+                        }
                     }
-                } else {
-                    let resp = ui.selectable_label(selected, &mat.name);
-                    if resp.clicked() {
-                        to_select = Some(i);
-                    }
-                    if resp.double_clicked() {
-                        to_start_rename = Some((mat.uuid, mat.name.clone()));
-                    }
-                }
-            });
+                });
 
-            // Trailing weight slider. Mutate via deferred channel so
-            // we don't double-borrow `lib` (it's iterated above).
-            let mut w = mat.weight;
-            let resp = ui.add(
-                egui::Slider::new(&mut w, 0.0..=10.0)
-                    .text("")
-                    .clamping(egui::SliderClamping::Always),
-            );
-            if resp.changed() {
-                to_set_weight = Some((mat.uuid, w));
+                // Col 3: weight slider, fixed width via add_sized.
+                let mut w = mat.weight;
+                let resp = ui.add_sized(
+                    [slider_w, 18.0],
+                    egui::Slider::new(&mut w, 0.0..=10.0)
+                        .text("")
+                        .clamping(egui::SliderClamping::Always)
+                        .show_value(true),
+                );
+                if resp.changed() {
+                    to_set_weight = Some((mat.uuid, w));
+                }
+                resp.on_hover_text(
+                    "Distribution weight — slots normalise to sum 1.0; 0 excludes this slot",
+                );
+
+                ui.end_row();
             }
-            resp.on_hover_text(
-                "Distribution weight — slots normalise to sum 1.0; set to 0 to exclude this slot",
-            );
         });
-    }
 
     if let Some(i) = to_select {
         lib.set_active(i);
     }
+    // Capture this BEFORE the consume below — used by the change-event
+    // gate at the bottom of the function.
+    let rename_committed = to_commit_rename.is_some();
     if let Some((uuid, new_name)) = to_commit_rename {
         if let Some((_, m)) = lib.find_by_uuid_mut(uuid) {
             m.name = new_name;
@@ -409,10 +445,19 @@ fn materials_list(ui: &mut egui::Ui, app: &mut App) {
     if let Some(entry) = to_start_rename {
         app.materials_rename_buffer = Some(entry);
     }
+    let mut weight_changed = false;
     if let Some((uuid, w)) = to_set_weight
         && let Some((_, m)) = lib.find_by_uuid_mut(uuid)
     {
         m.weight = w;
+        weight_changed = true;
+    }
+    if weight_changed || rename_committed {
+        // Weight directly drives the per-cube distribution → PT
+        // accumulation must reset. Rename is cosmetic but cheap to
+        // emit; keeps the cube cache fingerprint coherent in case
+        // anything downstream hashes by name.
+        app.events.emit(MaterialsChangedEvent);
     }
 }
 
