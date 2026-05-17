@@ -80,6 +80,7 @@ impl App {
                     app.show_settings = s.show_settings;
                     app.show_outliner = s.show_outliner;
                     app.show_viewport = s.show_viewport;
+                    app.show_ae = s.show_ae;
                     app.dark_mode = s.dark_mode;
                     app.scanner_mode = s.scanner_mode;
                     app.filter_auto_rebuild = s.filter_auto_rebuild;
@@ -92,6 +93,19 @@ impl App {
                     app.render_3d_opts = s.render_3d_opts;
                     app.dock_state = s.dock_state;
                     app.dock_layout = s.dock_layout;
+                    // Migration: older persisted layouts predate
+                    // `DockTab::AttributeEditor`. `rebuild_from_layout`
+                    // can only *strip* tabs from the layout — never
+                    // insert them — so if AE is missing here, clicking
+                    // the toolbar toggle would silently no-op. Reset
+                    // the layout to its default (which includes every
+                    // known tab) when AE is absent.
+                    if !crate::app::dock::dock_contains(
+                        &app.dock_layout,
+                        &crate::app::dock::DockTab::AttributeEditor,
+                    ) {
+                        app.dock_layout = crate::app::dock::default_dock_layout();
+                    }
                     app.font_size = s.font_size;
                     app.settings_tab = s.settings_tab;
                     app.ext_filter = s.ext_filter;
@@ -687,6 +701,7 @@ impl eframe::App for App {
             show_settings: self.show_settings,
             show_outliner: self.show_outliner,
             show_viewport: self.show_viewport,
+            show_ae: self.show_ae,
             dark_mode: self.dark_mode,
             scanner_mode: self.scanner_mode,
             filter_auto_rebuild: self.filter_auto_rebuild,

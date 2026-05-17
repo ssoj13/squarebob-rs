@@ -98,7 +98,7 @@ pub(crate) fn render_path_traced(
         let scene_start = std::time::Instant::now();
         let (materials_arc, pt_instances) =
             crate::renderer3d::material_cache::prepare_pt_expanded_materials(
-                &renderer.material_library,
+                &opts.material_library,
                 &mut renderer.mat_cache,
                 &renderer.picking,
                 &mut renderer.pt_expand_cache,

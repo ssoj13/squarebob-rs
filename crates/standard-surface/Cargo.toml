@@ -1,0 +1,26 @@
+[package]
+name = "standard-surface"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Autodesk Standard Surface shader for wgpu (WGSL port of MaterialX). Vendored from ssoj13/alembic-rs."
+readme = "README.md"
+
+# Versions tracked to the squarebob workspace (wgpu 29 / glam 0.32 /
+# bytemuck 1.25). Vendored copy lives at
+# `crates/standard-surface/`. The wgpu pipeline helpers in `lib.rs`
+# are only used by squarebob if a future raster fallback is added —
+# the path-tracer consumes only `StandardSurfaceParams` + the WGSL
+# shader-library snippets.
+
+[dependencies]
+# wgpu intentionally absent — the rasterizer pipeline from the
+# upstream crate has been stripped (see lib.rs doc-comment for why).
+# Re-add it here if you ever vendor the pipeline helpers back.
+bytemuck = { version = "1.25", features = ["derive"] }
+# `serde` feature on glam gives us `Serialize` / `Deserialize` for
+# `Vec3` / `Vec4`, which `StandardSurfaceParams` needs so callers
+# (e.g. pt-material) can save/load materials to/from JSON without a
+# bespoke conversion layer.
+glam = { version = "0.32", features = ["bytemuck", "serde"] }
+serde = { version = "1", features = ["derive"] }

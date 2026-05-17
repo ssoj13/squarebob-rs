@@ -1,21 +1,40 @@
-//! Per-path material classification cache and material settings helpers.
+//! Per-path material classification cache and PT material expansion.
 //!
-//! Extracted from `lib.rs` (Stage B.1 of TODO4 roadmap). Pure mechanical
-//! move — no behaviour change.
+//! Phase 4 rewrite: the legacy `pt_mats::MaterialLibrary` (1500-slot
+//! palette + `MaterialClass` enum) is gone. The single source of truth
+//! is now `pt_material::MaterialLibrary` carried inside
+//! `Render3DOptions.material_library`. Per-cube materialisation:
+//!
+//! 1. `MaterialCache::classify_or_get` maps a path to a
+//!    `material_index` in `0..library.len()`.
+//! 2. [`expand_pt_materials_and_ids`] resolves *one*
+//!    `StandardSurfaceParams` per cube (`Material::resolve_for_cube`),
+//!    producing a `(materials, ids)` pair where `ids[i] == i`. This
+//!    natively supports per-attribute variance (each cube has its own
+//!    resolved record) at the cost of a slightly larger GPU material
+//!    storage buffer (~144 bytes per cube).
 
 use std::sync::Arc;
 
 use glam::Mat4;
 use pt_core::{GpuMaterial, Instance};
+use pt_material::{MaterialLibrary, StandardSurfaceParams};
 use pt_mats::{
-    classify_to_id, hierarchical_path_value, MaterialClass, MaterialInput, MaterialLibrary,
-    MaterializeMode, MaterializeSettings,
+    classify_to_index, hierarchical_path_value, MaterialInput, MaterializeMode,
+    MaterializeSettings,
 };
 use render_shared::{name_hash, Render3DOptions};
 
 use crate::geometry::CubeInstance;
 use crate::picking::PickingState;
-use crate::renderer3d::helpers::{apply_glass_controls, hash_f32, mix_material};
+
+/// Capacity of the PBR `materials_buf` storage buffer (entries × 144 B
+/// each → 36 KiB at 256). Library indices visible to PBR are clamped to
+/// `[0, MAX_MATERIAL_SLOTS)` so a user-grown library cannot make the
+/// shader read past the buffer or the per-frame upload exceed buffer
+/// capacity. PT-side resolution is unaffected (its material storage is
+/// sized per-cube, not from this cap).
+pub(crate) const MAX_MATERIAL_SLOTS: u32 = 256;
 
 /// Global material params shared across all cubes in the PBR shader. Currently holds
 /// only the materialize-mix (instance color → library albedo blend factor). Kept
@@ -37,16 +56,10 @@ impl Default for MatGlobalUniform {
 }
 
 /// Per-path material classification cache. Caches the final
-/// `MaterialLibrary` index (u32), so legacy `MaterialClass` slots and
-/// palette samples share a single lookup table. Invalidated only when
-/// material settings change; survives layout/animation/camera updates.
-///
-/// Scene-level metadata (`scene_max_depth`, `scene_max_size`) is
-/// recomputed every frame by `instance_collect::collect_cubes` via
-/// `set_scene_meta` before classification starts. Without this, the
-/// `Depth` source would normalise against `max_depth=1` (collapsing to
-/// 0) and the `Size` source would normalise against `max_size=size`
-/// (collapsing to 1).
+/// `MaterialLibrary` index (u32) so identical paths reuse the
+/// classification result. Invalidated whenever material settings change
+/// or scene normalisation bounds shift (depth / size sources depend on
+/// scene-wide max). Survives layout/animation/camera updates.
 pub(crate) struct MaterialCache {
     pub(crate) settings_hash: u64,
     pub(crate) ids_pbr: std::collections::HashMap<u32, u32>,
@@ -100,11 +113,8 @@ impl MaterialCache {
     }
 
     /// Look up the cached material id for `path` or compute it. `is_pt`
-    /// selects the PT-specific path (light overrides depend on `is_pt`).
-    /// `depth` is the node's position in the directory tree — required
-    /// for the `Depth` source to produce meaningful values. PT callers
-    /// that only need cached lookups can pass `0`; lookups by `path_hash`
-    /// hit cache regardless of depth.
+    /// selects the PT-specific cache bucket. `depth` is the node's
+    /// position in the directory tree — required for the `Depth` source.
     pub(crate) fn classify_or_get(
         &mut self,
         path: &std::path::Path,
@@ -113,8 +123,13 @@ impl MaterialCache {
         opts: &Render3DOptions,
         is_pt: bool,
     ) -> u32 {
-        if opts.materialize_mode == MaterializeMode::None {
-            // Library slot 0 == MaterialClass::Default (Pure grey plastic).
+        // Clamp visible library size to the PBR upload cap so
+        // classification can never emit an index past the GPU-visible
+        // slot range.
+        let cap = MAX_MATERIAL_SLOTS as usize;
+        let raw_lib = &opts.material_library;
+        let lib_len = raw_lib.len().min(cap);
+        if lib_len == 0 || opts.materialize_mode == MaterializeMode::None {
             return 0;
         }
         let path_str = path.to_string_lossy();
@@ -128,8 +143,8 @@ impl MaterialCache {
             return id;
         }
         let mut settings = settings_from_opts(opts, is_pt);
-        // Sync legacy `materialize_mode` → `source` so classify_to_id sees
-        // the right source even if callers updated only the legacy field.
+        // Sync legacy `materialize_mode` → `source` so classify_to_index
+        // sees the right source even if callers updated only the legacy field.
         settings.source = opts.materialize_mode.to_source();
         let input = MaterialInput {
             name_hash: key,
@@ -139,13 +154,20 @@ impl MaterialCache {
             depth,
             max_depth: self.scene_max_depth,
             // No file mtime is plumbed through the pipeline yet, so Age
-            // falls back to a deterministic hash-based proxy. Real mtime
-            // wiring is a follow-up.
+            // falls back to a deterministic hash-based proxy.
             age_normalized: (key as f32) / (u32::MAX as f32),
             position: [0.0, 0.0, 0.0],
             path_hierarchical_value: hierarchical_path_value(path),
         };
-        let id = classify_to_id(&input, &settings);
+        // Per-slot user-editable weights drive the distribution: each
+        // slot claims `weight / sum(weights)` of cubes. Default weight
+        // is 1.0 → uniform. Sliced to the same cap so PBR storage and
+        // classification stay in sync.
+        let weights: Vec<f32> = raw_lib.materials[..lib_len]
+            .iter()
+            .map(|m| m.weight.max(0.0))
+            .collect();
+        let id = classify_to_index(&input, &settings, &weights);
         bucket.insert(key, id);
         id
     }
@@ -172,6 +194,16 @@ pub(crate) fn mat_settings_hash(opts: &Render3DOptions) -> u64 {
     opts.mat_include_dirs.hash(&mut h);
     opts.mat_palette.hash(&mut h);
     opts.mat_path_hierarchical.hash(&mut h);
+    // Library identity drives the classify_to_index range AND per-cube
+    // index meaning. Hash slot UUIDs (cheap, identity-only) AND
+    // weights so that reorders / deletions / insertions AND weight
+    // edits invalidate `ids_pbr` / `ids_pt`. PT-side params+variance
+    // hashing lives in `pt_expand_opts_hash` — PBR doesn't need that
+    // because the materials buffer is re-uploaded every frame.
+    for m in &opts.material_library.materials {
+        m.uuid.hash(&mut h);
+        m.weight.to_bits().hash(&mut h);
+    }
     h.finish()
 }
 
@@ -197,16 +229,21 @@ pub(crate) fn settings_from_opts(opts: &Render3DOptions, is_pt: bool) -> Materia
     }
 }
 
-// --- Path tracing: expanded material table + per-instance ids (cached across frames) ---
+// --- Path tracing: per-cube resolved material table + identity ids ---
 
-/// Cache GPU material table and parallel `material_id` list when the scan + material
-/// knobs that affect expansion are unchanged (animation can still move cubes).
+/// Cache the per-cube material table when the scan + library + variance
+/// state is unchanged (animation can still move cubes but the materials
+/// themselves don't depend on transform).
 pub(crate) struct PtExpandCacheEntry {
     pub key: u64,
     pub materials: Arc<Vec<GpuMaterial>>,
     pub material_ids: Vec<u32>,
 }
 
+/// Hash the bits of `opts` that influence per-cube material resolution
+/// but don't appear in `mat_settings_hash` — primarily the library
+/// contents (params + variance) and the PT-side glass UI knobs (kept
+/// for the follow-up wiring; they don't drive expansion yet).
 fn pt_expand_opts_hash(opts: &Render3DOptions) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -221,6 +258,19 @@ fn pt_expand_opts_hash(opts: &Render3DOptions) -> u64 {
     opts.pt_glass_dispersion.to_bits().hash(&mut h);
     opts.pt_glass_temp.to_bits().hash(&mut h);
     opts.pt_glass_thin.hash(&mut h);
+    // Library contents: UUID identifies each slot, params + variance
+    // drive resolution. Hash 40 lanes (10 vec4s × 4 channels) per slot.
+    for m in &opts.material_library.materials {
+        m.uuid.hash(&mut h);
+        let p: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&m.params));
+        for x in p {
+            x.to_bits().hash(&mut h);
+        }
+        let v: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&m.variance));
+        for x in v {
+            x.to_bits().hash(&mut h);
+        }
+    }
     h.finish()
 }
 
@@ -259,8 +309,15 @@ pub(crate) fn pt_expand_cache_key(
     h.finish()
 }
 
-/// Build expanded `GpuMaterial` table + per-cube material indices for PT.
-/// Caller must run [`MaterialCache::ensure`] first.
+/// Build the per-cube `GpuMaterial` table for the PT pipeline.
+///
+/// Each cube becomes one entry in the output `Vec<GpuMaterial>`; the
+/// `material_ids` vec is therefore the identity map `[0, 1, .., N-1]`.
+/// This trades a slightly larger GPU buffer (~144 bytes per cube) for a
+/// model that natively supports per-cube variance — each cube hashes
+/// its `object_id` through `Material::resolve_for_cube`, so two cubes
+/// pointing at the same library slot can land on different shades of
+/// the same family.
 pub(crate) fn expand_pt_materials_and_ids(
     library: &MaterialLibrary,
     mat_cache: &mut MaterialCache,
@@ -268,96 +325,43 @@ pub(crate) fn expand_pt_materials_and_ids(
     instances: &[CubeInstance],
     opts: &Render3DOptions,
 ) -> (Vec<GpuMaterial>, Vec<u32>) {
-    let mut materials = library.materials().to_vec();
-    let light_intensity = opts.mat_light_intensity.clamp(0.0, 10.0);
-    let light_color_rand = opts.mat_light_color_randomness.clamp(0.0, 1.0);
-    let light_variants = if light_color_rand > 0.0 { 16u32 } else { 1u32 };
-    let mut light_variant_ids: std::collections::HashMap<u64, u32> =
-        std::collections::HashMap::new();
-    let transparency = opts.pt_global_transparency.clamp(0.0, 1.0);
-    if transparency > 0.0 {
-        let glass_class = opts.pt_global_glass.to_material_class();
-        let glass_id = library.material_id(glass_class) as usize;
-        let glass = materials.get(glass_id).copied().unwrap_or(materials[0]);
-        let glass = apply_glass_controls(glass, opts);
-        for mat in &mut materials {
-            *mat = mix_material(*mat, glass, transparency);
-        }
-    }
-    let default_id = library.material_id(MaterialClass::Default);
-
+    // Mirror the PBR cap so a user-grown library cannot drive
+    // `material_index` past the slot range the shader can read.
+    let lib_size = library.len().min(MAX_MATERIAL_SLOTS as usize);
+    let mut materials = Vec::with_capacity(instances.len());
     let mut material_ids = Vec::with_capacity(instances.len());
+
     for inst in instances {
-        let material_id = if opts.materialize_mode != MaterializeMode::None {
+        let lib_idx = if lib_size > 0 && opts.materialize_mode != MaterializeMode::None {
             let path_opt = picking.path_for_id(inst.object_id);
             let is_dir = picking.is_dir_for_id(inst.object_id).unwrap_or(false);
             let size = picking.size_for_id(inst.object_id).unwrap_or(0);
             if let Some(path) = path_opt {
                 if is_dir && !opts.mat_include_dirs {
-                    default_id
+                    0
                 } else {
-                    let hash = name_hash(&path.to_string_lossy());
-                    let base_id = mat_cache.classify_or_get(path, size, 0, opts, true);
-                    // Single source of truth: `light_class = Some(c)` only when the
-                    // material classifies as a light. Branches that need the class
-                    // pattern-match on this Option directly instead of carrying a
-                    // parallel `is_light: bool` whose invariant has to be re-checked.
-                    let light_class = MaterialClass::from_id(base_id).filter(|c| c.is_light());
-                    if let Some(class) =
-                        light_class.filter(|_| light_intensity != 1.0 || light_color_rand > 0.0)
-                    {
-                        let bucket = if light_variants > 1 {
-                            hash % light_variants
-                        } else {
-                            0
-                        };
-                        let vkey = ((class as u64) << 32) | bucket as u64;
-                        if let Some(&id) = light_variant_ids.get(&vkey) {
-                            id
-                        } else {
-                            let mut m = materials[base_id as usize];
-                            m.emission_color_weight[3] *= light_intensity;
-                            if light_color_rand > 0.0 {
-                                let r = 1.0
-                                    + (hash_f32(hash, 0xA1u32) - 0.5)
-                                        * 2.0
-                                        * (0.3 * light_color_rand);
-                                let g = 1.0
-                                    + (hash_f32(hash, 0xB2u32) - 0.5)
-                                        * 2.0
-                                        * (0.3 * light_color_rand);
-                                let b = 1.0
-                                    + (hash_f32(hash, 0xC3u32) - 0.5)
-                                        * 2.0
-                                        * (0.3 * light_color_rand);
-                                m.emission_color_weight[0] =
-                                    (m.emission_color_weight[0] * r).max(0.0);
-                                m.emission_color_weight[1] =
-                                    (m.emission_color_weight[1] * g).max(0.0);
-                                m.emission_color_weight[2] =
-                                    (m.emission_color_weight[2] * b).max(0.0);
-                            }
-                            materials.push(m);
-                            let new_id = (materials.len() - 1) as u32;
-                            light_variant_ids.insert(vkey, new_id);
-                            new_id
-                        }
-                    } else if light_class.is_some() && light_intensity != 1.0 {
-                        let mut m = materials[base_id as usize];
-                        m.emission_color_weight[3] *= light_intensity;
-                        materials.push(m);
-                        (materials.len() - 1) as u32
-                    } else {
-                        base_id
-                    }
+                    mat_cache.classify_or_get(path, size, 0, opts, true) as usize
                 }
             } else {
-                default_id
+                0
             }
         } else {
-            default_id
+            0
         };
-        material_ids.push(material_id);
+        let lib_idx = lib_idx.min(lib_size.saturating_sub(1));
+        let resolved: StandardSurfaceParams = if lib_size > 0 {
+            library.materials[lib_idx].resolve_for_cube(inst.object_id as u64)
+        } else {
+            StandardSurfaceParams::default()
+        };
+        // `StandardSurfaceParams` and `GpuMaterial` are `#[repr(C)]` with
+        // matching field order and identical size (144 bytes / 9 × vec4).
+        // `bytemuck::cast` is the safe equivalent of a transmute: it
+        // compiles to a no-op and panics at build-time if layouts ever
+        // diverge.
+        let gpu: GpuMaterial = bytemuck::cast(resolved);
+        materials.push(gpu);
+        material_ids.push(materials.len() as u32 - 1);
     }
     (materials, material_ids)
 }
@@ -401,8 +405,6 @@ pub(crate) fn prepare_pt_expanded_materials(
     let (materials, material_ids) =
         expand_pt_materials_and_ids(library, mat_cache, picking, instances, opts);
     let arc = Arc::new(materials);
-    // `Option::insert` writes Some(_) and hands back `&mut T` in one step —
-    // no `as_ref().expect("just inserted")` panic-path needed.
     let entry = cache_slot.insert(PtExpandCacheEntry {
         key,
         materials: Arc::clone(&arc),

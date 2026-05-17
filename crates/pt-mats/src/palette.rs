@@ -15,14 +15,6 @@ use std::path::Path;
 
 use crate::MaterialSource;
 
-/// Number of pre-baked samples per palette stored in `MaterialLibrary`.
-/// 256 gives perceptually-continuous gradients on 8-bit displays.
-pub const PALETTE_BINS: u32 = 256;
-
-/// Number of materials reserved for legacy `MaterialClass` entries
-/// (Default..NeonBlue = 34). Palette samples start at this offset.
-pub const BASE_LIBRARY_SIZE: u32 = 34;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
 pub enum Palette {
     #[default]

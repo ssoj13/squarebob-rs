@@ -8,6 +8,7 @@ bytemuck = { version = "1", features = ["derive"] }
 glam = "0.32"
 serde = { version = "1", features = ["derive"] }
 pt-mats = { path = "../pt-mats" }
+pt-material = { path = "../pt-material" }
 
 [dev-dependencies]
 serde_json = "1"

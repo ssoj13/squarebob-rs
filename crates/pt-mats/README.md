@@ -1,27 +1,48 @@
 # pt-mats
 
-pt-mats is a small, reusable material classification and preset library for squarebob-rs.
+Classification-only helper crate for the squarebob-rs materialize
+pipeline.
 
 ## Why this exists
-The renderer needs deterministic, data-driven materials for two different pipelines:
 
-- **PBR (raster)**: per-instance colors that can be blended with procedural/materialized palettes.
-- **PT (path tracing)**: physically-inspired materials (metal/glass/emissive, etc.) packed into GPU buffers.
-
-Keeping this logic in a dedicated crate makes it reusable across projects and keeps the app layer free of
-material-model details. It also makes it possible to maintain a consistent material taxonomy between
-PBR and PT while still allowing pipeline-specific behavior (e.g., lights only in PT).
+After the Phase 4 split, `pt-mats` no longer owns the material data
+model — `pt-material::MaterialLibrary` is the single source of truth
+for per-scene material slots, with user-editable
+`StandardSurfaceParams` + per-attribute variance. `pt-mats` keeps the
+*classification* side: given a cube's metadata, pick a `u32` material
+index into the caller-supplied library.
 
 ## What it provides
-- `MaterialClass`: material taxonomy (including light/glass variants).
-- `MaterialLibrary`: CPU-side material presets -> `GpuMaterial` array.
-- `MaterializeMode`: classification modes (by extension, path, size, age, random).
-- `MaterializeSettings`: flags and probabilities for light/glass categories.
-- `classify_path_filtered(...)`: deterministic classifier with filtering & remapping rules.
+
+- `MaterialSource`: scalar dimension to classify on (extension, path,
+  size, age, depth, random).
+- `MaterialDistribution`: shaping curve applied to the source value
+  before bucketing (direct, quantised, gradient, spatial noise, bands).
+- `MaterializeMode`: legacy preset shortcut for `MaterialSource`.
+- `MaterializeSettings`: full classification knob bundle (seed,
+  source/distribution choice, quant levels, palette pin, etc.).
+- `MaterialInput`: per-cube inputs handed to `classify_to_index`.
+- `classify_to_index(input, settings, library_size) -> u32`: pick a
+  material index in `0..library_size`.
+- Palette helpers (`Palette`, `sample_palette`,
+  `auto_palette_for_source`, `hierarchical_path_value`) — used by
+  upstream colour-ramp consumers, not by the classifier itself.
 
 ## Where it is used
-- `crates/render-3d/src/lib.rs`: PBR color blending and PT material assignment.
-- PT shaders (`crates/pt-megakernel` / `crates/pt-wavefront`): consume `GpuMaterial` arrays.
 
-This crate does **not** implement a full Standard Surface model. It uses a compact custom material
-layout that matches the existing PT shaders and is sufficient for PBR tinting and PT shading.
+- `crates/render-3d/src/renderer3d/material_cache.rs`: calls
+  `classify_to_index` once per unique path; results are cached per
+  PBR/PT bucket and invalidated on `MaterializeSettings` change or
+  library identity change.
+- `crates/render-3d/src/renderer3d/instance_collect.rs`: consumes
+  palette + `MaterialDistribution` for per-cube colour ramps.
+
+## What lives elsewhere
+
+- Material slots, JSON serialisation, per-cube variance: `pt-material`.
+- GPU material layout (`GpuMaterial` / `StandardSurfaceParams`):
+  `pt-core` and `standard-surface`.
+- Glass / light overrides (legacy `MaterialClass` slot routing): gone.
+  Glass-vs-emissive is now a property of the `StandardSurface` params
+  themselves (transmission weight / emission weight), edited per
+  library slot.

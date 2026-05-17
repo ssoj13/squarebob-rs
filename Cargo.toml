@@ -1,7 +1,7 @@
 [package]
 name = "squarebob-rs"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 rust-version = "1.95"
 
 # Produced binary is `squarebob.exe` / `squarebob` rather than the
@@ -29,6 +29,10 @@ members = [
     "crates/treemap",
     "crates/pt-denoise-oidn",
     "crates/gpu-mem",
+    "crates/standard-surface",
+    "crates/squarebob-widgets",
+    "crates/pt-material",
+    "crates/playa-ae",
 ]
 resolver = "2"
 
@@ -75,6 +79,10 @@ bvh-gpu = { path = "crates/bvh-gpu" }
 pt-megakernel = { path = "crates/pt-megakernel" }
 pt-wavefront = { path = "crates/pt-wavefront" }
 pt-mats = { path = "crates/pt-mats" }
+pt-material = { path = "crates/pt-material" }
+squarebob-widgets = { path = "crates/squarebob-widgets" }
+playa-ae = { path = "crates/playa-ae" }
+uuid = { version = "1", features = ["v4", "serde"] }
 pt-denoise-oidn = { path = "crates/pt-denoise-oidn" }
 sysinfo = "0.38"
 egui-phosphor = "0.12.0"

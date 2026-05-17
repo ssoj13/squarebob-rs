@@ -1,15 +1,28 @@
-//! Material presets and materializer for PBR/PT rendering.
-
-use std::path::Path;
+//! Classification settings for the materialize pipeline.
+//!
+//! Phase 4 split: this crate no longer owns the material data model.
+//! `pt-material::MaterialLibrary` is the single source of truth for the
+//! per-scene material slots. `pt-mats` retains only the *classification*
+//! side — given a cube's metadata (`MaterialInput`), pick a `u32`
+//! `material_index` into a caller-supplied library. The legacy
+//! `MaterialClass` enum and its 1500-entry `MaterialLibrary` are gone.
+//!
+//! Public surface:
+//! - [`MaterialSource`] — what scalar dimension to classify on
+//!   (extension / path / size / age / depth / random).
+//! - [`MaterialDistribution`] — how the scalar maps to slot indices
+//!   (direct / quantised / gradient / spatial / bands).
+//! - [`MaterializeMode`] — legacy preset shortcut for `MaterialSource`.
+//! - [`MaterializeSettings`] — full classification knob bundle.
+//! - [`MaterialInput`] — per-cube inputs handed to [`classify_to_index`].
+//! - [`classify_to_index`] — pick one `material_index` in `0..library_size`.
+//! - palette helpers re-exported from [`palette`].
 
 use serde::{Deserialize, Serialize};
 
-use pt_core::bvh::GpuMaterial;
-
 mod palette;
 pub use palette::{
-    auto_palette_for_source, hierarchical_path_value, sample_palette, Palette, BASE_LIBRARY_SIZE,
-    PALETTE_BINS,
+    auto_palette_for_source, hierarchical_path_value, sample_palette, Palette,
 };
 
 // ============================================================================
@@ -19,13 +32,13 @@ pub use palette::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MaterialSource {
     #[default]
-    None, // All same material
-    Extension, // File extension hash
-    Path,      // Full path hash
-    Size,      // File size (normalized)
-    Age,       // File age (normalized)
-    Depth,     // Directory depth (normalized)
-    Random,    // Random per-file
+    None,
+    Extension,
+    Path,
+    Size,
+    Age,
+    Depth,
+    Random,
 }
 
 impl MaterialSource {
@@ -61,11 +74,11 @@ impl MaterialSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MaterialDistribution {
     #[default]
-    Direct, // Direct mapping: value -> material index
-    Quantized, // Quantize to N discrete levels (uses quant_levels)
-    Gradient,  // Smooth gradient across palette
-    Spatial,   // Spatial coherence (Perlin-like noise)
-    Bands,     // Alternating bands/stripes
+    Direct,
+    Quantized,
+    Gradient,
+    Spatial,
+    Bands,
 }
 
 impl MaterialDistribution {
@@ -90,7 +103,10 @@ impl MaterialDistribution {
     }
 }
 
-// Legacy enum for compatibility
+// ============================================================================
+// MaterializeMode (legacy preset -> MaterialSource)
+// ============================================================================
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MaterializeMode {
     None,
@@ -124,7 +140,7 @@ impl MaterializeMode {
         ]
     }
 
-    /// Convert legacy mode to new source
+    /// Convert legacy mode to new source enum.
     pub fn to_source(self) -> MaterialSource {
         match self {
             MaterializeMode::None => MaterialSource::None,
@@ -137,306 +153,9 @@ impl MaterializeMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaterialClass {
-    Default = 0,
-    Rubber,
-    GlassClear,
-    GlassBlue,
-    GlassGreen,
-    GlassAmber,
-    GlassPink,
-    Metal,
-    Plastic,
-    Water,
-    Emissive,
-    LightWarm2700,
-    LightWarm3500,
-    LightNeutral4500,
-    LightCool6500,
-    LightCool10000,
-    Paint,
-    Chalk,
-    Ceramic,
-    Concrete,
-    Gold,
-    Copper,
-    Silver,
-    Ruby,
-    Jade,
-    Diamond,
-    Velvet,
-    Wood,
-    Marble,
-    Neon,
-    NeonPink,
-    NeonPurple,
-    NeonOrange,
-    NeonBlue,
-}
-
-impl MaterialClass {
-    /// Display color for PBR (RGB 0-255)
-    pub fn color(self) -> [u8; 3] {
-        match self {
-            MaterialClass::Default => [200, 200, 200],
-            MaterialClass::Rubber => [30, 30, 30],
-            MaterialClass::GlassClear => [230, 240, 255],
-            MaterialClass::GlassBlue => [160, 200, 255],
-            MaterialClass::GlassGreen => [150, 220, 170],
-            MaterialClass::GlassAmber => [240, 190, 110],
-            MaterialClass::GlassPink => [240, 150, 190],
-            MaterialClass::Metal => [210, 200, 180],
-            MaterialClass::Plastic => [140, 160, 180],
-            MaterialClass::Water => [100, 180, 230],
-            MaterialClass::Emissive => [255, 180, 80],
-            MaterialClass::LightWarm2700 => [255, 160, 110],
-            MaterialClass::LightWarm3500 => [255, 185, 135],
-            MaterialClass::LightNeutral4500 => [255, 220, 180],
-            MaterialClass::LightCool6500 => [205, 225, 255],
-            MaterialClass::LightCool10000 => [180, 210, 255],
-            MaterialClass::Paint => [220, 100, 60],
-            MaterialClass::Chalk => [245, 245, 245],
-            MaterialClass::Ceramic => [200, 220, 240],
-            MaterialClass::Concrete => [130, 130, 130],
-            MaterialClass::Gold => [255, 215, 0],
-            MaterialClass::Copper => [184, 115, 51],
-            MaterialClass::Silver => [192, 192, 192],
-            MaterialClass::Ruby => [224, 17, 95],
-            MaterialClass::Jade => [0, 168, 107],
-            MaterialClass::Diamond => [185, 242, 255],
-            MaterialClass::Velvet => [75, 0, 130],
-            MaterialClass::Wood => [139, 90, 43],
-            MaterialClass::Marble => [240, 235, 230],
-            MaterialClass::Neon => [57, 255, 20],
-            MaterialClass::NeonPink => [255, 20, 147],
-            MaterialClass::NeonPurple => [191, 0, 255],
-            MaterialClass::NeonOrange => [255, 95, 31],
-            MaterialClass::NeonBlue => [0, 191, 255],
-        }
-    }
-
-    pub fn id(self) -> u32 {
-        self as u32
-    }
-
-    /// Inverse of [`Self::id`]. Returns `Some(class)` when `id` falls
-    /// inside the legacy `[0..BASE_LIBRARY_SIZE)` prefix of
-    /// `MaterialLibrary`. Palette-sample ids (>= BASE_LIBRARY_SIZE) yield
-    /// `None`, since they have no `MaterialClass` analog.
-    pub fn from_id(id: u32) -> Option<MaterialClass> {
-        Self::ALL.get(id as usize).copied()
-    }
-
-    pub fn is_emissive(self) -> bool {
-        matches!(
-            self,
-            MaterialClass::Emissive
-                | MaterialClass::LightWarm2700
-                | MaterialClass::LightWarm3500
-                | MaterialClass::LightNeutral4500
-                | MaterialClass::LightCool6500
-                | MaterialClass::LightCool10000
-                | MaterialClass::Neon
-                | MaterialClass::NeonPink
-                | MaterialClass::NeonPurple
-                | MaterialClass::NeonOrange
-                | MaterialClass::NeonBlue
-        )
-    }
-
-    pub fn is_transparent(self) -> bool {
-        matches!(
-            self,
-            MaterialClass::GlassClear
-                | MaterialClass::GlassBlue
-                | MaterialClass::GlassGreen
-                | MaterialClass::GlassAmber
-                | MaterialClass::GlassPink
-                | MaterialClass::Water
-                | MaterialClass::Diamond
-                | MaterialClass::Ruby
-                | MaterialClass::Jade
-        )
-    }
-
-    pub fn is_light(self) -> bool {
-        matches!(
-            self,
-            MaterialClass::Emissive
-                | MaterialClass::LightWarm2700
-                | MaterialClass::LightWarm3500
-                | MaterialClass::LightNeutral4500
-                | MaterialClass::LightCool6500
-                | MaterialClass::LightCool10000
-                | MaterialClass::Neon
-                | MaterialClass::NeonPink
-                | MaterialClass::NeonPurple
-                | MaterialClass::NeonOrange
-                | MaterialClass::NeonBlue
-        )
-    }
-
-    pub fn is_temperature_light(self) -> bool {
-        matches!(
-            self,
-            MaterialClass::LightWarm2700
-                | MaterialClass::LightWarm3500
-                | MaterialClass::LightNeutral4500
-                | MaterialClass::LightCool6500
-                | MaterialClass::LightCool10000
-        )
-    }
-
-    pub fn is_glass(self) -> bool {
-        matches!(
-            self,
-            MaterialClass::GlassClear
-                | MaterialClass::GlassBlue
-                | MaterialClass::GlassGreen
-                | MaterialClass::GlassAmber
-                | MaterialClass::GlassPink
-        )
-    }
-}
-
-const BASE_CLASSES: &[MaterialClass] = &[
-    MaterialClass::Default,
-    MaterialClass::Rubber,
-    MaterialClass::Metal,
-    MaterialClass::Plastic,
-    MaterialClass::Paint,
-    MaterialClass::Chalk,
-    MaterialClass::Ceramic,
-    MaterialClass::Concrete,
-    MaterialClass::Gold,
-    MaterialClass::Copper,
-    MaterialClass::Silver,
-    MaterialClass::Velvet,
-    MaterialClass::Wood,
-    MaterialClass::Marble,
-];
-
-const GLASS_CLASSES: &[MaterialClass] = &[
-    MaterialClass::GlassClear,
-    MaterialClass::GlassBlue,
-    MaterialClass::GlassGreen,
-    MaterialClass::GlassAmber,
-    MaterialClass::GlassPink,
-];
-
-const LIGHT_WARM: &[MaterialClass] = &[MaterialClass::LightWarm2700, MaterialClass::LightWarm3500];
-
-const LIGHT_NEUTRAL: &[MaterialClass] = &[MaterialClass::LightNeutral4500];
-
-const LIGHT_COOL: &[MaterialClass] = &[MaterialClass::LightCool6500, MaterialClass::LightCool10000];
-
-pub struct MaterialLibrary {
-    materials: Vec<GpuMaterial>,
-}
-
-impl Default for MaterialLibrary {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MaterialLibrary {
-    pub fn new() -> Self {
-        let palette_count = Palette::count();
-        let total = BASE_LIBRARY_SIZE + palette_count * PALETTE_BINS;
-        let mut materials = Vec::with_capacity(total as usize);
-        // [0..BASE_LIBRARY_SIZE): legacy MaterialClass slots (lights /
-        // glass / metal / etc. carrying their special PT params).
-        for class in MaterialClass::ALL {
-            materials.push(material_for_class(class));
-        }
-        // [BASE_LIBRARY_SIZE..total): palette samples. Each palette gets
-        // PALETTE_BINS consecutive plastic-like materials with base_color
-        // sampled along the ramp. Order MUST match `Palette::idx()`.
-        for &p in Palette::all() {
-            for bin in 0..PALETTE_BINS {
-                let t = bin as f32 / (PALETTE_BINS - 1) as f32;
-                let color = sample_palette(p, t);
-                materials.push(material_for_palette_sample(color));
-            }
-        }
-        debug_assert_eq!(materials.len() as u32, total);
-        Self { materials }
-    }
-
-    pub fn materials(&self) -> &[GpuMaterial] {
-        &self.materials
-    }
-
-    /// Legacy `MaterialClass` → library index. Always points inside the
-    /// `[0..BASE_LIBRARY_SIZE)` prefix.
-    pub fn material_id(&self, class: MaterialClass) -> u32 {
-        class
-            .id()
-            .min(self.materials.len().saturating_sub(1) as u32)
-    }
-
-    /// Palette sample → library index. Bin is clamped to
-    /// `[0..PALETTE_BINS)` so the result is always valid.
-    pub fn palette_material_id(&self, palette: Palette, t: f32) -> u32 {
-        let t = t.clamp(0.0, 1.0);
-        let bin = ((t * PALETTE_BINS as f32) as u32).min(PALETTE_BINS - 1);
-        BASE_LIBRARY_SIZE + palette.idx() * PALETTE_BINS + bin
-    }
-
-    /// Total entries (legacy + palette samples). Useful for sanity-checking
-    /// GPU buffer sizes and for clamping caller-supplied material ids.
-    pub fn total_count(&self) -> u32 {
-        self.materials.len() as u32
-    }
-}
-
-/// Generic plastic-ish material with the palette colour baked in.
-/// Roughness is mid (0.35) so colour reads without specular blowout;
-/// metalness 0 so PT keeps energy in the diffuse lobe.
-fn material_for_palette_sample(color: [f32; 3]) -> GpuMaterial {
-    make_plastic(color, 0.35)
-}
-
-impl MaterialClass {
-    pub const ALL: [MaterialClass; 34] = [
-        MaterialClass::Default,
-        MaterialClass::Rubber,
-        MaterialClass::GlassClear,
-        MaterialClass::GlassBlue,
-        MaterialClass::GlassGreen,
-        MaterialClass::GlassAmber,
-        MaterialClass::GlassPink,
-        MaterialClass::Metal,
-        MaterialClass::Plastic,
-        MaterialClass::Water,
-        MaterialClass::Emissive,
-        MaterialClass::LightWarm2700,
-        MaterialClass::LightWarm3500,
-        MaterialClass::LightNeutral4500,
-        MaterialClass::LightCool6500,
-        MaterialClass::LightCool10000,
-        MaterialClass::Paint,
-        MaterialClass::Chalk,
-        MaterialClass::Ceramic,
-        MaterialClass::Concrete,
-        MaterialClass::Gold,
-        MaterialClass::Copper,
-        MaterialClass::Silver,
-        MaterialClass::Ruby,
-        MaterialClass::Jade,
-        MaterialClass::Diamond,
-        MaterialClass::Velvet,
-        MaterialClass::Wood,
-        MaterialClass::Marble,
-        MaterialClass::Neon,
-        MaterialClass::NeonPink,
-        MaterialClass::NeonPurple,
-        MaterialClass::NeonOrange,
-        MaterialClass::NeonBlue,
-    ];
-}
+// ============================================================================
+// MaterializeSettings — full classification knob bundle
+// ============================================================================
 
 #[derive(Debug, Clone, Copy)]
 pub struct MaterializeSettings {
@@ -448,20 +167,19 @@ pub struct MaterializeSettings {
     pub glass_prob: f32,
     pub is_pt: bool,
     pub seed: u32,
-    // New unified system
     pub source: MaterialSource,
     pub distribution: MaterialDistribution,
-    pub quant_levels: u32,  // For Quantized distribution
-    pub band_count: u32,    // For Bands distribution
-    pub spatial_scale: f32, // For Spatial distribution
-    /// `Some(p)` pins the palette; `None` means auto-pick from `source`.
-    /// Light/glass overrides bypass the palette and fall back to legacy
-    /// `MaterialClass` materials in slots 0..BASE_LIBRARY_SIZE.
+    pub quant_levels: u32,
+    pub band_count: u32,
+    pub spatial_scale: f32,
+    /// `Some(p)` pins the palette for tinting; `None` means auto-pick from
+    /// `source`. The library is now driven by `pt-material` so the palette
+    /// is only used by upstream colour-ramp consumers (`render-3d`
+    /// instance_collect), not by [`classify_to_index`].
     pub palette: Option<Palette>,
     /// When true, the `Path` source uses `hierarchical_path_value` so
-    /// sibling files cluster into nearby palette colors. When false (the
-    /// legacy behaviour), `Path` uses a flat FNV hash and adjacent files
-    /// scatter randomly.
+    /// sibling files cluster into nearby indices. When false, `Path` uses a
+    /// flat FNV hash and adjacent files scatter randomly.
     pub path_hierarchical: bool,
 }
 
@@ -475,7 +193,7 @@ impl Default for MaterializeSettings {
             allow_glass: false,
             glass_prob: 0.5,
             is_pt: false,
-            seed: 2654435761,
+            seed: 2_654_435_761,
             source: MaterialSource::None,
             distribution: MaterialDistribution::Direct,
             quant_levels: 5,
@@ -487,7 +205,10 @@ impl Default for MaterializeSettings {
     }
 }
 
-/// Input data for material classification
+// ============================================================================
+// MaterialInput — per-cube classification inputs
+// ============================================================================
+
 #[derive(Debug, Clone, Copy)]
 pub struct MaterialInput {
     pub name_hash: u32,
@@ -496,12 +217,10 @@ pub struct MaterialInput {
     pub max_size: u64,
     pub depth: u32,
     pub max_depth: u32,
-    pub age_normalized: f32, // 0.0 = newest, 1.0 = oldest
-    pub position: [f32; 3],  // Cube center position
-    /// Hierarchical accumulation of the path components (0..1). Set by
-    /// `classify_path_filtered` so the inner classifier does not have to
-    /// own the `&Path`. Falls back to `hash_to_float(path_hash)` when zero
-    /// (i.e. caller did not compute it).
+    pub age_normalized: f32,
+    pub position: [f32; 3],
+    /// Hierarchical accumulation of the path components (0..1). Set by the
+    /// caller so the classifier doesn't have to own the `&Path`.
     pub path_hierarchical_value: f32,
 }
 
@@ -522,35 +241,74 @@ impl Default for MaterialInput {
 }
 
 // ============================================================================
-// New unified material classification
+// classify_to_index — the one and only public classification entry point
 // ============================================================================
 
-/// Classify material using the new unified system
-pub fn classify_material(input: &MaterialInput, settings: &MaterializeSettings) -> MaterialClass {
-    // Step 1: Get raw value from source (0.0 - 1.0)
-    let raw_value = get_source_value(input, settings);
+/// Map per-cube classification inputs to a `material_index` in
+/// `0..weights.len()`, sampling proportional to per-slot weights.
+///
+/// `weights` are unnormalised non-negative magnitudes — they're summed
+/// and treated as a probability mass function. Slot `i` claims a
+/// fraction `weights[i] / sum(weights)` of the cube population, so
+/// `[5, 1]` yields ~83% on slot 0 and ~17% on slot 1. Pass
+/// `&[1.0; n]` for uniform sampling (the legacy behaviour).
+///
+/// The flow is:
+/// 1. Pull a normalised scalar (0..1) from the chosen `source`.
+/// 2. Mix in a seed-derived noise so identical inputs across libraries
+///    don't all collapse onto slot 0.
+/// 3. Apply the distribution shaping (quantise / gradient / bands /
+///    spatial noise).
+/// 4. Walk the cumulative weight array to pick the slot.
+///
+/// Edge cases:
+/// - Empty `weights` or all-zero weights: returns 0.
+/// - `MaterialSource::None`: pins slot 0 regardless of weights.
+/// - Negative weights are clamped to zero before normalisation.
+///
+/// Light / glass overrides from the old library are now handled by the
+/// per-material PT shader path, not by classification — once a cube
+/// has resolved its `Material`, the renderer applies emission / IOR /
+/// dispersion based on the StandardSurface params themselves.
+pub fn classify_to_index(
+    input: &MaterialInput,
+    settings: &MaterializeSettings,
+    weights: &[f32],
+) -> u32 {
+    if weights.is_empty() {
+        return 0;
+    }
+    if settings.source == MaterialSource::None {
+        return 0;
+    }
 
-    // Step 2: Apply seed for variation
-    let seeded = apply_seed(raw_value, input.name_hash, settings.seed);
+    let total: f32 = weights.iter().map(|w| w.max(0.0)).sum();
+    if total <= 0.0 {
+        return 0;
+    }
 
-    // Step 3: Apply distribution algorithm
-    let distributed = apply_distribution(seeded, input, settings);
+    let raw = source_value(input, settings);
+    let seeded = apply_seed(raw, input.name_hash, settings.seed);
+    let distributed = apply_distribution(seeded, input, settings).clamp(0.0, 1.0);
+    debug_assert!(distributed.is_finite(), "distribution returned non-finite value");
 
-    // Step 4: Map to material class
-    let class = value_to_material(distributed);
-
-    // Step 5: Apply light/glass filters
-    let final_hash = float_to_hash(seeded);
-    apply_filters(class, final_hash, *settings)
+    let target = distributed * total;
+    let mut cum = 0.0f32;
+    for (i, &w) in weights.iter().enumerate() {
+        cum += w.max(0.0);
+        if target <= cum {
+            return i as u32;
+        }
+    }
+    (weights.len() - 1) as u32
 }
 
-/// Get normalized value (0.0-1.0) from the selected source
-fn get_source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
+/// Get normalised value (0.0-1.0) from the selected source.
+fn source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     match settings.source {
-        MaterialSource::None => 0.5, // Constant middle value
+        MaterialSource::None => 0.5,
         MaterialSource::Extension => hash_to_float(input.name_hash),
         MaterialSource::Path => {
-            // Hierarchical (siblings cluster) vs flat hash (random scatter).
             if settings.path_hierarchical && input.path_hierarchical_value > 0.0 {
                 input.path_hierarchical_value.clamp(0.0, 1.0)
             } else {
@@ -561,32 +319,32 @@ fn get_source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f3
             if input.max_size == 0 {
                 0.5
             } else {
-                // Log scale for size
                 let log_size = (input.size as f64 + 1.0).log10();
                 let log_max = (input.max_size as f64 + 1.0).log10();
                 (log_size / log_max.max(1.0)) as f32
             }
         }
-        MaterialSource::Age => input.age_normalized,
+        MaterialSource::Age => input.age_normalized.clamp(0.0, 1.0),
         MaterialSource::Depth => {
             if input.max_depth == 0 {
                 0.0
             } else {
-                input.depth as f32 / input.max_depth as f32
+                (input.depth as f32 / input.max_depth as f32).clamp(0.0, 1.0)
             }
         }
-        MaterialSource::Random => hash_to_float(input.name_hash.wrapping_mul(0x9E3779B9)),
+        MaterialSource::Random => hash_to_float(input.name_hash.wrapping_mul(0x9E37_79B9)),
     }
 }
 
-/// Apply seed to create variation
+/// Mix the seed into the value so identical inputs across different seeds
+/// scatter to different library slots. Keeps result in [0, 1).
 fn apply_seed(value: f32, hash: u32, seed: u32) -> f32 {
     let seeded_hash = hash.wrapping_mul(seed);
-    let noise = hash_to_float(seeded_hash) * 0.1; // Small noise from seed
-    (value + noise).fract() // Keep in 0-1 range
+    let noise = hash_to_float(seeded_hash) * 0.1;
+    (value + noise).fract()
 }
 
-/// Apply distribution algorithm
+/// Apply the distribution shaping to a normalised scalar.
 fn apply_distribution(value: f32, input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     match settings.distribution {
         MaterialDistribution::Direct => value,
@@ -597,25 +355,23 @@ fn apply_distribution(value: f32, input: &MaterialInput, settings: &MaterializeS
         }
 
         MaterialDistribution::Gradient => {
-            // Smooth S-curve for gradient
             let t = value.clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t) // Smoothstep
+            // Smoothstep: more visual weight near the ends, fewer
+            // mid-tone slots — useful when most materials in the
+            // library are mid-tone variants.
+            t * t * (3.0 - 2.0 * t)
         }
 
         MaterialDistribution::Spatial => {
-            // Perlin-like noise based on position
             let scale = settings.spatial_scale;
             let px = input.position[0] * scale;
             let py = input.position[1] * scale;
             let pz = input.position[2] * scale;
-
-            // Simple coherent noise (3D hash grid interpolation)
             let noise = spatial_noise(px, py, pz, settings.seed);
             (value * 0.3 + noise * 0.7).clamp(0.0, 1.0)
         }
 
         MaterialDistribution::Bands => {
-            // Create alternating bands
             let bands = settings.band_count.max(1) as f32;
             let band_idx = (value * bands).floor();
             band_idx / (bands - 1.0).max(1.0)
@@ -623,24 +379,20 @@ fn apply_distribution(value: f32, input: &MaterialInput, settings: &MaterializeS
     }
 }
 
-/// Simple 3D noise function for spatial coherence
+/// Simple 3D coherent noise. Used by `MaterialDistribution::Spatial`.
 fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
-    // Grid cell coordinates
     let ix = x.floor() as i32;
     let iy = y.floor() as i32;
     let iz = z.floor() as i32;
 
-    // Fractional part for interpolation
     let fx = x - x.floor();
     let fy = y - y.floor();
     let fz = z - z.floor();
 
-    // Smooth interpolation weights
     let ux = fx * fx * (3.0 - 2.0 * fx);
     let uy = fy * fy * (3.0 - 2.0 * fy);
     let uz = fz * fz * (3.0 - 2.0 * fz);
 
-    // Hash corners of the cell
     let h000 = grid_hash(ix, iy, iz, seed);
     let h001 = grid_hash(ix, iy, iz + 1, seed);
     let h010 = grid_hash(ix, iy + 1, iz, seed);
@@ -650,7 +402,6 @@ fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     let h110 = grid_hash(ix + 1, iy + 1, iz, seed);
     let h111 = grid_hash(ix + 1, iy + 1, iz + 1, seed);
 
-    // Trilinear interpolation
     let lerp = |a: f32, b: f32, t: f32| a + t * (b - a);
 
     let x00 = lerp(h000, h100, ux);
@@ -664,604 +415,158 @@ fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     lerp(y0, y1, uz)
 }
 
-/// Hash grid coordinates to float
 fn grid_hash(x: i32, y: i32, z: i32, seed: u32) -> f32 {
-    let h = (x as u32).wrapping_mul(73856093)
-        ^ (y as u32).wrapping_mul(19349663)
-        ^ (z as u32).wrapping_mul(83492791)
+    let h = (x as u32).wrapping_mul(73_856_093)
+        ^ (y as u32).wrapping_mul(19_349_663)
+        ^ (z as u32).wrapping_mul(83_492_791)
         ^ seed;
     hash_to_float(h)
 }
 
-/// Convert hash to float 0.0-1.0
 fn hash_to_float(h: u32) -> f32 {
     (h as f32) / (u32::MAX as f32)
 }
 
-/// Convert float back to hash for filters
-fn float_to_hash(f: f32) -> u32 {
-    (f.clamp(0.0, 1.0) * u32::MAX as f32) as u32
-}
-
-/// Map normalized value to material class
-fn value_to_material(value: f32) -> MaterialClass {
-    let idx = ((value * BASE_CLASSES.len() as f32) as usize).min(BASE_CLASSES.len() - 1);
-    BASE_CLASSES[idx]
-}
-
-// ============================================================================
-// Legacy API (for compatibility)
-// ============================================================================
-
-/// Classify file into material based on mode with optional filtering (legacy API)
-pub fn classify_path_filtered(
-    path: &Path,
-    size: u64,
-    name_hash: u32,
-    mode: MaterializeMode,
-    settings: MaterializeSettings,
-) -> MaterialClass {
-    // Convert legacy mode to new system
-    let mut new_settings = settings;
-    new_settings.source = mode.to_source();
-    // Keep distribution from settings (don't override)
-
-    let input = MaterialInput {
-        name_hash,
-        path_hash: path_hash(path),
-        size,
-        max_size: size.max(1), // Legacy: no max available
-        depth: 0,
-        max_depth: 1,
-        age_normalized: hash_to_float(name_hash), // Legacy: use hash as age proxy
-        position: [0.0, 0.0, 0.0],
-        path_hierarchical_value: hierarchical_path_value(path),
-    };
-
-    classify_material(&input, &new_settings)
-}
-
-/// Classify a path directly to a final `MaterialLibrary` index. Used by
-/// the production PBR/PT pipeline. Light/glass overrides return ids in
-/// `0..BASE_LIBRARY_SIZE` (legacy `MaterialClass` slots); palette samples
-/// occupy `BASE_LIBRARY_SIZE..total`.
-pub fn classify_path_filtered_id(
-    path: &Path,
-    size: u64,
-    name_hash: u32,
-    mode: MaterializeMode,
-    settings: MaterializeSettings,
-) -> u32 {
-    let mut new_settings = settings;
-    new_settings.source = mode.to_source();
-    let input = MaterialInput {
-        name_hash,
-        path_hash: path_hash(path),
-        size,
-        max_size: size.max(1),
-        depth: 0,
-        max_depth: 1,
-        age_normalized: hash_to_float(name_hash),
-        position: [0.0, 0.0, 0.0],
-        path_hierarchical_value: hierarchical_path_value(path),
-    };
-    classify_to_id(&input, &new_settings)
-}
-
-/// Classify rich `MaterialInput` to a final library index. Same routing
-/// as [`classify_path_filtered_id`] but lets callers feed real
-/// per-cube data (size_max, depth, age, position).
-pub fn classify_to_id(input: &MaterialInput, settings: &MaterializeSettings) -> u32 {
-    // None source short-circuits to a single library slot — keeps the
-    // "no materialize" case visually flat regardless of palette config.
-    if settings.source == MaterialSource::None {
-        return MaterialClass::Default.id();
-    }
-
-    let raw = get_source_value(input, settings);
-    let seeded = apply_seed(raw, input.name_hash, settings.seed);
-    let distributed = apply_distribution(seeded, input, settings);
-    let final_hash = float_to_hash(seeded);
-
-    // Light/glass overrides bypass the palette and resolve into the
-    // legacy `MaterialClass` slot range so the special PT/PBR shading
-    // (emission, IOR, transmission) still kicks in.
-    if settings.is_pt
-        && settings.allow_lights
-        && passes_prob(final_hash, 0x1234_5678, settings.light_prob)
-    {
-        return select_light_variant(final_hash, *settings).id();
-    }
-    if settings.allow_glass && passes_prob(final_hash, 0x8765_4321, settings.glass_prob) {
-        return select_glass_variant(final_hash).id();
-    }
-
-    // Palette-driven base colour. Auto-route source → palette when the
-    // user hasn't pinned one explicitly.
-    let palette = settings
-        .palette
-        .unwrap_or_else(|| auto_palette_for_source(settings.source));
-    let t = distributed.clamp(0.0, 1.0);
-    let bin = ((t * PALETTE_BINS as f32) as u32).min(PALETTE_BINS - 1);
-    BASE_LIBRARY_SIZE + palette.idx() * PALETTE_BINS + bin
-}
-
-fn apply_filters(
-    class: MaterialClass,
-    seeded_hash: u32,
-    settings: MaterializeSettings,
-) -> MaterialClass {
-    // Normalize to base classes first (lights/glass are optional categories)
-    let mut base = class;
-    if base.is_light() || base.is_glass() {
-        base = remap_to_base(seeded_hash);
-    }
-
-    // Optional light override (PT only)
-    if settings.is_pt
-        && settings.allow_lights
-        && passes_prob(seeded_hash, 0x1234_5678, settings.light_prob)
-    {
-        return select_light_variant(seeded_hash, settings);
-    }
-
-    // Optional glass override (PT + PBR)
-    if settings.allow_glass && passes_prob(seeded_hash, 0x8765_4321, settings.glass_prob) {
-        return select_glass_variant(seeded_hash);
-    }
-
-    base
-}
-
-fn passes_prob(hash: u32, salt: u32, prob: f32) -> bool {
-    let h = hash_derive(hash, salt);
-    let p = (h as f32) / (u32::MAX as f32);
-    p <= prob
-}
-
-fn remap_to_base(hash: u32) -> MaterialClass {
-    let idx = (hash as usize) % BASE_CLASSES.len().max(1);
-    BASE_CLASSES[idx]
-}
-
-fn select_glass_variant(hash: u32) -> MaterialClass {
-    let idx = (hash_derive(hash, 0x5bd1_e995) as usize) % GLASS_CLASSES.len().max(1);
-    GLASS_CLASSES[idx]
-}
-
-fn select_light_variant(hash: u32, settings: MaterializeSettings) -> MaterialClass {
-    let warm = settings.light_warm.max(0.0);
-    let cool = settings.light_cool.max(0.0);
-    let neutral = 1.0;
-    let total = (warm + cool + neutral).max(0.001);
-    let r = (hash_derive(hash, 0x9e37_79b9) as f32) / (u32::MAX as f32);
-
-    let warm_t = warm / total;
-    let neutral_t = (warm + neutral) / total;
-
-    if r < warm_t {
-        let idx = (hash_derive(hash, 0xa2c2_a01d) as usize) % LIGHT_WARM.len().max(1);
-        LIGHT_WARM[idx]
-    } else if r < neutral_t {
-        let idx = (hash_derive(hash, 0x1656_67b1) as usize) % LIGHT_NEUTRAL.len().max(1);
-        LIGHT_NEUTRAL[idx]
-    } else {
-        let idx = (hash_derive(hash, 0x6d2b_79f5) as usize) % LIGHT_COOL.len().max(1);
-        LIGHT_COOL[idx]
-    }
-}
-
-#[allow(dead_code)]
-fn classify_by_hash_with_palette(hash: u32, _settings: MaterializeSettings) -> MaterialClass {
-    let idx = (hash as usize) % BASE_CLASSES.len().max(1);
-    BASE_CLASSES[idx]
-}
-
-/// Classify by file extension
-#[allow(dead_code)]
-fn classify_by_extension(path: &Path) -> MaterialClass {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if name.contains("light") || name.contains("lamp") || name.contains("emit") {
-        return MaterialClass::Metal;
-    }
-    if name.contains("neon") {
-        return MaterialClass::Plastic;
-    }
-    if name.contains("glass") {
-        return MaterialClass::Plastic;
-    }
-    if name.contains("water") {
-        return MaterialClass::Plastic;
-    }
-    if name.contains("gold") {
-        return MaterialClass::Gold;
-    }
-    if name.contains("diamond") || name.contains("gem") {
-        return MaterialClass::Marble;
-    }
-
-    match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tga" => MaterialClass::Paint,
-        "hdr" | "exr" => MaterialClass::Marble,
-        "wav" | "mp3" | "flac" | "ogg" | "aac" | "m4a" => MaterialClass::Velvet,
-        "mp4" | "mkv" | "mov" | "avi" | "webm" => MaterialClass::Silver,
-        "zip" | "7z" | "rar" | "tar" | "gz" | "xz" | "bz2" => MaterialClass::Copper,
-        "iso" | "img" | "dmg" => MaterialClass::Gold,
-        "exe" | "dll" | "so" | "dylib" | "bin" => MaterialClass::Metal,
-        "txt" | "md" | "rtf" => MaterialClass::Chalk,
-        "doc" | "docx" | "pdf" => MaterialClass::Marble,
-        "rs" | "go" | "c" | "cpp" | "h" | "hpp" => MaterialClass::Ceramic,
-        "py" | "rb" => MaterialClass::Paint,
-        "js" | "ts" | "java" | "cs" => MaterialClass::Ceramic,
-        "html" | "css" | "scss" | "json" | "xml" | "yaml" | "toml" => MaterialClass::Plastic,
-        "ttf" | "otf" | "woff" | "woff2" => MaterialClass::Marble,
-        "obj" | "fbx" | "gltf" | "glb" | "stl" | "blend" => MaterialClass::Silver,
-        "db" | "sqlite" | "sql" => MaterialClass::Concrete,
-        "log" => MaterialClass::Wood,
-        _ => MaterialClass::Default,
-    }
-}
-
-/// Classify by file size ranges
-#[allow(dead_code)]
-fn classify_by_size(size: u64) -> MaterialClass {
-    match size {
-        0..=1024 => MaterialClass::Chalk,
-        1025..=102400 => MaterialClass::Plastic,
-        102401..=1048576 => MaterialClass::Paint,
-        1048577..=10485760 => MaterialClass::Ceramic,
-        10485761..=104857600 => MaterialClass::Metal,
-        104857601..=1073741824 => MaterialClass::Silver,
-        _ => MaterialClass::Gold,
-    }
-}
-
-fn path_hash(path: &Path) -> u32 {
-    let path_str = path.to_string_lossy();
-    name_hash(&path_str)
-}
-
-/// Compute deterministic hash from a string
-fn name_hash(name: &str) -> u32 {
-    name.bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
-}
-
-#[inline]
-fn hash_derive(hash: u32, salt: u32) -> u32 {
-    hash.wrapping_mul(1664525)
-        .wrapping_add(salt)
-        .wrapping_mul(1013904223)
-}
-
-fn material_for_class(class: MaterialClass) -> GpuMaterial {
-    match class {
-        MaterialClass::Default => make_plastic([0.8, 0.8, 0.8], 0.3),
-        MaterialClass::Rubber => make_plastic([0.05, 0.05, 0.05], 0.9),
-        MaterialClass::GlassClear => make_glass([0.95, 0.98, 1.0], 1.52, 0.02),
-        MaterialClass::GlassBlue => make_glass([0.7, 0.85, 1.0], 1.52, 0.02),
-        MaterialClass::GlassGreen => make_glass([0.6, 0.95, 0.7], 1.52, 0.02),
-        MaterialClass::GlassAmber => make_glass([1.0, 0.7, 0.4], 1.52, 0.03),
-        MaterialClass::GlassPink => make_glass([1.0, 0.7, 0.85], 1.52, 0.03),
-        MaterialClass::Metal => make_metal([0.9, 0.85, 0.75], 0.2),
-        MaterialClass::Plastic => make_plastic([0.6, 0.65, 0.7], 0.35),
-        MaterialClass::Water => make_glass([0.6, 0.8, 1.0], 1.33, 0.01),
-        MaterialClass::Emissive => make_emissive([1.0, 0.6, 0.2], 8.0),
-        MaterialClass::LightWarm2700 => make_emissive([1.0, 0.62, 0.3], 14.0),
-        MaterialClass::LightWarm3500 => make_emissive([1.0, 0.72, 0.45], 16.0),
-        MaterialClass::LightNeutral4500 => make_emissive([1.0, 0.85, 0.65], 18.0),
-        MaterialClass::LightCool6500 => make_emissive([0.78, 0.88, 1.0], 18.0),
-        MaterialClass::LightCool10000 => make_emissive([0.65, 0.8, 1.0], 20.0),
-        MaterialClass::Paint => make_paint([0.85, 0.4, 0.2], 0.3, 0.1),
-        MaterialClass::Chalk => make_plastic([0.95, 0.95, 0.95], 0.95),
-        MaterialClass::Ceramic => make_paint([0.85, 0.9, 0.95], 0.2, 0.2),
-        MaterialClass::Concrete => make_plastic([0.5, 0.5, 0.5], 0.75),
-        MaterialClass::Gold => make_metal([1.0, 0.84, 0.0], 0.1),
-        MaterialClass::Copper => make_metal([0.72, 0.45, 0.2], 0.15),
-        MaterialClass::Silver => make_metal([0.95, 0.93, 0.88], 0.05),
-        MaterialClass::Ruby => make_gem([0.88, 0.07, 0.37], 1.77),
-        MaterialClass::Jade => make_gem([0.0, 0.66, 0.42], 1.61),
-        MaterialClass::Diamond => make_glass([0.97, 0.97, 1.0], 2.42, 0.0),
-        MaterialClass::Velvet => make_velvet([0.29, 0.0, 0.51]),
-        MaterialClass::Wood => make_plastic([0.55, 0.35, 0.17], 0.6),
-        MaterialClass::Marble => make_marble([0.94, 0.92, 0.90]),
-        MaterialClass::Neon => make_emissive([0.22, 1.0, 0.08], 15.0),
-        MaterialClass::NeonPink => make_emissive([1.0, 0.08, 0.58], 15.0),
-        MaterialClass::NeonPurple => make_emissive([0.75, 0.0, 1.0], 15.0),
-        MaterialClass::NeonOrange => make_emissive([1.0, 0.37, 0.12], 15.0),
-        MaterialClass::NeonBlue => make_emissive([0.0, 0.75, 1.0], 15.0),
-    }
-}
-
-fn make_plastic(color: [f32; 3], roughness: f32) -> GpuMaterial {
-    let mut m = default_material();
-    m.base_color_weight = [color[0], color[1], color[2], 1.0];
-    m.params1[2] = roughness.max(0.04);
-    m
-}
-
-fn make_metal(color: [f32; 3], roughness: f32) -> GpuMaterial {
-    let mut m = default_material();
-    m.base_color_weight = [color[0], color[1], color[2], 1.0];
-    m.params1[1] = 1.0;
-    m.params1[2] = roughness.max(0.02);
-    m
-}
-
-fn make_glass(color: [f32; 3], ior: f32, roughness: f32) -> GpuMaterial {
-    let mut m = default_material();
-    m.base_color_weight = [color[0], color[1], color[2], 0.0];
-    m.transmission_color_weight = [color[0], color[1], color[2], 1.0];
-    m.params1[2] = roughness.max(0.0);
-    m.params1[3] = ior;
-    m
-}
-
-fn make_emissive(color: [f32; 3], intensity: f32) -> GpuMaterial {
-    let mut m = default_material();
-    m.base_color_weight = [0.0, 0.0, 0.0, 0.0];
-    m.specular_color_weight[3] = 0.0;
-    m.emission_color_weight = [color[0], color[1], color[2], intensity];
-    m
-}
-
-fn make_paint(color: [f32; 3], roughness: f32, coat_weight: f32) -> GpuMaterial {
-    let mut m = make_plastic(color, roughness);
-    m.coat_color_weight = [1.0, 1.0, 1.0, coat_weight];
-    m.params2[1] = 0.15;
-    m
-}
-
-fn make_gem(color: [f32; 3], ior: f32) -> GpuMaterial {
-    let mut m = default_material();
-    m.base_color_weight = [color[0] * 0.3, color[1] * 0.3, color[2] * 0.3, 0.5];
-    m.transmission_color_weight = [color[0], color[1], color[2], 0.8];
-    m.specular_color_weight = [1.0, 1.0, 1.0, 1.0];
-    m.params1[2] = 0.02;
-    m.params1[3] = ior;
-    m
-}
-
-fn make_velvet(color: [f32; 3]) -> GpuMaterial {
-    let mut m = default_material();
-    m.base_color_weight = [color[0], color[1], color[2], 1.0];
-    m.params1[2] = 0.8;
-    m.coat_color_weight = [1.0, 1.0, 1.0, 0.1];
-    m.params2[1] = 0.9;
-    m
-}
-
-fn make_marble(color: [f32; 3]) -> GpuMaterial {
-    let mut m = default_material();
-    m.base_color_weight = [color[0], color[1], color[2], 1.0];
-    m.params1[2] = 0.15;
-    m.subsurface_color_weight = [color[0] * 0.9, color[1] * 0.85, color[2] * 0.8, 0.1];
-    m
-}
-
-fn default_material() -> GpuMaterial {
-    GpuMaterial {
-        base_color_weight: [0.8, 0.8, 0.8, 1.0],
-        specular_color_weight: [1.0, 1.0, 1.0, 1.0],
-        transmission_color_weight: [1.0, 1.0, 1.0, 0.0],
-        subsurface_color_weight: [1.0, 1.0, 1.0, 0.0],
-        coat_color_weight: [1.0, 1.0, 1.0, 0.0],
-        emission_color_weight: [1.0, 1.0, 1.0, 0.0],
-        opacity: [1.0, 1.0, 1.0, 1.0],
-        params1: [0.0, 0.0, 0.2, 1.5],
-        params2: [0.0, 0.1, 1.5, 1.0],
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    //! Table-driven tests for `classify_path_filtered`.
-    //!
-    //! The function is the single classify call site in the codebase
-    //! (verified via gitnexus impact: only `MaterialCache.classify_or_get`
-    //! depends on it). Silent behaviour drift here propagates to both PBR
-    //! and PT cube colouring without any compiler warning, so these tests
-    //! pin the contract: light/glass overrides are gated by their
-    //! respective allow flags and probability values, the PT-only branch
-    //! never fires in PBR mode, and the function is deterministic for
-    //! identical inputs.
-    //!
-    //! Strategy: fix one variable (the property under test), iterate the
-    //! `name_hash` across many values, and assert a universal property
-    //! across the iteration. The actual class returned for a single hash
-    //! is implementation detail and intentionally not asserted —
-    //! changing seed, distribution algorithm, or palette ordering must
-    //! not break these tests.
     use super::*;
+    use std::path::Path;
 
-    fn settings(allow_lights: bool, allow_glass: bool, is_pt: bool) -> MaterializeSettings {
-        MaterializeSettings {
-            allow_lights,
-            allow_glass,
-            is_pt,
-            ..MaterializeSettings::default()
+    fn input_for(hash: u32, hier: f32) -> MaterialInput {
+        MaterialInput {
+            name_hash: hash,
+            path_hash: hash,
+            size: 1024,
+            max_size: 1_048_576,
+            depth: 3,
+            max_depth: 8,
+            age_normalized: hash_to_float(hash),
+            position: [0.0, 0.0, 0.0],
+            path_hierarchical_value: hier,
         }
     }
 
-    /// Mix of hashes — simple counter mixed by FNV-style multiplication so
-    /// adjacent values are not also adjacent in hash space.
-    fn hash_set(n: u32) -> impl Iterator<Item = u32> {
-        (0..n).map(|i| i.wrapping_mul(2_654_435_761).wrapping_add(0xDEAD_BEEF))
+    fn uniform(n: usize) -> Vec<f32> {
+        vec![1.0; n]
     }
 
     #[test]
-    fn determinism_same_inputs_same_class() {
-        let path = Path::new("/foo/bar/baz.txt");
-        let s = settings(true, true, true);
-        for h in hash_set(50) {
-            let a = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            let b = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
+    fn empty_library_returns_zero() {
+        let s = MaterializeSettings {
+            source: MaterialSource::Extension,
+            ..Default::default()
+        };
+        assert_eq!(classify_to_index(&input_for(42, 0.0), &s, &[]), 0);
+    }
+
+    #[test]
+    fn source_none_returns_zero() {
+        let s = MaterializeSettings::default();
+        let w = uniform(8);
+        for h in 0..50u32 {
+            let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
+            assert_eq!(
+                classify_to_index(&i, &s, &w),
+                0,
+                "source=None must pin slot 0"
+            );
+        }
+    }
+
+    #[test]
+    fn index_in_range() {
+        let s = MaterializeSettings {
+            source: MaterialSource::Extension,
+            ..Default::default()
+        };
+        for lib in [1usize, 2, 5, 8, 16, 64] {
+            let w = uniform(lib);
+            for h in 0..200u32 {
+                let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
+                let idx = classify_to_index(&i, &s, &w) as usize;
+                assert!(idx < lib, "idx {idx} >= lib {lib}");
+            }
+        }
+    }
+
+    #[test]
+    fn determinism_same_inputs_same_index() {
+        let s = MaterializeSettings {
+            source: MaterialSource::Path,
+            ..Default::default()
+        };
+        let w = uniform(16);
+        for h in 0..50u32 {
+            let i = input_for(h.wrapping_mul(2_654_435_761), 0.3);
+            let a = classify_to_index(&i, &s, &w);
+            let b = classify_to_index(&i, &s, &w);
             assert_eq!(a, b, "non-deterministic for hash {h}");
         }
     }
 
     #[test]
-    fn no_glass_when_allow_glass_is_false() {
-        let path = Path::new("/x");
-        let s = settings(false, false, false);
-        for h in hash_set(500) {
-            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            assert!(
-                !c.is_glass(),
-                "produced glass class {:?} with allow_glass=false (hash {h})",
-                c
-            );
+    fn distribution_quantized_uses_quant_levels() {
+        let s = MaterializeSettings {
+            source: MaterialSource::Extension,
+            distribution: MaterialDistribution::Quantized,
+            quant_levels: 3,
+            ..Default::default()
+        };
+        let w = uniform(64);
+        let mut seen = std::collections::HashSet::new();
+        for h in 0..1000u32 {
+            let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
+            seen.insert(classify_to_index(&i, &s, &w));
+        }
+        // 3 quantisation levels → at most 3 distinct output indices.
+        assert!(seen.len() <= 3, "quantised distribution produced {} distinct indices", seen.len());
+    }
+
+    #[test]
+    fn weights_skew_distribution() {
+        // weight 9 vs 1 → ~90% of cubes on slot 0, ~10% on slot 1.
+        // Verify by counting over a large sample; the per-slot count
+        // ratio should follow the weight ratio within a generous
+        // tolerance (this is a probabilistic test, not a tight one).
+        let s = MaterializeSettings {
+            source: MaterialSource::Extension,
+            ..Default::default()
+        };
+        let w = vec![9.0, 1.0];
+        let mut c0 = 0u32;
+        let mut c1 = 0u32;
+        for h in 0..10_000u32 {
+            let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
+            match classify_to_index(&i, &s, &w) {
+                0 => c0 += 1,
+                1 => c1 += 1,
+                other => panic!("idx {other} out of range"),
+            }
+        }
+        let ratio = c0 as f32 / c1.max(1) as f32;
+        // Expected ~9.0; allow 5..15 — wide tolerance for hash bias.
+        assert!(
+            (5.0..15.0).contains(&ratio),
+            "expected slot0:slot1 ~9:1, got {c0}:{c1} (ratio {ratio:.2})"
+        );
+    }
+
+    #[test]
+    fn zero_weights_collapse_to_zero() {
+        let s = MaterializeSettings {
+            source: MaterialSource::Extension,
+            ..Default::default()
+        };
+        let w = vec![0.0; 5];
+        for h in 0..50u32 {
+            let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
+            assert_eq!(classify_to_index(&i, &s, &w), 0);
         }
     }
 
     #[test]
-    fn no_light_when_allow_lights_is_false() {
-        let path = Path::new("/x");
-        // is_pt=true so the light branch *would* fire if allow_lights were true.
-        let s = settings(false, false, true);
-        for h in hash_set(500) {
-            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            assert!(
-                !c.is_light(),
-                "produced light class {:?} with allow_lights=false (hash {h})",
-                c
-            );
-        }
-    }
-
-    #[test]
-    fn no_light_in_pbr_even_with_allow_lights() {
-        let path = Path::new("/x");
-        // allow_lights=true but is_pt=false. apply_filters guards the light
-        // override on `settings.is_pt`, so PBR mode must never produce lights
-        // even with light_prob saturated.
-        let mut s = settings(true, false, false);
-        s.light_prob = 1.0;
-        for h in hash_set(500) {
-            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            assert!(!c.is_light(), "PBR mode produced light {:?} (hash {h})", c);
-        }
-    }
-
-    #[test]
-    fn glass_prob_zero_means_never_glass() {
-        let path = Path::new("/x");
-        let mut s = settings(false, true, false);
-        s.glass_prob = 0.0;
-        for h in hash_set(500) {
-            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            assert!(
-                !c.is_glass(),
-                "glass_prob=0 produced glass {:?} (hash {h})",
-                c
-            );
-        }
-    }
-
-    #[test]
-    fn glass_prob_one_pbr_always_glass() {
-        let path = Path::new("/x");
-        // is_pt=false → light branch can't fire → glass branch sees 100% of inputs.
-        let mut s = settings(false, true, false);
-        s.glass_prob = 1.0;
-        for h in hash_set(500) {
-            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            assert!(
-                c.is_glass(),
-                "glass_prob=1 produced non-glass {:?} (hash {h})",
-                c
-            );
-        }
-    }
-
-    #[test]
-    fn light_prob_one_pt_always_light() {
-        let path = Path::new("/x");
-        // is_pt=true and light_prob=1.0 → light branch always fires before glass.
-        let mut s = settings(true, false, true);
-        s.light_prob = 1.0;
-        for h in hash_set(500) {
-            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            assert!(
-                c.is_light(),
-                "light_prob=1 in PT produced non-light {:?} (hash {h})",
-                c
-            );
-        }
-    }
-
-    #[test]
-    fn light_branch_takes_priority_over_glass_in_pt() {
-        let path = Path::new("/x");
-        // Both allowed at prob=1 in PT — light fires first per apply_filters().
-        let mut s = settings(true, true, true);
-        s.light_prob = 1.0;
-        s.glass_prob = 1.0;
-        for h in hash_set(200) {
-            let c = classify_path_filtered(path, 100, h, MaterializeMode::ByExtension, s);
-            assert!(
-                c.is_light(),
-                "light should win over glass in PT, got {:?} (hash {h})",
-                c
-            );
-        }
-    }
-
-    #[test]
-    fn class_predicates_are_disjoint() {
-        // Sanity: a class is never both light and glass.
-        use MaterialClass::*;
-        for c in [
-            Default,
-            Rubber,
-            GlassClear,
-            GlassBlue,
-            GlassGreen,
-            GlassAmber,
-            GlassPink,
-            Metal,
-            Plastic,
-            Water,
-            Emissive,
-            LightWarm2700,
-            LightWarm3500,
-            LightNeutral4500,
-            LightCool6500,
-            LightCool10000,
-            Paint,
-            Chalk,
-            Ceramic,
-            Concrete,
-            Gold,
-            Copper,
-            Silver,
-            Ruby,
-            Jade,
-            Diamond,
-            Velvet,
-            Wood,
-            Marble,
-            Neon,
-            NeonPink,
-            NeonPurple,
-            NeonOrange,
-            NeonBlue,
-        ] {
-            assert!(
-                !(c.is_light() && c.is_glass()),
-                "class {:?} reports both is_light and is_glass",
-                c
-            );
-        }
+    fn hierarchical_path_re_exports_correctly() {
+        let v = hierarchical_path_value(Path::new("/a/b/c"));
+        assert!((0.0..=1.0).contains(&v));
     }
 }

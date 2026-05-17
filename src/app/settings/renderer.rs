@@ -809,6 +809,11 @@ impl App {
             self.settings_tint_mix,
             self.settings_section_header_height,
             |ui| {
+                // Slot browser (list + add/dup/remove + JSON I/O) sits
+                // above the distribution knobs so the user sees what
+                // they're distributing across.
+                super::materials::materials_browser_section(self, ui);
+                ui.separator();
                 egui::Grid::new("materials_unified_grid")
                     .num_columns(2)
                     .spacing([8.0, 4.0])

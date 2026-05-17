@@ -16,5 +16,6 @@ render-shared = { path = "../render-shared" }
 pt-core = { path = "../pt-core" }
 pt-megakernel = { path = "../pt-megakernel" }
 pt-mats = { path = "../pt-mats" }
+pt-material = { path = "../pt-material" }
 treemap = { path = "../treemap" }
 wgpu = "29"

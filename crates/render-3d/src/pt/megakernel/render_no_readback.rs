@@ -94,7 +94,7 @@ pub(crate) fn render_path_traced_no_readback(
     if allow_update && (renderer.pt.pt_scene_dirty || animated) && !instances.is_empty() {
         let (materials_arc, pt_instances) =
             crate::renderer3d::material_cache::prepare_pt_expanded_materials(
-                &renderer.material_library,
+                &opts.material_library,
                 &mut renderer.mat_cache,
                 &renderer.picking,
                 &mut renderer.pt_expand_cache,

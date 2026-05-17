@@ -1,0 +1,20 @@
+[package]
+name = "pt-material"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Per-scene material library for the squarebob path tracer. Wraps `standard_surface::StandardSurfaceParams` with optional per-attribute variance, JSON save/load, and deterministic per-cube resolution."
+
+# Replaces the previous discrete `MaterialClass` library in pt-mats.
+# Each scene owns a `MaterialLibrary` of N user-editable materials;
+# cubes carry a `material_index` into the library; per-cube variance
+# is applied at materialize-time so the GPU sees one resolved
+# `StandardSurfaceParams` per cube.
+
+[dependencies]
+standard-surface = { path = "../standard-surface" }
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = { version = "0.32", features = ["bytemuck"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }

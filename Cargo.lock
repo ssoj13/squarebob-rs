@@ -2496,6 +2496,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_extras"
+version = "0.34.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c609fc87f6c70ffd3afd679cbb294985096d2fc0be33e762ad5614bde4925bc"
+dependencies = [
+ "ahash",
+ "egui",
+ "enum-map",
+ "log",
+ "mime_guess2",
+ "profiling",
+]
+
+[[package]]
 name = "egui_glow"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2613,6 +2627,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1e6a265c649f3f5979b601d26f1d05ada116434c87741c9493cb56218f76cbc"
 dependencies = [
  "heck",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "enum-map"
+version = "2.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6866f3bfdf8207509a033af1a75a7b08abda06bbaaeae6669323fd5a097df2e9"
+dependencies = [
+ "enum-map-derive",
+]
+
+[[package]]
+name = "enum-map-derive"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f282cfdfe92516eb26c2af8589c274c7c17681f5ecc03c18255fe741c6aa64eb"
+dependencies = [
  "proc-macro2",
  "quote",
  "syn",
@@ -3240,6 +3274,10 @@ name = "glam"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
+dependencies = [
+ "bytemuck",
+ "serde_core",
+]
 
 [[package]]
 name = "glob"
@@ -4322,6 +4360,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "mime"
+version = "0.3.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "mime_guess2"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1706dc14a2e140dec0a7a07109d9a3d5890b81e85bd6c60b906b249a77adf0ca"
+dependencies = [
+ "mime",
+ "phf",
+ "phf_shared",
+ "unicase",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5222,6 +5278,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
+dependencies = [
+ "phf_macros",
+ "phf_shared",
+]
+
+[[package]]
+name = "phf_generator"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
+dependencies = [
+ "phf_shared",
+ "rand 0.8.6",
+]
+
+[[package]]
+name = "phf_macros"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
+dependencies = [
+ "phf_generator",
+ "phf_shared",
+ "proc-macro2",
+ "quote",
+ "syn",
+ "unicase",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
+dependencies = [
+ "siphasher",
+ "unicase",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5258,6 +5358,18 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "playa-ae"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_extras",
+ "serde",
+ "serde_json",
+ "uuid",
+]
 
 [[package]]
 name = "playa-ffmpeg"
@@ -5450,6 +5562,18 @@ dependencies = [
  "oidn-rs",
  "render-core",
  "wgpu",
+]
+
+[[package]]
+name = "pt-material"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "serde",
+ "serde_json",
+ "standard-surface",
+ "uuid",
 ]
 
 [[package]]
@@ -5921,6 +6045,7 @@ dependencies = [
  "image",
  "log",
  "pt-core",
+ "pt-material",
  "pt-mats",
  "pt-megakernel",
  "render-core",
@@ -5945,6 +6070,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
+ "pt-material",
  "pt-mats",
  "serde",
  "serde_json",
@@ -6415,6 +6541,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "siphasher"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
+
+[[package]]
 name = "skrifa"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6604,9 +6736,11 @@ dependencies = [
  "media-encoder",
  "num_cpus",
  "open",
+ "playa-ae",
  "pollster",
  "pt-core",
  "pt-denoise-oidn",
+ "pt-material",
  "pt-mats",
  "pt-megakernel",
  "pt-wavefront",
@@ -6619,11 +6753,25 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "squarebob-core",
+ "squarebob-widgets",
  "sysinfo",
  "trash",
  "treemap",
+ "uuid",
  "wgpu",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "squarebob-widgets"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_extras",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -6637,6 +6785,15 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "standard-surface"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "serde",
+]
 
 [[package]]
 name = "static_assertions"
@@ -7263,6 +7420,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
+name = "unicase"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7388,7 +7551,10 @@ version = "1.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
+ "getrandom 0.4.2",
+ "js-sys",
  "serde_core",
+ "wasm-bindgen",
 ]
 
 [[package]]

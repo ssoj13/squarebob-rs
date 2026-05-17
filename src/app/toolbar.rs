@@ -112,6 +112,13 @@ impl App {
                 {
                     self.show_settings = !self.show_settings;
                 }
+                if ui
+                    .add(egui::Button::new("AE").selected(self.show_ae))
+                    .on_hover_text("Toggle Attribute Editor panel")
+                    .clicked()
+                {
+                    self.show_ae = !self.show_ae;
+                }
 
                 // === RIGHT-ALIGNED: 2D/3D + CPU/GPU + Dark/Light toggle buttons ===
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

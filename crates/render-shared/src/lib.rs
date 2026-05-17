@@ -1,7 +1,7 @@
 /// Renderer abstraction: CPU (rayon) or GPU (wgpu) backends.
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
-use pt_mats::{MaterialClass, MaterialDistribution, MaterialSource, MaterializeMode, Palette};
+use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 use serde::{Deserialize, Serialize};
 
 pub mod viz;
@@ -249,15 +249,6 @@ impl GlassPreset {
         ]
     }
 
-    pub fn to_material_class(self) -> MaterialClass {
-        match self {
-            GlassPreset::Clear => MaterialClass::GlassClear,
-            GlassPreset::Blue => MaterialClass::GlassBlue,
-            GlassPreset::Green => MaterialClass::GlassGreen,
-            GlassPreset::Amber => MaterialClass::GlassAmber,
-            GlassPreset::Pink => MaterialClass::GlassPink,
-        }
-    }
 }
 
 /// Color gradient for depth (rainbow: red->orange->yellow->green->cyan->blue->magenta)
@@ -784,6 +775,21 @@ pub struct Render3DOptions {
     /// [`PhysicalCamera`] for the full field semantics.
     #[serde(default)]
     pub pt_physical_camera: PhysicalCamera,
+
+    /// Per-scene material library — the canonical source of cube
+    /// materials going forward. Cubes get a `material_index` into
+    /// `material_library.materials` (chosen by `mat_source` /
+    /// `mat_distribution`) and per-cube variance is resolved at
+    /// materialize-time via [`pt_material::Material::resolve_for_cube`].
+    ///
+    /// Co-exists today with the legacy `MaterialClass`-driven
+    /// `pt_mats::MaterialLibrary` (the field is parsed into state
+    /// and edited via the Materials section, but the active render
+    /// pipeline still consumes the legacy library). The legacy path
+    /// will be removed once `material_cache` is rewritten to consume
+    /// this field.
+    #[serde(default)]
+    pub material_library: pt_material::MaterialLibrary,
 }
 
 impl Render3DOptions {
@@ -1150,6 +1156,7 @@ impl Default for Render3DOptions {
             pt_oidn_adaptive_clamp: true,
             pt_camera_type: CameraType::Physical,
             pt_physical_camera: PhysicalCamera::default(),
+            material_library: pt_material::MaterialLibrary::default(),
         }
     }
 }

@@ -62,6 +62,7 @@ impl App {
             (dock::DockTab::FileView, self.show_outliner),
             (dock::DockTab::QuadTreeView, self.show_viewport),
             (dock::DockTab::Settings, self.show_settings),
+            (dock::DockTab::AttributeEditor, self.show_ae),
         ];
 
         let mut needs_restore = false;
@@ -91,7 +92,11 @@ impl App {
     /// drag-rearrangements without losing the remembered positions of
     /// currently-hidden tabs.
     fn snapshot_dock_layout(&mut self) {
-        if self.show_outliner && self.show_viewport && self.show_settings {
+        if self.show_outliner
+            && self.show_viewport
+            && self.show_settings
+            && self.show_ae
+        {
             self.dock_layout = self.dock_state.clone();
         }
     }

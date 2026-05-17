@@ -13,16 +13,26 @@ pub enum DockTab {
     QuadTreeView,
     Extensions,
     Settings,
+    AttributeEditor,
 }
 
-/// Default dock state with all panels visible.
+/// Default dock state — Settings visible, AE hidden so existing
+/// users don't get a surprise re-layout on first launch.
 pub fn default_dock_state() -> DockState<DockTab> {
-    build_dock_state(true)
+    build_dock_state(true, false)
+}
+
+/// Default *memory* layout — must include every known tab so
+/// `rebuild_from_layout` can restore a previously-hidden panel.
+/// Otherwise opening AE for the first time would be a no-op (the
+/// layout would have no slot to put it in).
+pub fn default_dock_layout() -> DockState<DockTab> {
+    build_dock_state(true, true)
 }
 
 /// Build dock layout with configurable right panels.
-/// Layout: FileView | QuadTreeView | [Settings]
-pub fn build_dock_state(show_settings: bool) -> DockState<DockTab> {
+/// Layout: FileView | QuadTreeView | [Settings, AttributeEditor]
+pub fn build_dock_state(show_settings: bool, show_ae: bool) -> DockState<DockTab> {
     let mut dock_state = DockState::new(vec![DockTab::FileView]);
 
     // FileView | QuadTreeView (always present)
@@ -32,10 +42,18 @@ pub fn build_dock_state(show_settings: bool) -> DockState<DockTab> {
         vec![DockTab::QuadTreeView],
     );
 
-    if show_settings {
+    let right_tabs: Vec<DockTab> = [
+        (show_settings, DockTab::Settings),
+        (show_ae, DockTab::AttributeEditor),
+    ]
+    .into_iter()
+    .filter_map(|(want, tab)| want.then_some(tab))
+    .collect();
+
+    if !right_tabs.is_empty() {
         let _ = dock_state
             .main_surface_mut()
-            .split_right(quadtree, 0.70, vec![DockTab::Settings]);
+            .split_right(quadtree, 0.70, right_tabs);
     }
 
     dock_state
@@ -93,6 +111,7 @@ impl<'a> TabViewer for DockTabs<'a> {
             DockTab::QuadTreeView => "Treemap".into(),
             DockTab::Extensions => "Extensions".into(),
             DockTab::Settings => "Settings".into(),
+            DockTab::AttributeEditor => "Attribute Editor".into(),
         }
     }
 
@@ -102,6 +121,7 @@ impl<'a> TabViewer for DockTabs<'a> {
             DockTab::QuadTreeView => self.app.ui_treemap(ui),
             DockTab::Extensions => self.app.ui_ext_stats(ui),
             DockTab::Settings => self.app.ui_settings(ui),
+            DockTab::AttributeEditor => self.app.ui_attribute_editor(ui),
         }
     }
 
@@ -120,6 +140,7 @@ impl<'a> TabViewer for DockTabs<'a> {
             DockTab::FileView => self.app.show_outliner = false,
             DockTab::QuadTreeView => self.app.show_viewport = false,
             DockTab::Settings => self.app.show_settings = false,
+            DockTab::AttributeEditor => self.app.show_ae = false,
             DockTab::Extensions => {}
         }
         OnCloseResponse::Close

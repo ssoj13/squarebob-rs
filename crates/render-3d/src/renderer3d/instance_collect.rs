@@ -9,8 +9,7 @@ use log::debug;
 
 use squarebob_core::DirEntry;
 use pt_mats::{
-    hierarchical_path_value, sample_palette, MaterialClass, MaterialDistribution, MaterializeMode,
-    Palette,
+    hierarchical_path_value, sample_palette, MaterialDistribution, MaterializeMode, Palette,
 };
 use render_shared::{
     hash_transform, name_hash, ColorMode, FolderColorMode, HoverMode, RampParams, Render3DOptions,
@@ -255,7 +254,9 @@ impl Renderer3D {
                 self.mat_cache
                     .classify_or_get(&node.path, node.size, depth, opts, false)
             } else {
-                self.material_library.material_id(MaterialClass::Default)
+                // Library slot 0 is the convention default — first
+                // material in `opts.material_library`.
+                0
             };
             // color_f is the pure color_mode result (per-instance tint).
             let color_f = base_color;

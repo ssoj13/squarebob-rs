@@ -3,6 +3,7 @@
 mod appearance;
 mod denoiser;
 mod exclusions;
+mod materials;
 mod output;
 mod ramp_widget;
 mod renderer;

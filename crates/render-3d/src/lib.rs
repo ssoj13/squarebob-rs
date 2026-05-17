@@ -21,7 +21,8 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use squarebob_core::DirEntry;
-use pt_mats::{MaterialLibrary, MaterializeMode};
+use pt_mats::MaterializeMode;
+use pt_material::StandardSurfaceParams;
 use render_core::gpu::{self, GpuContext};
 use render_shared::{
     CameraUniform, CubeHeightMode, EnvParamsUniform, HoverMode, HoverParamsUniform,
@@ -31,7 +32,9 @@ use treemap::{self, TreeMapOptions};
 
 use geometry::{CubeInstance, CUBE_INDICES, NUM_INDICES};
 use pipelines::{BindGroupLayouts, Pipelines};
-use renderer3d::material_cache::{mat_settings_hash, MatGlobalUniform, MaterialCache};
+use renderer3d::material_cache::{
+    mat_settings_hash, MatGlobalUniform, MaterialCache, MAX_MATERIAL_SLOTS,
+};
 use targets::{DynamicBindGroups, RenderTargets};
 
 const DEFAULT_SCENE_LAYOUT_SIZE: (u32, u32) = (1024, 1024);
@@ -136,9 +139,6 @@ pub struct Renderer3D {
 
     // Path tracer state (lazy init)
     pt: PtState,
-
-    // Material presets (for PT materializer)
-    material_library: MaterialLibrary,
 
     // Per-path classification cache; invalidated only on mat-settings change.
     mat_cache: MaterialCache,
@@ -258,12 +258,17 @@ impl Renderer3D {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Per-instance material library: storage buffer with full GpuMaterial array.
-        // Sized & filled from the in-memory MaterialLibrary used by both PBR and PT.
-        let material_library = MaterialLibrary::new();
+        // PBR materials storage. Sized to a generous cap so growing the
+        // user-edited `material_library` doesn't require a buffer recreate
+        // mid-session. Contents are written per-frame from
+        // `opts.material_library` in `update_uniforms` — at construction
+        // we only need the buffer to exist and bind correctly.
+        // `MAX_MATERIAL_SLOTS` (256) × 144 B = 36 KiB.
+        let initial_materials =
+            vec![StandardSurfaceParams::default(); MAX_MATERIAL_SLOTS as usize];
         let materials_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Materials Storage"),
-            contents: bytemuck::cast_slice(material_library.materials()),
+            contents: bytemuck::cast_slice(&initial_materials),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let mat_global_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -373,7 +378,6 @@ impl Renderer3D {
             mouse_pos: None,
             light_rig,
             pt: PtState::default(),
-            material_library,
             mat_cache: MaterialCache::default(),
             pt_expand_cache: None,
             cached_instances: None,
@@ -650,6 +654,35 @@ impl Renderer3D {
                 _pad: [0.0; 3],
             }),
         );
+
+        // Push the user-editable material library to the PBR storage
+        // buffer. Cheap (≤ MAX_MATERIAL_SLOTS × 144 B) and lets the
+        // editor see edits live without resizing or recreating the
+        // bind group. Variance is intentionally NOT applied here —
+        // PBR uses one library entry per material_index; per-cube
+        // variance is a PT feature (see `expand_pt_materials_and_ids`).
+        //
+        // Clamp to `MAX_MATERIAL_SLOTS` so a user-grown library
+        // cannot overflow the static buffer (wgpu would otherwise
+        // panic on a too-large write). Classification on the cache
+        // side mirrors this cap so material indices never reference
+        // truncated slots.
+        let lib = &opts.material_library;
+        let n = lib.materials.len().min(MAX_MATERIAL_SLOTS as usize);
+        if lib.materials.len() > MAX_MATERIAL_SLOTS as usize {
+            warn!(
+                "material_library has {} slots, truncating to MAX_MATERIAL_SLOTS={}",
+                lib.materials.len(),
+                MAX_MATERIAL_SLOTS
+            );
+        }
+        if n > 0 {
+            let params: Vec<StandardSurfaceParams> = lib.materials[..n]
+                .iter()
+                .map(|m| m.params)
+                .collect();
+            q.write_buffer(&self.materials_buf, 0, bytemuck::cast_slice(&params));
+        }
 
         q.write_buffer(
             &self.env_params_buf,

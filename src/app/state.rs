@@ -72,6 +72,11 @@ pub(super) struct PersistState {
     pub show_outliner: bool,
     #[serde(default = "default_true")]
     pub show_viewport: bool,
+    /// Attribute Editor panel visibility (dock tab + toolbar AE button).
+    /// Defaults to false so existing users don't get a surprise
+    /// re-layout on first launch — opt-in via toolbar.
+    #[serde(default)]
+    pub show_ae: bool,
     pub dark_mode: bool,
     pub scanner_mode: ScannerMode,
     pub filter_auto_rebuild: bool,
@@ -95,7 +100,10 @@ pub(super) struct PersistState {
     /// last-known position. Used to restore a tab to where it was when
     /// the user reopens it via the toolbar — without it the panel
     /// would snap onto the first leaf and end up in the wrong column.
-    #[serde(default = "crate::app::dock::default_dock_state")]
+    ///
+    /// Default contains every known tab so `rebuild_from_layout` can
+    /// restore initially-hidden tabs (e.g. AE) on first toolbar click.
+    #[serde(default = "crate::app::dock::default_dock_layout")]
     pub dock_layout: DockState<DockTab>,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
@@ -212,6 +220,18 @@ pub struct App {
     pub(super) show_settings: bool,
     pub(super) show_outliner: bool,
     pub(super) show_viewport: bool,
+    pub(super) show_ae: bool,
+    /// Persistent column-width / split state for the Attribute Editor
+    /// table. Session-only.
+    pub(super) materials_ae_state: playa_ae::AttributesState,
+    /// Last `.json` path used by Save / Load in the materials editor.
+    /// Lets the toolbar Save button overwrite the previous file without
+    /// re-prompting. Session-only.
+    pub(super) materials_last_save_path: Option<PathBuf>,
+    /// In-place rename target for the materials list. `Some((uuid, text))`
+    /// while the user is editing a name; the row renders a text-edit
+    /// instead of a label and commits on focus loss.
+    pub(super) materials_rename_buffer: Option<(uuid::Uuid, String)>,
     pub(super) expanded: std::collections::HashSet<PathBuf>,
     pub(super) needs_layout: bool,
     pub(super) needs_render_3d: bool,
@@ -432,6 +452,10 @@ impl Default for App {
             show_settings: true,
             show_outliner: true,
             show_viewport: true,
+            show_ae: false,
+            materials_ae_state: playa_ae::AttributesState::default(),
+            materials_last_save_path: None,
+            materials_rename_buffer: None,
             expanded: std::collections::HashSet::new(),
             needs_layout: false,
             needs_render_3d: false,
@@ -468,7 +492,7 @@ impl Default for App {
             settings_panel_font_button: default_settings_panel_font_button(),
             settings_panel_font_monospace: default_settings_panel_font_monospace(),
             dock_state: crate::app::dock::default_dock_state(),
-            dock_layout: crate::app::dock::default_dock_state(),
+            dock_layout: crate::app::dock::default_dock_layout(),
             tree_panel_width: 200.0,
             settings_panel_width: 280.0,
             cache_age: None,
