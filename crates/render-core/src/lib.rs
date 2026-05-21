@@ -197,6 +197,36 @@ pub mod gpu {
         }
     }
 
+    /// Single unified entry point for creating a GPU storage buffer.
+    ///
+    /// Behaviour:
+    /// - Applies the WebGPU 16-byte minimum (`size.max(16)`) so callers
+    ///   don't each repeat the same guard.
+    /// - Calls [`gpu_mem::note_alloc`] *before* allocation so the log
+    ///   shows the requested size even if `create_buffer` itself
+    ///   triggers an OOM panic.
+    /// - `mapped_at_creation` is always `false` — initial uploads go
+    ///   through `queue.write_buffer` per project convention.
+    ///
+    /// Use this instead of `device.create_buffer(...)` for every
+    /// storage buffer in the workspace. The helper is the single
+    /// place that knows about VRAM accounting; callers stay focused
+    /// on size + usage flags.
+    pub fn create_storage_buffer(
+        device: &wgpu::Device,
+        label: &str,
+        size: u64,
+        usage: wgpu::BufferUsages,
+    ) -> wgpu::Buffer {
+        gpu_mem::note_alloc(label, size);
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: size.max(16),
+            usage,
+            mapped_at_creation: false,
+        })
+    }
+
     /// Copy a GPU texture to encoder and submit, then read back pixels as Vec<u8>.
     /// Handles row alignment (256-byte), buffer mapping, and padding removal.
     pub fn readback_texture(

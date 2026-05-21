@@ -77,11 +77,14 @@ impl AdaptivePipeline {
     /// Builds both per-pixel buffers for `width × height`. Used by `new()` and
     /// `resize()` so the two paths cannot drift.
     fn build_buffers(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Buffer, wgpu::Buffer) {
+        use render_core::gpu::create_storage_buffer;
+        use wgpu::BufferUsages;
+        let usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         let n = (width * height) as u64;
         let var_sz = std::mem::size_of::<VarianceData>() as u64;
         (
-            create_buf(device, "adaptive_variance", n * var_sz),
-            create_buf(device, "adaptive_spp", n * 4), // u32 per pixel
+            create_storage_buffer(device, "adaptive_variance", n * var_sz, usage),
+            create_storage_buffer(device, "adaptive_spp", n * 4, usage), // u32 per pixel
         )
     }
 
@@ -141,15 +144,6 @@ fn create_pipeline(
         cache: None,
     });
     (pipeline, bgl)
-}
-
-fn create_buf(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: size.max(16),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
 
 fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {

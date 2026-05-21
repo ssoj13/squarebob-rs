@@ -10,3 +10,4 @@ bytemuck = { workspace = true }
 log = { workspace = true }
 wgpu = { workspace = true }
 gpu-mem = { workspace = true }
+render-core = { workspace = true }

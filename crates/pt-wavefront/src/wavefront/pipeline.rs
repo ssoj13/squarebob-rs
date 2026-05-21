@@ -475,15 +475,19 @@ impl WfBuffers {
         // `full_w * full_h` — these are full-image storage buffers, not
         // tile-local.
         let aov_sz = 16u64;
+        use render_core::gpu::create_storage_buffer;
+        use wgpu::BufferUsages;
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        // AOV buffers add COPY_SRC — the OIDN denoiser reads them via
+        // `copy_buffer_to_buffer` into a mappable staging buffer each
+        // frame.
+        let aov = storage | BufferUsages::COPY_SRC;
         Self {
-            ray_a: create_buf(device, "wf_ray_a", n * ray_sz),
-            ray_b: create_buf(device, "wf_ray_b", n * ray_sz),
-            hit: create_buf(device, "wf_hit", n * hit_sz),
-            // AOV buffers must add COPY_SRC — the OIDN denoiser reads them
-            // via `copy_buffer_to_buffer` into a mappable staging buffer
-            // each frame.
-            albedo: create_aov_buf(device, "wf_albedo_aov", n * aov_sz),
-            normal: create_aov_buf(device, "wf_normal_aov", n * aov_sz),
+            ray_a: create_storage_buffer(device, "wf_ray_a", n * ray_sz, storage),
+            ray_b: create_storage_buffer(device, "wf_ray_b", n * ray_sz, storage),
+            hit: create_storage_buffer(device, "wf_hit", n * hit_sz, storage),
+            albedo: create_storage_buffer(device, "wf_albedo_aov", n * aov_sz, aov),
+            normal: create_storage_buffer(device, "wf_normal_aov", n * aov_sz, aov),
         }
     }
 }
@@ -533,26 +537,6 @@ fn create_pipeline(
         cache: None,
     });
     (pipeline, bgl)
-}
-
-fn create_aov_buf(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: size.max(16),
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    })
-}
-
-fn create_buf(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: size.max(16),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
 
 fn create_tile_dims_buf(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {

@@ -98,6 +98,55 @@ pub fn vram_budget() -> Option<u64> {
     budget_from(&info)
 }
 
+/// Threshold above which a single allocation gets an `INFO`-level
+/// log line. 16 MiB is large enough to skip the small-buffer noise
+/// (uniforms, bind-group params, tile state) and small enough that
+/// every full-image AOV / scene buffer / BVH on a working renderer
+/// shows up.
+pub const ALLOC_LOG_THRESHOLD: u64 = 16 * 1024 * 1024;
+
+/// Single-allocation visibility helper for GPU buffer creation.
+///
+/// Call right before / after a `wgpu::Device::create_buffer` so the
+/// running renderer's VRAM footprint is visible without strapping a
+/// profiler to it:
+///
+/// - `bytes < ALLOC_LOG_THRESHOLD` → silent (small buffer, not worth
+///   the noise).
+/// - `bytes >= ALLOC_LOG_THRESHOLD` → `INFO`.
+/// - `bytes >= 50 %` of [`vram_budget`] → `WARN` with budget context.
+/// - `bytes > vram_budget` → `ERROR`. Allocation is *not* blocked
+///   (the caller may still fit it via on-board residency tricks);
+///   the error is for operator visibility.
+///
+/// `bytes` is the raw allocation size. The 16-byte wgpu minimum
+/// (`size.max(16)`) is the caller's responsibility — `note_alloc`
+/// only observes.
+pub fn note_alloc(label: &str, bytes: u64) {
+    if bytes < ALLOC_LOG_THRESHOLD {
+        return;
+    }
+    let mib = bytes / (1024 * 1024);
+    if let Some(budget) = vram_budget() {
+        let half = budget / 2;
+        if bytes > budget {
+            log::error!(
+                "VRAM: allocation '{label}' = {mib} MiB EXCEEDS budget {} MiB",
+                budget / (1024 * 1024)
+            );
+        } else if bytes >= half {
+            log::warn!(
+                "VRAM: allocation '{label}' = {mib} MiB (>= 50 % of {} MiB budget)",
+                budget / (1024 * 1024)
+            );
+        } else {
+            log::info!("VRAM: allocation '{label}' = {mib} MiB");
+        }
+    } else {
+        log::info!("VRAM: allocation '{label}' = {mib} MiB (budget unknown)");
+    }
+}
+
 /// Same rule as [`vram_budget`] but on a caller-supplied [`GpuMemInfo`]
 /// — useful when consumers already have a cached `query()` result.
 pub fn budget_from(info: &GpuMemInfo) -> Option<u64> {

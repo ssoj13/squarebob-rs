@@ -4,9 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Query GPU video memory (VRAM) — zero unsafe, zero dependencies"
+description = "Query GPU video memory (VRAM) and surface allocation visibility — zero unsafe."
 keywords = ["gpu", "vram", "memory", "graphics"]
 categories = ["hardware-support", "os"]
 
-# No dependencies — pure std.
+# `log` is a facade crate (no transitive deps) — needed by
+# `note_alloc` so consumers get level-tagged VRAM allocation
+# warnings through the same logger they already use.
 [dependencies]
+log = { workspace = true }
