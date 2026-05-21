@@ -818,18 +818,11 @@ pub struct Render3DOptions {
     #[serde(default = "default_color_gamut_compress_auto")]
     pub color_gamut_compress_auto: bool,
 
-    /// Per-scene material library — the canonical source of cube
-    /// materials going forward. Cubes get a `material_index` into
-    /// `material_library.materials` (chosen by `mat_source` /
-    /// `mat_distribution`) and per-cube variance is resolved at
-    /// materialize-time via [`pt_material::Material::resolve_for_cube`].
-    ///
-    /// Co-exists today with the legacy `MaterialClass`-driven
-    /// `pt_mats::MaterialLibrary` (the field is parsed into state
-    /// and edited via the Materials section, but the active render
-    /// pipeline still consumes the legacy library). The legacy path
-    /// will be removed once `material_cache` is rewritten to consume
-    /// this field.
+    /// Per-scene material library — the single source of truth for
+    /// cube materials. Cubes get a `material_index` chosen by
+    /// `mat_source` / `mat_distribution` (via `pt_mats::classify_to_index`)
+    /// and per-cube variance is resolved at materialize-time via
+    /// [`pt_material::Material::resolve_for_cube`].
     #[serde(default)]
     pub material_library: pt_material::MaterialLibrary,
 }

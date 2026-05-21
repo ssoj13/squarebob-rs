@@ -1,18 +1,16 @@
 //! Classification settings for the materialize pipeline.
 //!
-//! Phase 4 split: this crate no longer owns the material data model.
-//! `pt-material::MaterialLibrary` is the single source of truth for the
-//! per-scene material slots. `pt-mats` retains only the *classification*
-//! side — given a cube's metadata (`MaterialInput`), pick a `u32`
-//! `material_index` into a caller-supplied library. The legacy
-//! `MaterialClass` enum and its 1500-entry `MaterialLibrary` are gone.
+//! This crate is the *classification* half of the materials system:
+//! given a cube's metadata (`MaterialInput`), pick a `u32`
+//! `material_index` into a caller-supplied library. The actual
+//! per-scene material data lives in `pt-material::MaterialLibrary`.
 //!
 //! Public surface:
 //! - [`MaterialSource`] — what scalar dimension to classify on
 //!   (extension / path / size / age / depth / random).
 //! - [`MaterialDistribution`] — how the scalar maps to slot indices
 //!   (direct / quantised / gradient / spatial / bands).
-//! - [`MaterializeMode`] — legacy preset shortcut for `MaterialSource`.
+//! - [`MaterializeMode`] — preset shortcut for `MaterialSource`.
 //! - [`MaterializeSettings`] — full classification knob bundle.
 //! - [`MaterialInput`] — per-cube inputs handed to [`classify_to_index`].
 //! - [`classify_to_index`] — pick one `material_index` in `0..library_size`.

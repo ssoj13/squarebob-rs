@@ -1,11 +1,9 @@
 //! Standalone helper functions for `Renderer3D`.
 //!
-//! Post Phase-4 trim: the legacy glass-mixing helpers
-//! (`apply_glass_controls`, `mix_material`, `kelvin_to_rgb`, `lerp`,
-//! `lerp4`, `hash_f32`) belonged to the discrete-`MaterialClass`
-//! pipeline. With glass / lights now driven by per-material
-//! StandardSurface params they have no callers; deleted rather than
-//! left behind as silent dead-code warnings.
+//! The legacy glass-mixing helpers (`apply_glass_controls`,
+//! `mix_material`, `kelvin_to_rgb`, `lerp`, `lerp4`, `hash_f32`) are
+//! gone: glass / lights are now driven by per-material
+//! `StandardSurfaceParams` resolved via `pt_material`.
 
 use render_shared::Render3DOptions;
 

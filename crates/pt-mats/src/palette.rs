@@ -3,7 +3,7 @@
 //! Provides smooth color ramps suitable for visualizing ordered scalar data
 //! (file size, directory depth, age) and high-quality categorical mappings
 //! (extension, random). Output is linear RGB in [0, 1]^3 — ready to drop
-//! into `GpuMaterial.base_color_weight`.
+//! into a `StandardSurfaceParams.base_color_weight`.
 //!
 //! Polynomials for Viridis/Magma/Plasma/Turbo come from Inigo Quilez's
 //! shader approximations of matplotlib's colormaps (close enough for

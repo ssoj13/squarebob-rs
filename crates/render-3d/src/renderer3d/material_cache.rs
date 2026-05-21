@@ -1,12 +1,12 @@
 //! Per-path material classification cache and PT material expansion.
 //!
-//! Phase 4 rewrite: the legacy `pt_mats::MaterialLibrary` (1500-slot
-//! palette + `MaterialClass` enum) is gone. The single source of truth
-//! is now `pt_material::MaterialLibrary` carried inside
-//! `Render3DOptions.material_library`. Per-cube materialisation:
+//! `pt_material::MaterialLibrary` (carried inside
+//! `Render3DOptions.material_library`) is the single source of truth
+//! for cube materials. Per-cube materialisation is a two-step process:
 //!
 //! 1. `MaterialCache::classify_or_get` maps a path to a
-//!    `material_index` in `0..library.len()`.
+//!    `material_index` in `0..library.len()` via
+//!    `pt_mats::classify_to_index`.
 //! 2. [`expand_pt_materials_and_ids`] resolves *one*
 //!    `StandardSurfaceParams` per cube (`Material::resolve_for_cube`),
 //!    producing a `(materials, ids)` pair where `ids[i] == i`. This
