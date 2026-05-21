@@ -1170,7 +1170,8 @@ impl App {
             .collect();
         let mut changed = false;
         let over = &mut self.render_3d_opts.material_overrides[idx];
-        settings_grid(ui, &format!("material_override_grid_{idx}"), |ui| {
+        ui.push_id(idx, |ui| {
+        settings_grid(ui, "material_override_grid", |ui| {
             control_label(ui, "Enabled:");
             changed |= ui.checkbox(&mut over.enabled, "").changed();
             ui.end_row();
@@ -1272,6 +1273,7 @@ impl App {
             };
             ui.label(format!("{applied} / {total_cubes} cubes ({pct:.1}%)"));
             ui.end_row();
+        });
         });
         if changed {
             self.mark_pt_scene_dirty();
