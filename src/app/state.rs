@@ -238,6 +238,14 @@ pub struct App {
     /// Toggled from the footer next to All on / All off.
     /// Session-only (not persisted, not project state).
     pub(super) materials_weight_log: bool,
+    /// Persistent named-preset bank for the Material Attribute
+    /// Editor. Seeded from
+    /// [`crate::app::settings::material_presets::factory_material_preset_bank`]
+    /// on first launch, persisted to
+    /// `{config_dir}/material_presets.json` on each save / remove /
+    /// rename via [`crate::app::settings::material_presets::save_preset_bank`].
+    pub(super) materials_preset_bank: playa_ae::PresetBank,
+    pub(super) materials_preset_button_state: playa_ae::PresetButtonState,
     pub(super) expanded: std::collections::HashSet<PathBuf>,
     pub(super) needs_layout: bool,
     pub(super) needs_render_3d: bool,
@@ -471,6 +479,9 @@ impl Default for App {
             materials_last_save_path: None,
             materials_rename_buffer: None,
             materials_weight_log: false,
+            materials_preset_bank:
+                crate::app::settings::material_presets::load_preset_bank(),
+            materials_preset_button_state: playa_ae::PresetButtonState::default(),
             expanded: std::collections::HashSet::new(),
             needs_layout: false,
             needs_render_3d: false,

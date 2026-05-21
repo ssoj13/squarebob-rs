@@ -153,6 +153,20 @@ fn material_schema() -> &'static AttrSchema {
 /// as `AttrValue::Vec4` directly; scalar packs are split into
 /// individually-named `Float` entries so the AE row labels are
 /// meaningful.
+/// Schema name passed to `playa_ae::render` and used as the
+/// `PresetBank` index key.
+pub(super) fn material_schema_name() -> &'static str {
+    "Material"
+}
+
+/// Public version of [`material_to_attrs`] for the preset bank
+/// builder. Same body — just a re-export so the factory presets
+/// helper in `material_presets` can stay in its own file without
+/// re-implementing the keyed Attrs layout.
+pub(super) fn material_to_attrs_pub(p: &StandardSurfaceParams) -> Attrs {
+    material_to_attrs(p)
+}
+
 fn material_to_attrs(p: &StandardSurfaceParams) -> Attrs {
     let mut a = Attrs::with_schema(material_schema());
     // Vec4 colour-weights go through playa-ae's `"color"`-hinted
@@ -307,20 +321,57 @@ impl App {
     /// it per-frame keeps the AE in sync with external edits (Settings
     /// → Materials presets, file load, etc.) without a manual refresh.
     pub(crate) fn ui_attribute_editor(&mut self, ui: &mut egui::Ui) {
-        let lib = &mut self.render_3d_opts.material_library;
-        let Some(active_idx) = (lib.active < lib.materials.len()).then_some(lib.active) else {
-            ui.label("No active material — open Settings → Materials and add or select a slot.");
-            return;
+        // Snapshot the active material's display fields and params,
+        // then drop the library borrow so the preset button (which
+        // needs `&mut self`) can run without overlapping reborrows.
+        let snapshot = {
+            let lib = &self.render_3d_opts.material_library;
+            let Some(active_idx) = (lib.active < lib.materials.len()).then_some(lib.active)
+            else {
+                ui.label(
+                    "No active material — open Settings → Materials and add or select a slot.",
+                );
+                return;
+            };
+            let mat: &Material = &lib.materials[active_idx];
+            (active_idx, mat.name.clone(), mat.uuid, mat.params)
         };
-        let mat: &mut Material = &mut lib.materials[active_idx];
+        let (active_idx, name, uuid, params) = snapshot;
 
-        ui.label(egui::RichText::new(&mat.name).heading());
-        ui.label(egui::RichText::new(format!("uuid: {}", mat.uuid)).weak().small());
+        ui.label(egui::RichText::new(&name).heading());
+        ui.label(egui::RichText::new(format!("uuid: {uuid}")).weak().small());
         ui.separator();
 
-        let mut attrs = material_to_attrs(&mat.params);
-        if playa_ae::render(ui, &mut attrs, &mut self.materials_ae_state, "Material") {
-            attrs_to_material(&attrs, &mut mat.params);
+        let mut attrs = material_to_attrs(&params);
+
+        // Preset bar: `Presets ▾` menu button. Applies snapshots to
+        // `attrs` directly, and surfaces an event for save / rename /
+        // remove so we can persist the bank to disk.
+        let preset_event = playa_ae::presets_button(
+            ui,
+            &mut self.materials_preset_bank,
+            &mut self.materials_preset_button_state,
+            &mut attrs,
+            material_schema_name(),
+        );
+        let preset_applied =
+            matches!(preset_event, playa_ae::PresetButtonEvent::Applied { .. });
+        let bank_dirty = !matches!(preset_event, playa_ae::PresetButtonEvent::None);
+        if bank_dirty {
+            crate::app::settings::material_presets::save_preset_bank(
+                &self.materials_preset_bank,
+            );
+        }
+
+        ui.separator();
+
+        let ae_changed =
+            playa_ae::render(ui, &mut attrs, &mut self.materials_ae_state, material_schema_name());
+        if preset_applied || ae_changed {
+            let lib = &mut self.render_3d_opts.material_library;
+            if let Some(mat) = lib.materials.get_mut(active_idx) {
+                attrs_to_material(&attrs, &mut mat.params);
+            }
             self.events.emit(MaterialsChangedEvent);
         }
     }

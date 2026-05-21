@@ -21,9 +21,13 @@
 
 pub mod attr_editor;
 pub mod attrs;
+pub mod preset_widget;
+pub mod presets;
 
 pub use attr_editor::{AttributesState, render, render_with_mixed};
 pub use attrs::{
     AttrDef, AttrFlags, AttrSchema, AttrType, AttrValue, Attrs, FLAG_DAG, FLAG_DISPLAY,
     FLAG_INTERNAL, FLAG_KEYABLE, FLAG_READONLY,
 };
+pub use preset_widget::{presets_button, PresetButtonEvent, PresetButtonState};
+pub use presets::{ApplyReport, PresetBank, PresetSnapshot};
