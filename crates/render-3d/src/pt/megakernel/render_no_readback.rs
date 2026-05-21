@@ -188,7 +188,10 @@ pub(crate) fn render_path_traced_no_readback(
         spectral_samples: opts.pt_spectral_samples.max(1),
         spectral_dispersion: if opts.pt_spectral_dispersion { 1 } else { 0 },
         sampler_mode: opts.pt_sampler_mode as u32,
+        materialize_mix: opts.materialize_mix.clamp(0.0, 1.0),
+        _pad4: [0.0; 3],
     };
+    pt.set_materialize_mix(opts.materialize_mix);
 
     let cam_pos = pos.to_array();
     let cam_vp = (proj_for_vp * view_for_vp).to_cols_array_2d();

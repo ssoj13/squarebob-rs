@@ -70,7 +70,11 @@ struct Params {
     width: u32,
     height: u32,
     frame_count: u32,
-    _pad: u32,
+    // instance_color ↔ material.base_color_weight blend, mirrors
+    // camera.materialize_mix on the megakernel side. Repurposed
+    // from the previous _pad slot so RESTIR_SHADE_PARAMS_SIZE
+    // stays at 48 bytes.
+    materialize_mix: f32,
     camera_pos: vec3<f32>,
     _pad2: f32,
     tile_x: u32,
@@ -215,7 +219,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let inst = instances[hit.instance_id];
     let mat = materials[inst.material_id];
 
-    let base_color = inst.color.rgb * mat.base_color_weight.rgb;
+    // PBR-mirror albedo blend (see bvh_traverse.wgsl base_color
+    // comment). Slider drives both PT pipelines from one host knob.
+    let base_color = mix(inst.color.rgb, mat.base_color_weight.rgb, params.materialize_mix);
     let base_weight = mat.base_color_weight.a;
     let spec_color = mat.specular_color_weight.rgb;
     let spec_weight = mat.specular_color_weight.a;

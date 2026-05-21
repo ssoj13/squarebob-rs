@@ -184,6 +184,12 @@ pub struct PtCameraUniform {
     pub spectral_samples: u32,    //  4B
     pub spectral_dispersion: u32, //  4B
     pub sampler_mode: u32,        //  4B (0=PCG,1=R2; align to 16B)
+    /// PT-side counterpart of `MatGlobalUniform.materialize_mix` —
+    /// blends `instance_color` (per-cube tint from `color_mode`)
+    /// with `material.base_color_weight` for the diffuse lobe.
+    /// `0.0` → pure instance tint, `1.0` → pure library material.
+    pub materialize_mix: f32,     //  4B
+    pub _pad4: [f32; 3],          // 12B (align to 16B)
 }
 
 const WG_SIZE: u32 = 8;
@@ -320,7 +326,11 @@ struct RestirShadeParams {
     width: u32,
     height: u32,
     frame_count: u32,
-    _pad: u32,
+    /// Mirrors `PtCameraUniform.materialize_mix` for the ReSTIR
+    /// shade kernel. Was previously a `_pad: u32` slot — repurposed
+    /// in place so RESTIR_SHADE_PARAMS_SIZE stays 48 bytes and the
+    /// dynamic-offset alignment is unchanged.
+    materialize_mix: f32,
     camera_pos: [f32; 3],
     _pad2: f32,
     tile_x: u32,
@@ -375,6 +385,13 @@ pub struct PathTraceCompute {
 
     // Camera uniform
     camera_buffer: wgpu::Buffer,
+
+    /// `instance_color` ↔ `material.base_color_weight` blend factor,
+    /// shared by the megakernel (via `PtCameraUniform`) and the
+    /// ReSTIR shade kernel (via `RestirShadeParams`). Host updates
+    /// it through [`Self::set_materialize_mix`] before each
+    /// dispatch.
+    materialize_mix: f32,
 
     // Output texture (rgba32float storage)
     output_texture: wgpu::Texture,
@@ -1175,6 +1192,7 @@ impl PathTraceCompute {
             prev_view_proj: None,
             last_slice_params: None,
             camera_buffer,
+            materialize_mix: 0.0,
             output_texture,
             output_view,
             accum_buffer,
@@ -2904,13 +2922,14 @@ impl PathTraceCompute {
                     &pack_tile_slots(&[spatial_full_params]),
                 );
 
+                let mix = self.materialize_mix;
                 let shade_params: Vec<RestirShadeParams> = tiles_meta
                     .iter()
                     .map(|d| RestirShadeParams {
                         width: d.full_width,
                         height: d.full_height,
                         frame_count: frame,
-                        _pad: 0,
+                        materialize_mix: mix,
                         camera_pos: cam_pos,
                         _pad2: 0.0,
                         tile_x: d.tile_x,
@@ -4288,6 +4307,19 @@ impl PathTraceCompute {
     /// Update camera uniform.
     pub fn update_camera(&mut self, queue: &wgpu::Queue, uniform: &PtCameraUniform) {
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(uniform));
+    }
+
+    /// Update the `instance_color` ↔ `material.base_color_weight`
+    /// blend factor used by both the megakernel and the ReSTIR
+    /// shade kernel. Call once per frame from the host
+    /// (`render-3d::pt::megakernel::render*`) before
+    /// [`Self::dispatch`] / [`Self::dispatch_wavefront`].
+    ///
+    /// `mix` is clamped to `[0.0, 1.0]`; values outside that range
+    /// are accepted to make the slider's full `Slider::new(0..=1)`
+    /// range usable without callers having to clamp themselves.
+    pub fn set_materialize_mix(&mut self, mix: f32) {
+        self.materialize_mix = mix.clamp(0.0, 1.0);
     }
 
     /// Update ReSTIR gbuffer camera matrices (prev/curr view-proj).

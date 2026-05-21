@@ -61,6 +61,10 @@ struct Camera {
     spectral_samples: u32,
     spectral_dispersion: u32,
     sampler_mode: u32,
+    // PBR-mirror: instance_color ↔ material.base_color_weight blend
+    // factor. 0.0 = pure instance tint, 1.0 = pure library albedo.
+    materialize_mix: f32,
+    _pad4: vec3<f32>,
 };
 
 struct Ray {
@@ -994,7 +998,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         let inst = instances[hit.inst_idx];
         let mat = materials[inst.material_id];
-        let base_color = inst.color.rgb * mat.base_color_weight.rgb;
+        // PBR-mirror albedo blend. `materialize_mix == 0` → cube
+        // keeps its `color_mode`-derived tint (instance.color). 1 →
+        // pure library material albedo. The pre-Phase-4 multiplicative
+        // path (`inst.color * mat.base_color`) corresponded to no
+        // user control; the mix slider now drives this lane on both
+        // PBR and PT.
+        let base_color = mix(inst.color.rgb, mat.base_color_weight.rgb, camera.materialize_mix);
         let p = ray.origin + ray.dir * hit.t;
 
         // Ensure normal faces the ray
