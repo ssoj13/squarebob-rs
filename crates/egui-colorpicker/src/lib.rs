@@ -182,21 +182,6 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
     response
 }
 
-fn paint_swatch(ui: &Ui, rect: Rect, color: &[f32; 4], cfg: &PickerConfig) {
-    let d = (cfg.display_transform)([color[0], color[1], color[2]]);
-    let c32 = display_to_color32(d, color[3]);
-    let painter = ui.painter();
-    // Checkerboard under transparent colors so alpha shows up.
-    paint_checker(painter, rect, 4.0);
-    painter.rect_filled(rect, 2.0, c32);
-    painter.rect_stroke(
-        rect,
-        2.0,
-        Stroke::new(1.0, Color32::from_gray(60)),
-        egui::StrokeKind::Inside,
-    );
-}
-
 /// Compact circular swatch used inside an attribute row. Hover
 /// brightens the rim so the hit target reads clearly even when
 /// the colour itself is close to the background.
