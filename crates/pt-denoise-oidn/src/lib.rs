@@ -1,19 +1,26 @@
 //! `pt-denoise-oidn` — Intel OIDN integration for squarebob-rs path-tracer output.
 //!
-//! Runs the OIDN U-Net on the *same* wgpu device as the renderer (shared via
-//! `cubecl_wgpu::init_device(WgpuSetup{...})`). Burn-wgpu allocates its tensors
-//! on that shared device, so the only cross-system bridge is the input/output
-//! staging on the host: the Image-based API in `oidn-rs` today still expects
-//! CPU slices. Phase I in `oidn-rs` lifts this to pure GPU tensors and removes
-//! the host roundtrip; the public API here stays unchanged.
+//! **End-to-end GPU pipeline — no CPU readback.** Runs the OIDN U-Net on the
+//! *same* `wgpu::Device` as the renderer (shared via
+//! `cubecl_wgpu::init_device(WgpuSetup::Existing{...})`). Burn-wgpu allocates
+//! its tensors as wgpu buffers on that shared device, so the bridge is pure
+//! `copy_texture_to_buffer` / `copy_buffer_to_buffer` between PT outputs and
+//! Burn-allocated input tensors — never a `map_async` round-trip.
 //!
 //! Pipeline per `denoise()` call:
-//! 1. `copy_texture_to_buffer(color_tex)` + `copy_buffer_to_buffer(albedo/normal)`
-//!    into mappable staging buffers on the *same* wgpu device.
-//! 2. `device.poll(Wait)` + `map_async(Read)` → contiguous `Vec<u8>` per input.
-//! 3. Strip alpha (`Rgba32Float` → `Rgb32f` 12-byte stride) into f32 slices.
-//! 4. Build a one-shot `RtFilter<WgpuBackend>`, set inputs, commit, execute.
-//! 5. `take_output()` → `queue.write_texture(result_texture)`.
+//! 1. Allocate input tensors (`Tensor::<Wgpu, 4>::zeros`) — backed by wgpu
+//!    buffers on the shared device.
+//! 2. `copy_texture_to_buffer(color_tex → color_input_buf)` on GPU.
+//!    `copy_buffer_to_buffer(albedo_src → albedo_input_buf)` on GPU
+//!    (likewise for normal).
+//! 3. `queue.submit(encoder)` — fire-and-forget; no `poll(Wait)` here.
+//! 4. Burn-wgpu UNet inference on those tensors via cubecl compute kernels —
+//!    HWC↔CHW reshapes, firefly clamp, U-Net forward, transfer-function
+//!    decode — all emitted as wgpu compute shaders against the shared queue.
+//! 5. `copy_buffer_to_buffer(output_tensor_buf → result_texture_staging)`
+//!    then a single `queue.write_texture` to land in `result_texture` for
+//!    the next blit. The `device.poll(Wait)` at the end is for sync, not
+//!    for reading data back to CPU.
 //!
 //! The denoiser is built lazily on the first `denoise()` call with a
 //! non-`Off` mode, so app startup pays no TZA load cost.
