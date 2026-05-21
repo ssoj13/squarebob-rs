@@ -90,6 +90,11 @@ pub mod gpu {
         pub adapter: Arc<wgpu::Adapter>,
         pub device: Arc<wgpu::Device>,
         pub queue: Arc<wgpu::Queue>,
+        /// Best-effort VRAM intel queried at init via `gpu-mem`. `None`
+        /// when no platform method (nvidia-smi / registry / sysfs /
+        /// system_profiler) could determine it. Consumers should treat
+        /// missing data as "limits unknown — use conservative defaults".
+        pub gpu_info: Option<gpu_mem::GpuMemInfo>,
     }
 
     impl GpuContext {
@@ -159,12 +164,47 @@ pub mod gpu {
                     }
                 };
 
+            let gpu_info = gpu_mem::query();
+            if let Some(info) = &gpu_info {
+                let to_mib = |b: u64| b / (1024 * 1024);
+                log::info!(
+                    "GPU: {} — VRAM {} MiB total, {} MiB free ({})",
+                    info.name,
+                    to_mib(info.dedicated_vram),
+                    to_mib(info.free_vram),
+                    if info.unified { "unified" } else { "dedicated" },
+                );
+            } else {
+                log::info!("GPU: VRAM query unavailable on this platform");
+            }
+
             Some(Self {
                 instance: Arc::new(instance),
                 adapter: Arc::new(adapter),
                 device: Arc::new(device),
                 queue: Arc::new(queue),
+                gpu_info,
             })
+        }
+
+        /// Conservative VRAM budget for large transient buffers
+        /// (BVH, wavefront tile state, OIDN aux). Returns 75 % of free
+        /// VRAM clamped to `[256 MiB, dedicated_vram]`, or `None` when
+        /// `gpu-mem` could not determine VRAM size for the active
+        /// adapter (AMD on Windows, intel-only macOS, etc.).
+        pub fn vram_budget(&self) -> Option<u64> {
+            let info = self.gpu_info.as_ref()?;
+            let basis = if info.free_vram > 0 {
+                info.free_vram
+            } else {
+                info.dedicated_vram
+            };
+            if basis == 0 {
+                return None;
+            }
+            let budget = (basis / 4) * 3;
+            let min = 256 * 1024 * 1024;
+            Some(budget.clamp(min, info.dedicated_vram.max(min)))
         }
     }
 

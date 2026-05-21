@@ -9,6 +9,7 @@ license.workspace = true
 wgpu = { workspace = true }
 pollster = { workspace = true }
 log = { workspace = true }
+gpu-mem = { workspace = true }
 
 [features]
 default = []

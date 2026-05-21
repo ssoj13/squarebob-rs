@@ -176,6 +176,7 @@ uuid = { workspace = true }
 pt-denoise-oidn = { workspace = true }
 sysinfo = { workspace = true }
 egui-phosphor = { workspace = true }
+gpu-mem = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

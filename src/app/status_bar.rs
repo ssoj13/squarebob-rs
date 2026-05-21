@@ -67,7 +67,44 @@ impl App {
                         let used_kb = self.sys.used_memory();
                         self.mem_total_mb = (total_kb / 1024).max(1);
                         self.mem_used_mb = used_kb / 1024;
+                        // VRAM is shelled out via `gpu_mem::query()` (≤4 ms
+                        // for nvidia-smi, ~instant for sysfs/registry).
+                        // Sharing the 0.5 s heartbeat keeps polling cost
+                        // bounded; first poll fills the GPU name string.
+                        if let Some(info) = gpu_mem::query() {
+                            let to_mib = |b: u64| b / (1024 * 1024);
+                            self.vram_total_mb = to_mib(info.dedicated_vram);
+                            self.vram_free_mb = to_mib(info.free_vram);
+                            self.vram_unified = info.unified;
+                            if self.vram_name != info.name {
+                                self.vram_name = info.name;
+                            }
+                        }
                         self.last_mem_update = now;
+                    }
+                    if self.vram_total_mb > 0 {
+                        // Show used VRAM when `gpu-mem` could read free
+                        // VRAM (NVIDIA all platforms, AMD on Linux, Apple
+                        // Silicon). On AMD/Intel Windows / Intel macOS
+                        // only total is available — fall back to a
+                        // total-only readout. Unified-memory parts get a
+                        // small `*` so users know VRAM and RAM are the
+                        // same pool.
+                        let star = if self.vram_unified { "*" } else { "" };
+                        if self.vram_free_mb > 0 {
+                            let used = self
+                                .vram_total_mb
+                                .saturating_sub(self.vram_free_mb);
+                            ui.label(format!(
+                                "VRAM {used} / {total} MB{star}",
+                                total = self.vram_total_mb,
+                            ));
+                        } else {
+                            ui.label(format!(
+                                "VRAM {} MB{star}",
+                                self.vram_total_mb
+                            ));
+                        }
                     }
                     if self.mem_total_mb > 0 {
                         ui.label(format!(

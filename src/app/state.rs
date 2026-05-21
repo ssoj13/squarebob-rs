@@ -392,6 +392,14 @@ pub struct App {
     pub(super) mem_total_mb: u64,
     pub(super) last_mem_update: std::time::Instant,
     pub(super) sys: sysinfo::System,
+    /// VRAM stats queried via `gpu_mem::query()` on the same 0.5 s
+    /// heartbeat as `sys.refresh_memory()`. `vram_total_mb == 0`
+    /// means the platform method did not return data (AMD on Windows,
+    /// Intel macOS — fallback to a textless status entry).
+    pub(super) vram_total_mb: u64,
+    pub(super) vram_free_mb: u64,
+    pub(super) vram_name: String,
+    pub(super) vram_unified: bool,
     pub(super) wgpu_error_flag: Arc<AtomicBool>,
     pub(super) pt_auto_spp_tick: std::time::Instant,
     pub(super) show_encode_panel: bool,
@@ -561,6 +569,10 @@ impl Default for App {
             mem_total_mb: 0,
             last_mem_update: std::time::Instant::now(),
             sys: sysinfo::System::new(),
+            vram_total_mb: 0,
+            vram_free_mb: 0,
+            vram_name: String::new(),
+            vram_unified: false,
             wgpu_error_flag: Arc::new(AtomicBool::new(false)),
             pt_auto_spp_tick: std::time::Instant::now(),
             show_encode_panel: false,
