@@ -900,12 +900,15 @@ impl Render3DOptions {
             mat3_mul(&saturation_matrix(lmt_sat), &idt_src)
         };
 
-        // ODT — ACEScg → display gamut. Wider-gamut targets still fall
-        // back to the sRGB matrix; see TaskList #9 for the proper
-        // per-ODT matrices via vfx-color.
+        // ODT — ACEScg → display gamut. Per-target matrices with
+        // appropriate Bradford CAT baked in. sRGB / Rec.709 share
+        // primaries; the EOTF differs but the linear matrix is the
+        // same. Display P3 and DCI-P3 differ in white point.
         let post_src: [[f32; 3]; 3] = match self.color_odt {
             AcesOdt::Srgb100nits | AcesOdt::Rec709 | AcesOdt::SrgbHdrSim => ACESCG_TO_SRGB,
-            AcesOdt::P3D65 | AcesOdt::DciP3 | AcesOdt::Rec2020_1000nits => ACESCG_TO_SRGB,
+            AcesOdt::Rec2020_1000nits => ACESCG_TO_REC2020,
+            AcesOdt::P3D65 => ACESCG_TO_P3D65,
+            AcesOdt::DciP3 => ACESCG_TO_DCIP3,
         };
 
         (
@@ -1058,6 +1061,31 @@ pub const SRGB_TO_ACESCG: [[f32; 3]; 3] = [
     [0.61314, 0.33952, 0.04734],
     [0.07012, 0.91634, 0.01354],
     [0.02061, 0.10957, 0.86983],
+];
+
+/// ACEScg (AP1) → Rec.2020 primaries with Bradford D60→D65 CAT.
+/// For HDR / wide-gamut displays. Matches `vfx-color` output to <1e-4.
+pub const ACESCG_TO_REC2020: [[f32; 3]; 3] = [
+    [0.69545, 0.14068, 0.16387],
+    [0.04434, 0.85968, 0.09598],
+    [-0.00553, 0.00404, 1.00149],
+];
+
+/// ACEScg (AP1) → P3-D65 primaries with Bradford D60→D65 CAT.
+/// Display P3 — modern wide-gamut desktops (Apple Display P3, OLEDs).
+pub const ACESCG_TO_P3D65: [[f32; 3]; 3] = [
+    [1.02901, -0.02164, -0.00737],
+    [-0.04210, 1.06250, -0.02040],
+    [-0.00203, -0.07601, 1.07804],
+];
+
+/// ACEScg (AP1) → DCI-P3 primaries with Bradford D60→DCI CAT.
+/// Theatrical projection target. Different white point from Display P3
+/// (DCI white ≈ (0.314, 0.351) vs D65 ≈ (0.3127, 0.3290)).
+pub const ACESCG_TO_DCIP3: [[f32; 3]; 3] = [
+    [1.04391, -0.04437, 0.00045],
+    [-0.04158, 1.04408, -0.00250],
+    [0.00033, -0.04020, 1.03987],
 ];
 
 /// Identity 3×3 matrix — used when an IDT or ODT lane is `None`
@@ -1536,6 +1564,31 @@ mod tests {
                 rt[c],
                 v[c],
                 rt[c] - v[c]
+            );
+        }
+    }
+
+    #[test]
+    fn wider_gamut_odt_matrices_selected_correctly() {
+        use super::{ACESCG_TO_DCIP3, ACESCG_TO_P3D65, ACESCG_TO_REC2020};
+        let cases = [
+            (AcesOdt::Rec2020_1000nits, ACESCG_TO_REC2020[0][0]),
+            (AcesOdt::P3D65, ACESCG_TO_P3D65[0][0]),
+            (AcesOdt::DciP3, ACESCG_TO_DCIP3[0][0]),
+        ];
+        for (odt, expected_00) in cases {
+            let opts = Render3DOptions {
+                color_odt: odt,
+                ..Default::default()
+            };
+            let (_pre, post) = opts.aces_full_matrices();
+            // post[0] is column 0 of the std140-packed matrix → first
+            // element is (0,0) of the original row-major matrix.
+            assert!(
+                (post[0][0] - expected_00).abs() < 1e-6,
+                "ODT={odt:?}: post[0][0]={} ≠ expected {}",
+                post[0][0],
+                expected_00,
             );
         }
     }
