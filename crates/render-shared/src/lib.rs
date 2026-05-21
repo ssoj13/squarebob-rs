@@ -919,8 +919,26 @@ impl Render3DOptions {
             self.color_tonemap.gpu_tag(),
             self.color_exposure_ev,
             self.color_white_balance_k / 6500.0,
-            self.color_gamut_compress,
+            self.effective_gamut_compress(),
         )
+    }
+
+    /// Resolve the effective gamut-compression strength. When
+    /// `color_gamut_compress_auto` is `true`, the manual slider is
+    /// overridden by a per-ODT default — full strength for narrow-gamut
+    /// targets (sRGB / Rec.709 / sRGB HDR sim) where ACEScg → display
+    /// invariably produces out-of-gamut samples, zero otherwise. Wide-
+    /// gamut targets (Rec.2020, P3) cover most of ACEScg natively so
+    /// the compressor would just dull the image.
+    pub fn effective_gamut_compress(&self) -> f32 {
+        if self.color_gamut_compress_auto {
+            match self.color_odt {
+                AcesOdt::Srgb100nits | AcesOdt::Rec709 | AcesOdt::SrgbHdrSim => 1.0,
+                AcesOdt::Rec2020_1000nits | AcesOdt::P3D65 | AcesOdt::DciP3 => 0.0,
+            }
+        } else {
+            self.color_gamut_compress.clamp(0.0, 1.0)
+        }
     }
 
     /// Scene-linear exposure multiplier applied at display + as the
@@ -1516,6 +1534,31 @@ mod tests {
                 && pre[0][2].abs() < 1e-6,
             "pre matrix should be identity for Ap1Passthrough IDT"
         );
+    }
+
+    #[test]
+    fn effective_gamut_compress_auto_lookup() {
+        // Auto on + narrow-gamut ODT → full strength.
+        let mut opts = Render3DOptions {
+            color_gamut_compress_auto: true,
+            color_gamut_compress: 0.42, // manual override should be ignored
+            color_odt: AcesOdt::Srgb100nits,
+            ..Default::default()
+        };
+        assert_eq!(opts.effective_gamut_compress(), 1.0);
+
+        // Auto on + wide-gamut ODT → no compression.
+        opts.color_odt = AcesOdt::Rec2020_1000nits;
+        assert_eq!(opts.effective_gamut_compress(), 0.0);
+
+        // Auto off → respect manual slider, clamped to [0,1].
+        opts.color_gamut_compress_auto = false;
+        opts.color_gamut_compress = 0.42;
+        assert!((opts.effective_gamut_compress() - 0.42).abs() < 1e-6);
+        opts.color_gamut_compress = -0.5;
+        assert_eq!(opts.effective_gamut_compress(), 0.0);
+        opts.color_gamut_compress = 2.0;
+        assert_eq!(opts.effective_gamut_compress(), 1.0);
     }
 
     #[test]

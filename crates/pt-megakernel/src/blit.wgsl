@@ -59,6 +59,58 @@ fn aces_filmic(color: vec3<f32>) -> vec3<f32> {
     return saturate((color * (a * color + b)) / (color * (c * color + d) + e));
 }
 
+// ACES Reference Gamut Compression (cyan/magenta/yellow asymmetric).
+// Pulls samples that lie outside the display gamut back inside with a
+// soft rolloff in the achromatic-distance domain. Constants are the
+// canonical ACES 1.3 values published with the Reference Gamut
+// Compressor (Nick Shaw / Daniel Brylka).
+//
+// `strength` in `[0,1]` lerps from "no compression" to "full". The
+// returned RGB is still scene-referred display-gamut linear; OETF is
+// applied downstream as for any other tonemap branch.
+fn gamut_compress(rgb: vec3<f32>, strength: f32) -> vec3<f32> {
+    if (strength <= 0.0) {
+        return rgb;
+    }
+    // Per-channel distance limit and threshold. Limits are the maximum
+    // distance from achromatic the published algorithm will compress;
+    // thresholds gate where the compression starts (below threshold =
+    // untouched).
+    let limit     = vec3<f32>(1.147, 1.264, 1.312);
+    let threshold = vec3<f32>(0.815, 0.803, 0.880);
+    let power     = 1.2;
+
+    // Achromatic = max channel. If everything is negative we have no
+    // valid scaling axis — bail out.
+    let achromatic = max(max(rgb.r, rgb.g), rgb.b);
+    if (achromatic <= 0.0) {
+        return rgb;
+    }
+
+    // Per-channel distance from achromatic, normalised.
+    let dist = (vec3<f32>(achromatic) - rgb) / achromatic;
+
+    // Soft-knee compress each channel independently.
+    var compressed = dist;
+    for (var i = 0; i < 3; i = i + 1) {
+        let d = dist[i];
+        let t = threshold[i];
+        let l = limit[i];
+        if (d < t) {
+            continue;
+        }
+        // Normalised distance into the compressed region.
+        let nd = (d - t) / (l - t);
+        // Asymptotic compressor: nd/(1 + nd^power)^(1/power).
+        let denom = pow(1.0 + pow(nd, power), 1.0 / power);
+        compressed[i] = t + (l - t) * (nd / denom);
+    }
+
+    // Linear-blend toward the compressed sample by `strength`.
+    let final_dist = mix(dist, compressed, vec3<f32>(strength));
+    return achromatic - final_dist * achromatic;
+}
+
 // Reinhard `x / (1 + x)`. Soft rolloff, washed-out highlights.
 fn reinhard(color: vec3<f32>) -> vec3<f32> {
     return color / (vec3<f32>(1.0) + color);
@@ -107,9 +159,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         case 1u: { mapped = saturate(scene); }                  // Linear (curve-less)
         case 2u: { mapped = reinhard(scene); }                  // Reinhard
         case 4u: {                                              // AcesFull
-            let working = blit_params.aces_pre * scene;
-            let curved  = aces_filmic(working);
-            mapped      = saturate(blit_params.aces_post * curved);
+            let working    = blit_params.aces_pre * scene;
+            let curved     = aces_filmic(working);
+            let displayed  = blit_params.aces_post * curved;
+            // Gamut compression operates in display gamut, BEFORE
+            // saturate — clipping first would defeat the point. The
+            // strength lane is already resolved on CPU (Auto checkbox
+            // -> per-ODT default).
+            let compressed = gamut_compress(displayed, blit_params.color.w);
+            mapped         = saturate(compressed);
         }
         default: { mapped = aces_filmic(scene); }               // AcesFilmic (default)
     }
