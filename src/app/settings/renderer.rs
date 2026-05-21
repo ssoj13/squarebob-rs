@@ -2231,15 +2231,21 @@ impl App {
         let mut lens_changed = false;
 
         settings_grid(ui, "camera_phys_lens_grid", |ui| {
+            // F-stop: slider on its own row; preset chips dropped to
+            // the row below so they don't push past the panel width
+            // on narrow sidebars.
             control_label(ui, "F-stop:");
-            ui.horizontal(|ui| {
-                let resp = ui.add(
-                    egui::Slider::new(&mut pc.f_number, 0.7..=64.0)
-                        .logarithmic(true),
-                );
-                if resp.changed() {
-                    *pt_changed = true;
-                }
+            let resp = ui.add(
+                egui::Slider::new(&mut pc.f_number, 0.7..=64.0)
+                    .logarithmic(true),
+            );
+            if resp.changed() {
+                *pt_changed = true;
+            }
+            ui.end_row();
+
+            control_label(ui, "");
+            ui.horizontal_wrapped(|ui| {
                 for preset in F_NUMBER_PRESETS {
                     let selected = (pc.f_number - preset).abs() < 0.05;
                     if ui
@@ -2253,17 +2259,22 @@ impl App {
             });
             ui.end_row();
 
+            // Focal length: same row layout as F-stop above —
+            // slider on its own row, preset chips below.
             control_label(ui, "Focal length:");
-            ui.horizontal(|ui| {
-                let resp = ui.add(
-                    egui::Slider::new(&mut pc.focal_length_mm, 8.0..=400.0)
-                        .logarithmic(true)
-                        .suffix(" mm"),
-                );
-                if resp.changed() {
-                    *pt_changed = true;
-                    lens_changed = true;
-                }
+            let resp = ui.add(
+                egui::Slider::new(&mut pc.focal_length_mm, 8.0..=400.0)
+                    .logarithmic(true)
+                    .suffix(" mm"),
+            );
+            if resp.changed() {
+                *pt_changed = true;
+                lens_changed = true;
+            }
+            ui.end_row();
+
+            control_label(ui, "");
+            ui.horizontal_wrapped(|ui| {
                 for preset in FOCAL_LENGTH_PRESETS_MM {
                     let selected = (pc.focal_length_mm - preset).abs() < 0.5;
                     if ui
