@@ -459,6 +459,7 @@ pub(crate) fn render_path_traced(
     // the PT accumulator; if OIDN is active, the app blits its result texture
     // separately on top.
     pt.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
+    pt.set_blit_odt_tag(&renderer.ctx.queue, opts.color_odt.gpu_tag());
     let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
     pt.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);
     if opts.color_tonemap == render_shared::TonemapKind::AcesFull {

@@ -16,6 +16,16 @@ use crate::app::App;
 use eframe::egui;
 use render_shared::{AcesIdt, AcesLmt, AcesOdt, AcesRrt, ColorWorkingSpace, TonemapKind};
 
+/// Whether the active ODT targets an HDR display. Used to surface a
+/// surface-format warning in the status line — the eframe-managed
+/// swapchain is always Rgba8UnormSrgb today, so HDR ODTs produce
+/// mathematically correct codewords that get destroyed by the 8-bit
+/// framebuffer. Will go away once TaskList #8 (wgpu surface
+/// negotiation) lands.
+fn odt_targets_hdr(odt: AcesOdt) -> bool {
+    matches!(odt, AcesOdt::Rec2020_1000nits | AcesOdt::SrgbHdrSim)
+}
+
 impl App {
     /// Colour pipeline section. Every control here is a display-side
     /// hyper-param — none of them affect cube layout or PT samples, so
@@ -332,12 +342,31 @@ impl App {
 
                 ui.label(
                     egui::RichText::new(
-                        "ACES Full lanes (IDT / LMT / RRT / ODT) round-trip through \
-                         presets immediately; the GPU wiring lands in a later phase.",
+                        "ACES Full applies IDT → filmic RRT → ODT matrices on GPU. \
+                         LMT and IDT lanes round-trip through presets.",
                     )
                     .small()
                     .weak(),
                 );
+
+                // SDR-surface warning: the eframe swapchain is always
+                // Rgba8UnormSrgb today, so picking an HDR ODT produces
+                // correct codewords that the framebuffer cannot encode.
+                // Will be replaced with the actual surface format once
+                // TaskList #8 (wgpu HDR surface negotiation) lands.
+                if odt_targets_hdr(self.render_3d_opts.color_odt)
+                    && self.render_3d_opts.color_tonemap == TonemapKind::AcesFull
+                {
+                    ui.label(
+                        egui::RichText::new(
+                            "⚠ HDR ODT selected, but surface is SDR Rgba8UnormSrgb. \
+                             Output will clip — full HDR needs surface negotiation \
+                             (TaskList #8).",
+                        )
+                        .small()
+                        .color(egui::Color32::from_rgb(220, 180, 90)),
+                    );
+                }
             },
         );
     }

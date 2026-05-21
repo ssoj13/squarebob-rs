@@ -9,7 +9,9 @@
 // mirrors `BlitParamsGpu` on the Rust side (compute.rs).
 //
 // exposure.x = physical-camera exposure multiplier (1.0 = passthrough)
-// exposure.yzw = reserved
+// exposure.y = ACES ODT tag (`AcesOdt::gpu_tag`). 2 = Rec2020 1000nits
+//              → PQ OETF; everything else → sRGB 1/2.2 OETF.
+// exposure.zw = reserved
 //
 // color.x = tonemap kind (u32 bitcast into f32; see TonemapKind::gpu_tag):
 //             0=None, 1=Linear, 2=Reinhard, 3=AcesFilmic, 4=AcesFull.
@@ -57,6 +59,32 @@ fn aces_filmic(color: vec3<f32>) -> vec3<f32> {
     let d = 0.59;
     let e = 0.14;
     return saturate((color * (a * color + b)) / (color * (c * color + d) + e));
+}
+
+// SMPTE ST 2084 (PQ) inverse-EOTF — encodes display-linear nits to
+// the 10-bit PQ-encoded signal expected by HDR10 displays. Input is
+// nits normalised to 1.0 = 10_000 nits (so an Rec.2020 1000-nit signal
+// peaks at 0.1). Returns `[0,1]`.
+//
+// Constants are the canonical PQ parameters (m1, m2, c1, c2, c3 from
+// SMPTE ST 2084:2014, also called Rec.2100 PQ).
+//
+// Note: at C-6 first-cut, the eframe surface is always Rgba8UnormSrgb,
+// which means PQ output is wasted on an SDR framebuffer. The function
+// ships now so the math is in place when a future eframe / wgpu surface
+// negotiation lands; until then it's a no-op behind the `kind == 4 &&
+// odt == Rec2020` runtime check.
+fn pq_inverse_eotf(nits_normalised: vec3<f32>) -> vec3<f32> {
+    let m1 = 0.1593017578125;       // 1305 / 8192
+    let m2 = 78.84375;              // 2523 / 32 (× 32 = 78.84375)
+    let c1 = 0.8359375;             // 3424 / 4096
+    let c2 = 18.8515625;            // 2413 / 4096 × 32
+    let c3 = 18.6875;               // 2392 / 4096 × 32
+    let l  = max(nits_normalised, vec3<f32>(0.0));
+    let lm1 = pow(l, vec3<f32>(m1));
+    let num = c1 + c2 * lm1;
+    let den = vec3<f32>(1.0) + c3 * lm1;
+    return pow(num / den, vec3<f32>(m2));
 }
 
 // ACES Reference Gamut Compression (cyan/magenta/yellow asymmetric).
@@ -172,11 +200,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         default: { mapped = aces_filmic(scene); }               // AcesFilmic (default)
     }
 
-    // Stage 5 — sRGB OETF (linear -> display). Skip when tonemap is
-    // `None` (clamp-only debug mode); keep the legacy 1/2.2 approximation
-    // everywhere else for behavioural continuity.
+    // Stage 5 — OETF (display-linear → display-encoded). Three paths:
+    //
+    //  * `kind == 0u` (None): clamp-only debug mode, skip OETF entirely.
+    //  * ODT tag == 2 (Rec.2020 1000nits HDR): apply PQ (SMPTE ST 2084)
+    //    inverse-EOTF. PT mapped value is treated as nits / 10_000,
+    //    so an Rec.2020 1000-nit signal peaks at 0.1 before encoding.
+    //  * Otherwise: keep the legacy 1/2.2 sRGB approximation.
+    //
+    // CAVEAT: today's eframe-managed surface is always Rgba8UnormSrgb.
+    // The PQ branch produces mathematically correct HDR10 codewords,
+    // but the 8-bit framebuffer destroys them — proper HDR output needs
+    // a Rgba16Float / Rgb10a2Unorm surface plus colour-space negotiation
+    // through wgpu. That surface plumbing is the remaining open work on
+    // this pipeline (TaskList #8).
     if kind == 0u {
         return vec4<f32>(mapped, 1.0);
+    }
+    let odt_tag = u32(blit_params.exposure.y);
+    if odt_tag == 2u {
+        let pq = pq_inverse_eotf(mapped);
+        return vec4<f32>(pq, 1.0);
     }
     let display = pow(mapped, vec3<f32>(1.0 / 2.2));
     return vec4<f32>(display, 1.0);

@@ -1042,6 +1042,23 @@ impl TonemapKind {
     }
 }
 
+impl AcesOdt {
+    /// Stable numeric tag for the GPU side. Used by `blit.wgsl` to pick
+    /// the right OETF for the active ODT (sRGB 1/2.2 vs PQ for the HDR
+    /// Rec.2020 target). Values are ABI — never renumber without bumping
+    /// the shader.
+    pub const fn gpu_tag(self) -> u32 {
+        match self {
+            AcesOdt::Srgb100nits => 0,
+            AcesOdt::Rec709 => 1,
+            AcesOdt::Rec2020_1000nits => 2,
+            AcesOdt::P3D65 => 3,
+            AcesOdt::DciP3 => 4,
+            AcesOdt::SrgbHdrSim => 5,
+        }
+    }
+}
+
 /// ACEScg (AP1) → sRGB matrix with Bradford D60→D65 CAT.
 ///
 /// Row-major. Values are the canonical ACES 1.0 RRT_SAT⊗ODT_sRGB
@@ -1566,6 +1583,17 @@ mod tests {
                 rt[c] - v[c]
             );
         }
+    }
+
+    #[test]
+    fn aces_odt_gpu_tags_are_stable() {
+        // ABI-fixed tags consumed by `blit.wgsl` — never renumber.
+        assert_eq!(AcesOdt::Srgb100nits.gpu_tag(), 0);
+        assert_eq!(AcesOdt::Rec709.gpu_tag(), 1);
+        assert_eq!(AcesOdt::Rec2020_1000nits.gpu_tag(), 2);
+        assert_eq!(AcesOdt::P3D65.gpu_tag(), 3);
+        assert_eq!(AcesOdt::DciP3.gpu_tag(), 4);
+        assert_eq!(AcesOdt::SrgbHdrSim.gpu_tag(), 5);
     }
 
     #[test]

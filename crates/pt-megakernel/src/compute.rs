@@ -4576,12 +4576,22 @@ impl PathTraceCompute {
     /// [`Self::blit_with_source`]. `1.0` reproduces the legacy
     /// behaviour (manual / no physical-camera scaling).
     pub fn set_blit_exposure(&self, queue: &wgpu::Queue, exposure: f32) {
-        // Only writes the first vec4 lane (offset 0..16). Leaves the
-        // colour-pipeline lane (offset 16..32) intact — it's owned by
-        // `set_blit_color`. The two lanes are decoupled by design so a
-        // per-frame exposure update doesn't churn the colour state.
-        let params: [f32; 4] = [exposure, 0.0, 0.0, 0.0];
+        // Only writes `exposure.x` (offset 0..4) so the rest of the
+        // first vec4 (ODT tag at .y, reserved .z/.w) stays whatever
+        // `set_blit_odt_tag` last wrote. Decoupled lanes keep per-frame
+        // exposure updates from churning the colour state.
+        let params: [f32; 1] = [exposure];
         queue.write_buffer(&self.blit_uniform_buffer, 0, bytemuck::cast_slice(&params));
+    }
+
+    /// Push the ACES ODT tag into the blit uniform buffer. Drives the
+    /// OETF selection at the very end of `fs_main` — `Rec2020_1000nits`
+    /// (tag `2`) picks PQ encoding; everything else picks the sRGB 1/2.2
+    /// approximation. Writes a single float at offset 4 (`exposure.y`)
+    /// so it doesn't clobber the per-frame exposure scalar.
+    pub fn set_blit_odt_tag(&self, queue: &wgpu::Queue, odt_tag: u32) {
+        let params: [f32; 1] = [odt_tag as f32];
+        queue.write_buffer(&self.blit_uniform_buffer, 4, bytemuck::cast_slice(&params));
     }
 
     /// Push the colour-pipeline lane of the blit uniform buffer.
