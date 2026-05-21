@@ -96,11 +96,10 @@ impl App {
             }
             RenderMode::Mode3D => {
                 // If we already rendered this frame, just read back.
-                if self.last_render_frame_3d == self.frame_count {
-                    if let Some(r) = &self.renderer_3d {
+                if self.last_render_frame_3d == self.frame_count
+                    && let Some(r) = &self.renderer_3d {
                         return r.readback_render_texture();
                     }
-                }
 
                 // Otherwise, render once and read back.
                 let root_ptr = match self.display_root() {
@@ -132,11 +131,10 @@ impl App {
 /// Save RGBA pixels as PNG using image crate
 fn save_png(path: &str, w: u32, h: u32, pixels: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
     // Create parent directory if needed
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
-    }
     let img = image::RgbaImage::from_raw(w, h, pixels).ok_or("Invalid image dimensions")?;
     img.save(path)?;
     Ok(())

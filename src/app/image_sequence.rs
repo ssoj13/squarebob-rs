@@ -169,12 +169,11 @@ impl App {
         let frame_end = self.encode_dialog.frame_end.max(frame_start);
         let fps = self.encode_dialog.fps.max(1.0);
 
-        if let Some(source) = &self.encode_sequence_source {
-            if source.matches(w, h, frame_start, frame_end, fps) {
+        if let Some(source) = &self.encode_sequence_source
+            && source.matches(w, h, frame_start, frame_end, fps) {
                 self.encode_source_size = (w, h);
                 return;
             }
-        }
 
         let source = Arc::new(SquarebobEncodeSource::new(w, h, frame_start, frame_end, fps));
         let comp: Comp = source.clone();

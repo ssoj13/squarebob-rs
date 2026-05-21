@@ -136,12 +136,11 @@ pub fn load_cache(scan_path: &str) -> Option<CachedScan> {
 
 /// Delete on-disk cache for a scan path (e.g. user clears cache in settings).
 pub fn delete_cache(scan_path: &str) -> anyhow::Result<()> {
-    if let Some(cache_file) = cache_path(scan_path) {
-        if cache_file.exists() {
+    if let Some(cache_file) = cache_path(scan_path)
+        && cache_file.exists() {
             fs::remove_file(&cache_file)?;
             info!("Cache deleted: {:?}", cache_file);
         }
-    }
     Ok(())
 }
 

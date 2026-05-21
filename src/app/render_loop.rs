@@ -177,27 +177,23 @@ impl App {
         if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Backspace)) {
             self.events.emit(NavigateUpEvent);
         }
-        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
-            if let Some(sel) = self.selected_path.clone() {
+        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Delete))
+            && let Some(sel) = self.selected_path.clone() {
                 self.request_trash_confirmation(sel);
             }
-        }
-        if kb_ok && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
-            if let Some(sel) = &self.selected_path {
+        if kb_ok && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C))
+            && let Some(sel) = &self.selected_path {
                 ctx.copy_text(sel.to_string_lossy().to_string());
             }
-        }
-        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.alt) {
-            if let Some(sel) = &self.selected_path {
+        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.alt)
+            && let Some(sel) = &self.selected_path {
                 shell::shell_open(sel);
             }
-        }
         #[cfg(any(target_os = "windows", target_os = "macos"))]
-        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.alt) {
-            if let Some(sel) = &self.selected_path.clone() {
+        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.alt)
+            && let Some(sel) = &self.selected_path.clone() {
                 shell::shell_properties(sel);
             }
-        }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.show_search = !self.show_search;
         }

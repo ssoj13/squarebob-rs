@@ -122,8 +122,7 @@ impl App {
                     // produced at least one pass.
                     if self.render_3d_opts.pt_oidn_mode
                         != render_shared::OidnModeOption::Off
-                    {
-                        if let Some(ms) = self.oidn_last_latency_ms {
+                        && let Some(ms) = self.oidn_last_latency_ms {
                             let state = if self.oidn_display_is_denoised {
                                 "shown"
                             } else {
@@ -134,7 +133,6 @@ impl App {
                                 ms, self.oidn_last_interval_spp, state
                             ));
                         }
-                    }
                     if let Some(hover) = &self.hovered {
                         ui.label(format!("{} ({})", hover.path, fmt_size(hover.size)));
                     }

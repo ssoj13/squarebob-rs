@@ -468,19 +468,17 @@ pub fn parse_args() -> CliOptions {
             }
             "-b" | "--bounces" => {
                 i += 1;
-                if i < args.len() {
-                    if let Ok(n) = args[i].parse::<u32>() {
+                if i < args.len()
+                    && let Ok(n) = args[i].parse::<u32>() {
                         opts.pt_max_bounces = Some(n);
                     }
-                }
             }
             "-s" | "--samples" => {
                 i += 1;
-                if i < args.len() {
-                    if let Ok(n) = args[i].parse::<u32>() {
+                if i < args.len()
+                    && let Ok(n) = args[i].parse::<u32>() {
                         opts.pt_samples = Some(n);
                     }
-                }
             }
             "-e" | "--env-map" => {
                 opts.env_map_enabled = Some(true);

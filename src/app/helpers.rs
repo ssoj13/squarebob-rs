@@ -107,14 +107,13 @@ pub(super) fn rfd_pick_folder() -> Option<String> {
 pub(super) fn rfd_env_map_pick_start_dir(
     current: Option<&std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
-    if let Some(p) = current {
-        if p.is_file() {
+    if let Some(p) = current
+        && p.is_file() {
             let path_for_parent = p.canonicalize().unwrap_or_else(|_| p.clone());
             if let Some(parent) = path_for_parent.parent() {
                 return Some(parent.to_path_buf());
             }
         }
-    }
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))

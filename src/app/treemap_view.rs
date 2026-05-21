@@ -114,11 +114,10 @@ impl App {
             let ly_u = ly_f.max(0.0) as u32;
             // Raster mode: always feed cursor to the GPU picker so readback runs in render_3d_callback.
             // (Throttling only applied below to expensive PT ray picks and animation pick rate.)
-            if !is_pt {
-                if let Some(r) = &mut self.renderer_3d {
+            if !is_pt
+                && let Some(r) = &mut self.renderer_3d {
                     r.set_mouse_pos(lx_u, ly_u);
                 }
-            }
             // Sub-pixel threshold so slow mouse motion still issues picks when the camera is idle
             // (otherwise only camera motion forced `need_render` and hid the stale-hover effect).
             const PICK_MOVE_EPS_SQ: f32 = 0.25; // 0.5 px
@@ -152,11 +151,9 @@ impl App {
                     let mut hit_id: Option<u32> = None;
                     if let Some((origin, dir)) =
                         render_3d::Renderer3D::screen_ray(w, h, &self.orbit_camera, lx_f, ly_f)
-                    {
-                        if let Some(r) = &mut self.renderer_3d {
+                        && let Some(r) = &mut self.renderer_3d {
                             hit_id = r.pt_pick(origin, dir).map(|(id, _t)| id);
                         }
-                    }
                     let id = hit_id.unwrap_or(0);
                     if id != self.hovered_3d_id {
                         self.hovered_3d_id = id;
@@ -169,12 +166,11 @@ impl App {
                     }
                     // Update sticky_hover when file found
                     if id != 0 {
-                        if let Some(r) = &self.renderer_3d {
-                            if let Some(path) = r.path_for_id(id) {
+                        if let Some(r) = &self.renderer_3d
+                            && let Some(path) = r.path_for_id(id) {
                                 let size = r.size_for_id(id).unwrap_or(0);
                                 self.sticky_hover = Some((path.clone(), size));
                             }
-                        }
                     } else {
                         self.sticky_hover = None;
                     }
@@ -221,8 +217,7 @@ impl App {
             || resp.clicked_by(egui::PointerButton::Middle))
             && self.render_3d_opts.pt_dof_enabled
             && is_pt
-        {
-            if let Some(pos) = resp.interact_pointer_pos() {
+            && let Some(pos) = resp.interact_pointer_pos() {
                 let mut focus_dist = 1000.0;
                 if let Some((origin, dir)) = render_3d::Renderer3D::screen_ray(
                     w,
@@ -230,22 +225,20 @@ impl App {
                     &self.orbit_camera,
                     pos.x - resp.rect.left(),
                     pos.y - resp.rect.top(),
-                ) {
-                    if let Some(r) = &mut self.renderer_3d {
+                )
+                    && let Some(r) = &mut self.renderer_3d {
                         if let Some((_id, t)) = r.pt_pick(origin, dir) {
                             focus_dist = t;
                         }
                         r.reset_pt_accumulation();
                     }
-                }
                 self.render_3d_opts.pt_focus_distance = focus_dist;
                 self.needs_layout = true;
             }
-        }
 
         // LMB click: toggle selection (shift adds to selection without clearing)
-        if resp.clicked_by(egui::PointerButton::Primary) && !ctrl_held {
-            if let Some(pos) = resp.interact_pointer_pos() {
+        if resp.clicked_by(egui::PointerButton::Primary) && !ctrl_held
+            && let Some(pos) = resp.interact_pointer_pos() {
                 let picked_id: Option<u32> = if is_pt {
                     if let Some((origin, dir)) = render_3d::Renderer3D::screen_ray(
                         w,
@@ -331,11 +324,10 @@ impl App {
                     self.needs_render_3d = true;
                 }
             }
-        }
 
         // RMB click: context menu (same as 2D)
-        if resp.clicked_by(egui::PointerButton::Secondary) {
-            if let Some(pos) = resp.interact_pointer_pos() {
+        if resp.clicked_by(egui::PointerButton::Secondary)
+            && let Some(pos) = resp.interact_pointer_pos() {
                 if is_pt {
                     if let Some((origin, dir)) = render_3d::Renderer3D::screen_ray(
                         w,
@@ -343,28 +335,24 @@ impl App {
                         &self.orbit_camera,
                         pos.x - resp.rect.left(),
                         pos.y - resp.rect.top(),
-                    ) {
-                        if let Some(r) = &mut self.renderer_3d {
-                            if let Some((id, _t)) = r.pt_pick(origin, dir) {
-                                if let Some(path) = r.path_for_id(id).cloned() {
+                    )
+                        && let Some(r) = &mut self.renderer_3d
+                            && let Some((id, _t)) = r.pt_pick(origin, dir)
+                                && let Some(path) = r.path_for_id(id).cloned() {
                                     self.ctx_menu_path = Some(path);
                                     self.ctx_menu_pos = Some(pos);
                                 }
-                            }
-                        }
-                    }
                 } else {
                     let mut picked: Option<std::path::PathBuf> = None;
-                    if self.render_3d_opts.hover_mode != crate::renderer::HoverMode::None {
-                        if let Some(r) = &self.renderer_3d {
+                    if self.render_3d_opts.hover_mode != crate::renderer::HoverMode::None
+                        && let Some(r) = &self.renderer_3d {
                             // Use async hovered_id (already updated from hover)
                             let id = r.hovered_id();
                             picked = r.path_for_id(id).cloned();
                         }
-                    }
-                    if picked.is_none() {
-                        if let Some(root) = self.display_root() {
-                            if let Some(r) = &self.renderer_3d {
+                    if picked.is_none()
+                        && let Some(root) = self.display_root()
+                            && let Some(r) = &self.renderer_3d {
                                 let hit = r.cpu_pick(
                                     root,
                                     w,
@@ -377,15 +365,12 @@ impl App {
                                 );
                                 picked = hit.map(|h| h.path);
                             }
-                        }
-                    }
                     if let Some(path) = picked {
                         self.ctx_menu_path = Some(path);
                         self.ctx_menu_pos = Some(pos);
                     }
                 }
             }
-        }
 
         // LMB - orbit (inertia optional, not with shift - that's marquee select).
         //
@@ -415,8 +400,8 @@ impl App {
         // current rect, then refresh the outline overlay so the user
         // sees in real time which cubes WILL be selected if they
         // release the button now.
-        if shift_held && resp.dragged_by(egui::PointerButton::Primary) {
-            if let Some(pos) = resp.interact_pointer_pos() {
+        if shift_held && resp.dragged_by(egui::PointerButton::Primary)
+            && let Some(pos) = resp.interact_pointer_pos() {
                 if self.marquee_start.is_none() {
                     self.marquee_start = Some(pos);
                     self.marquee_baseline = Some(self.selected_3d_ids.clone());
@@ -433,7 +418,6 @@ impl App {
                 // while the drag is in progress.
                 ctx.request_repaint();
             }
-        }
         // Shift+LMB released — commit the live preview and drop the
         // baseline. Selection is already in `selected_3d_ids` from the
         // last drag frame; the explicit release-time recompute below
@@ -442,14 +426,13 @@ impl App {
         if self.marquee_start.is_some()
             && !ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary))
         {
-            if let Some(start) = self.marquee_start.take() {
-                if let Some(end) = resp.interact_pointer_pos().or(resp.hover_pos()) {
+            if let Some(start) = self.marquee_start.take()
+                && let Some(end) = resp.interact_pointer_pos().or(resp.hover_pos()) {
                     let rect = egui::Rect::from_two_pos(start, end);
                     if rect.width() > 5.0 || rect.height() > 5.0 {
                         self.commit_marquee_at(rect, &resp.rect, w, h, is_pt, shift_held, ctx);
                     }
                 }
-            }
             self.marquee_baseline = None;
         }
         // MMB - pan (inertia optional)
@@ -587,8 +570,8 @@ impl App {
 
     /// Draw marquee selection rectangle overlay
     fn draw_marquee_overlay(&self, ui: &egui::Ui, resp: &egui::Response, _ctx: &egui::Context) {
-        if let Some(start) = self.marquee_start {
-            if let Some(current) = resp.interact_pointer_pos().or(resp.hover_pos()) {
+        if let Some(start) = self.marquee_start
+            && let Some(current) = resp.interact_pointer_pos().or(resp.hover_pos()) {
                 let rect = egui::Rect::from_two_pos(start, current);
                 // Semi-transparent blue fill
                 ui.painter().rect_filled(
@@ -604,7 +587,6 @@ impl App {
                     egui::StrokeKind::Outside,
                 );
             }
-        }
     }
 
     /// Select all objects within a screen-space rectangle (marquee selection)
@@ -835,8 +817,8 @@ impl App {
         }
 
         // Double-click: zoom deeper
-        if resp.double_clicked() {
-            if let Some(pos) = resp.interact_pointer_pos() {
+        if resp.double_clicked()
+            && let Some(pos) = resp.interact_pointer_pos() {
                 let lx = pos.x - resp.rect.left();
                 let ly = pos.y - resp.rect.top();
                 let hit_path = self.hit_test_at(lx, ly).map(|h| h.path.clone());
@@ -845,11 +827,10 @@ impl App {
                     self.events.emit(SelectPathEvent(path));
                 }
             }
-        }
 
         // Left click: select
-        if resp.clicked() && !resp.double_clicked() {
-            if let Some(pos) = resp.interact_pointer_pos() {
+        if resp.clicked() && !resp.double_clicked()
+            && let Some(pos) = resp.interact_pointer_pos() {
                 let lx = pos.x - resp.rect.left();
                 let ly = pos.y - resp.rect.top();
                 let hit_path = self.hit_test_at(lx, ly).map(|h| h.path.clone());
@@ -857,11 +838,10 @@ impl App {
                     self.events.emit(SelectPathEvent(path));
                 }
             }
-        }
 
         // Right click: context menu
-        if resp.secondary_clicked() {
-            if let Some(pos) = resp.interact_pointer_pos() {
+        if resp.secondary_clicked()
+            && let Some(pos) = resp.interact_pointer_pos() {
                 let lx = pos.x - resp.rect.left();
                 let ly = pos.y - resp.rect.top();
                 let hit_path = self.hit_test_at(lx, ly).map(|h| h.path.clone());
@@ -870,7 +850,6 @@ impl App {
                     self.ctx_menu_pos = Some(pos);
                 }
             }
-        }
 
         // Mouse wheel: scroll zoom
         let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
@@ -1002,21 +981,17 @@ impl App {
         let ctx = ui.ctx().clone();
 
         // Ensure renderer exists
-        if self.renderer_3d.is_none() {
-            if let Some(gpu_ctx) = &self.gpu_context {
+        if self.renderer_3d.is_none()
+            && let Some(gpu_ctx) = &self.gpu_context {
                 let mut r3d = render_3d::Renderer3D::new(gpu_ctx.clone());
-                if self.render_3d_opts.env_map_enabled {
-                    if let Some(ref path) = self.render_3d_opts.env_map_path {
-                        if path.exists() {
-                            if let Err(e) = r3d.load_env_map(path) {
+                if self.render_3d_opts.env_map_enabled
+                    && let Some(ref path) = self.render_3d_opts.env_map_path
+                        && path.exists()
+                            && let Err(e) = r3d.load_env_map(path) {
                                 log::error!("Auto-load env map failed: {e}");
                             }
-                        }
-                    }
-                }
                 self.renderer_3d = Some(r3d);
             }
-        }
 
         // Initialize camera to view center if not set
         if self.orbit_camera.target == glam::Vec3::ZERO && w > 0 && h > 0 {
@@ -1078,12 +1053,11 @@ impl App {
                 .push_error_scope(wgpu::ErrorFilter::Validation);
 
             // When layout changes, invalidate instances and mark PT scene dirty
-            if self.needs_layout {
-                if let Some(r) = &mut self.renderer_3d {
+            if self.needs_layout
+                && let Some(r) = &mut self.renderer_3d {
                     r.invalidate_instances();
                     r.mark_pt_scene_dirty();
                 }
-            }
 
             // Get root - use raw pointer to avoid clone (safe: root lives for duration of render)
             let root_ptr = match self.display_root() {
@@ -1124,8 +1098,8 @@ impl App {
             // going through `blit_with_source` keeps hover/selection
             // overlays and tone-mapping consistent between raw and
             // denoised display.
-            if self.oidn_display_is_denoised {
-                if let (Some(r), Some(denoised_view)) = (
+            if self.oidn_display_is_denoised
+                && let (Some(r), Some(denoised_view)) = (
                     self.renderer_3d.as_ref(),
                     self.oidn_denoiser.as_ref().map(|d| d.result_view()),
                 ) {
@@ -1134,15 +1108,14 @@ impl App {
                         self.render_3d_opts.effective_exposure_multiplier(),
                     );
                 }
-            }
             self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
 
             // Register/update the PT render-target texture with egui. Same
             // texture every frame regardless of denoise state — display
             // source has been mutated in place by the (raw) blit + optional
             // denoised re-blit above.
-            if let Some(r) = &self.renderer_3d {
-                if let Some(texture) = r.get_render_texture() {
+            if let Some(r) = &self.renderer_3d
+                && let Some(texture) = r.get_render_texture() {
                     if let Some(tex_id) = self.render_texture_id {
                         if size_changed {
                             let mut renderer = render_state.renderer.write();
@@ -1162,7 +1135,6 @@ impl App {
                         ));
                     }
                 }
-            }
             #[cfg(debug_assertions)]
             if let Some(err) = pollster::block_on(error_scope.pop()) {
                 log::error!("wgpu validation error after 3D render: {:?}", err);
@@ -1281,11 +1253,10 @@ impl App {
         let ctx = ui.ctx().clone();
 
         // Lazy-init the GPU 2D renderer with the (eframe-backed) GpuContext.
-        if self.renderer_2d_gpu.is_none() {
-            if let Some(gpu_ctx) = &self.gpu_context {
+        if self.renderer_2d_gpu.is_none()
+            && let Some(gpu_ctx) = &self.gpu_context {
                 self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
             }
-        }
 
         let size_changed = self.last_render_size != (w, h);
         let need_render = self.needs_layout || size_changed || self.render_texture_id.is_none();
@@ -1308,9 +1279,9 @@ impl App {
             };
 
             // Register the texture with egui, or update the binding on resize.
-            if drew {
-                if let Some(r) = &renderer {
-                    if let Some(texture) = r.get_render_texture() {
+            if drew
+                && let Some(r) = &renderer
+                    && let Some(texture) = r.get_render_texture() {
                         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                         let mut egui_renderer = render_state.renderer.write();
                         if let Some(tex_id) = self.render_texture_id {
@@ -1330,8 +1301,6 @@ impl App {
                             ));
                         }
                     }
-                }
-            }
             self.renderer_2d_gpu = renderer;
 
             self.last_render_size = (w, h);

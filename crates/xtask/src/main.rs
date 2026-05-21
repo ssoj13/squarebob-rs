@@ -112,6 +112,20 @@ enum Commands {
         #[arg(long)]
         workspace: bool,
 
+        /// Forward `cargo clippy --fix` so clippy auto-applies its
+        /// suggested edits in-place. Pair with `--allow-dirty` /
+        /// `--allow-staged` if the working tree isn't clean.
+        #[arg(long)]
+        fix: bool,
+
+        /// Forward `cargo clippy --fix --allow-dirty`. Implies `--fix`.
+        #[arg(long = "allow-dirty")]
+        allow_dirty: bool,
+
+        /// Forward `cargo clippy --fix --allow-staged`. Implies `--fix`.
+        #[arg(long = "allow-staged")]
+        allow_staged: bool,
+
         /// Arguments passed after `--` to clippy/rustc, e.g. `-D warnings`.
         #[arg(last = true)]
         clippy_args: Vec<String>,
@@ -277,6 +291,9 @@ fn run() -> Result<()> {
             all_features,
             all_targets,
             workspace,
+            fix,
+            allow_dirty,
+            allow_staged,
             clippy_args,
         } => cmd_clippy(
             &package,
@@ -285,6 +302,9 @@ fn run() -> Result<()> {
             all_features,
             all_targets,
             workspace,
+            fix || allow_dirty || allow_staged,
+            allow_dirty,
+            allow_staged,
             &clippy_args,
         ),
         Commands::Changelog => cmd_changelog(),
@@ -389,7 +409,8 @@ fn cmd_check(
     Ok(())
 }
 
-/// Command: cargo xtask clippy [-p package ...] [--all-targets] [-- -D warnings]
+/// Command: cargo xtask clippy [-p package ...] [--all-targets] [--fix] [-- -D warnings]
+#[allow(clippy::too_many_arguments)]
 fn cmd_clippy(
     packages: &[String],
     features: Option<&str>,
@@ -397,6 +418,9 @@ fn cmd_clippy(
     all_features: bool,
     all_targets: bool,
     workspace: bool,
+    fix: bool,
+    allow_dirty: bool,
+    allow_staged: bool,
     clippy_args: &[String],
 ) -> Result<()> {
     println!("========================================");
@@ -417,6 +441,13 @@ fn cmd_clippy(
     }
     if all_targets {
         println!("Targets: all");
+    }
+    if fix {
+        println!(
+            "Auto-fix: enabled{}{}",
+            if allow_dirty { " (--allow-dirty)" } else { "" },
+            if allow_staged { " (--allow-staged)" } else { "" },
+        );
     }
     if !clippy_args.is_empty() {
         println!("Clippy args: {}", clippy_args.join(" "));
@@ -450,6 +481,18 @@ fn cmd_clippy(
     }
     if all_features {
         cmd.arg("--all-features");
+    }
+    // `--fix` and the `--allow-*` flags go to `cargo clippy` (the cargo
+    // subcommand layer), not to clippy/rustc — they must be before the
+    // `--` separator. Order doesn't matter relative to `--workspace` etc.
+    if fix {
+        cmd.arg("--fix");
+    }
+    if allow_dirty {
+        cmd.arg("--allow-dirty");
+    }
+    if allow_staged {
+        cmd.arg("--allow-staged");
     }
     if !clippy_args.is_empty() {
         cmd.arg("--");

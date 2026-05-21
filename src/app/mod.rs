@@ -73,9 +73,9 @@ impl App {
         };
 
         // Restore persisted state
-        if let Some(storage) = cc.storage {
-            if let Some(json) = storage.get_string("squarebob_state") {
-                if let Ok(s) = serde_json::from_str::<PersistState>(&json) {
+        if let Some(storage) = cc.storage
+            && let Some(json) = storage.get_string("squarebob_state")
+                && let Ok(s) = serde_json::from_str::<PersistState>(&json) {
                     app.scan_path = s.scan_path;
                     app.show_settings = s.show_settings;
                     app.show_outliner = s.show_outliner;
@@ -135,8 +135,6 @@ impl App {
                         _ => LayoutStyle::KDirStat,
                     };
                 }
-            }
-        }
 
         if !app.scan_path.is_empty() && !PathBuf::from(&app.scan_path).exists() {
             log::warn!(
@@ -267,9 +265,9 @@ impl App {
     }
 
     pub(super) fn zoom_step_toward(&mut self, target: &PathBuf) {
-        if let Some(tree) = self.active_tree() {
-            if let Some(node) = find_node_by_path(tree, target) {
-                if node.lod_expand.is_some() && !node.is_dir {
+        if let Some(tree) = self.active_tree()
+            && let Some(node) = find_node_by_path(tree, target)
+                && node.lod_expand.is_some() && !node.is_dir {
                     self.lod_expanded_paths.insert(target.clone());
                     self.rebuild_filtered_tree();
                     self.zoom_path = Some(target.clone());
@@ -277,8 +275,6 @@ impl App {
                     self.select(target.clone());
                     return;
                 }
-            }
-        }
 
         let tree = self.active_tree_cloned_path();
         let Some((_tree_path, zoom_root_path)) = tree else {
@@ -365,11 +361,10 @@ impl App {
 
     pub(super) fn display_root(&self) -> Option<&DirEntry> {
         let has_exclusions = !self.exclusions.is_empty();
-        if (self.show_free_space || has_exclusions) && self.zoom_path.is_none() {
-            if let Some(ref cached) = self.display_tree_cache {
+        if (self.show_free_space || has_exclusions) && self.zoom_path.is_none()
+            && let Some(ref cached) = self.display_tree_cache {
                 return Some(cached);
             }
-        }
 
         let base_tree = if has_exclusions || self.show_free_space {
             self.display_tree_cache.as_ref().or(self.active_tree())
@@ -551,21 +546,17 @@ impl App {
         let _ = (RenderMode::Mode3D, RenderBackend::Gpu); // explicit: paths used elsewhere
 
         if self.render_mode == RenderMode::Mode3D {
-            if self.renderer_3d.is_none() {
-                if let Some(gpu_ctx) = &self.gpu_context {
+            if self.renderer_3d.is_none()
+                && let Some(gpu_ctx) = &self.gpu_context {
                     let mut r3d = Renderer3D::new(gpu_ctx.clone());
-                    if self.render_3d_opts.env_map_enabled {
-                        if let Some(ref path) = self.render_3d_opts.env_map_path {
-                            if path.exists() {
-                                if let Err(e) = r3d.load_env_map(path) {
+                    if self.render_3d_opts.env_map_enabled
+                        && let Some(ref path) = self.render_3d_opts.env_map_path
+                            && path.exists()
+                                && let Err(e) = r3d.load_env_map(path) {
                                     log::error!("Auto-load env map failed: {e}");
                                 }
-                            }
-                        }
-                    }
                     self.renderer_3d = Some(r3d);
                 }
-            }
             if self.orbit_camera.target == glam::Vec3::ZERO {
                 let (scene_w, scene_h) = self
                     .renderer_3d
@@ -583,11 +574,9 @@ impl App {
         if self.render_mode == RenderMode::Mode2D
             && self.render_backend == RenderBackend::Gpu
             && self.renderer_2d_gpu.is_none()
-        {
-            if let Some(gpu_ctx) = &self.gpu_context {
+            && let Some(gpu_ctx) = &self.gpu_context {
                 self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
             }
-        }
 
         // CPU-readback fallback path. The zero-copy path lives in
         // `treemap_view::render_3d_callback` (Mode3D) and

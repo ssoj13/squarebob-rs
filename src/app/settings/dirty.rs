@@ -111,6 +111,12 @@ impl SettingsDirty {
     /// [`Self::preset`]. The dispatcher emits
     /// [`MaterialsChangedEvent`] which the render loop wires to a
     /// full PT scene re-upload + accumulation reset.
+    ///
+    /// Not yet called from any settings callback — `materials.rs`
+    /// still emits `MaterialsChangedEvent` directly. Kept here as a
+    /// forward-looking API surface so new material-touching settings
+    /// can opt into the typed channel without inventing their own.
+    #[allow(dead_code)]
     pub(in crate::app) fn materials(&mut self) {
         self.preset = true;
         self.materials = true;
@@ -120,6 +126,13 @@ impl SettingsDirty {
     /// [`Self::preset`]. The dispatcher calls
     /// `Renderer3D::mark_pt_accum_reset` so the next dispatch zeros
     /// `frame_count` without rebuilding the scene buffers.
+    ///
+    /// Not yet called from any settings callback — `renderer.rs`'s
+    /// `ui_pt_*` family still uses the pre-existing `pt_changed:
+    /// &mut bool` local plus an inline `reset_pt_accumulation` call.
+    /// Kept here so the upcoming migration of that channel has a
+    /// landing pad ready.
+    #[allow(dead_code)]
     pub(in crate::app) fn pt_accum(&mut self) {
         self.preset = true;
         self.pt_accum = true;
@@ -130,6 +143,11 @@ impl SettingsDirty {
     /// [`Self::pt_accum`] (and through it [`Self::preset`]). The
     /// dispatcher calls `Renderer3D::mark_pt_scene_dirty` so the next
     /// dispatch re-initialises the path tracer from scratch.
+    ///
+    /// Not yet called from any settings callback — the shading-mode
+    /// toggle and env-map enable button still call
+    /// `Renderer3D::mark_pt_scene_dirty` directly. Forward-looking.
+    #[allow(dead_code)]
     pub(in crate::app) fn pt_scene(&mut self) {
         self.preset = true;
         self.pt_accum = true;

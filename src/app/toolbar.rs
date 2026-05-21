@@ -44,12 +44,10 @@ impl App {
                     .button("...")
                     .on_hover_text("Browse for folder")
                     .clicked()
-                {
-                    if let Some(path) = rfd_pick_folder() {
+                    && let Some(path) = rfd_pick_folder() {
                         self.scan_path = path;
                         start_scan = true;
                     }
-                }
 
                 ui.separator();
 

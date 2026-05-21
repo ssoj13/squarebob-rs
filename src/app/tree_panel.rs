@@ -198,8 +198,8 @@ impl App {
         // `row_stride = row_height_sans_spacing + item_spacing.y` (see egui scroll_area.rs).
         //
         // Use laid-out content height for clamp (matches egui:`max_offset = content_size - inner`).
-        if need_scroll {
-            if let Some(idx) = selected_idx {
+        if need_scroll
+            && let Some(idx) = selected_idx {
                 let content_h = output.content_size.y;
                 let view_h = output.inner_rect.height().max(row_h_sans);
                 let max_offset = (content_h - view_h).max(0.0);
@@ -209,7 +209,6 @@ impl App {
                 output.state.store(ui.ctx(), output.id);
                 ui.ctx().request_repaint();
             }
-        }
         if let Some(path) = toggle_expand {
             if self.expanded.contains(&path) {
                 self.expanded.remove(&path);
@@ -219,12 +218,11 @@ impl App {
         }
 
         // Handle expand/collapse all
-        if expand_all {
-            if let Some(ptr) = root_ptr {
+        if expand_all
+            && let Some(ptr) = root_ptr {
                 let root = unsafe { &*ptr };
                 collect_all_dir_paths(root, &mut self.expanded);
             }
-        }
         if collapse_all {
             self.expanded.clear();
             if let Some(ptr) = root_ptr {
@@ -256,11 +254,10 @@ fn flatten_tree<'a>(
     out: &mut Vec<FlatNode<'a>>,
 ) {
     // Skip filtered nodes
-    if let Some(cache) = filter_cache {
-        if !cache.contains(&node.path) {
+    if let Some(cache) = filter_cache
+        && !cache.contains(&node.path) {
             return;
         }
-    }
 
     let is_expanded = expanded.contains(&node.path);
     let has_children = node.is_dir && !node.children.is_empty();

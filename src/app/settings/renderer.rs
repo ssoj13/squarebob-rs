@@ -1097,11 +1097,10 @@ impl App {
                         // cubes above.
                         let mut pt_changed = false;
                         self.ui_pt_glass(ui, &mut pt_changed);
-                        if pt_changed {
-                            if let Some(r) = &mut self.renderer_3d {
+                        if pt_changed
+                            && let Some(r) = &mut self.renderer_3d {
                                 r.reset_pt_accumulation();
                             }
-                        }
                     });
                     compact_section(ui, "Lights", false, header_h, |ui| {
                         self.ui_material_light_cubes(ui, total_cubes);
@@ -1140,11 +1139,10 @@ impl App {
             |ui| self.ui_pt_advanced(ui, &mut pt_changed),
         );
 
-        if pt_changed {
-            if let Some(r) = &mut self.renderer_3d {
+        if pt_changed
+            && let Some(r) = &mut self.renderer_3d {
                 r.reset_pt_accumulation();
             }
-        }
     }
 
     fn mark_pt_scene_dirty(&mut self) {
@@ -1339,11 +1337,10 @@ impl App {
             |ui| {
                 let mut pt_changed = false;
                 self.ui_pt_sampling(ui, &mut pt_changed);
-                if pt_changed {
-                    if let Some(r) = &mut self.renderer_3d {
+                if pt_changed
+                    && let Some(r) = &mut self.renderer_3d {
                         r.reset_pt_accumulation();
                     }
-                }
             },
         );
     }
@@ -1973,15 +1970,12 @@ impl App {
                                 .changed()
                             {
                                 if let Some(r) = &mut self.renderer_3d {
-                                    if self.render_3d_opts.env_map_enabled {
-                                        if let Some(ref path) = self.render_3d_opts.env_map_path {
-                                            if path.exists() {
-                                                if let Err(e) = r.load_env_map(path) {
+                                    if self.render_3d_opts.env_map_enabled
+                                        && let Some(ref path) = self.render_3d_opts.env_map_path
+                                            && path.exists()
+                                                && let Err(e) = r.load_env_map(path) {
                                                     log::error!("Env map: {e}");
                                                 }
-                                            }
-                                        }
-                                    }
                                     r.mark_pt_env_dirty();
                                     r.reset_pt_accumulation();
                                 }
@@ -1999,15 +1993,14 @@ impl App {
                                 ) {
                                     dlg = dlg.set_directory(dir);
                                 }
-                                if let Some(path) = dlg.pick_file() {
-                                    if let Some(r) = &mut self.renderer_3d {
+                                if let Some(path) = dlg.pick_file()
+                                    && let Some(r) = &mut self.renderer_3d {
                                         if let Err(e) = r.load_env_map(&path) {
                                             log::error!("Env map: {e}");
                                         } else {
                                             self.render_3d_opts.env_map_path = Some(path);
                                         }
                                     }
-                                }
                             }
                         });
                         ui.end_row();
@@ -2494,10 +2487,9 @@ impl App {
             },
         );
 
-        if pt_changed {
-            if let Some(r) = &mut self.renderer_3d {
+        if pt_changed
+            && let Some(r) = &mut self.renderer_3d {
                 r.reset_pt_accumulation();
             }
-        }
     }
 }

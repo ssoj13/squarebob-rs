@@ -123,11 +123,10 @@ fn adjacent_presets_path() -> Option<PathBuf> {
 /// Adjacent-binary path wins if the file already exists (portable mode);
 /// otherwise we use the per-user path.
 fn resolved_presets_path() -> Option<PathBuf> {
-    if let Some(adj) = adjacent_presets_path() {
-        if adj.is_file() {
+    if let Some(adj) = adjacent_presets_path()
+        && adj.is_file() {
             return Some(adj);
         }
-    }
     user_presets_path()
 }
 
