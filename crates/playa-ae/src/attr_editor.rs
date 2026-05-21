@@ -303,31 +303,56 @@ fn render_value_editor(
             }
             // Vec3/Vec4 honour an optional `"color"` hint in
             // ui_options — when present, the row gets a Nuke-style
-            // swatch button on the right that opens the
+            // colour chip on the right that opens the
             // `egui-colorpicker` popup. Without the hint, the
             // fallback is XYZ(W) drag values, since not every Vec3
             // is a color (could be a position, normal, etc.).
+            //
+            // Layout is compact on purpose: single-letter prefix,
+            // fixed 44-pixel-wide DragValues, tight `item_spacing`.
+            // The picker chip sits flush to the right of the
+            // numeric cells so the row fits in narrow side
+            // panels.
             AttrValue::Vec3(arr) => {
                 let is_color = ui_options.contains(&"color");
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     let (l0, l1, l2) = if is_color {
-                        ("R:", "G:", "B:")
+                        ("R", "G", "B")
                     } else {
-                        ("X:", "Y:", "Z:")
+                        ("X", "Y", "Z")
                     };
                     let speed: f64 = if is_color { 0.005 } else { 0.1 };
+                    let drag_w = 44.0;
                     ui.label(l0);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[0]).speed(speed))
+                        .add(
+                            egui::DragValue::new(&mut arr[0])
+                                .speed(speed)
+                                .max_decimals(3)
+                                .min_decimals(2)
+                                .fixed_decimals(3)
+                                .custom_formatter(|n, _| format!("{n:.3}"))
+                                .speed(speed),
+                        )
                         .changed();
                     ui.label(l1);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[1]).speed(speed))
+                        .add(
+                            egui::DragValue::new(&mut arr[1])
+                                .speed(speed)
+                                .custom_formatter(|n, _| format!("{n:.3}")),
+                        )
                         .changed();
                     ui.label(l2);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[2]).speed(speed))
+                        .add(
+                            egui::DragValue::new(&mut arr[2])
+                                .speed(speed)
+                                .custom_formatter(|n, _| format!("{n:.3}")),
+                        )
                         .changed();
+                    let _ = drag_w;
                     if is_color {
                         let mut rgba = [arr[0], arr[1], arr[2], 1.0];
                         let before = rgba;
@@ -346,27 +371,44 @@ fn render_value_editor(
             AttrValue::Vec4(arr) => {
                 let is_color = ui_options.contains(&"color");
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     let (l0, l1, l2, l3) = if is_color {
-                        ("R:", "G:", "B:", "A:")
+                        ("R", "G", "B", "A")
                     } else {
-                        ("X:", "Y:", "Z:", "W:")
+                        ("X", "Y", "Z", "W")
                     };
                     let speed: f64 = if is_color { 0.005 } else { 0.1 };
                     ui.label(l0);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[0]).speed(speed))
+                        .add(
+                            egui::DragValue::new(&mut arr[0])
+                                .speed(speed)
+                                .custom_formatter(|n, _| format!("{n:.3}")),
+                        )
                         .changed();
                     ui.label(l1);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[1]).speed(speed))
+                        .add(
+                            egui::DragValue::new(&mut arr[1])
+                                .speed(speed)
+                                .custom_formatter(|n, _| format!("{n:.3}")),
+                        )
                         .changed();
                     ui.label(l2);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[2]).speed(speed))
+                        .add(
+                            egui::DragValue::new(&mut arr[2])
+                                .speed(speed)
+                                .custom_formatter(|n, _| format!("{n:.3}")),
+                        )
                         .changed();
                     ui.label(l3);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[3]).speed(speed))
+                        .add(
+                            egui::DragValue::new(&mut arr[3])
+                                .speed(speed)
+                                .custom_formatter(|n, _| format!("{n:.3}")),
+                        )
                         .changed();
                     if is_color {
                         let before = *arr;

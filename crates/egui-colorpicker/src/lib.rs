@@ -144,10 +144,14 @@ pub fn color_button(ui: &mut Ui, color: &mut [f32; 4]) -> Response {
 /// taken by mutable reference so the eyedropper callback can be
 /// invoked from inside the popup without owning the entire config.
 pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConfig) -> Response {
-    let swatch_size = Vec2::new(28.0, 18.0);
+    // Nuke-style tiny chip: a round colour pill that sits next to
+    // the R/G/B/A DragValues without stealing column width. Clicks
+    // open the full picker popup.
+    let size = ui.spacing().interact_size.y.max(14.0);
+    let swatch_size = Vec2::new(size, size);
     let (rect, response) = ui.allocate_exact_size(swatch_size, Sense::click());
 
-    paint_swatch(ui, rect, color, cfg);
+    paint_swatch_icon(ui, rect, color, cfg, response.hovered());
 
     let popup_id = response.id.with("colorpicker_popup");
     if response.clicked() {
@@ -191,6 +195,35 @@ fn paint_swatch(ui: &Ui, rect: Rect, color: &[f32; 4], cfg: &PickerConfig) {
         Stroke::new(1.0, Color32::from_gray(60)),
         egui::StrokeKind::Inside,
     );
+}
+
+/// Compact circular swatch used inside an attribute row. Hover
+/// brightens the rim so the hit target reads clearly even when
+/// the colour itself is close to the background.
+fn paint_swatch_icon(
+    ui: &Ui,
+    rect: Rect,
+    color: &[f32; 4],
+    cfg: &PickerConfig,
+    hovered: bool,
+) {
+    let d = (cfg.display_transform)([color[0], color[1], color[2]]);
+    let c32 = display_to_color32(d, color[3]);
+    let painter = ui.painter();
+    let radius = (rect.width().min(rect.height()) * 0.5) - 0.5;
+    let center = rect.center();
+    // Tiny checkerboard for alpha visibility — drawn as a clipped
+    // square that the circle stroke covers on the edge.
+    let cell = (radius * 0.6).max(2.0);
+    let chk_rect = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
+    paint_checker(painter, chk_rect, cell);
+    painter.circle_filled(center, radius, c32);
+    let rim = if hovered {
+        Color32::from_gray(200)
+    } else {
+        Color32::from_gray(80)
+    };
+    painter.circle_stroke(center, radius, Stroke::new(1.0, rim));
 }
 
 fn display_to_color32(d: [f32; 3], a: f32) -> Color32 {
