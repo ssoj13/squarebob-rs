@@ -349,18 +349,15 @@ pub(crate) fn expand_pt_materials_and_ids(
             0
         };
         let lib_idx = lib_idx.min(lib_size.saturating_sub(1));
-        let resolved: StandardSurfaceParams = if lib_size > 0 {
+        // `GpuMaterial` is a type alias for `StandardSurfaceParams`
+        // (see `pt-core/src/bvh.rs`), so `resolve_for_cube` lands the
+        // value directly into the GPU buffer without a cast.
+        let resolved: GpuMaterial = if lib_size > 0 {
             library.materials[lib_idx].resolve_for_cube(inst.object_id as u64)
         } else {
             StandardSurfaceParams::default()
         };
-        // `StandardSurfaceParams` and `GpuMaterial` are `#[repr(C)]` with
-        // matching field order and identical size (144 bytes / 9 × vec4).
-        // `bytemuck::cast` is the safe equivalent of a transmute: it
-        // compiles to a no-op and panics at build-time if layouts ever
-        // diverge.
-        let gpu: GpuMaterial = bytemuck::cast(resolved);
-        materials.push(gpu);
+        materials.push(resolved);
         material_ids.push(materials.len() as u32 - 1);
     }
     (materials, material_ids)

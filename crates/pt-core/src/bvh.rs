@@ -93,30 +93,12 @@ pub struct GpuTriangle {
 
 /// Standard Surface material params for GPU (144 bytes).
 ///
-/// Matches StandardSurfaceParams layout from the rasterizer.
-/// All colors use vec4 packing: rgb = color, a = weight.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct GpuMaterial {
-    /// Base color (rgb) and weight (a)
-    pub base_color_weight: [f32; 4],
-    /// Specular color (rgb) and weight (a)
-    pub specular_color_weight: [f32; 4],
-    /// Transmission color (rgb) and weight (a)
-    pub transmission_color_weight: [f32; 4],
-    /// Subsurface color (rgb) and weight (a)
-    pub subsurface_color_weight: [f32; 4],
-    /// Coat color (rgb) and weight (a)
-    pub coat_color_weight: [f32; 4],
-    /// Emission color (rgb) and weight (a)
-    pub emission_color_weight: [f32; 4],
-    /// Opacity (rgb), a unused
-    pub opacity: [f32; 4],
-    /// x=diffuse_roughness, y=metalness, z=specular_roughness, w=specular_IOR
-    pub params1: [f32; 4],
-    /// x=specular_anisotropy, y=coat_roughness, z=coat_IOR, w=visible (0=hidden, 1=visible)
-    pub params2: [f32; 4],
-}
+/// Identical to [`standard_surface::StandardSurfaceParams`] —
+/// `pt-core` re-exports the type instead of defining its own clone so
+/// the path tracer, the rasterizer raster materials, and the
+/// `pt-material` library all share one definition. WGSL on the GPU
+/// side sees nine `vec4<f32>` regardless of the type used here.
+pub use standard_surface::StandardSurfaceParams as GpuMaterial;
 
 // ---- Instance-based path tracing (ray-box intersection) ----
 
