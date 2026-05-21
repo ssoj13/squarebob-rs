@@ -63,8 +63,19 @@ struct Camera {
     sampler_mode: u32,
     // PBR-mirror: instance_color ↔ material.base_color_weight blend
     // factor. 0.0 = pure instance tint, 1.0 = pure library albedo.
+    //
+    // The three trailing pads are scalar `f32` (not a `vec3<f32>`)
+    // on purpose: WGSL `vec3` has 16-byte alignment inside a
+    // struct, which would force the host-side `PtCameraUniform`
+    // (Rust `[f32; 3]`, 4-byte aligned) to grow with a hidden 12
+    // bytes of padding before it — and then to 256 bytes total to
+    // satisfy the struct's 16-byte tail rule. Three scalar floats
+    // keep WGSL and Rust at the same 240-byte size and the bind
+    // group size check happy.
     materialize_mix: f32,
-    _pad4: vec3<f32>,
+    _pad4a: f32,
+    _pad4b: f32,
+    _pad4c: f32,
 };
 
 struct Ray {
