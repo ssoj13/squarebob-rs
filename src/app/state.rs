@@ -232,6 +232,12 @@ pub struct App {
     /// while the user is editing a name; the row renders a text-edit
     /// instead of a label and commits on focus loss.
     pub(super) materials_rename_buffer: Option<(uuid::Uuid, String)>,
+    /// When true, the per-material weight sliders use a
+    /// logarithmic scale. Useful when most weights cluster near
+    /// zero — linear sliders make them indistinguishable.
+    /// Toggled from the footer next to All on / All off.
+    /// Session-only (not persisted, not project state).
+    pub(super) materials_weight_log: bool,
     pub(super) expanded: std::collections::HashSet<PathBuf>,
     pub(super) needs_layout: bool,
     pub(super) needs_render_3d: bool,
@@ -464,6 +470,7 @@ impl Default for App {
             materials_ae_state: playa_ae::AttributesState::default(),
             materials_last_save_path: None,
             materials_rename_buffer: None,
+            materials_weight_log: false,
             expanded: std::collections::HashSet::new(),
             needs_layout: false,
             needs_render_3d: false,

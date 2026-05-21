@@ -253,14 +253,16 @@ pub(super) fn materials_browser_section(app: &mut App, ui: &mut egui::Ui) {
 /// vector.
 fn materials_footer(ui: &mut egui::Ui, app: &mut App) {
     let mut library_dirty = false;
-    {
-        let lib = &mut app.render_3d_opts.material_library;
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        {
+            let lib = &mut app.render_3d_opts.material_library;
             ui.add_enabled_ui(!lib.is_empty(), |ui| {
                 if ui
                     .button("All on")
-                    .on_hover_text("Set every material weight to 1.0 (include all in distribution)")
+                    .on_hover_text(
+                        "Set every material weight to 1.0 (include all in distribution)",
+                    )
                     .clicked()
                 {
                     for mat in &mut lib.materials {
@@ -270,7 +272,9 @@ fn materials_footer(ui: &mut egui::Ui, app: &mut App) {
                 }
                 if ui
                     .button("All off")
-                    .on_hover_text("Set every material weight to 0.0 (exclude all from distribution)")
+                    .on_hover_text(
+                        "Set every material weight to 0.0 (exclude all from distribution)",
+                    )
                     .clicked()
                 {
                     for mat in &mut lib.materials {
@@ -279,8 +283,14 @@ fn materials_footer(ui: &mut egui::Ui, app: &mut App) {
                     library_dirty = true;
                 }
             });
-        });
-    }
+        }
+        ui.separator();
+        ui.checkbox(&mut app.materials_weight_log, "Log").on_hover_text(
+            "Switch the weight column to a logarithmic slider. Useful when most \
+             weights cluster near zero — linear sliders flatten them into one \
+             indistinguishable group.",
+        );
+    });
     if library_dirty {
         app.events.emit(MaterialsChangedEvent);
     }
@@ -494,16 +504,34 @@ fn materials_list(ui: &mut egui::Ui, app: &mut App) {
                 });
 
                 // Col 3: weight slider, fixed width via add_sized.
+                // App-level `materials_weight_log` toggles between
+                // linear and logarithmic; weights stay in 0..=10
+                // either way. Log mode needs a non-zero minimum
+                // because `SliderClamping::Always` + log + min=0
+                // collapses the bar; we clamp to 1e-3 only for the
+                // slider widget and round back when persisting so a
+                // user dragging to the left end still reads as
+                // exactly zero.
                 let mut w = mat.weight;
-                let resp = ui.add_sized(
-                    [slider_w, 18.0],
-                    egui::Slider::new(&mut w, 0.0..=10.0)
-                        .text("")
-                        .clamping(egui::SliderClamping::Always)
-                        .show_value(true),
-                );
+                let log = app.materials_weight_log;
+                let slider_min = if log { 1.0e-3 } else { 0.0 };
+                let mut slider = egui::Slider::new(&mut w, slider_min..=10.0)
+                    .text("")
+                    .clamping(egui::SliderClamping::Always)
+                    .show_value(true);
+                if log {
+                    slider = slider.logarithmic(true);
+                }
+                let resp = ui.add_sized([slider_w, 18.0], slider);
                 if resp.changed() {
-                    to_set_weight = Some((mat.uuid, w));
+                    // Treat anything ≤ the log-mode floor as 0 so
+                    // disabling a slot still reads as exact zero.
+                    let final_w = if log && w <= slider_min * 1.001 {
+                        0.0
+                    } else {
+                        w
+                    };
+                    to_set_weight = Some((mat.uuid, final_w));
                 }
                 resp.on_hover_text(
                     "Distribution weight — slots normalise to sum 1.0; 0 excludes this slot",
