@@ -85,12 +85,12 @@ impl PathGuidePipeline {
             max_nodes,
             (size as f64 / (1024.0 * 1024.0))
         );
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pathguide_svo"),
-            size: size.min(128 * 1024 * 1024),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        render_core::gpu::make_buffer(
+            device,
+            "pathguide_svo",
+            size.min(128 * 1024 * 1024),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        )
     }
 
     pub fn svo_buffer(&self) -> &wgpu::Buffer {

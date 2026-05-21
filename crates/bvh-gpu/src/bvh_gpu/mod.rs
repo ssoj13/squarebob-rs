@@ -289,24 +289,26 @@ impl GpuBvhBuilder {
                 cache: None,
             });
 
-        let bounds_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_bounds"),
-            size: std::mem::size_of::<SceneBounds>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let build_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_build_params"),
-            size: std::mem::size_of::<BuildParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let radix_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bvh_radix_params"),
-            size: std::mem::size_of::<RadixParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        use render_core::gpu::make_buffer;
+        let uniform = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
+        let bounds_buffer = make_buffer(
+            device,
+            "bvh_bounds",
+            std::mem::size_of::<SceneBounds>() as u64,
+            uniform,
+        );
+        let build_params_buffer = make_buffer(
+            device,
+            "bvh_build_params",
+            std::mem::size_of::<BuildParams>() as u64,
+            uniform,
+        );
+        let radix_params_buffer = make_buffer(
+            device,
+            "bvh_radix_params",
+            std::mem::size_of::<RadixParams>() as u64,
+            uniform,
+        );
 
         Self {
             morton_pipeline,
@@ -348,14 +350,14 @@ impl GpuBvhBuilder {
             .map(|b| b.size() < size)
             .unwrap_or(true);
         if need_new {
-            self.output_nodes_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("bvh_output_nodes"),
-                size: size.max(std::mem::size_of::<BvhNode>() as u64),
-                usage: wgpu::BufferUsages::STORAGE
+            self.output_nodes_buf = Some(render_core::gpu::make_buffer(
+                device,
+                "bvh_output_nodes",
+                size.max(std::mem::size_of::<BvhNode>() as u64),
+                wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::COPY_SRC
                     | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+            ));
         }
     }
 
@@ -943,12 +945,12 @@ impl GpuBvhBuilder {
         // Build the whole bundle atomically — never expose a half-initialised
         // state where some slots are Some and others None.
         let make_buf = |label: &str, size: u64, extra_usage: wgpu::BufferUsages| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: size.max(16),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra_usage,
-                mapped_at_creation: false,
-            })
+            render_core::gpu::make_buffer(
+                device,
+                label,
+                size,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | extra_usage,
+            )
         };
         self.bufs = Some(BvhBuffers {
             aabb: make_buf("bvh_aabb_buffer", aabb_size, wgpu::BufferUsages::empty()),
@@ -1433,12 +1435,12 @@ fn read_buffer_vec<T: Pod>(
         return Vec::new();
     }
     let size = (count * std::mem::size_of::<T>()) as u64;
-    let staging = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("bvh_readback"),
+    let staging = render_core::gpu::make_buffer(
+        device,
+        "bvh_readback",
         size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
+        wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+    );
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("bvh_readback_encoder"),
     });

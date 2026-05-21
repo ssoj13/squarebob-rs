@@ -226,19 +226,19 @@ impl ReSTIRBuffers {
     /// Allocates the full frame-buffer set for `width × height`. Used by
     /// `ReSTIRPipeline::new` and `resize` so allocation lives in one place.
     fn build(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        use render_core::gpu::create_storage_buffer;
+        use render_core::gpu::make_buffer;
         use wgpu::BufferUsages;
         let usage = BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         let n = (width * height) as u64;
         let res_sz = Reservoir::SIZE as u64;
         let mv_sz = std::mem::size_of::<MotionVector>() as u64;
         Self {
-            reservoir_a: create_storage_buffer(device, "restir_res_a", n * res_sz, usage),
-            reservoir_b: create_storage_buffer(device, "restir_res_b", n * res_sz, usage),
-            motion: create_storage_buffer(device, "restir_motion", n * mv_sz, usage),
-            gbuf_depth: create_storage_buffer(device, "restir_depth", n * 4, usage),
-            gbuf_normal: create_storage_buffer(device, "restir_normal", n * 16, usage),
-            gbuf_instance_id: create_storage_buffer(device, "restir_instance_id", n * 4, usage),
+            reservoir_a: make_buffer(device, "restir_res_a", n * res_sz, usage),
+            reservoir_b: make_buffer(device, "restir_res_b", n * res_sz, usage),
+            motion: make_buffer(device, "restir_motion", n * mv_sz, usage),
+            gbuf_depth: make_buffer(device, "restir_depth", n * 4, usage),
+            gbuf_normal: make_buffer(device, "restir_normal", n * 16, usage),
+            gbuf_instance_id: make_buffer(device, "restir_instance_id", n * 4, usage),
         }
     }
 }

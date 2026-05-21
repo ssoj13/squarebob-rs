@@ -150,13 +150,12 @@ impl Renderer3D {
             if need_realloc {
                 let new_capacity = (instances.len() * 5 / 4).max(1024);
                 let new_size = new_capacity * std::mem::size_of::<CubeInstance>();
-                self.instance_buffer =
-                    Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Instance VBO"),
-                        size: new_size as u64,
-                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    }));
+                self.instance_buffer = Some(render_core::gpu::make_buffer(
+                    &self.ctx.device,
+                    "Instance VBO",
+                    new_size as u64,
+                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                ));
                 self.instance_buffer_capacity = new_capacity;
             }
             if let Some(ref buf) = self.instance_buffer {

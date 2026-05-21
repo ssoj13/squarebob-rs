@@ -197,7 +197,7 @@ pub mod gpu {
         }
     }
 
-    /// Single unified entry point for creating a GPU storage buffer.
+    /// Single unified entry point for creating a GPU buffer.
     ///
     /// Behaviour:
     /// - Applies the WebGPU 16-byte minimum (`size.max(16)`) so callers
@@ -205,14 +205,15 @@ pub mod gpu {
     /// - Calls [`gpu_mem::note_alloc`] *before* allocation so the log
     ///   shows the requested size even if `create_buffer` itself
     ///   triggers an OOM panic.
-    /// - `mapped_at_creation` is always `false` — initial uploads go
-    ///   through `queue.write_buffer` per project convention.
+    /// - `mapped_at_creation` is always `false`. Use [`make_buffer_init`]
+    ///   when initial contents are known up-front.
     ///
     /// Use this instead of `device.create_buffer(...)` for every
-    /// storage buffer in the workspace. The helper is the single
-    /// place that knows about VRAM accounting; callers stay focused
-    /// on size + usage flags.
-    pub fn create_storage_buffer(
+    /// buffer in the workspace — storage, uniform, vertex, index,
+    /// readback staging. The helper is the single place that knows
+    /// about VRAM accounting; callers stay focused on size + usage
+    /// flags.
+    pub fn make_buffer(
         device: &wgpu::Device,
         label: &str,
         size: u64,
@@ -224,6 +225,29 @@ pub mod gpu {
             size: size.max(16),
             usage,
             mapped_at_creation: false,
+        })
+    }
+
+    /// Pre-populated variant of [`make_buffer`]. Wraps
+    /// `wgpu::util::DeviceExt::create_buffer_init` so initial contents
+    /// land in the buffer via a single mapped-at-creation copy
+    /// (faster than `create_buffer + queue.write_buffer` for small
+    /// param buffers that change rarely).
+    ///
+    /// Size is taken from `contents.len()` and the same
+    /// [`gpu_mem::note_alloc`] visibility hook runs first.
+    pub fn make_buffer_init(
+        device: &wgpu::Device,
+        label: &str,
+        contents: &[u8],
+        usage: wgpu::BufferUsages,
+    ) -> wgpu::Buffer {
+        use wgpu::util::DeviceExt as _;
+        gpu_mem::note_alloc(label, contents.len() as u64);
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents,
+            usage,
         })
     }
 

@@ -244,19 +244,18 @@ impl Renderer3D {
         let pipes = Pipelines::new(device, &layouts);
 
         // Uniform buffers
-        let camera_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Camera UBO"),
-            size: std::mem::size_of::<CameraUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        use render_core::gpu::{make_buffer, make_buffer_init};
+        let uniform = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
+        let camera_buf = make_buffer(
+            device,
+            "Camera UBO",
+            std::mem::size_of::<CameraUniform>() as u64,
+            uniform,
+        );
 
         let light_rig = LightRigUniform::default();
-        let light_rig_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("LightRig UBO"),
-            contents: bytemuck::bytes_of(&light_rig),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let light_rig_buf =
+            make_buffer_init(device, "LightRig UBO", bytemuck::bytes_of(&light_rig), uniform);
 
         // PBR materials storage. Sized to a generous cap so growing the
         // user-edited `material_library` doesn't require a buffer recreate
@@ -266,36 +265,40 @@ impl Renderer3D {
         // `MAX_MATERIAL_SLOTS` (256) × 144 B = 36 KiB.
         let initial_materials =
             vec![StandardSurfaceParams::default(); MAX_MATERIAL_SLOTS as usize];
-        let materials_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Materials Storage"),
-            contents: bytemuck::cast_slice(&initial_materials),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-        let mat_global_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("MatGlobal UBO"),
-            contents: bytemuck::bytes_of(&MatGlobalUniform::default()),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let materials_buf = make_buffer_init(
+            device,
+            "Materials Storage",
+            bytemuck::cast_slice(&initial_materials),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        let mat_global_buf = make_buffer_init(
+            device,
+            "MatGlobal UBO",
+            bytemuck::bytes_of(&MatGlobalUniform::default()),
+            uniform,
+        );
 
-        let env_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("EnvParams UBO"),
-            contents: bytemuck::bytes_of(&EnvParamsUniform::default()),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let env_params_buf = make_buffer_init(
+            device,
+            "EnvParams UBO",
+            bytemuck::bytes_of(&EnvParamsUniform::default()),
+            uniform,
+        );
 
-        let hover_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("HoverParams UBO"),
-            contents: bytemuck::bytes_of(&HoverParamsUniform::default()),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let hover_params_buf = make_buffer_init(
+            device,
+            "HoverParams UBO",
+            bytemuck::bytes_of(&HoverParamsUniform::default()),
+            uniform,
+        );
 
         // Storage buffer for selected IDs (4MB = 1 million objects)
-        let selected_ids_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SelectedIds Storage"),
-            size: 4 * 1024 * 1024, // 4MB = 1M u32 = count + 1M IDs
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let selected_ids_buf = make_buffer(
+            device,
+            "SelectedIds Storage",
+            4 * 1024 * 1024, // 4MB = 1M u32 = count + 1M IDs
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
 
         // Environment map (default placeholder)
         let env = env_map::EnvMap::new_default(&ctx);
@@ -342,16 +345,18 @@ impl Renderer3D {
         });
 
         // Geometry
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cube VBO"),
-            contents: bytemuck::cast_slice(geometry::CUBE_VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cube IBO"),
-            contents: bytemuck::cast_slice(CUBE_INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let vertex_buffer = make_buffer_init(
+            device,
+            "Cube VBO",
+            bytemuck::cast_slice(geometry::CUBE_VERTICES),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let index_buffer = make_buffer_init(
+            device,
+            "Cube IBO",
+            bytemuck::cast_slice(CUBE_INDICES),
+            wgpu::BufferUsages::INDEX,
+        );
 
         Self {
             ctx,
@@ -1309,13 +1314,12 @@ impl Renderer3D {
                 // Allocate with 25% growth factor to avoid frequent reallocs
                 let new_capacity = (instances.len() * 5 / 4).max(1024);
                 let new_size = new_capacity * std::mem::size_of::<CubeInstance>();
-                self.instance_buffer =
-                    Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Instance VBO"),
-                        size: new_size as u64,
-                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    }));
+                self.instance_buffer = Some(render_core::gpu::make_buffer(
+                    &self.ctx.device,
+                    "Instance VBO",
+                    new_size as u64,
+                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                ));
                 self.instance_buffer_capacity = new_capacity;
             }
 

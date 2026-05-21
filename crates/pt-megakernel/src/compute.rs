@@ -143,23 +143,12 @@ fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
 /// exclusive-RW rule forbids the same buffer in both slots within one
 /// dispatch.
 fn create_restir_fallbacks(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
+    use render_core::gpu::make_buffer;
+    let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
     let res_size = crate::restir::Reservoir::SIZE as u64;
-    let make_res = |label: &str| {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: res_size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
-    };
-    let cur = make_res("pt_restir_fb_reservoir_cur");
-    let prev = make_res("pt_restir_fb_reservoir_prev");
-    let mv = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("pt_restir_fb_motion"),
-        size: 16,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+    let cur = make_buffer(device, "pt_restir_fb_reservoir_cur", res_size, storage);
+    let prev = make_buffer(device, "pt_restir_fb_reservoir_prev", res_size, storage);
+    let mv = make_buffer(device, "pt_restir_fb_motion", 16, storage);
     (cur, prev, mv)
 }
 
@@ -934,31 +923,33 @@ impl PathTraceCompute {
             cache: None,
         });
 
-        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_camera_buffer"),
-            size: std::mem::size_of::<PtCameraUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        use render_core::gpu::make_buffer;
+        let uniform = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
+        let camera_buffer = make_buffer(
+            device,
+            "pt_camera_buffer",
+            std::mem::size_of::<PtCameraUniform>() as u64,
+            uniform,
+        );
 
-        let pick_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_pick_params"),
-            size: std::mem::size_of::<PickParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let pick_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_pick_result"),
-            size: std::mem::size_of::<PickResult>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let pick_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_pick_readback"),
-            size: std::mem::size_of::<PickResult>() as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let pick_params_buffer = make_buffer(
+            device,
+            "pt_pick_params",
+            std::mem::size_of::<PickParams>() as u64,
+            uniform,
+        );
+        let pick_result_buffer = make_buffer(
+            device,
+            "pt_pick_result",
+            std::mem::size_of::<PickResult>() as u64,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let pick_readback_buffer = make_buffer(
+            device,
+            "pt_pick_readback",
+            std::mem::size_of::<PickResult>() as u64,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
 
         let (output_texture, output_view) = Self::create_output(device, width, height);
         let accum_buffer = Self::create_accum_buffer(device, width, height);
@@ -982,12 +973,12 @@ impl PathTraceCompute {
         //   80..128 ACES post-matrix (3× vec4 std140 columns, ODT)
         // Total 128 bytes. The pre/post matrices only matter when
         // `tonemap_tag == 4` (AcesFull); other branches ignore them.
-        let blit_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_blit_uniforms"),
-            size: 128, // 2× vec4 + 2× mat3 (std140-padded)
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let blit_uniform_buffer = make_buffer(
+            device,
+            "pt_blit_uniforms",
+            128, // 2× vec4 + 2× mat3 (std140-padded)
+            uniform,
+        );
         // Initialise to identity:
         //   exposure lane = [1.0, 0, 0, 0]      → bit-exact passthrough
         //   colour lane   = [3.0, 0, 1.0, 0]    → tonemap = AcesFilmic
@@ -1088,11 +1079,12 @@ impl PathTraceCompute {
         });
 
         let fallback_samples = vec![u32::MAX; (width * height).max(1) as usize];
-        let sample_map_fallback = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_sample_map_fallback"),
-            contents: bytemuck::cast_slice(&fallback_samples),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let sample_map_fallback = render_core::gpu::make_buffer_init(
+            device,
+            "pt_sample_map_fallback",
+            bytemuck::cast_slice(&fallback_samples),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
 
         let (restir_fb_reservoir_cur, restir_fb_reservoir_prev, restir_fb_motion) =
             create_restir_fallbacks(device);
@@ -1128,35 +1120,42 @@ impl PathTraceCompute {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let env_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_env_uniform"),
-            contents: bytemuck::bytes_of(&PtEnvUniform::default()),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        use render_core::gpu::make_buffer_init;
+        let uniform = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
+        let storage_rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let env_uniform_buffer = make_buffer_init(
+            device,
+            "pt_env_uniform",
+            bytemuck::bytes_of(&PtEnvUniform::default()),
+            uniform,
+        );
 
-        let env_marginal_cdf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_env_marginal_cdf"),
-            contents: bytemuck::cast_slice(&[1.0f32]),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let env_conditional_cdf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_env_conditional_cdf"),
-            contents: bytemuck::cast_slice(&[1.0f32]),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let env_marginal_cdf = make_buffer_init(
+            device,
+            "pt_env_marginal_cdf",
+            bytemuck::cast_slice(&[1.0f32]),
+            wgpu::BufferUsages::STORAGE,
+        );
+        let env_conditional_cdf = make_buffer_init(
+            device,
+            "pt_env_conditional_cdf",
+            bytemuck::cast_slice(&[1.0f32]),
+            wgpu::BufferUsages::STORAGE,
+        );
         let (emissive_light_texture, emissive_light_view) =
             Self::create_emissive_light_texture(device, queue, &[[0.0; 4]; 6], 1);
-        let emissive_light_uniform_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("pt_emissive_light_uniform"),
-                contents: bytemuck::bytes_of(&EmissiveLightUniform::default()),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-        let emissive_alias_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_emissive_alias_init"),
-            contents: bytemuck::bytes_of(&AliasEntry::default()),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let emissive_light_uniform_buffer = make_buffer_init(
+            device,
+            "pt_emissive_light_uniform",
+            bytemuck::bytes_of(&EmissiveLightUniform::default()),
+            uniform,
+        );
+        let emissive_alias_buf = make_buffer_init(
+            device,
+            "pt_emissive_alias_init",
+            bytemuck::bytes_of(&AliasEntry::default()),
+            storage_rw,
+        );
 
         Self {
             pipeline,
@@ -1697,12 +1696,12 @@ impl PathTraceCompute {
         let alias_contents = bytemuck::cast_slice(&alias_table);
         let alias_need = alias_contents.len() as u64;
         if self.emissive_alias_buf.size() < alias_need {
-            self.emissive_alias_buf =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("pt_emissive_alias"),
-                    contents: alias_contents,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                });
+            self.emissive_alias_buf = render_core::gpu::make_buffer_init(
+                device,
+                "pt_emissive_alias",
+                alias_contents,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            );
             resources_changed = true;
         } else {
             queue.write_buffer(&self.emissive_alias_buf, 0, alias_contents);
@@ -1799,11 +1798,12 @@ impl PathTraceCompute {
             spectral_dispersion: self.spectral_dispersion,
             _pad: 0,
         };
-        let shade_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wf_shade_params"),
-            contents: bytemuck::bytes_of(&shade_params),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let shade_params_buf = render_core::gpu::make_buffer_init(
+            device,
+            "wf_shade_params",
+            bytemuck::bytes_of(&shade_params),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         // Helper to create one set of bind groups
         let guide = &self.guide_buffer;
@@ -1965,11 +1965,12 @@ impl PathTraceCompute {
         // Finalize: accum -> output texture (same for both sets)
         let w = self.width.max(1);
         let h = self.height.max(1);
-        let finalize_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wf_finalize_params"),
-            contents: bytemuck::bytes_of(&[w, h, self.frame_count, 0u32]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let finalize_params_buf = render_core::gpu::make_buffer_init(
+            device,
+            "wf_finalize_params",
+            bytemuck::bytes_of(&[w, h, self.frame_count, 0u32]),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
         let finalize_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wf_finalize_bg"),
             layout: wf.finalize_bgl(),
@@ -2037,11 +2038,12 @@ impl PathTraceCompute {
             height: self.height,
             _pad: [0; 2],
         };
-        let variance_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("adaptive_variance_params"),
-            contents: bytemuck::bytes_of(&variance_params),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let variance_params_buf = render_core::gpu::make_buffer_init(
+            device,
+            "adaptive_variance_params",
+            bytemuck::bytes_of(&variance_params),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         let allocate_params = AllocateParams {
             width: self.width,
@@ -2052,11 +2054,12 @@ impl PathTraceCompute {
             _pad: [0.0; 3],
             _pad2: [0.0; 4],
         };
-        let allocate_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("adaptive_allocate_params"),
-            contents: bytemuck::bytes_of(&allocate_params),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let allocate_params_buf = render_core::gpu::make_buffer_init(
+            device,
+            "adaptive_allocate_params",
+            bytemuck::bytes_of(&allocate_params),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         let (variance_bgl, allocate_bgl) = ad.bgls();
 
@@ -2177,12 +2180,12 @@ impl PathTraceCompute {
 
         // Per-tile gbuffer params: N TILE_SLOT_STRIDE slots, populated each
         // frame via pack_tile_slots + a single queue.write_buffer.
-        let gbuffer_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("wf_gbuffer_params"),
-            size: u64::from(MAX_TILE_CAPACITY) * TILE_SLOT_STRIDE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let gbuffer_params_buf = render_core::gpu::make_buffer(
+            device,
+            "wf_gbuffer_params",
+            u64::from(MAX_TILE_CAPACITY) * TILE_SLOT_STRIDE,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         let gbuffer_bgl = &gbuffer_stack.bgl;
         let gbuffer_bg_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2270,41 +2273,27 @@ impl PathTraceCompute {
         // queue.write_buffer. The bind groups use dynamic offsets to address
         // each tile. Sized at MAX_TILE_CAPACITY so they don't need to be
         // reallocated when the tile count changes.
+        use render_core::gpu::make_buffer;
+        let uniform = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
         let tile_buf_size = u64::from(MAX_TILE_CAPACITY) * TILE_SLOT_STRIDE;
-        let initial_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("restir_initial_params"),
-            size: tile_buf_size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let temporal_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("restir_temporal_params"),
-            size: tile_buf_size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let spatial_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("restir_spatial_params"),
-            size: tile_buf_size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let shade_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("restir_shade_params"),
-            size: tile_buf_size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let initial_params_buf =
+            make_buffer(device, "restir_initial_params", tile_buf_size, uniform);
+        let temporal_params_buf =
+            make_buffer(device, "restir_temporal_params", tile_buf_size, uniform);
+        let spatial_params_buf =
+            make_buffer(device, "restir_spatial_params", tile_buf_size, uniform);
+        let shade_params_buf =
+            make_buffer(device, "restir_shade_params", tile_buf_size, uniform);
 
         let (cur_res, prev_res) = rs.reservoirs();
-        let prev_depth_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("restir_prev_depth"),
-            size: (self.width * self.height).max(1) as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE
+        let prev_depth_buf = make_buffer(
+            device,
+            "restir_prev_depth",
+            (self.width * self.height).max(1) as u64 * 4,
+            wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        );
 
         let build_initial_bg = |label: &str, rays: &wgpu::Buffer| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2560,21 +2549,22 @@ impl PathTraceCompute {
             ],
             params1: [0.95, 0.0, 0.0, 0.0],
         };
-        let update_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pathguide_update_params"),
-            contents: bytemuck::bytes_of(&update_params),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let update_params_buf = render_core::gpu::make_buffer_init(
+            device,
+            "pathguide_update_params",
+            bytemuck::bytes_of(&update_params),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         // Per-tile pathguide sample params: each tile gets its own 256-byte
         // slot. The host writes all slots once per frame via pack_tile_slots,
         // and the bind group uses a dynamic offset to address each tile.
-        let sample_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pathguide_sample_params"),
-            size: u64::from(MAX_TILE_CAPACITY) * TILE_SLOT_STRIDE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let sample_params_buf = render_core::gpu::make_buffer(
+            device,
+            "pathguide_sample_params",
+            u64::from(MAX_TILE_CAPACITY) * TILE_SLOT_STRIDE,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         let guide = &self.guide_buffer;
         let update_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3681,46 +3671,46 @@ impl PathTraceCompute {
     fn create_accum_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
         let size = (width * height) as u64 * 16;
         log::debug!("PT accum buffer: {}x{} -> {} bytes", width, height, size);
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_accum"),
-            size: size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        render_core::gpu::make_buffer(
+            device,
+            "pt_accum",
+            size,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        )
     }
 
     fn create_aov_buffer(device: &wgpu::Device, label: &str, width: u32, height: u32) -> wgpu::Buffer {
         let size = (width * height) as u64 * 16;
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: size.max(16),
-            usage: wgpu::BufferUsages::STORAGE
+        render_core::gpu::make_buffer(
+            device,
+            label,
+            size,
+            wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        )
     }
 
     fn create_variance_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
         let size = (width * height) as u64 * 16; // M2 (vec4) for Welford's algorithm
         log::debug!("PT variance buffer: {}x{} -> {} bytes", width, height, size);
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_variance"),
-            size: size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        render_core::gpu::make_buffer(
+            device,
+            "pt_variance",
+            size,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        )
     }
 
     fn create_guide_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
         let size = (width * height).max(1) as u64 * 24; // packed guide: 6x u32 per pixel
         log::debug!("PT guide buffer: {}x{} -> {} bytes", width, height, size);
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_guide_buffer"),
-            size: size.max(16),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        render_core::gpu::make_buffer(
+            device,
+            "pt_guide_buffer",
+            size,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        )
     }
 
     fn clear_guide_buffer(encoder: &mut wgpu::CommandEncoder, guide: &wgpu::Buffer) {
@@ -3916,11 +3906,12 @@ impl PathTraceCompute {
             ad.resize(device, width, height);
         }
         let fallback_samples = vec![u32::MAX; (width * height).max(1) as usize];
-        self.sample_map_fallback = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_sample_map_fallback"),
-            contents: bytemuck::cast_slice(&fallback_samples),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        self.sample_map_fallback = render_core::gpu::make_buffer_init(
+            device,
+            "pt_sample_map_fallback",
+            bytemuck::cast_slice(&fallback_samples),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
         self.rebuild_bind_group(device);
         self.rebuild_adaptive_bind_groups(device);
         self.rebuild_wavefront_bind_groups(device);
@@ -3945,12 +3936,12 @@ impl PathTraceCompute {
             Some(b) => b.size() < cap,
         };
         if too_small {
-            *slot = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: cap,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+            *slot = Some(render_core::gpu::make_buffer(
+                device,
+                label,
+                cap,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            ));
         }
         // `slot` is Some here by structure: either the if-block above just
         // populated it, or the existing Some(_) survived the size check.
@@ -4389,16 +4380,18 @@ impl PathTraceCompute {
             conditional_cdf.to_vec()
         };
 
-        self.env_marginal_cdf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_env_marginal_cdf"),
-            contents: bytemuck::cast_slice(&marginal),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        self.env_conditional_cdf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pt_env_conditional_cdf"),
-            contents: bytemuck::cast_slice(&conditional),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        self.env_marginal_cdf = render_core::gpu::make_buffer_init(
+            device,
+            "pt_env_marginal_cdf",
+            bytemuck::cast_slice(&marginal),
+            wgpu::BufferUsages::STORAGE,
+        );
+        self.env_conditional_cdf = render_core::gpu::make_buffer_init(
+            device,
+            "pt_env_conditional_cdf",
+            bytemuck::cast_slice(&conditional),
+            wgpu::BufferUsages::STORAGE,
+        );
         self.env_use_importance_sampling = if width > 1 && height > 1 { 1.0 } else { 0.0 };
         self.env_width = width.max(1);
         self.env_height = height.max(1);

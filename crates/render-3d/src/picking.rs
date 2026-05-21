@@ -99,12 +99,12 @@ impl PickingState {
         // Buffer size = aligned row (256 bytes alignment for wgpu)
         let bytes_per_row = (width * 4 + 255) & !255;
         if self.buffer.is_none() || self.buffer_size < bytes_per_row {
-            self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("ID Readback"),
-                size: bytes_per_row as u64,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            }));
+            self.buffer = Some(render_core::gpu::make_buffer(
+                device,
+                "ID Readback",
+                bytes_per_row as u64,
+                wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            ));
             self.buffer_size = bytes_per_row;
         }
     }

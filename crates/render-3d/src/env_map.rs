@@ -66,20 +66,18 @@ impl EnvMap {
             ..Default::default()
         });
 
-        let marginal_cdf = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("default_env_marginal_cdf"),
-                contents: bytemuck::cast_slice(&[1.0f32]),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        let conditional_cdf = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("default_env_conditional_cdf"),
-                contents: bytemuck::cast_slice(&[1.0f32]),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+        let marginal_cdf = render_core::gpu::make_buffer_init(
+            &ctx.device,
+            "default_env_marginal_cdf",
+            bytemuck::cast_slice(&[1.0f32]),
+            wgpu::BufferUsages::STORAGE,
+        );
+        let conditional_cdf = render_core::gpu::make_buffer_init(
+            &ctx.device,
+            "default_env_conditional_cdf",
+            bytemuck::cast_slice(&[1.0f32]),
+            wgpu::BufferUsages::STORAGE,
+        );
 
         Self {
             texture,
@@ -199,20 +197,18 @@ impl EnvMap {
         let (conditional_cdf_data, marginal_cdf_data) = build_env_cdfs(w, h, &luminance);
         self.conditional_cdf_data = conditional_cdf_data;
         self.marginal_cdf_data = marginal_cdf_data;
-        self.conditional_cdf = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("env_conditional_cdf"),
-                contents: bytemuck::cast_slice(&self.conditional_cdf_data),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        self.marginal_cdf = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("env_marginal_cdf"),
-                contents: bytemuck::cast_slice(&self.marginal_cdf_data),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+        self.conditional_cdf = render_core::gpu::make_buffer_init(
+            &ctx.device,
+            "env_conditional_cdf",
+            bytemuck::cast_slice(&self.conditional_cdf_data),
+            wgpu::BufferUsages::STORAGE,
+        );
+        self.marginal_cdf = render_core::gpu::make_buffer_init(
+            &ctx.device,
+            "env_marginal_cdf",
+            bytemuck::cast_slice(&self.marginal_cdf_data),
+            wgpu::BufferUsages::STORAGE,
+        );
 
         info!("Loaded env map: {}x{} {:?} from {:?}", w, h, format, path);
         Ok(())

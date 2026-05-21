@@ -475,7 +475,7 @@ impl WfBuffers {
         // `full_w * full_h` — these are full-image storage buffers, not
         // tile-local.
         let aov_sz = 16u64;
-        use render_core::gpu::create_storage_buffer;
+        use render_core::gpu::make_buffer;
         use wgpu::BufferUsages;
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         // AOV buffers add COPY_SRC — the OIDN denoiser reads them via
@@ -483,11 +483,11 @@ impl WfBuffers {
         // frame.
         let aov = storage | BufferUsages::COPY_SRC;
         Self {
-            ray_a: create_storage_buffer(device, "wf_ray_a", n * ray_sz, storage),
-            ray_b: create_storage_buffer(device, "wf_ray_b", n * ray_sz, storage),
-            hit: create_storage_buffer(device, "wf_hit", n * hit_sz, storage),
-            albedo: create_storage_buffer(device, "wf_albedo_aov", n * aov_sz, aov),
-            normal: create_storage_buffer(device, "wf_normal_aov", n * aov_sz, aov),
+            ray_a: make_buffer(device, "wf_ray_a", n * ray_sz, storage),
+            ray_b: make_buffer(device, "wf_ray_b", n * ray_sz, storage),
+            hit: make_buffer(device, "wf_hit", n * hit_sz, storage),
+            albedo: make_buffer(device, "wf_albedo_aov", n * aov_sz, aov),
+            normal: make_buffer(device, "wf_normal_aov", n * aov_sz, aov),
         }
     }
 }
@@ -540,34 +540,34 @@ fn create_pipeline(
 }
 
 fn create_tile_dims_buf(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wf_tile_dims"),
-        size: u64::from(capacity) * TILE_SLOT_STRIDE,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
+    render_core::gpu::make_buffer(
+        device,
+        "wf_tile_dims",
+        u64::from(capacity) * TILE_SLOT_STRIDE,
+        wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    )
 }
 
 fn create_tile_counts_buf(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wf_tile_counts"),
-        size: u64::from(capacity) * TILE_SLOT_STRIDE,
-        usage: wgpu::BufferUsages::STORAGE
+    render_core::gpu::make_buffer(
+        device,
+        "wf_tile_counts",
+        u64::from(capacity) * TILE_SLOT_STRIDE,
+        wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    })
+    )
 }
 
 fn create_count_init_src(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wf_tile_count_init_src"),
-        size: u64::from(capacity) * TILE_SLOT_STRIDE,
-        usage: wgpu::BufferUsages::STORAGE
+    render_core::gpu::make_buffer(
+        device,
+        "wf_tile_count_init_src",
+        u64::from(capacity) * TILE_SLOT_STRIDE,
+        wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    })
+    )
 }
 
 fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {

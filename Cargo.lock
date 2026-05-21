@@ -3401,6 +3401,9 @@ dependencies = [
 [[package]]
 name = "gpu-mem"
 version = "0.1.0"
+dependencies = [
+ "log",
+]
 
 [[package]]
 name = "h2"
@@ -5547,6 +5550,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
+ "standard-surface",
 ]
 
 [[package]]
@@ -5604,7 +5608,9 @@ name = "pt-wavefront"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "gpu-mem",
  "log",
+ "render-core",
  "wgpu",
 ]
 
@@ -6061,6 +6067,7 @@ dependencies = [
 name = "render-core"
 version = "0.1.0"
 dependencies = [
+ "gpu-mem",
  "log",
  "pollster",
  "wgpu",
@@ -6730,6 +6737,7 @@ dependencies = [
  "egui_dock",
  "env_logger",
  "glam",
+ "gpu-mem",
  "half",
  "image",
  "jwalk",

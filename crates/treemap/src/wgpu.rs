@@ -249,12 +249,12 @@ impl GpuRenderer2D {
         });
 
         // Create uniform buffer
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("2D Uniform Buffer"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let uniform_buffer = render_core::gpu::make_buffer(
+            device,
+            "2D Uniform Buffer",
+            std::mem::size_of::<Uniforms>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         // Create bind group layout
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -319,11 +319,12 @@ impl GpuRenderer2D {
         });
 
         // Create vertex buffer for unit quad
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("2D Vertex Buffer"),
-            contents: bytemuck::cast_slice(UNIT_QUAD),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let vertex_buffer = render_core::gpu::make_buffer_init(
+            device,
+            "2D Vertex Buffer",
+            bytemuck::cast_slice(UNIT_QUAD),
+            wgpu::BufferUsages::VERTEX,
+        );
 
         Self {
             ctx,
@@ -556,12 +557,12 @@ impl GpuRenderer2D {
         } else {
             let min_bytes = (256 * bytes_per_rect) as u64;
             let new_size = needed_u64.max(min_bytes).next_power_of_two();
-            let instance_buffer = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("2D Instance Buffer"),
-                size: new_size,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let instance_buffer = render_core::gpu::make_buffer(
+                &self.ctx.device,
+                "2D Instance Buffer",
+                new_size,
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            );
             self.ctx
                 .queue
                 .write_buffer(&instance_buffer, 0, bytemuck::cast_slice(&rects));
