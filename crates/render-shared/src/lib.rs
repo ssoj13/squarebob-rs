@@ -218,40 +218,6 @@ impl SpectralMode {
     }
 }
 
-/// Preset glass variants for global PT transparency
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum GlassPreset {
-    #[default]
-    Clear,
-    Blue,
-    Green,
-    Amber,
-    Pink,
-}
-
-impl GlassPreset {
-    pub fn name(self) -> &'static str {
-        match self {
-            GlassPreset::Clear => "Clear",
-            GlassPreset::Blue => "Blue",
-            GlassPreset::Green => "Green",
-            GlassPreset::Amber => "Amber",
-            GlassPreset::Pink => "Pink",
-        }
-    }
-
-    pub fn all() -> &'static [GlassPreset] {
-        &[
-            GlassPreset::Clear,
-            GlassPreset::Blue,
-            GlassPreset::Green,
-            GlassPreset::Amber,
-            GlassPreset::Pink,
-        ]
-    }
-
-}
-
 /// Color gradient for depth (rainbow: red->orange->yellow->green->cyan->blue->magenta)
 pub fn color_for_depth(depth: u32, max_depth: u32) -> [f32; 4] {
     let t = if max_depth > 0 {
@@ -640,24 +606,6 @@ pub struct Render3DOptions {
     pub mat_include_dirs: bool, // Allow materialization for directories
     #[serde(default = "default_mat_seed")]
     pub mat_seed: u32, // Seed for random material assignment
-    #[serde(default = "default_transparency")]
-    pub pt_global_transparency: f32, // 0=opaque, 1=all glass
-    #[serde(default)]
-    pub pt_global_glass: GlassPreset,
-    #[serde(default = "default_glass_specular")]
-    pub pt_glass_specular: f32,
-    #[serde(default = "default_glass_base")]
-    pub pt_glass_base: f32,
-    #[serde(default = "default_glass_roughness")]
-    pub pt_glass_roughness: f32,
-    #[serde(default = "default_glass_ior")]
-    pub pt_glass_ior: f32,
-    #[serde(default = "default_glass_dispersion")]
-    pub pt_glass_dispersion: f32,
-    #[serde(default = "default_glass_temp")]
-    pub pt_glass_temp: f32,
-    #[serde(default = "default_false")]
-    pub pt_glass_thin: bool,
     pub env_map_intensity: f32,
     pub env_map_rotation: f32,
     pub env_map_enabled: bool,
@@ -1365,29 +1313,8 @@ fn default_band_count() -> u32 {
 fn default_spatial_scale() -> f32 {
     0.01
 }
-fn default_transparency() -> f32 {
-    0.0
-}
 fn default_folder_tint() -> f32 {
     0.0
-}
-fn default_glass_specular() -> f32 {
-    1.0
-}
-fn default_glass_base() -> f32 {
-    0.0
-}
-fn default_glass_roughness() -> f32 {
-    0.02
-}
-fn default_glass_ior() -> f32 {
-    1.52
-}
-fn default_glass_dispersion() -> f32 {
-    0.0
-}
-fn default_glass_temp() -> f32 {
-    6500.0
 }
 fn default_inertia_enabled() -> bool {
     true
@@ -1502,15 +1429,6 @@ impl Default for Render3DOptions {
             material_overrides: default_material_overrides(),
             mat_include_dirs: false,
             mat_seed: default_mat_seed(),
-            pt_global_transparency: 0.0,
-            pt_global_glass: GlassPreset::Clear,
-            pt_glass_specular: default_glass_specular(),
-            pt_glass_base: default_glass_base(),
-            pt_glass_roughness: default_glass_roughness(),
-            pt_glass_ior: default_glass_ior(),
-            pt_glass_dispersion: default_glass_dispersion(),
-            pt_glass_temp: default_glass_temp(),
-            pt_glass_thin: false,
             env_map_intensity: 1.0,
             env_map_rotation: 0.0,
             env_map_enabled: true,

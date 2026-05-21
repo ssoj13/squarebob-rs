@@ -5,18 +5,11 @@ use super::tinted_section;
 use crate::app::helpers::{multibutton_exclusive, rfd_env_map_pick_start_dir, MultiButtonAxis};
 use crate::app::App;
 use crate::renderer::{
-    AdaptivePreset, ColorMode, CubeHeightMode, FolderColorMode, GlassPreset, HashTransformEffect,
-    HoverMode, PtSamplerMode, RenderMode, SpectralMode,
+    AdaptivePreset, ColorMode, CubeHeightMode, FolderColorMode, HashTransformEffect, HoverMode,
+    PtSamplerMode, RenderMode, SpectralMode,
 };
 use eframe::egui;
 use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
-
-/// Maximum absolute PT light/glass cube count in the UI and when persisting settings.
-///
-/// When `total_cubes == 0` (scan not finished), the drag range must **not** fall back to `0..=1`:
-/// [`egui::DragValue`] clamps existing values every frame (`clamp_existing_to_range(true)` default),
-/// which was resetting saved counts to **1** on every launch before the tree existed.
-const MAX_PT_MAT_CUBE_COUNT: u32 = 5000;
 
 use super::{
     curve_rows, ramp_section, settings_grid, RampUiCtx, SETTINGS_LABEL_WIDTH,
@@ -1139,14 +1132,6 @@ impl App {
             .unwrap_or(0)
     }
 
-    fn pt_count_drag_max(total_cubes: u32) -> u32 {
-        if total_cubes > 0 {
-            total_cubes.clamp(1, MAX_PT_MAT_CUBE_COUNT)
-        } else {
-            MAX_PT_MAT_CUBE_COUNT
-        }
-    }
-
     /// Single-slot Material override widget. Drives one entry of
     /// `Render3DOptions.material_overrides`. Two of these are placed
     /// in `ui_3d_materials` so the user can stack two independent
@@ -1582,135 +1567,6 @@ impl App {
                 .checkbox(&mut self.render_3d_opts.pt_russian_roulette, "")
                 .on_hover_text("Probabilistic path termination")
                 .changed();
-            ui.end_row();
-        });
-    }
-
-    fn ui_pt_glass(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
-        settings_grid(ui, "pt_glass_grid", |ui| {
-            control_label(ui, "Transparency:");
-            let mut transparency_ui = self.render_3d_opts.pt_global_transparency * 64.0;
-            if ui
-                .add(egui::Slider::new(&mut transparency_ui, 0.0..=64.0))
-                .changed()
-            {
-                self.render_3d_opts.pt_global_transparency =
-                    (transparency_ui / 64.0).clamp(0.0, 1.0);
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Preset:");
-            let old_glass = self.render_3d_opts.pt_global_glass;
-            if multibutton_exclusive(
-                ui,
-                &mut self.render_3d_opts.pt_global_glass,
-                &[
-                    (GlassPreset::Clear, "Clear"),
-                    (GlassPreset::Blue, "Blue"),
-                    (GlassPreset::Green, "Green"),
-                    (GlassPreset::Amber, "Amber"),
-                    (GlassPreset::Pink, "Pink"),
-                ],
-                MultiButtonAxis::Horizontal,
-            ) {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            if self.render_3d_opts.pt_global_glass != old_glass {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Thin:");
-            if ui
-                .checkbox(&mut self.render_3d_opts.pt_glass_thin, "")
-                .changed()
-            {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Specular:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.pt_glass_specular,
-                    0.0..=1.0,
-                ))
-                .changed()
-            {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Base:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.pt_glass_base,
-                    0.0..=1.0,
-                ))
-                .changed()
-            {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Roughness:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.pt_glass_roughness,
-                    0.0..=1.0,
-                ))
-                .changed()
-            {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "IoR:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.pt_glass_ior,
-                    1.0..=3.0,
-                ))
-                .changed()
-            {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Dispersion:");
-            if ui
-                .add(egui::Slider::new(
-                    &mut self.render_3d_opts.pt_glass_dispersion,
-                    0.0..=1.0,
-                ))
-                .changed()
-            {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
-            ui.end_row();
-
-            control_label(ui, "Temperature:");
-            if ui
-                .add(
-                    egui::Slider::new(&mut self.render_3d_opts.pt_glass_temp, 1000.0..=12000.0)
-                        .integer()
-                        .text("K"),
-                )
-                .changed()
-            {
-                *pt_changed = true;
-                self.mark_pt_scene_dirty();
-            }
             ui.end_row();
         });
     }

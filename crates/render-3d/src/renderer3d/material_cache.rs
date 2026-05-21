@@ -343,16 +343,7 @@ pub(crate) struct PtExpandCacheEntry {
 fn pt_expand_opts_hash(opts: &Render3DOptions) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    opts.pt_global_transparency.to_bits().hash(&mut h);
-    (opts.pt_global_glass as u8).hash(&mut h);
-    opts.pt_glass_specular.to_bits().hash(&mut h);
-    opts.pt_glass_base.to_bits().hash(&mut h);
-    opts.pt_glass_roughness.to_bits().hash(&mut h);
-    opts.pt_glass_ior.to_bits().hash(&mut h);
-    opts.pt_glass_dispersion.to_bits().hash(&mut h);
-    opts.pt_glass_temp.to_bits().hash(&mut h);
-    opts.pt_glass_thin.hash(&mut h);
-    // Library contents: UUID identifies each slot, params + variance
+// Library contents: UUID identifies each slot, params + variance
     // drive resolution. Hash 40 lanes (10 vec4s × 4 channels) per slot.
     for m in &opts.material_library.materials {
         m.uuid.hash(&mut h);
