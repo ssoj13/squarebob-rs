@@ -878,28 +878,39 @@ impl Render3DOptions {
     /// plain filmic curve in sRGB space, which is the same as the
     /// AcesFilmic default. No black frames on unhandled combos.
     pub fn aces_full_matrices(&self) -> ([[f32; 4]; 3], [[f32; 4]; 3]) {
-        let pre_src: &[[f32; 3]; 3] = match (self.color_idt, self.color_lmt) {
-            // sRGB / Rec.709 share primaries — same matrix.
-            (AcesIdt::SrgbToAp1, AcesLmt::None)
-            | (AcesIdt::Rec709ToAp1, AcesLmt::None) => &SRGB_TO_ACESCG,
-            // LMT variants ride on top of the IDT but aren't baked yet —
-            // C-3 ships the IDT; LMT injection is a C-3+ refinement.
-            (AcesIdt::SrgbToAp1, _) | (AcesIdt::Rec709ToAp1, _) => &SRGB_TO_ACESCG,
-            (AcesIdt::Ap1Passthrough, _) | (AcesIdt::None, _) => &MAT3_IDENTITY,
+        // Base IDT — scene-referred → ACEScg.
+        let idt_src: [[f32; 3]; 3] = match self.color_idt {
+            AcesIdt::SrgbToAp1 | AcesIdt::Rec709ToAp1 => SRGB_TO_ACESCG,
+            AcesIdt::Ap1Passthrough | AcesIdt::None => MAT3_IDENTITY,
         };
 
-        let post_src: &[[f32; 3]; 3] = match self.color_odt {
-            // sRGB and Rec.709 share primaries; their EOTFs differ but
-            // the linear-light matrix is identical.
-            AcesOdt::Srgb100nits | AcesOdt::Rec709 | AcesOdt::SrgbHdrSim => &ACESCG_TO_SRGB,
-            // Wider-gamut targets need their own matrices — wired in a
-            // later phase when vfx-color is pulled in for Bradford CATs.
-            AcesOdt::P3D65 | AcesOdt::DciP3 | AcesOdt::Rec2020_1000nits => &ACESCG_TO_SRGB,
+        // Bake LMT on top of the IDT in working space. Saturation
+        // values are calibrated to land in the "obviously different
+        // but not blown out" zone — Neutral is barely-perceptible,
+        // Punchy is cinematic-grade. Identity (`None`) skips the
+        // multiply.
+        let lmt_sat: f32 = match self.color_lmt {
+            AcesLmt::None => 1.0,
+            AcesLmt::Neutral => 1.05,
+            AcesLmt::Punchy => 1.15,
+        };
+        let pre_src = if (lmt_sat - 1.0).abs() < f32::EPSILON {
+            idt_src
+        } else {
+            mat3_mul(&saturation_matrix(lmt_sat), &idt_src)
+        };
+
+        // ODT — ACEScg → display gamut. Wider-gamut targets still fall
+        // back to the sRGB matrix; see TaskList #9 for the proper
+        // per-ODT matrices via vfx-color.
+        let post_src: [[f32; 3]; 3] = match self.color_odt {
+            AcesOdt::Srgb100nits | AcesOdt::Rec709 | AcesOdt::SrgbHdrSim => ACESCG_TO_SRGB,
+            AcesOdt::P3D65 | AcesOdt::DciP3 | AcesOdt::Rec2020_1000nits => ACESCG_TO_SRGB,
         };
 
         (
-            mat3_to_std140_columns(pre_src),
-            mat3_to_std140_columns(post_src),
+            mat3_to_std140_columns(&pre_src),
+            mat3_to_std140_columns(&post_src),
         )
     }
 
@@ -1053,6 +1064,37 @@ pub const SRGB_TO_ACESCG: [[f32; 3]; 3] = [
 /// (passthrough) or unimplemented.
 pub const MAT3_IDENTITY: [[f32; 3]; 3] =
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// Build a saturation matrix using Rec.709 luminance coefficients.
+/// `s = 1.0` returns identity; `s < 1` desaturates; `s > 1` saturates.
+/// The matrix lives in the ACEScg working space — applied after the
+/// IDT and before the RRT curve.
+pub fn saturation_matrix(s: f32) -> [[f32; 3]; 3] {
+    // Rec.709 luma coefficients (Y' = 0.2126 R + 0.7152 G + 0.0722 B).
+    // Mixing in ACEScg with Rec.709 luma is an approximation — proper
+    // ACEScg uses different coefficients, but the visual difference at
+    // these subtle LMT strengths (≤1.2) is below quantisation noise.
+    let lr = 0.2126;
+    let lg = 0.7152;
+    let lb = 0.0722;
+    let inv = 1.0 - s;
+    [
+        [s + inv * lr, inv * lg, inv * lb],
+        [inv * lr, s + inv * lg, inv * lb],
+        [inv * lr, inv * lg, s + inv * lb],
+    ]
+}
+
+/// Row-major 3×3 matrix product: `a * b`.
+pub fn mat3_mul(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut out = [[0.0_f32; 3]; 3];
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    out
+}
 
 /// Pack a row-major 3×3 matrix into the column-major
 /// `array<vec4<f32>, 3>` layout WGSL std140 uniforms consume.
@@ -1462,6 +1504,7 @@ impl Default for Render3DOptions {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)]
 mod tests {
     use super::{
         AcesIdt, AcesOdt, PtSamplerMode, Render3DOptions, TonemapKind, ACESCG_TO_SRGB,
@@ -1533,6 +1576,73 @@ mod tests {
                 && pre[0][1].abs() < 1e-6
                 && pre[0][2].abs() < 1e-6,
             "pre matrix should be identity for Ap1Passthrough IDT"
+        );
+    }
+
+    #[test]
+    fn saturation_matrix_identity_at_unity() {
+        let m = super::saturation_matrix(1.0);
+        // Identity along the diagonal, zero off-diagonal — except for
+        // float rounding at the Rec.709 coefficients.
+        for i in 0..3 {
+            for j in 0..3 {
+                let want = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (m[i][j] - want).abs() < 1e-6,
+                    "saturation(1.0)[{i}][{j}] = {} not {}",
+                    m[i][j],
+                    want
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn saturation_matrix_preserves_neutral_gray() {
+        // (1,1,1) should map to (1,1,1) for any saturation value —
+        // achromatic input has zero chroma to scale.
+        let v: [f32; 3] = [1.0, 1.0, 1.0];
+        for s in [0.5, 1.0, 1.5] {
+            let m = super::saturation_matrix(s);
+            let out = mul3(&m, v);
+            for c in 0..3 {
+                assert!(
+                    (out[c] - 1.0).abs() < 1e-5,
+                    "saturation({s}) on gray channel {c}: {} drifted",
+                    out[c]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lmt_punchy_changes_pre_matrix() {
+        // Default opts → LMT=None → pre == SRGB_TO_ACESCG exactly.
+        // Switch to Punchy → pre must differ from SRGB_TO_ACESCG on
+        // chromatic channels (gray is preserved by the saturation
+        // matrix, so the diff shows on the off-diagonal).
+        let default_opts = Render3DOptions::default();
+        let (pre_none, _) = default_opts.aces_full_matrices();
+
+        let punchy = Render3DOptions {
+            color_lmt: super::AcesLmt::Punchy,
+            ..Default::default()
+        };
+        let (pre_punchy, _) = punchy.aces_full_matrices();
+
+        // At least one of the 12 floats must differ by >1% — saturation
+        // 1.15 lifts colour channels meaningfully.
+        let mut diff_count = 0;
+        for col in 0..3 {
+            for row in 0..3 {
+                if (pre_none[col][row] - pre_punchy[col][row]).abs() > 0.01 {
+                    diff_count += 1;
+                }
+            }
+        }
+        assert!(
+            diff_count >= 1,
+            "Punchy LMT should perturb the pre matrix; got {diff_count} cells with >1% delta"
         );
     }
 
