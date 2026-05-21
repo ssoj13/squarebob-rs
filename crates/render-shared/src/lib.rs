@@ -878,37 +878,56 @@ impl Render3DOptions {
     /// plain filmic curve in sRGB space, which is the same as the
     /// AcesFilmic default. No black frames on unhandled combos.
     pub fn aces_full_matrices(&self) -> ([[f32; 4]; 3], [[f32; 4]; 3]) {
-        // Base IDT — scene-referred → ACEScg.
-        let idt_src: [[f32; 3]; 3] = match self.color_idt {
+        // Step 1 — IDT (scene-referred → ACEScg / AP1). All non-passthrough
+        // IDT variants land in AP1 first; working-space conversion to AP0
+        // (if requested) happens in the next step. None / Ap1Passthrough
+        // assume PT already writes ACEScg.
+        let idt_to_ap1: [[f32; 3]; 3] = match self.color_idt {
             AcesIdt::SrgbToAp1 | AcesIdt::Rec709ToAp1 => SRGB_TO_ACESCG,
             AcesIdt::Ap1Passthrough | AcesIdt::None => MAT3_IDENTITY,
         };
 
-        // Bake LMT on top of the IDT in working space. Saturation
-        // values are calibrated to land in the "obviously different
-        // but not blown out" zone — Neutral is barely-perceptible,
-        // Punchy is cinematic-grade. Identity (`None`) skips the
-        // multiply.
+        // Step 2 — LMT on the AP1 working domain. Saturation values are
+        // calibrated to be perceptible but production-safe.
         let lmt_sat: f32 = match self.color_lmt {
             AcesLmt::None => 1.0,
             AcesLmt::Neutral => 1.05,
             AcesLmt::Punchy => 1.15,
         };
-        let pre_src = if (lmt_sat - 1.0).abs() < f32::EPSILON {
-            idt_src
+        let idt_lmt = if (lmt_sat - 1.0).abs() < f32::EPSILON {
+            idt_to_ap1
         } else {
-            mat3_mul(&saturation_matrix(lmt_sat), &idt_src)
+            mat3_mul(&saturation_matrix(lmt_sat), &idt_to_ap1)
         };
 
-        // ODT — ACEScg → display gamut. Per-target matrices with
-        // appropriate Bradford CAT baked in. sRGB / Rec.709 share
-        // primaries; the EOTF differs but the linear matrix is the
-        // same. Display P3 and DCI-P3 differ in white point.
-        let post_src: [[f32; 3]; 3] = match self.color_odt {
+        // Step 3 — fold the chosen working space into pre/post. The
+        // RRT (filmic curve) is applied between pre and post on GPU, so
+        // working space is where the filmic curve operates:
+        //   * LinearSRGB  : skip the IDT entirely (identity pre/post).
+        //                   Filmic runs on raw sRGB — the AcesFull
+        //                   branch then matches the AcesFilmic default.
+        //   * ACEScg (AP1): pre = idt_lmt; post = ACEScg → display.
+        //                   This is the canonical ACES 1.x pipeline.
+        //   * ACES2065-1  : pre = AP1→AP0 · idt_lmt;
+        //                   post = ACEScg → display · AP0→AP1.
+        //                   Filmic runs in AP0 — wider gamut, softer
+        //                   highlight rolloff than AP1.
+        //
+        // odt_in_ap1 = "ACEScg → display gamut" matrix for the chosen ODT.
+        let odt_in_ap1: [[f32; 3]; 3] = match self.color_odt {
             AcesOdt::Srgb100nits | AcesOdt::Rec709 | AcesOdt::SrgbHdrSim => ACESCG_TO_SRGB,
             AcesOdt::Rec2020_1000nits => ACESCG_TO_REC2020,
             AcesOdt::P3D65 => ACESCG_TO_P3D65,
             AcesOdt::DciP3 => ACESCG_TO_DCIP3,
+        };
+
+        let (pre_src, post_src): ([[f32; 3]; 3], [[f32; 3]; 3]) = match self.color_working {
+            ColorWorkingSpace::LinearSRGB => (MAT3_IDENTITY, MAT3_IDENTITY),
+            ColorWorkingSpace::ACEScg => (idt_lmt, odt_in_ap1),
+            ColorWorkingSpace::ACES2065_1 => (
+                mat3_mul(&AP1_TO_AP0, &idt_lmt),
+                mat3_mul(&odt_in_ap1, &AP0_TO_AP1),
+            ),
         };
 
         (
@@ -1002,8 +1021,8 @@ pub enum OidnQualityOption {
 /// phase (see `docs/aces-color-pipeline-plan.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ColorWorkingSpace {
-    #[default]
     LinearSRGB,
+    #[default]
     ACEScg,
     ACES2065_1,
 }
@@ -1094,6 +1113,22 @@ pub const ACESCG_TO_P3D65: [[f32; 3]; 3] = [
     [1.02901, -0.02164, -0.00737],
     [-0.04210, 1.06250, -0.02040],
     [-0.00203, -0.07601, 1.07804],
+];
+
+/// ACEScg (AP1) → ACES2065-1 (AP0) primaries, no CAT (both AP1 and AP0
+/// share the ACES D60 white point). Canonical ACES constants.
+pub const AP1_TO_AP0: [[f32; 3]; 3] = [
+    [0.695452, 0.140679, 0.163869],
+    [0.044794, 0.859671, 0.095535],
+    [-0.005525, 0.004025, 1.001_5],
+];
+
+/// ACES2065-1 (AP0) → ACEScg (AP1) primaries, no CAT. Inverse of
+/// [`AP1_TO_AP0`].
+pub const AP0_TO_AP1: [[f32; 3]; 3] = [
+    [1.451439, -0.236_51, -0.214929],
+    [-0.076553, 1.176229, -0.099677],
+    [0.008316, -0.006032, 0.997716],
 ];
 
 /// ACEScg (AP1) → DCI-P3 primaries with Bradford D60→DCI CAT.
@@ -1205,7 +1240,7 @@ pub enum AcesOdt {
 }
 
 fn default_color_working() -> ColorWorkingSpace {
-    ColorWorkingSpace::LinearSRGB
+    ColorWorkingSpace::ACEScg
 }
 fn default_color_tonemap() -> TonemapKind {
     TonemapKind::AcesFilmic
@@ -1533,7 +1568,7 @@ impl Default for Render3DOptions {
             // user actually flips a control. Other lanes are seeded with
             // production-grade values so flipping to `AcesFull` lands on
             // a sensible sRGB / 100 nits view without further setup.
-            color_working: ColorWorkingSpace::LinearSRGB,
+            color_working: ColorWorkingSpace::ACEScg,
             color_tonemap: TonemapKind::AcesFilmic,
             color_idt: AcesIdt::SrgbToAp1,
             color_lmt: AcesLmt::None,
@@ -1619,6 +1654,58 @@ mod tests {
                 expected_00,
             );
         }
+    }
+
+    #[test]
+    fn working_space_changes_aces_pre_post_matrices() {
+        // Three working spaces should produce three visibly different
+        // (pre, post) pairs. LinearSRGB → identity pair; ACEScg →
+        // sRGB↔AP1; ACES2065-1 → wrapped through AP0 (different from
+        // the AP1 pair).
+        use super::ColorWorkingSpace;
+
+        let mut opts = Render3DOptions {
+            color_tonemap: TonemapKind::AcesFull,
+            color_working: ColorWorkingSpace::LinearSRGB,
+            ..Default::default()
+        };
+        let (pre_lin, post_lin) = opts.aces_full_matrices();
+        // LinearSRGB → identity pre/post.
+        assert!((pre_lin[0][0] - 1.0).abs() < 1e-6, "Linear pre[0][0] ≠ 1");
+        assert!((pre_lin[1][0]).abs() < 1e-6, "Linear pre off-diag ≠ 0");
+        assert!((post_lin[0][0] - 1.0).abs() < 1e-6, "Linear post[0][0] ≠ 1");
+
+        opts.color_working = ColorWorkingSpace::ACEScg;
+        let (pre_cg, post_cg) = opts.aces_full_matrices();
+        // ACEScg → pre[0][0] = SRGB_TO_ACESCG[0][0] = 0.61314.
+        assert!(
+            (pre_cg[0][0] - 0.61314).abs() < 1e-4,
+            "ACEScg pre[0][0] = {} ≠ 0.61314",
+            pre_cg[0][0]
+        );
+        // Differs from Linear.
+        assert!(
+            (pre_cg[0][0] - pre_lin[0][0]).abs() > 0.1,
+            "ACEScg pre should differ from Linear pre"
+        );
+
+        opts.color_working = ColorWorkingSpace::ACES2065_1;
+        let (pre_2065, post_2065) = opts.aces_full_matrices();
+        // AP0 routing → both pre and post differ from the AP1 case.
+        // (AP1→AP0 ≈ 0.6955 for [0][0], times sRGB→AP1 ≈ 0.6131 →
+        // composite is around 0.46 or so, distinctly less than 0.6131.)
+        assert!(
+            (pre_2065[0][0] - pre_cg[0][0]).abs() > 0.05,
+            "ACES2065-1 pre should differ from ACEScg pre by >0.05; got {} vs {}",
+            pre_2065[0][0],
+            pre_cg[0][0]
+        );
+        assert!(
+            (post_2065[0][0] - post_cg[0][0]).abs() > 0.05,
+            "ACES2065-1 post should differ from ACEScg post; got {} vs {}",
+            post_2065[0][0],
+            post_cg[0][0]
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@
 //! new lanes to the blit shader and vfx-rs matrices — see
 //! `docs/aces-color-pipeline-plan.md`.
 
-use super::{control_label, settings_grid, tinted_section, SettingsDirty};
+use super::{settings_grid, tinted_section, SettingsDirty};
 use crate::app::App;
 use eframe::egui;
 use render_shared::{AcesIdt, AcesLmt, AcesOdt, AcesRrt, ColorWorkingSpace, TonemapKind};
@@ -24,6 +24,14 @@ use render_shared::{AcesIdt, AcesLmt, AcesOdt, AcesRrt, ColorWorkingSpace, Tonem
 /// negotiation) lands.
 fn odt_targets_hdr(odt: AcesOdt) -> bool {
     matches!(odt, AcesOdt::Rec2020_1000nits | AcesOdt::SrgbHdrSim)
+}
+
+/// Row label with an attached hover tooltip explaining the stage.
+/// Used instead of bare `control_label` so every row in the Color
+/// section spells out what the parameter does without forcing the
+/// user to mouse over each individual dropdown item.
+fn labeled_row(ui: &mut egui::Ui, label: &'static str, tooltip: &'static str) {
+    ui.label(label).on_hover_text(tooltip);
 }
 
 impl App {
@@ -43,32 +51,42 @@ impl App {
                 let aces_full = self.render_3d_opts.color_tonemap == TonemapKind::AcesFull;
 
                 settings_grid(ui, "color_grid", |ui| {
-                    // Row 1 — working colour space. Forward-looking knob:
-                    // PT still writes linear-sRGB today, so anything other
-                    // than `LinearSRGB` is a no-op until C-3 wires the
-                    // matrix bake. We still expose it so saved presets
-                    // survive the migration.
-                    control_label(ui, "Working space:");
+                    // Row 1 — working colour space. Drives the space the
+                    // ACES filmic curve runs in (LinearSRGB / AP1 /
+                    // AP0). Greyed unless tonemap == AcesFull because
+                    // every other tonemap path operates in linear-sRGB
+                    // directly and ignores the chosen working space.
+                    labeled_row(
+                        ui,
+                        "Working space:",
+                        "Colour space the ACES filmic curve runs in. Only takes \
+                         effect when Tonemap = ACES Full. Linear sRGB = no ACES \
+                         conversion (curve in sRGB, equivalent to ACES Filmic). \
+                         ACEScg (AP1) = canonical ACES 1.x. ACES2065-1 (AP0) = \
+                         widest gamut, softer highlight rolloff.",
+                    );
                     let ws = &mut self.render_3d_opts.color_working;
-                    egui::ComboBox::from_id_salt("color_working_cb")
-                        .width(220.0)
-                        .selected_text(working_label(*ws))
-                        .show_ui(ui, |ui| {
-                            for opt in [
-                                ColorWorkingSpace::LinearSRGB,
-                                ColorWorkingSpace::ACEScg,
-                                ColorWorkingSpace::ACES2065_1,
-                            ] {
-                                if ui
-                                    .selectable_label(*ws == opt, working_label(opt))
-                                    .on_hover_text(working_hover(opt))
-                                    .clicked()
-                                {
-                                    *ws = opt;
-                                    dirty.preset();
+                    ui.add_enabled_ui(aces_full, |ui| {
+                        egui::ComboBox::from_id_salt("color_working_cb")
+                            .width(220.0)
+                            .selected_text(working_label(*ws))
+                            .show_ui(ui, |ui| {
+                                for opt in [
+                                    ColorWorkingSpace::LinearSRGB,
+                                    ColorWorkingSpace::ACEScg,
+                                    ColorWorkingSpace::ACES2065_1,
+                                ] {
+                                    if ui
+                                        .selectable_label(*ws == opt, working_label(opt))
+                                        .on_hover_text(working_hover(opt))
+                                        .clicked()
+                                    {
+                                        *ws = opt;
+                                        dirty.preset();
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    });
                     ui.end_row();
 
                     // Row 2 — tonemap kind. This is the master switch: the
@@ -76,7 +94,15 @@ impl App {
                     // to `AcesFull`. Default = `AcesFilmic` (current blit
                     // shader behaviour) so flipping the section doesn't
                     // change the rendered image until the user opts in.
-                    control_label(ui, "Tonemap:");
+                    labeled_row(
+                        ui,
+                        "Tonemap:",
+                        "Display-side curve that maps scene-linear HDR into the \
+                         [0,1] display range. None = clamp only (debug). Linear \
+                         = no curve (highlights blow). Reinhard = soft, washed. \
+                         ACES Filmic = current fast path (Narkowicz fit). ACES \
+                         Full = unlocks IDT/LMT/RRT/ODT lanes and Working space.",
+                    );
                     let tm = &mut self.render_3d_opts.color_tonemap;
                     egui::ComboBox::from_id_salt("color_tonemap_cb")
                         .width(220.0)
@@ -122,7 +148,13 @@ impl App {
                 ui.add_enabled_ui(aces_full, |ui| {
                     settings_grid(ui, "color_aces_grid", |ui| {
                         // IDT — input to working space (scene-linear → AP1).
-                        control_label(ui, "IDT:");
+                        labeled_row(
+                            ui,
+                            "IDT:",
+                            "Input Device Transform — maps the scene-referred RGB \
+                             from PT into the ACES working space. Default sRGB → \
+                             AP1 matches what the path tracer writes today.",
+                        );
                         let idt = &mut self.render_3d_opts.color_idt;
                         egui::ComboBox::from_id_salt("color_idt_cb")
                             .width(220.0)
@@ -147,7 +179,14 @@ impl App {
                         ui.end_row();
 
                         // LMT — optional creative grade between IDT + RRT.
-                        control_label(ui, "LMT (look):");
+                        labeled_row(
+                            ui,
+                            "LMT (look):",
+                            "Look Modification Transform — optional creative grade \
+                             that runs in the working space, between IDT and the \
+                             filmic curve. Neutral = subtle +5 % saturation. \
+                             Punchy = +15 % saturation, cinematic.",
+                        );
                         let lmt = &mut self.render_3d_opts.color_lmt;
                         egui::ComboBox::from_id_salt("color_lmt_cb")
                             .width(220.0)
@@ -167,7 +206,14 @@ impl App {
                         ui.end_row();
 
                         // RRT — Reference Rendering Transform.
-                        control_label(ui, "RRT:");
+                        labeled_row(
+                            ui,
+                            "RRT:",
+                            "Reference Rendering Transform — the filmic curve \
+                             applied in working space. Standard = ACES 1.0 \
+                             reference. RRT.a1.1 = ACES 1.1+ highlight tweak. \
+                             Off = skip the curve (debug-only).",
+                        );
                         let rrt = &mut self.render_3d_opts.color_rrt;
                         egui::ComboBox::from_id_salt("color_rrt_cb")
                             .width(220.0)
@@ -187,7 +233,15 @@ impl App {
                         ui.end_row();
 
                         // ODT — Output Device Transform.
-                        control_label(ui, "ODT:");
+                        labeled_row(
+                            ui,
+                            "ODT:",
+                            "Output Device Transform — maps working space to the \
+                             display's native primaries. Must match what the \
+                             monitor expects. sRGB / Rec.709 are standard SDR; \
+                             Rec.2020 / P3 are wide-gamut; Rec.2020 1000nits \
+                             enables PQ encoding (HDR10).",
+                        );
                         let odt = &mut self.render_3d_opts.color_odt;
                         egui::ComboBox::from_id_salt("color_odt_cb")
                             .width(220.0)
@@ -223,7 +277,14 @@ impl App {
                 ui.add_space(4.0);
                 ui.separator();
                 settings_grid(ui, "color_post_grid", |ui| {
-                    control_label(ui, "Exposure (EV):");
+                    labeled_row(
+                        ui,
+                        "Exposure (EV):",
+                        "Display-side exposure in EV stops. Multiplies scene-linear \
+                         RGB by 2^ev before tonemap. Independent of the physical-\
+                         camera exposure (which is baked into PT integration). \
+                         0 = no change; +1 = twice as bright; -1 = half.",
+                    );
                     let ev_resp = ui
                         .add(
                             egui::Slider::new(
@@ -244,7 +305,14 @@ impl App {
                     }
                     ui.end_row();
 
-                    control_label(ui, "White balance:");
+                    labeled_row(
+                        ui,
+                        "White balance:",
+                        "White-point target in Kelvin. 6500 K ≈ D65 (no tint, \
+                         reference white). Lower warms the image (tungsten, \
+                         sunset). Higher cools it (overcast, shade). Implemented \
+                         as a cheap R/B-gain — full Planckian locus is C-5+.",
+                    );
                     let wb_resp = ui
                         .add(
                             egui::Slider::new(
@@ -264,7 +332,16 @@ impl App {
                     }
                     ui.end_row();
 
-                    control_label(ui, "Gamut compress:");
+                    labeled_row(
+                        ui,
+                        "Gamut compress:",
+                        "ACES Reference Gamut Compression — pulls out-of-gamut \
+                         samples back inside the display gamut with a soft \
+                         rolloff. Useful for Rec.709 / sRGB displays receiving \
+                         wide-gamut PT output. Auto = full strength on narrow-\
+                         gamut targets, off on wide-gamut. Only active when \
+                         Tonemap = ACES Full.",
+                    );
                     ui.horizontal(|ui| {
                         let auto = self.render_3d_opts.color_gamut_compress_auto;
                         let gc_resp = ui
