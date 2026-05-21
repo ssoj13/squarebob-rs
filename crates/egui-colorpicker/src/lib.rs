@@ -154,7 +154,8 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
     paint_swatch_icon(ui, rect, color, cfg, response.hovered());
 
     let popup_id = response.id.with("colorpicker_popup");
-    if response.clicked() {
+    let just_toggled = response.clicked();
+    if just_toggled {
         egui::Popup::toggle_id(ui.ctx(), popup_id);
     }
     if egui::Popup::is_id_open(ui.ctx(), popup_id) {
@@ -167,16 +168,23 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
                     picker_popup_contents(ui, color, cfg);
                 });
             });
-        // Close when the user clicks outside the popup AND the
-        // current frame already routed the click somewhere else.
-        let inside = area
-            .response
-            .interact_pointer_pos()
-            .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()))
-            .map(|p| area.response.rect.contains(p))
-            .unwrap_or(false);
-        if !inside && ui.ctx().input(|i| i.pointer.any_click()) {
-            egui::Popup::close_id(ui.ctx(), popup_id);
+        // Auto-close on click outside — but only on frames where
+        // the swatch button itself wasn't just clicked. Without
+        // this guard the very click that opens the popup also
+        // qualifies as "a click happened" and closes it again,
+        // producing the brief-flash bug.
+        if !just_toggled {
+            let pointer = ui.ctx().input(|i| i.pointer.interact_pos());
+            let inside_popup = pointer
+                .map(|p| area.response.rect.contains(p))
+                .unwrap_or(false);
+            let inside_button = pointer.map(|p| rect.contains(p)).unwrap_or(false);
+            if !inside_popup
+                && !inside_button
+                && ui.ctx().input(|i| i.pointer.any_click())
+            {
+                egui::Popup::close_id(ui.ctx(), popup_id);
+            }
         }
     }
     response
