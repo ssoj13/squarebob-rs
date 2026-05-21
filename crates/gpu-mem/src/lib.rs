@@ -84,6 +84,36 @@ pub fn free_vram() -> u64 {
     query().map_or(0, |g| g.free_vram)
 }
 
+/// Conservative VRAM budget for large transient buffers (BVH,
+/// wavefront tile state, OIDN aux, etc.). 75 % of free VRAM,
+/// clamped to `[256 MiB, dedicated_vram]`.
+///
+/// Returns `None` when [`query`] could not determine VRAM on this
+/// host (AMD/Intel Windows registry-only path, Intel-only macOS,
+/// non-NVIDIA Linux without sysfs entries). Callers should treat
+/// missing data as "skip the VRAM-aware clamp" rather than as a
+/// zero budget.
+pub fn vram_budget() -> Option<u64> {
+    let info = query()?;
+    budget_from(&info)
+}
+
+/// Same rule as [`vram_budget`] but on a caller-supplied [`GpuMemInfo`]
+/// — useful when consumers already have a cached `query()` result.
+pub fn budget_from(info: &GpuMemInfo) -> Option<u64> {
+    let basis = if info.free_vram > 0 {
+        info.free_vram
+    } else {
+        info.dedicated_vram
+    };
+    if basis == 0 {
+        return None;
+    }
+    let budget = (basis / 4) * 3;
+    const MIN_BUDGET: u64 = 256 * 1024 * 1024;
+    Some(budget.clamp(MIN_BUDGET, info.dedicated_vram.max(MIN_BUDGET)))
+}
+
 // ── System RAM ───────────────────────────────────────────────────────────
 
 /// System (host) memory information.

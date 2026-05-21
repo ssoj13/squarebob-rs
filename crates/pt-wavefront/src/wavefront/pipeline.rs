@@ -230,25 +230,65 @@ impl WavefrontPipeline {
         self.cur_buf = 0;
     }
 
+    /// Clamps render dimensions against two budgets:
+    ///
+    /// 1. **WebGPU single-binding limit** — each storage buffer
+    ///    (`ray_a`, `ray_b`, `hit`, `albedo`, `normal`) must fit in
+    ///    `device.limits().max_storage_buffer_binding_size`.
+    /// 2. **Total VRAM budget** — five buffers coexist for the entire
+    ///    frame, so total per-pixel cost is `2·ray + hit + 2·aov`.
+    ///    Sourced from `gpu_mem::query()` (75 % of free VRAM via the
+    ///    standard budget rule, capped to dedicated VRAM). Skipped on
+    ///    platforms where `gpu-mem` returns no data (AMD/Intel
+    ///    Windows registry path, Intel macOS) — the binding limit
+    ///    still applies.
+    ///
+    /// Returns the larger of the two as the effective max pixel
+    /// count. Logs `WARN` on clamp with which budget triggered it.
     fn clamp_dimensions(device: &wgpu::Device, width: u32, height: u32) -> (u32, u32) {
         let n = (width * height).max(1) as u64;
         let ray_sz = std::mem::size_of::<WfRay>() as u64;
         let hit_sz = std::mem::size_of::<WfHit>() as u64;
-        let per_pixel = ray_sz.max(hit_sz).max(1);
-        let limit = device.limits().max_storage_buffer_binding_size;
-        let max_pixels = (limit / per_pixel).max(1);
+        // AOV buffers are vec4<f32> = 16 B per pixel each.
+        let aov_sz: u64 = 16;
+        // Largest single binding — must fit under WebGPU's
+        // `max_storage_buffer_binding_size` per buffer.
+        let per_pixel_single = ray_sz.max(hit_sz).max(aov_sz).max(1);
+        let binding_limit = device.limits().max_storage_buffer_binding_size as u64;
+        let max_pixels_binding = (binding_limit / per_pixel_single).max(1);
+        // Total per-frame VRAM consumed by the wavefront per-pixel
+        // buffer set (2 ray + 1 hit + 2 AOV). The ping-pong ray
+        // buffers are always both live.
+        let per_pixel_total = ray_sz * 2 + hit_sz + aov_sz * 2;
+        let max_pixels_vram = match gpu_mem::vram_budget() {
+            Some(budget) => (budget / per_pixel_total).max(1),
+            None => u64::MAX,
+        };
+        let max_pixels = max_pixels_binding.min(max_pixels_vram);
         if n <= max_pixels {
             return (width, height);
         }
         let scale = (max_pixels as f64 / n as f64).sqrt();
         let new_w = (width as f64 * scale).floor().max(1.0) as u32;
         let new_h = (height as f64 * scale).floor().max(1.0) as u32;
+        let reason = if max_pixels_binding < max_pixels_vram {
+            "WebGPU binding limit"
+        } else {
+            "VRAM budget"
+        };
         log::warn!(
-            "WavefrontPipeline: dimensions clamped {}x{} -> {}x{} (limit={}, per_pixel={}, max_pixels={})",
-            width, height, new_w, new_h, limit, per_pixel, max_pixels
+            "WavefrontPipeline: clamped {}x{} -> {}x{} ({}; per-pixel total={} B, max_pixels={})",
+            width,
+            height,
+            new_w,
+            new_h,
+            reason,
+            per_pixel_total,
+            max_pixels
         );
         (new_w.max(1), new_h.max(1))
     }
+
 
     /// Get current/next ray buffers (ping-pong).
     pub fn ray_bufs(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {

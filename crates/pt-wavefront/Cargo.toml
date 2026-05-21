@@ -9,3 +9,4 @@ license.workspace = true
 bytemuck = { workspace = true }
 log = { workspace = true }
 wgpu = { workspace = true }
+gpu-mem = { workspace = true }

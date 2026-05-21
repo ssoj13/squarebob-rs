@@ -188,23 +188,12 @@ pub mod gpu {
         }
 
         /// Conservative VRAM budget for large transient buffers
-        /// (BVH, wavefront tile state, OIDN aux). Returns 75 % of free
-        /// VRAM clamped to `[256 MiB, dedicated_vram]`, or `None` when
-        /// `gpu-mem` could not determine VRAM size for the active
-        /// adapter (AMD on Windows, intel-only macOS, etc.).
+        /// (BVH, wavefront tile state, OIDN aux). Delegates to
+        /// [`gpu_mem::budget_from`] so the 75 %-of-free rule lives in
+        /// one place. Returns `None` when `gpu-mem` could not
+        /// determine VRAM size for the active adapter.
         pub fn vram_budget(&self) -> Option<u64> {
-            let info = self.gpu_info.as_ref()?;
-            let basis = if info.free_vram > 0 {
-                info.free_vram
-            } else {
-                info.dedicated_vram
-            };
-            if basis == 0 {
-                return None;
-            }
-            let budget = (basis / 4) * 3;
-            let min = 256 * 1024 * 1024;
-            Some(budget.clamp(min, info.dedicated_vram.max(min)))
+            gpu_mem::budget_from(self.gpu_info.as_ref()?)
         }
     }
 
