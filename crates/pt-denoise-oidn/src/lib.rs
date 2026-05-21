@@ -529,19 +529,18 @@ impl OidnDenoiser {
                 // (resolved via env / exe-relative / cwd; missing dir is
                 // fine — embedded path covers the standard modes alone).
                 let base_key = oidn_rs::registry::select_rt(
-                    true,
+                    /*has_color*/ true,
                     use_albedo,
                     use_normal,
                     /*hdr*/ true,
                     /*srgb*/ false,
-                    /*directional*/ false,
                     /*clean_aux*/ false,
                     self.quality,
                 );
                 let fallback_dir = self.weights_dir.as_deref();
                 let loaded = base_key
-                    .as_ref()
-                    .and_then(|key| oidn_rs::weights::resolve(key, self.quality, fallback_dir));
+                    .ok()
+                    .and_then(|key| oidn_rs::weights::resolve(&key, self.quality, fallback_dir));
                 if let Some((stem, b)) = loaded {
                     log::debug!("OIDN: weights resolved stem={} ({} bytes)", stem, b.len());
                     self.cached_model_bytes = Some(b.clone());

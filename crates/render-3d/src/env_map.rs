@@ -4,7 +4,6 @@
 use image::{GenericImageView, ImageFormat, ImageReader};
 use log::info;
 use render_core::gpu::GpuContext;
-use wgpu::util::DeviceExt;
 
 /// Environment map state (texture + sampler)
 pub struct EnvMap {

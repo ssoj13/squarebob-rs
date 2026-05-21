@@ -18,7 +18,6 @@ pub mod targets;
 use glam::{Mat4, Vec3, Vec4};
 use log::{debug, info, trace, warn};
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
 
 use squarebob_core::DirEntry;
 use pt_mats::MaterializeMode;

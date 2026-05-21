@@ -4,7 +4,6 @@
 //! Progressive accumulation, HDR env map, tone-mapped blit.
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::adaptive::{AdaptiveConfig, AdaptivePipeline};
 use crate::pathguide::{PathGuideConfig, PathGuidePipeline, PG_SAMPLE_PARAMS_SIZE};

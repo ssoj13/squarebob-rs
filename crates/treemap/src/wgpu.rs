@@ -4,7 +4,6 @@
 use bytemuck::{Pod, Zeroable};
 use log::debug;
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
 
 use crate::{self as treemap, TreeMapOptions};
 use squarebob_core::DirEntry;
