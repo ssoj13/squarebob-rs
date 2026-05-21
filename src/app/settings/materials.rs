@@ -193,6 +193,49 @@ pub(super) fn materials_browser_section(app: &mut App, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             materials_list(ui, app);
         });
+    materials_footer(ui, app);
+}
+
+/// Bulk-weight footer row placed *under* the slot list (the top
+/// toolbar has no horizontal room left for additional buttons).
+/// A `weight == 0.0` slot is effectively excluded from the per-cube
+/// distribution, so "All off" disables every material at once and
+/// "All on" restores the uniform 1.0 weight. Disabled when the
+/// library is empty so the buttons cannot mutate a zero-length
+/// vector.
+fn materials_footer(ui: &mut egui::Ui, app: &mut App) {
+    let mut library_dirty = false;
+    {
+        let lib = &mut app.render_3d_opts.material_library;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!lib.is_empty(), |ui| {
+                if ui
+                    .button("All on")
+                    .on_hover_text("Set every material weight to 1.0 (include all in distribution)")
+                    .clicked()
+                {
+                    for mat in &mut lib.materials {
+                        mat.weight = 1.0;
+                    }
+                    library_dirty = true;
+                }
+                if ui
+                    .button("All off")
+                    .on_hover_text("Set every material weight to 0.0 (exclude all from distribution)")
+                    .clicked()
+                {
+                    for mat in &mut lib.materials {
+                        mat.weight = 0.0;
+                    }
+                    library_dirty = true;
+                }
+            });
+        });
+    }
+    if library_dirty {
+        app.events.emit(MaterialsChangedEvent);
+    }
 }
 
 // ============================================================================
@@ -272,36 +315,6 @@ fn materials_toolbar(ui: &mut egui::Ui, app: &mut App) {
                     .clicked()
                 {
                     lib.remove(lib.active);
-                    library_dirty = true;
-                }
-            });
-
-            ui.separator();
-
-            // Bulk weight toggles — a `weight == 0.0` slot is effectively
-            // excluded from the per-cube distribution, so "All off"
-            // disables every material at once and "All on" restores the
-            // uniform 1.0 weight. Disabled when the library is empty so
-            // the buttons cannot mutate a zero-length vector.
-            ui.add_enabled_ui(!lib.is_empty(), |ui| {
-                if ui
-                    .button("All on")
-                    .on_hover_text("Set every material weight to 1.0 (include all in distribution)")
-                    .clicked()
-                {
-                    for mat in &mut lib.materials {
-                        mat.weight = 1.0;
-                    }
-                    library_dirty = true;
-                }
-                if ui
-                    .button("All off")
-                    .on_hover_text("Set every material weight to 0.0 (exclude all from distribution)")
-                    .clicked()
-                {
-                    for mat in &mut lib.materials {
-                        mat.weight = 0.0;
-                    }
                     library_dirty = true;
                 }
             });
