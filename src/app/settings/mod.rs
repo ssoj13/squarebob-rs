@@ -2,6 +2,7 @@
 
 mod appearance;
 mod denoiser;
+mod dirty;
 mod exclusions;
 mod materials;
 mod output;
@@ -10,12 +11,12 @@ mod renderer;
 mod scanner;
 mod view;
 
+pub(super) use dirty::SettingsDirty;
 pub(super) use ramp_widget::{curve_rows, ramp_section, RampUiCtx};
 
 use super::icons;
 use super::state::SettingsTab;
 use super::App;
-use crate::events::SettingsChangedEvent;
 use crate::renderer::OrbitCamera;
 use eframe::egui;
 use treemap::TreeMapOptions;
@@ -411,7 +412,7 @@ impl App {
                     let w = ui.available_width();
                     ui.set_width(w);
 
-                    let mut changed = false;
+                    let mut dirty = SettingsDirty::default();
 
                     match self.settings_tab {
                         SettingsTab::Rendering => {
@@ -439,11 +440,11 @@ impl App {
                                 |ui| {
                                     self.ui_settings_scanner(ui);
                                     ui.separator();
-                                    self.ui_settings_view(ui, &ctx, &mut changed);
+                                    self.ui_settings_view(ui, &ctx, &mut dirty);
                                     ui.separator();
-                                    self.ui_settings_appearance(ui, &mut changed);
+                                    self.ui_settings_appearance(ui, &mut dirty);
                                     ui.separator();
-                                    self.ui_settings_panel_chrome(ui, &mut changed);
+                                    self.ui_settings_panel_chrome(ui, &mut dirty);
                                     // Interaction lives here as a UX
                                     // preference. Only meaningful in
                                     // 3D mode — hover outline/tint is
@@ -465,18 +466,56 @@ impl App {
                             // `ui_settings_renderer`, right after the
                             // Samples section — see the section-order
                             // doc on `ui_3d_settings`.
-                            self.ui_settings_renderer(ui, &mut changed);
+                            self.ui_settings_renderer(ui, &mut dirty);
                         }
                         SettingsTab::Exclusions => {
-                            self.ui_settings_exclusions(ui, &mut changed);
+                            self.ui_settings_exclusions(ui, &mut dirty);
                         }
                         SettingsTab::Extensions => {
                             self.ui_ext_stats(ui);
                         }
                     }
 
-                    if changed {
-                        self.events.emit(SettingsChangedEvent);
+                    // Dispatch the typed dirtiness signal to the matching
+                    // follow-up actions. Each flag maps to one specific
+                    // side-effect, in increasing cost order, so e.g. a
+                    // denoise hyper-param change (preset only) doesn't
+                    // accidentally trigger a treemap rebuild or a
+                    // PT-accumulation reset.
+                    //
+                    // The `pt_scene` branch supersedes `pt_accum`
+                    // because `mark_pt_scene_dirty` already implies a
+                    // full re-init that re-zeroes `frame_count`; firing
+                    // both would just double-work the renderer.
+                    //
+                    // The pre-existing material editor in `materials.rs`
+                    // and the PT-knob channel in `renderer.rs::ui_pt_*`
+                    // still emit `MaterialsChangedEvent` /
+                    // `reset_pt_accumulation` directly because they
+                    // pre-date this dispatcher; new settings should
+                    // prefer the typed `dirty.*()` methods below.
+                    if dirty.is_pt_scene() {
+                        if let Some(r) = &mut self.renderer_3d {
+                            r.mark_pt_scene_dirty();
+                        }
+                        self.needs_render_3d = true;
+                    } else if dirty.is_pt_accum() {
+                        if let Some(r) = &mut self.renderer_3d {
+                            r.mark_pt_accum_reset();
+                        }
+                        self.needs_render_3d = true;
+                    }
+                    if dirty.is_materials() {
+                        self.events.emit(crate::events::MaterialsChangedEvent);
+                    }
+                    if dirty.is_layout() {
+                        self.needs_layout = true;
+                    }
+                    if dirty.is_preset() {
+                        self.preset_dirty = true;
+                    }
+                    if dirty.any() {
+                        ctx.request_repaint();
                     }
                 });
         });

@@ -1,6 +1,6 @@
 //! Appearance settings: font size, brightness, cushion, ambient.
 
-use super::LABEL_WIDTH;
+use super::{SettingsDirty, LABEL_WIDTH};
 use crate::app::App;
 use eframe::egui;
 
@@ -30,8 +30,14 @@ impl App {
         );
     }
 
-    /// Appearance section (2D treemap visual settings)
-    pub(super) fn ui_settings_appearance(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+    /// Appearance section (2D treemap visual settings).
+    ///
+    /// `tint_mix` controls only the settings-panel chrome and is marked
+    /// as `preset` (no layout rebuild needed). The remaining sliders
+    /// (brightness / cushion / scale / ambient) feed the CPU 2D treemap
+    /// rasteriser, so they are marked `layout` to trigger a re-render
+    /// through the existing `needs_layout`-gated path.
+    pub(super) fn ui_settings_appearance(&mut self, ui: &mut egui::Ui, dirty: &mut SettingsDirty) {
         egui::CollapsingHeader::new(egui::RichText::new("Appearance").heading())
             .default_open(true)
             .show(ui, |ui| {
@@ -57,39 +63,54 @@ impl App {
                             )
                             .changed()
                         {
-                            *changed = true;
+                            dirty.preset();
                         }
                         ui.end_row();
 
                         ui.label("Brightness:");
-                        *changed |= ui
+                        if ui
                             .add(egui::Slider::new(&mut self.opts.brightness, 0.0..=1.0))
-                            .changed();
+                            .changed()
+                        {
+                            dirty.layout();
+                        }
                         ui.end_row();
 
                         ui.label("Cushion:");
-                        *changed |= ui
+                        if ui
                             .add(egui::Slider::new(&mut self.opts.height, 0.0..=1.0))
-                            .changed();
+                            .changed()
+                        {
+                            dirty.layout();
+                        }
                         ui.end_row();
 
                         ui.label("Scale:");
-                        *changed |= ui
+                        if ui
                             .add(egui::Slider::new(&mut self.opts.scale_factor, 0.0..=1.0))
-                            .changed();
+                            .changed()
+                        {
+                            dirty.layout();
+                        }
                         ui.end_row();
 
                         ui.label("Ambient:");
-                        *changed |= ui
+                        if ui
                             .add(egui::Slider::new(&mut self.opts.ambient_light, 0.0..=1.0))
-                            .changed();
+                            .changed()
+                        {
+                            dirty.layout();
+                        }
                         ui.end_row();
                     });
             });
     }
 
     /// Typography / chrome for this settings sidebar (General → Settings).
-    pub(super) fn ui_settings_panel_chrome(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+    /// Every knob in this section is visual-only (font sizes, header row
+    /// height) — none of them feed the treemap layout, so they are all
+    /// marked `preset`.
+    pub(super) fn ui_settings_panel_chrome(&mut self, ui: &mut egui::Ui, dirty: &mut SettingsDirty) {
         egui::CollapsingHeader::new(egui::RichText::new("Settings").heading())
             .default_open(false)
             .show(ui, |ui| {
@@ -112,7 +133,7 @@ impl App {
                             )
                             .changed()
                         {
-                            *changed = true;
+                            dirty.preset();
                         }
                         ui.end_row();
 
@@ -125,7 +146,7 @@ impl App {
                             .on_hover_text("Default text and control labels in this sidebar.")
                             .changed()
                         {
-                            *changed = true;
+                            dirty.preset();
                         }
                         ui.end_row();
 
@@ -143,7 +164,7 @@ impl App {
                             )
                             .changed()
                         {
-                            *changed = true;
+                            dirty.preset();
                         }
                         ui.end_row();
 
@@ -161,7 +182,7 @@ impl App {
                             )
                             .changed()
                         {
-                            *changed = true;
+                            dirty.preset();
                         }
                         ui.end_row();
 
@@ -174,7 +195,7 @@ impl App {
                             .on_hover_text("Widgets that use TextStyle::Small (hints, captions).")
                             .changed()
                         {
-                            *changed = true;
+                            dirty.preset();
                         }
                         ui.end_row();
 
@@ -190,7 +211,7 @@ impl App {
                             .on_hover_text("Tab strip and button labels in this sidebar.")
                             .changed()
                         {
-                            *changed = true;
+                            dirty.preset();
                         }
                         ui.end_row();
 
@@ -205,7 +226,7 @@ impl App {
                             )
                             .changed()
                         {
-                            *changed = true;
+                            dirty.preset();
                         }
                         ui.end_row();
                     });
@@ -231,7 +252,7 @@ impl App {
                         crate::app::state::default_settings_panel_font_button();
                     self.settings_panel_font_monospace =
                         crate::app::state::default_settings_panel_font_monospace();
-                    *changed = true;
+                    dirty.preset();
                 }
             });
     }

@@ -1,14 +1,16 @@
 //! Exclusions settings.
 
-use super::LABEL_WIDTH;
+use super::{SettingsDirty, LABEL_WIDTH};
 use crate::app::App;
 use crate::exclusions;
 use eframe::egui;
 use std::path::PathBuf;
 
 impl App {
-    /// Exclusions section
-    pub(super) fn ui_settings_exclusions(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+    /// Exclusions section. Toggling "Show excluded" or clearing the
+    /// exclusion list re-shapes the visible tree, so the change is
+    /// marked as `layout`.
+    pub(super) fn ui_settings_exclusions(&mut self, ui: &mut egui::Ui, dirty: &mut SettingsDirty) {
         egui::CollapsingHeader::new(egui::RichText::new("Exclusions").heading())
             .default_open(false)
             .show(ui, |ui| {
@@ -23,7 +25,7 @@ impl App {
                             ui.checkbox(&mut self.show_excluded, "Show excluded");
                             if self.show_excluded != old {
                                 self.rebuild_display_tree();
-                                *changed = true;
+                                dirty.layout();
                             }
                             if !self.exclusions.is_empty() && ui.small_button("Clear all").clicked()
                             {

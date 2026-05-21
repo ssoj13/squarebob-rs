@@ -9,7 +9,7 @@ use egui_dock::DockArea;
 
 use crate::events::{
     downcast, LayoutDirtyEvent, NavigateIntoEvent, NavigateUpEvent, RenderTick3DEvent,
-    MaterialsChangedEvent, SelectPathEvent, SettingsChangedEvent, ZoomResetEvent,
+    MaterialsChangedEvent, SelectPathEvent, ZoomResetEvent,
 };
 use crate::renderer::{HashTransformEffect, RenderMode};
 
@@ -33,9 +33,6 @@ impl App {
                 self.zoom_reset();
             } else if let Some(e) = downcast::<SelectPathEvent>(&event) {
                 self.select(e.0.clone());
-            } else if downcast::<SettingsChangedEvent>(&event).is_some() {
-                self.needs_layout = true;
-                ctx.request_repaint();
             } else if downcast::<MaterialsChangedEvent>(&event).is_some() {
                 // Material params / weights changed → PT samples are
                 // stale (light transport depends on materials), and

@@ -24,9 +24,9 @@ pub struct Material {
 
     /// Relative weight in the per-cube distribution. Weights across
     /// the library are normalised to sum 1.0 at classification time —
-    /// e.g. `[5.0, 1.0]` puts ~83% of cubes on slot 0 and ~17% on slot
-    /// 1. Range 0.0 ..= 10.0 in the UI; default 1.0 (uniform). Set to
-    /// 0 to effectively exclude a slot from the distribution.
+    /// e.g. `[5.0, 1.0]` puts ~83% of cubes on slot 0 and ~17% on slot 1.
+    /// Range 0.0 ..= 10.0 in the UI; default 1.0 (uniform).
+    /// A weight of 0 effectively excludes a slot from the distribution.
     #[serde(default = "default_weight")]
     pub weight: f32,
 

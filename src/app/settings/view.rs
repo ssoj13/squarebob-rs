@@ -1,6 +1,6 @@
 //! View settings: display, layout, and LoD (size band / merge).
 
-use super::LABEL_WIDTH;
+use super::{SettingsDirty, LABEL_WIDTH};
 use crate::app::filters::{count_files_in_range, count_files_outside_range};
 use crate::app::helpers::{fmt_size, multibutton_exclusive, parse_size, MultiButtonAxis};
 use crate::app::App;
@@ -8,12 +8,16 @@ use eframe::egui;
 use treemap::LayoutStyle;
 
 impl App {
-    /// View (layout) + LoD (size band / merge) sections
+    /// View (layout) + LoD (size band / merge) sections. Every knob in
+    /// the View block (free-space toggle, grid, layout style) re-shapes
+    /// the visible cube set, so they all mark `dirty.layout()`. The LoD
+    /// block runs its own pipeline (`needs_filter_rebuild` +
+    /// `filter_changed_at`) and does not flow through this signal.
     pub(super) fn ui_settings_view(
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
-        changed: &mut bool,
+        dirty: &mut SettingsDirty,
     ) {
         egui::CollapsingHeader::new(egui::RichText::new("View").heading())
             .default_open(true)
@@ -30,14 +34,17 @@ impl App {
                                 .on_hover_text("Show unallocated disk space as gray blocks");
                             if self.show_free_space != old {
                                 self.rebuild_display_tree();
-                                *changed = true;
+                                dirty.layout();
                             }
-                            *changed |= ui
+                            if ui
                                 .checkbox(&mut self.opts.grid, "Grid")
                                 .on_hover_text(
                                     "Draw thin border lines between blocks for better visibility",
                                 )
-                                .changed();
+                                .changed()
+                            {
+                                dirty.layout();
+                            }
                         });
                         ui.end_row();
 
@@ -54,7 +61,7 @@ impl App {
                                 MultiButtonAxis::Horizontal,
                             ) && self.opts.style != old
                             {
-                                *changed = true;
+                                dirty.layout();
                             }
                         });
                         ui.end_row();

@@ -60,9 +60,14 @@ fn neon_cyan() -> Material {
 }
 
 fn polished_marble() -> Material {
-    let mut p = StandardSurfaceParams::default();
-    p.base_color_weight = glam::Vec4::new(0.95, 0.93, 0.88, 1.0);
-    p.params1.z = 0.18; // specular roughness — gentle sheen
-    p.subsurface_color_weight = glam::Vec4::new(0.95, 0.92, 0.85, 0.15);
+    // Authored as a struct-literal patch on Default so each tweak (warm
+    // base, gentle specular roughness, slight subsurface tint) stays
+    // visually paired with its field — no per-field reassign churn.
+    let p = StandardSurfaceParams {
+        base_color_weight: glam::Vec4::new(0.95, 0.93, 0.88, 1.0),
+        subsurface_color_weight: glam::Vec4::new(0.95, 0.92, 0.85, 0.15),
+        params1: glam::Vec4::new(0.0, 0.0, 0.18, 0.0),
+        ..StandardSurfaceParams::default()
+    };
     Material::new("Polished Marble", p)
 }

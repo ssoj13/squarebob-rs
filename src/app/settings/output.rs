@@ -9,7 +9,7 @@
 use eframe::egui;
 use media_encoder::Project;
 
-use super::tinted_section;
+use super::{tinted_section, SettingsDirty};
 use crate::app::App;
 
 /// Inner content width for the inline encoder, in logical egui points.
@@ -23,7 +23,13 @@ impl App {
     /// Settings → Rendering tab. Mirrors the lifecycle bookkeeping
     /// that `ui_encode_dialog_window` performs (refresh frame source,
     /// poll progress) so the inline UI behaves identically.
-    pub(super) fn ui_settings_output(&mut self, ui: &mut egui::Ui, _changed: &mut bool) {
+    /// Output / Encoder inline UI. The encoder owns its own progress
+    /// lifecycle and does not feed the preset/layout dirty signal
+    /// — the `_dirty` parameter is kept for sig parity with the
+    /// other `ui_settings_*` callbacks so a future encoder knob
+    /// (e.g. a preset-tracked default codec) can opt in without
+    /// touching call sites.
+    pub(super) fn ui_settings_output(&mut self, ui: &mut egui::Ui, _dirty: &mut SettingsDirty) {
         tinted_section(
             ui,
             "Output",

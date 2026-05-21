@@ -359,6 +359,13 @@ fn apply_seed(value: f32, hash: u32, seed: u32) -> f32 {
 }
 
 /// Apply the distribution shaping to a normalised scalar.
+///
+/// Staged for a future `MaterializeSettings::distribution` UI pull-through —
+/// the shader-side path already exists; only the Rust-side caller is missing.
+/// Kept in tree (with `#[allow(dead_code)]`) rather than deleted so the
+/// implementation stays paired with its WGSL counterpart and the next wire-up
+/// commit doesn't have to reconstruct it from the shader.
+#[allow(dead_code)]
 fn apply_distribution(value: f32, input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     match settings.distribution {
         MaterialDistribution::Direct => value,
@@ -393,7 +400,10 @@ fn apply_distribution(value: f32, input: &MaterialInput, settings: &MaterializeS
     }
 }
 
-/// Simple 3D coherent noise. Used by `MaterialDistribution::Spatial`.
+/// Simple 3D coherent noise. Used by `MaterialDistribution::Spatial` via
+/// `apply_distribution`; both are currently dead until the distribution UI
+/// wire-up lands (see `apply_distribution` doc).
+#[allow(dead_code)]
 fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     let ix = x.floor() as i32;
     let iy = y.floor() as i32;
@@ -429,6 +439,7 @@ fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     lerp(y0, y1, uz)
 }
 
+#[allow(dead_code)]
 fn grid_hash(x: i32, y: i32, z: i32, seed: u32) -> f32 {
     let h = (x as u32).wrapping_mul(73_856_093)
         ^ (y as u32).wrapping_mul(19_349_663)
@@ -524,14 +535,16 @@ mod tests {
         // color-ramp concern only; it must NOT change material slot
         // assignment vs the default (Direct). Same inputs + same
         // weights + different `distribution` → same slot per cube.
-        let mut s_direct = MaterializeSettings {
+        let s_direct = MaterializeSettings {
             source: MaterialSource::Extension,
             distribution: MaterialDistribution::Direct,
             ..Default::default()
         };
-        let mut s_bands = s_direct;
-        s_bands.distribution = MaterialDistribution::Bands;
-        s_bands.band_count = 14;
+        let s_bands = MaterializeSettings {
+            distribution: MaterialDistribution::Bands,
+            band_count: 14,
+            ..s_direct
+        };
         let w = uniform(7);
         for h in 0..200u32 {
             let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
@@ -539,8 +552,6 @@ mod tests {
             let b = classify_to_index(&i, &s_bands, &w);
             assert_eq!(a, b, "shaping should not affect slot for hash {h}");
         }
-        // Suppress unused-mut lint without changing the assertion above.
-        s_direct.quant_levels = s_direct.quant_levels.max(1);
     }
 
     #[test]

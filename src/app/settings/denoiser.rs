@@ -6,13 +6,20 @@
 //! denoiser automatically once `current_spp >= target_spp`). A manual
 //! "Denoise now" button forces a single pass regardless of `auto`.
 
-use super::{control_label, settings_grid, tinted_section};
+use super::{control_label, settings_grid, tinted_section, SettingsDirty};
 use crate::app::App;
 use eframe::egui;
 use render_shared::{OidnModeOption, OidnQualityOption};
 
 impl App {
-    pub(super) fn ui_settings_denoiser(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+    /// Denoise (OIDN) section. Every control here adjusts a post-process
+    /// hyper-param — mode / quality / auto-trigger / interval / clamp /
+    /// adaptive-clamp / NaN-protect — and none of them affect cube layout
+    /// or PT samples. They are uniformly marked `dirty.preset()` so the
+    /// preset autosave fires but the treemap is not rebuilt and PT
+    /// accumulation is not reset. Fixes the long-standing surprise where
+    /// nudging "Interval" restarted the render from spp=0.
+    pub(super) fn ui_settings_denoiser(&mut self, ui: &mut egui::Ui, dirty: &mut SettingsDirty) {
         tinted_section(
             ui,
             "Denoiser (OIDN)",
@@ -42,7 +49,7 @@ impl App {
                                     .clicked()
                                 {
                                     *mode = opt;
-                                    *changed = true;
+                                    dirty.preset();
                                 }
                             }
                         });
@@ -68,7 +75,7 @@ impl App {
                                     .clicked()
                                 {
                                     *q = opt;
-                                    *changed = true;
+                                    dirty.preset();
                                 }
                             }
                         });
@@ -87,7 +94,7 @@ impl App {
                                  Off → only the manual button fires.",
                             );
                         if auto_resp.changed() {
-                            *changed = true;
+                            dirty.preset();
                         }
                         let off = self.render_3d_opts.pt_oidn_mode == OidnModeOption::Off;
                         let btn = ui
@@ -123,7 +130,7 @@ impl App {
                                  intermediate previews without hammering inference.",
                             );
                         if interval_resp.changed() {
-                            *changed = true;
+                            dirty.preset();
                         }
                         for preset in [32_u32, 64, 128, 256, 512, 1024] {
                             let selected = self.render_3d_opts.pt_oidn_interval == preset;
@@ -133,7 +140,7 @@ impl App {
                                 .clicked()
                             {
                                 self.render_3d_opts.pt_oidn_interval = preset;
-                                *changed = true;
+                                dirty.preset();
                             }
                         }
                     });
@@ -162,7 +169,7 @@ impl App {
                                  touch the raw PT accumulator.",
                             );
                         if clamp_resp.changed() {
-                            *changed = true;
+                            dirty.preset();
                         }
                         let adaptive_resp = ui
                             .checkbox(
@@ -178,7 +185,7 @@ impl App {
                                  dynamic range.",
                             );
                         if adaptive_resp.changed() {
-                            *changed = true;
+                            dirty.preset();
                         }
                     });
                     ui.end_row();
@@ -201,7 +208,7 @@ impl App {
                              PU/exp expansion in the inverse transfer.",
                         );
                     if nan_resp.changed() {
-                        *changed = true;
+                        dirty.preset();
                     }
                     ui.end_row();
                 });

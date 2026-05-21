@@ -56,15 +56,15 @@ pub fn downcast<E: Event>(event: &BoxedEvent) -> Option<&E> {
 // Events
 // ============================================================================
 
-/// Settings changed (triggers re-render)
-#[derive(Clone, Debug)]
-pub struct SettingsChangedEvent;
-
 /// Material library mutated (params, variance, weight, add / remove /
-/// rename / reorder / load). Distinct from `SettingsChangedEvent` so
-/// callers can react with the minimum work needed — for materials
-/// that's a PT accumulation reset + a forced 3D re-render, without
-/// the full layout rebuild a general settings change would imply.
+/// rename / reorder / load). Triggers a PT accumulation reset + a
+/// forced 3D re-render — without rebuilding the treemap layout.
+///
+/// The previous blanket `SettingsChangedEvent` is gone: settings-panel
+/// callbacks now emit a typed `SettingsDirty` record (see
+/// `app::settings::dirty`) which is dispatched directly inside the
+/// settings panel, so layout / preset-dirty / repaint side-effects
+/// stay scoped to the field that actually changed.
 #[derive(Clone, Debug)]
 pub struct MaterialsChangedEvent;
 

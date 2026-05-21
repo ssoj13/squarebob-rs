@@ -150,7 +150,11 @@ impl App {
     /// emitted as top-level siblings of the caller's Denoiser section
     /// rather than nested inside a single "Renderer" collapsing
     /// header — flatter, easier to scan, faster to drill into.
-    pub(super) fn ui_settings_renderer(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+    pub(super) fn ui_settings_renderer(
+        &mut self,
+        ui: &mut egui::Ui,
+        dirty: &mut super::SettingsDirty,
+    ) {
         if self.render_mode == RenderMode::Mode2D {
             egui::CollapsingHeader::new(egui::RichText::new("Renderer").heading())
                 .default_open(true)
@@ -159,7 +163,7 @@ impl App {
                 });
         }
         if self.render_mode == RenderMode::Mode3D {
-            self.ui_3d_settings(ui, changed);
+            self.ui_3d_settings(ui, dirty);
         }
     }
 
@@ -197,7 +201,7 @@ impl App {
     /// `Interaction` (hover/selection) lives as a sub-band of the
     /// General section in `mod.rs` — it's a UX preference, not a
     /// production-pipeline step.
-    fn ui_3d_settings(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+    fn ui_3d_settings(&mut self, ui: &mut egui::Ui, dirty: &mut super::SettingsDirty) {
         // 1. Geometry.
         self.ui_3d_geometry(ui);
         // 2. Animation — time master feeding FX + env.
@@ -237,11 +241,11 @@ impl App {
         // 9. Denoise — sits next to Samples because it consumes the
         //    same sample budget. Always rendered (status is informative
         //    even in PBR mode where OIDN never fires).
-        self.ui_settings_denoiser(ui, changed);
+        self.ui_settings_denoiser(ui, dirty);
         // 10. Output — inline video/sequence encoder, peer of Denoise.
         //     Body is gated by `show_output_section`; the section
         //     header is always present so the user can opt in.
-        self.ui_settings_output(ui, changed);
+        self.ui_settings_output(ui, dirty);
     }
 
     /// Shading mode selection (Shaded/Wireframe/Path Tracing)

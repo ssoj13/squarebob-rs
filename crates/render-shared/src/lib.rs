@@ -764,7 +764,7 @@ pub struct Render3DOptions {
     pub pt_oidn_adaptive_clamp: bool,
 
     /// Camera model selector: `Manual` reads the legacy raw-aperture
-    /// + orbit-fov pair; `Physical` swaps in derived values from
+    /// and orbit-fov pair; `Physical` swaps in derived values from
     /// [`Self::pt_physical_camera`] (F-stop, focal length, sensor
     /// width, ISO, shutter).
     #[serde(default)]
