@@ -1195,13 +1195,53 @@ impl App {
             ui.end_row();
 
             control_label(ui, "Probability:");
-            changed |= ui
+            if ui
                 .add(egui::Slider::new(&mut over.probability, 0.0..=1.0))
                 .on_hover_text(
-                    "Fraction of cubes this override claims. Combined \
-                     with the Distribute shape below.",
+                    "Fraction of cubes this override claims. Edit the \
+                     Count row below to specify it as an absolute cube \
+                     count instead — the two stay in lockstep.",
                 )
-                .changed();
+                .changed()
+            {
+                changed = true;
+            }
+            ui.end_row();
+
+            // Count ↔ Probability mirror. Editing one snaps the
+            // other: `count = round(probability * total_cubes)` and
+            // `probability = count / total_cubes`. When the scan
+            // hasn't finished (`total_cubes == 0`) we leave the
+            // count read-only so the user can't paint a fraction of
+            // an unknown universe.
+            control_label(ui, "Count:");
+            ui.horizontal(|ui| {
+                if total_cubes == 0 {
+                    ui.add_enabled(
+                        false,
+                        egui::Label::new(
+                            egui::RichText::new("-- (scan first)")
+                                .color(ui.visuals().weak_text_color()),
+                        ),
+                    );
+                } else {
+                    let mut count = (over.probability * total_cubes as f32).round() as u32;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut count)
+                                .speed(1.0)
+                                .range(0..=total_cubes),
+                        )
+                        .on_hover_text("Absolute cube count this override should claim.")
+                        .changed()
+                    {
+                        over.probability =
+                            (count as f32 / total_cubes as f32).clamp(0.0, 1.0);
+                        changed = true;
+                    }
+                    ui.small(format!("/ {total_cubes}"));
+                }
+            });
             ui.end_row();
 
             control_label(ui, "Distribute:");
