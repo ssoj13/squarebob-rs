@@ -1,14 +1,16 @@
 [package]
 name = "render-shared"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-bytemuck = { version = "1", features = ["derive"] }
-glam = "0.32"
-serde = { version = "1", features = ["derive"] }
-pt-mats = { path = "../pt-mats" }
-pt-material = { path = "../pt-material" }
+bytemuck = { workspace = true }
+glam = { workspace = true }
+serde = { workspace = true }
+pt-mats = { workspace = true }
+pt-material = { workspace = true }
 
 [dev-dependencies]
-serde_json = "1"
+serde_json = { workspace = true }

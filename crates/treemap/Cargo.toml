@@ -1,24 +1,25 @@
 [package]
 name = "treemap"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-squarebob-core = { path = "../squarebob-core" }
-log = "0.4"
-rayon = "1.12"
+squarebob-core = { workspace = true }
+log = { workspace = true }
+rayon = { workspace = true }
 
 [dependencies.bytemuck]
-version = "1"
-features = ["derive"]
+workspace = true
 optional = true
 
 [dependencies.wgpu]
-version = "29"
+workspace = true
 optional = true
 
 [dependencies.render-core]
-path = "../render-core"
+workspace = true
 optional = true
 
 [features]

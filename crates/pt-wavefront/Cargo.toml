@@ -1,9 +1,11 @@
 [package]
 name = "pt-wavefront"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-bytemuck = { version = "1", features = ["derive"] }
-log = "0.4"
-wgpu = "29"
+bytemuck = { workspace = true }
+log = { workspace = true }
+wgpu = { workspace = true }

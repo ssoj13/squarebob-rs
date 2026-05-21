@@ -1,8 +1,9 @@
 [package]
 name = "gpu-mem"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Query GPU video memory (VRAM) — zero unsafe, zero dependencies"
 keywords = ["gpu", "vram", "memory", "graphics"]
 categories = ["hardware-support", "os"]

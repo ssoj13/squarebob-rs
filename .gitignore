@@ -8,3 +8,5 @@
 .env
 .vcpkg
 .log
+*.log
+.bughunt/*.log

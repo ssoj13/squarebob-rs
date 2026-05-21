@@ -1,14 +1,16 @@
 [package]
 name = "pt-megakernel"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-bytemuck = { version = "1", features = ["derive"] }
-log = "0.4"
-wgpu = "29"
-glam = "0.32"
-pt-core = { path = "../pt-core" }
-bvh-gpu = { path = "../bvh-gpu" }
-pt-wavefront = { path = "../pt-wavefront" }
-render-core = { path = "../render-core" }
+bytemuck = { workspace = true }
+log = { workspace = true }
+wgpu = { workspace = true }
+glam = { workspace = true }
+pt-core = { workspace = true }
+bvh-gpu = { workspace = true }
+pt-wavefront = { workspace = true }
+render-core = { workspace = true }

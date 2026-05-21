@@ -1,17 +1,18 @@
 [package]
 name = "pt-denoise-oidn"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.95"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Intel OIDN GPU denoiser integration for squarebob-rs PT output."
 
 [dependencies]
-wgpu = "29"
-bytemuck = { version = "1", features = ["derive"] }
-anyhow = "1"
-log = "0.4"
-half = "2.7.1"
-render-core = { path = "../render-core" }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+half = { workspace = true }
+render-core = { workspace = true }
 
 # Burn + WGPU backend share the same wgpu 29.0.3 we already pin in workspace.
 # `cubecl-wgpu::init_device` lets us reuse squarebob's wgpu::Instance/Adapter/

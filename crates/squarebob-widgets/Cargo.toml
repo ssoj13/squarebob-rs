@@ -1,7 +1,8 @@
 [package]
 name = "squarebob-widgets"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 license = "Apache-2.0"
 description = "Reusable egui widgets for squarebob — attribute editor, value+variance sliders, and friends. Hermetic, no project-specific deps beyond egui/serde/uuid."
 
@@ -17,9 +18,9 @@ description = "Reusable egui widgets for squarebob — attribute editor, value+v
 # syntax, which is only stabilised in edition 2024.
 
 [dependencies]
-eframe = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu"] }
-egui = "0.34"
-egui_extras = "0.34"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v4", "serde"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

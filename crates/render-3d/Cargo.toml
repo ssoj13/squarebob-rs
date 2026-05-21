@@ -1,21 +1,23 @@
 [package]
 name = "render-3d"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-anyhow = "1"
-half = "2.7.1"
-bytemuck = { version = "1", features = ["derive"] }
-squarebob-core = { path = "../squarebob-core" }
-glam = "0.32"
-image = "0.25"
-log = "0.4"
-render-core = { path = "../render-core" }
-render-shared = { path = "../render-shared" }
-pt-core = { path = "../pt-core" }
-pt-megakernel = { path = "../pt-megakernel" }
-pt-mats = { path = "../pt-mats" }
-pt-material = { path = "../pt-material" }
-treemap = { path = "../treemap" }
-wgpu = "29"
+anyhow = { workspace = true }
+half = { workspace = true }
+bytemuck = { workspace = true }
+glam = { workspace = true }
+image = { workspace = true }
+log = { workspace = true }
+wgpu = { workspace = true }
+squarebob-core = { workspace = true }
+render-core = { workspace = true }
+render-shared = { workspace = true }
+pt-core = { workspace = true }
+pt-megakernel = { workspace = true }
+pt-mats = { workspace = true }
+pt-material = { workspace = true }
+treemap = { workspace = true }

@@ -118,8 +118,17 @@ App::ui_treemap
 
 ## Current Bug-Hunt Focus Areas
 
-- Shared GPU readback helper still panics on callback/map failures.
-- Readback size arithmetic is still done in `u32` before casting to `u64` / `usize`.
-- Some unsafe blocks lack `// SAFETY:` comments.
-- Megakernel path-tracer initialization is duplicated between readback and no-readback render paths.
-- A few `expect` invariants remain after `.bughunt/plan1.md` fixes; most are mechanically safe but should be centralized to keep the panic surface small.
+Archived bug-hunt plans live in `md.old/bughunt-plan1.md` and
+`md.old/bughunt-plan2.md`. The shared readback helper in
+`render-core::gpu::map_readback` now returns `Vec::new()` and logs a
+warning on failure instead of panicking, so the historical "panic on
+map_async" entry is closed.
+
+Remaining open work that earlier passes flagged but did not finish:
+
+- Audit readback size arithmetic (`width * height * 4`) for `u32`
+  overflow before casts to `usize` in 2D/3D/PT readback paths.
+- Add `// SAFETY:` comments to remaining `unsafe` blocks across
+  `crates/render-3d`, `crates/bvh-gpu`, and `crates/pt-megakernel`.
+- Consider unifying megakernel readback vs no-readback init paths in
+  `crates/render-3d/src/pt/megakernel/render.rs`.

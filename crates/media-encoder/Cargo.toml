@@ -1,8 +1,9 @@
 [package]
 name = "media-encoder"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.95"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [features]
 default = ["ffmpeg", "exr"]
@@ -10,18 +11,18 @@ ffmpeg = ["dep:playa-ffmpeg"]
 exr = ["dep:vfx-core", "dep:vfx-exr", "dep:vfx-io"]
 
 [dependencies]
-bytemuck = "1"
-eframe = { version = "0.34", default-features = false }
-egui = "0.34"
-egui-phosphor = "0.12.0"
-egui_dock = { version = "0.19", features = ["serde"] }
-half = { version = "2.7", features = ["bytemuck", "serde"] }
+bytemuck = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+egui-phosphor = { workspace = true }
+egui_dock = { workspace = true }
+half = { workspace = true, features = ["bytemuck", "serde"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "tga", "hdr"] }
-log = "0.4"
-playa-ffmpeg = { git = "https://github.com/ssoj13/playa-ffmpeg", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling", "nvenc", "static"], optional = true }
-rfd = "0.17"
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
-vfx-core = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", optional = true }
-vfx-exr = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", features = ["htj2k"], optional = true }
-vfx-io = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", default-features = false, features = ["exr", "htj2k", "png", "jpeg", "tiff", "dpx", "hdr"], optional = true }
+log = { workspace = true }
+playa-ffmpeg = { workspace = true, optional = true }
+rfd = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+vfx-core = { workspace = true, optional = true }
+vfx-exr = { workspace = true, optional = true }
+vfx-io = { workspace = true, optional = true }
