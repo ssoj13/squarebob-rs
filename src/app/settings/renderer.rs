@@ -1194,29 +1194,44 @@ impl App {
                 });
             ui.end_row();
 
+            // Probability ↔ Count mirror.
+            //
+            // Single source of truth: `over.probability` on the
+            // options struct. `count` is recomputed every frame as
+            // `round(probability * total_cubes)` and lives only on
+            // the stack — there is nothing for a probability→count
+            // path to *persist* between frames. The only writes
+            // back into `over.probability` come from user-driven
+            // `.changed()` responses on either the slider or the
+            // DragValue, so no autonomous loop can fire.
+            //
+            // Belt-and-braces: the Count→probability write is
+            // gated on `!prob_changed_this_frame` so that even a
+            // hypothetical egui event ordering where both
+            // widgets report `changed()` in the same frame cannot
+            // produce a fight. The slider always wins on ties
+            // (user moved it last by definition).
             control_label(ui, "Probability:");
-            if ui
+            let prob_changed = ui
                 .add(egui::Slider::new(&mut over.probability, 0.0..=1.0))
                 .on_hover_text(
                     "Fraction of cubes this override claims. Edit the \
                      Count row below to specify it as an absolute cube \
                      count instead — the two stay in lockstep.",
                 )
-                .changed()
-            {
+                .changed();
+            if prob_changed {
                 changed = true;
             }
             ui.end_row();
 
-            // Count ↔ Probability mirror. Editing one snaps the
-            // other: `count = round(probability * total_cubes)` and
-            // `probability = count / total_cubes`. When the scan
-            // hasn't finished (`total_cubes == 0`) we leave the
-            // count read-only so the user can't paint a fraction of
-            // an unknown universe.
             control_label(ui, "Count:");
             ui.horizontal(|ui| {
                 if total_cubes == 0 {
+                    // No scan yet → count has no meaningful range.
+                    // Show a hint instead of a DragValue clamped to
+                    // 0..=0, which would silently eat any typed
+                    // value.
                     ui.add_enabled(
                         false,
                         egui::Label::new(
@@ -1224,23 +1239,23 @@ impl App {
                                 .color(ui.visuals().weak_text_color()),
                         ),
                     );
-                } else {
-                    let mut count = (over.probability * total_cubes as f32).round() as u32;
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut count)
-                                .speed(1.0)
-                                .range(0..=total_cubes),
-                        )
-                        .on_hover_text("Absolute cube count this override should claim.")
-                        .changed()
-                    {
-                        over.probability =
-                            (count as f32 / total_cubes as f32).clamp(0.0, 1.0);
-                        changed = true;
-                    }
-                    ui.small(format!("/ {total_cubes}"));
+                    return;
                 }
+                let mut count = (over.probability * total_cubes as f32).round() as u32;
+                let count_changed = ui
+                    .add(
+                        egui::DragValue::new(&mut count)
+                            .speed(1.0)
+                            .range(0..=total_cubes),
+                    )
+                    .on_hover_text("Absolute cube count this override should claim.")
+                    .changed();
+                if count_changed && !prob_changed {
+                    over.probability =
+                        (count as f32 / total_cubes as f32).clamp(0.0, 1.0);
+                    changed = true;
+                }
+                ui.small(format!("/ {total_cubes}"));
             });
             ui.end_row();
 
