@@ -1020,7 +1020,7 @@ impl Renderer3D {
     /// highlight (selection or hover); the object_id texture is reused
     /// from the previous full `render_to_view` so we don't pay for a
     /// per-instance pass here.
-    pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>, exposure: f32) {
+    pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>, opts: &Render3DOptions) {
         let Some(state) = self.render_state.as_ref() else { return; };
         let Some(pt) = self.pt.path_tracer.as_ref() else { return; };
         let mut encoder = self
@@ -1029,10 +1029,18 @@ impl Renderer3D {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("composite_overlay"),
             });
-        // Push physical-camera exposure into the blit shader before
-        // drawing. `1.0` reproduces legacy behaviour for callers that
-        // don't care.
-        pt.set_blit_exposure(&self.ctx.queue, exposure);
+        // Push the FULL colour-pipeline state, not just exposure. This
+        // is the OIDN denoise-display path; without re-pushing the lane,
+        // a user changing Color settings while the denoise is on-screen
+        // would see no effect until the next PT render frame.
+        pt.set_blit_exposure(&self.ctx.queue, opts.effective_exposure_multiplier());
+        pt.set_blit_odt_tag(&self.ctx.queue, opts.color_odt.gpu_tag());
+        let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
+        pt.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
+        if opts.color_tonemap == render_shared::TonemapKind::AcesFull {
+            let (pre, post) = opts.aces_full_matrices();
+            pt.set_blit_aces_matrices(&self.ctx.queue, &pre, &post);
+        }
         pt.blit_with_source(&self.ctx.device, &mut encoder, &state.targets.render_view, source);
         let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
         if has_active {

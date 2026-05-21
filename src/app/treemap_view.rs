@@ -678,7 +678,7 @@ impl App {
                 None
             };
             if let Some(r) = self.renderer_3d.as_ref() {
-                r.composite_overlay(source, self.render_3d_opts.effective_exposure_multiplier());
+                r.composite_overlay(source, &self.render_3d_opts);
             }
             ctx.request_repaint();
         } else {
@@ -1103,10 +1103,7 @@ impl App {
                     self.renderer_3d.as_ref(),
                     self.oidn_denoiser.as_ref().map(|d| d.result_view()),
                 ) {
-                    r.composite_overlay(
-                        Some(denoised_view),
-                        self.render_3d_opts.effective_exposure_multiplier(),
-                    );
+                    r.composite_overlay(Some(denoised_view), &self.render_3d_opts);
                 }
             self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
 
