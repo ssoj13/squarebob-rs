@@ -18,9 +18,17 @@
 // color.y = display-side exposure in EV stops (additive, on top of x)
 // color.z = white-balance Kelvin / 6500 (normalised so 1.0 = neutral)
 // color.w = gamut-compress strength [0,1] (0.0 = bypass)
+//
+// aces_pre  = IDT (scene-linear → ACEScg) matrix, column-major.
+// aces_post = ODT (ACEScg → display) matrix, column-major.
+// Both consulted only when color.x == 4 (AcesFull). For other tonemap
+// kinds the matrices are unused — CPU still writes identity at init so
+// reading them in a placeholder branch is well-defined.
 struct BlitParams {
-    exposure: vec4<f32>,
-    color:    vec4<f32>,
+    exposure:  vec4<f32>,
+    color:     vec4<f32>,
+    aces_pre:  mat3x3<f32>,
+    aces_post: mat3x3<f32>,
 }
 @group(0) @binding(2) var<uniform> blit_params: BlitParams;
 
@@ -88,13 +96,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Stage 4 — tonemap switch. Default branch is AcesFilmic so callers
     // that haven't migrated yet (or that explicitly select kind == 3)
     // produce the same image as the pre-C-2 shader.
+    //
+    // AcesFull (kind == 4): scene-linear → ACEScg (pre IDT∘LMT) →
+    // filmic RRT → display (post ODT). When CPU writes identity for
+    // both matrices the result is algebraically equal to AcesFilmic.
     let kind = u32(blit_params.color.x);
     var mapped: vec3<f32>;
     switch kind {
         case 0u: { mapped = saturate(scene); }                  // None
         case 1u: { mapped = saturate(scene); }                  // Linear (curve-less)
         case 2u: { mapped = reinhard(scene); }                  // Reinhard
-        case 4u: { mapped = aces_filmic(scene); }               // AcesFull (C-3 will swap)
+        case 4u: {                                              // AcesFull
+            let working = blit_params.aces_pre * scene;
+            let curved  = aces_filmic(working);
+            mapped      = saturate(blit_params.aces_post * curved);
+        }
         default: { mapped = aces_filmic(scene); }               // AcesFilmic (default)
     }
 

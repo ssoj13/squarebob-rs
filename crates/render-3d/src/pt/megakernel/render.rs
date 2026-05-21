@@ -461,6 +461,10 @@ pub(crate) fn render_path_traced(
     pt.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
     let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
     pt.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);
+    if opts.color_tonemap == render_shared::TonemapKind::AcesFull {
+        let (pre, post) = opts.aces_full_matrices();
+        pt.set_blit_aces_matrices(&renderer.ctx.queue, &pre, &post);
+    }
     pt.blit(&mut encoder, &targets.render_view);
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);

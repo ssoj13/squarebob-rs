@@ -974,16 +974,17 @@ impl PathTraceCompute {
             source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
         });
 
-        // Blit-time uniforms. Two vec4 lanes — first is the legacy
-        // physical-camera exposure lane (`.x` = multiplier, `.yzw` =
-        // reserved); second is the colour-pipeline lane consumed by
-        // the C-2 tonemap switch (`.x` = TonemapKind::gpu_tag(),
-        // `.y` = display EV stops, `.z` = WB normalised around 6500K,
-        // `.w` = gamut-compress strength). Total 32 bytes — both lanes
-        // are bytemuck-friendly and bind as a single uniform buffer.
+        // Blit-time uniforms. Layout mirrors `BlitParams` in blit.wgsl:
+        //   0..16   exposure lane (.x = camera exposure, yzw = reserved)
+        //   16..32  colour lane (.x = tonemap_tag, .y = display EV,
+        //                        .z = WB norm, .w = gamut compress)
+        //   32..80  ACES pre-matrix (3× vec4 std140 columns, IDT∘LMT)
+        //   80..128 ACES post-matrix (3× vec4 std140 columns, ODT)
+        // Total 128 bytes. The pre/post matrices only matter when
+        // `tonemap_tag == 4` (AcesFull); other branches ignore them.
         let blit_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pt_blit_uniforms"),
-            size: 32, // 2× vec4<f32>
+            size: 128, // 2× vec4 + 2× mat3 (std140-padded)
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -994,12 +995,23 @@ impl PathTraceCompute {
         //                                         EV = 0, WB = neutral
         //                                         (1.0 = 6500/6500), no
         //                                         gamut compress.
+        //   pre / post    = identity 3×3 (sRGB → sRGB no-op). AcesFull
+        //                   would re-bake them anyway on first push.
         queue.write_buffer(
             &blit_uniform_buffer,
             0,
             bytemuck::cast_slice(&[
-                1.0_f32, 0.0, 0.0, 0.0, // exposure lane
-                3.0_f32, 0.0, 1.0, 0.0, // colour lane (AcesFilmic default)
+                // base lanes
+                1.0_f32, 0.0, 0.0, 0.0, // exposure
+                3.0_f32, 0.0, 1.0, 0.0, // colour (AcesFilmic default)
+                // pre matrix (identity, column-major std140)
+                1.0_f32, 0.0, 0.0, 0.0,
+                0.0,     1.0, 0.0, 0.0,
+                0.0,     0.0, 1.0, 0.0,
+                // post matrix (identity)
+                1.0_f32, 0.0, 0.0, 0.0,
+                0.0,     1.0, 0.0, 0.0,
+                0.0,     0.0, 1.0, 0.0,
             ]),
         );
 
@@ -4601,6 +4613,24 @@ impl PathTraceCompute {
             gamut_compress,
         ];
         queue.write_buffer(&self.blit_uniform_buffer, 16, bytemuck::cast_slice(&params));
+    }
+
+    /// Push the ACES pre/post matrices into the blit uniform buffer.
+    /// Only consulted by the GPU when `tonemap_tag == 4` (AcesFull) —
+    /// other branches read the curve directly in linear-sRGB space.
+    ///
+    /// Each matrix is 3× vec4 (column-major, std140-padded; see
+    /// `render-shared::mat3_to_std140_columns`). Writes at offsets
+    /// `32..80` (pre) and `80..128` (post) — independent from the
+    /// per-frame exposure / colour lanes.
+    pub fn set_blit_aces_matrices(
+        &self,
+        queue: &wgpu::Queue,
+        pre: &[[f32; 4]; 3],
+        post: &[[f32; 4]; 3],
+    ) {
+        queue.write_buffer(&self.blit_uniform_buffer, 32, bytemuck::cast_slice(pre));
+        queue.write_buffer(&self.blit_uniform_buffer, 80, bytemuck::cast_slice(post));
     }
 
     pub fn blit(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {

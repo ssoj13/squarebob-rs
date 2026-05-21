@@ -864,6 +864,45 @@ impl Render3DOptions {
         }
     }
 
+    /// Bake the IDT and ODT lanes into a pair of std140-packed 3×3
+    /// matrices the blit shader applies around the RRT curve when
+    /// `tonemap == AcesFull`.
+    ///
+    /// Returns `(pre, post)` where:
+    /// - `pre`  is the IDT (∘ LMT, future) — scene-linear → ACEScg.
+    /// - `post` is the ODT — ACEScg → display.
+    ///
+    /// Each matrix is encoded as 3 `vec4` columns with `.w = 0` padding
+    /// (12 floats, 48 bytes). Unimplemented lane combinations fall back
+    /// to identity — that means the AcesFull GPU branch degrades to a
+    /// plain filmic curve in sRGB space, which is the same as the
+    /// AcesFilmic default. No black frames on unhandled combos.
+    pub fn aces_full_matrices(&self) -> ([[f32; 4]; 3], [[f32; 4]; 3]) {
+        let pre_src: &[[f32; 3]; 3] = match (self.color_idt, self.color_lmt) {
+            // sRGB / Rec.709 share primaries — same matrix.
+            (AcesIdt::SrgbToAp1, AcesLmt::None)
+            | (AcesIdt::Rec709ToAp1, AcesLmt::None) => &SRGB_TO_ACESCG,
+            // LMT variants ride on top of the IDT but aren't baked yet —
+            // C-3 ships the IDT; LMT injection is a C-3+ refinement.
+            (AcesIdt::SrgbToAp1, _) | (AcesIdt::Rec709ToAp1, _) => &SRGB_TO_ACESCG,
+            (AcesIdt::Ap1Passthrough, _) | (AcesIdt::None, _) => &MAT3_IDENTITY,
+        };
+
+        let post_src: &[[f32; 3]; 3] = match self.color_odt {
+            // sRGB and Rec.709 share primaries; their EOTFs differ but
+            // the linear-light matrix is identical.
+            AcesOdt::Srgb100nits | AcesOdt::Rec709 | AcesOdt::SrgbHdrSim => &ACESCG_TO_SRGB,
+            // Wider-gamut targets need their own matrices — wired in a
+            // later phase when vfx-color is pulled in for Bradford CATs.
+            AcesOdt::P3D65 | AcesOdt::DciP3 | AcesOdt::Rec2020_1000nits => &ACESCG_TO_SRGB,
+        };
+
+        (
+            mat3_to_std140_columns(pre_src),
+            mat3_to_std140_columns(post_src),
+        )
+    }
+
     /// Pack the colour-pipeline knobs into the 4-tuple the blit
     /// shader's second `vec4` consumes (see `compute.rs::set_blit_color`).
     ///
@@ -969,6 +1008,46 @@ impl TonemapKind {
             TonemapKind::AcesFull => 4,
         }
     }
+}
+
+/// ACEScg (AP1) → sRGB matrix with Bradford D60→D65 CAT.
+///
+/// Row-major. Values are the canonical ACES 1.0 RRT_SAT⊗ODT_sRGB
+/// composite — also matches `vfx-color::aces::acescg_to_srgb_matrix()`
+/// to <1e-4. Hard-coded for now to avoid pulling vfx-color as a dep
+/// just for one matrix pair; the constants are short-lived (C-5+ will
+/// either swap on ODT or move to vfx-color for Rec.2020 / P3-D65).
+pub const ACESCG_TO_SRGB: [[f32; 3]; 3] = [
+    [1.70505, -0.62179, -0.08326],
+    [-0.13026, 1.14080, -0.01055],
+    [-0.02400, -0.12897, 1.15297],
+];
+
+/// sRGB → ACEScg (AP1) matrix with Bradford D65→D60 CAT. Inverse of
+/// [`ACESCG_TO_SRGB`] (to numerical precision).
+pub const SRGB_TO_ACESCG: [[f32; 3]; 3] = [
+    [0.61314, 0.33952, 0.04734],
+    [0.07012, 0.91634, 0.01354],
+    [0.02061, 0.10957, 0.86983],
+];
+
+/// Identity 3×3 matrix — used when an IDT or ODT lane is `None`
+/// (passthrough) or unimplemented.
+pub const MAT3_IDENTITY: [[f32; 3]; 3] =
+    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// Pack a row-major 3×3 matrix into the column-major
+/// `array<vec4<f32>, 3>` layout WGSL std140 uniforms consume.
+///
+/// Each output `vec4` is a column of the matrix with `.w = 0.0` for
+/// alignment padding. WGSL's `mat3x3` reads columns sequentially, so
+/// CPU stores `[col0.xyzw, col1.xyzw, col2.xyzw]` (12 floats, 48 bytes).
+pub fn mat3_to_std140_columns(m: &[[f32; 3]; 3]) -> [[f32; 4]; 3] {
+    [
+        [m[0][0], m[1][0], m[2][0], 0.0], // column 0
+        [m[0][1], m[1][1], m[2][1], 0.0], // column 1
+        [m[0][2], m[1][2], m[2][2], 0.0], // column 2
+    ]
 }
 
 /// Input Device Transform — maps scene-referred RGB into the ACES
@@ -1366,7 +1445,78 @@ impl Default for Render3DOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::{PtSamplerMode, Render3DOptions};
+    use super::{
+        AcesIdt, AcesOdt, PtSamplerMode, Render3DOptions, TonemapKind, ACESCG_TO_SRGB,
+        MAT3_IDENTITY, SRGB_TO_ACESCG,
+    };
+
+    /// Apply a row-major 3×3 to a column vector.
+    fn mul3(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+        [
+            m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+            m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+            m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+        ]
+    }
+
+    #[test]
+    fn aces_matrices_round_trip_white() {
+        // Equal-energy gray (1,1,1) is the most aggressive round-trip
+        // test for matrix pairs because chromatic-adaptation errors
+        // show up as a tint. Tolerance is loose because the constants
+        // are quoted to 5 decimals.
+        let v: [f32; 3] = [1.0, 1.0, 1.0];
+        let ap1 = mul3(&SRGB_TO_ACESCG, v);
+        let rt = mul3(&ACESCG_TO_SRGB, ap1);
+        for c in 0..3 {
+            assert!(
+                (rt[c] - v[c]).abs() < 1e-3,
+                "AP1 round-trip drift on channel {c}: {} vs {} (delta {})",
+                rt[c],
+                v[c],
+                rt[c] - v[c]
+            );
+        }
+    }
+
+    #[test]
+    fn aces_full_matrices_default_returns_srgb_pair() {
+        // Default options select IDT=SrgbToAp1 + LMT=None + ODT=Srgb100nits,
+        // so `aces_full_matrices()` must hand back the sRGB↔AP1 pair —
+        // never identity (identity would degrade AcesFull to AcesFilmic).
+        let opts = Render3DOptions::default();
+        let (pre, post) = opts.aces_full_matrices();
+        // pre[0] is the first WGSL column = SRGB_TO_ACESCG row 0
+        // ([0.61314, 0.07012, 0.02061], 0.0). Check the (0,0).
+        assert!(
+            (pre[0][0] - SRGB_TO_ACESCG[0][0]).abs() < 1e-6,
+            "pre matrix not SRGB_TO_ACESCG"
+        );
+        assert!(
+            (post[0][0] - ACESCG_TO_SRGB[0][0]).abs() < 1e-6,
+            "post matrix not ACESCG_TO_SRGB"
+        );
+    }
+
+    #[test]
+    fn aces_full_matrices_passthrough_returns_identity() {
+        // IDT=Ap1Passthrough means "PT already writes ACEScg" → pre is
+        // identity. Pair this with a normal ODT and we get the post-
+        // only behaviour (working space = AP1, no IDT applied).
+        let opts = Render3DOptions {
+            color_tonemap: TonemapKind::AcesFull,
+            color_idt: AcesIdt::Ap1Passthrough,
+            color_odt: AcesOdt::Srgb100nits,
+            ..Default::default()
+        };
+        let (pre, _post) = opts.aces_full_matrices();
+        assert!(
+            (pre[0][0] - MAT3_IDENTITY[0][0]).abs() < 1e-6
+                && pre[0][1].abs() < 1e-6
+                && pre[0][2].abs() < 1e-6,
+            "pre matrix should be identity for Ap1Passthrough IDT"
+        );
+    }
 
     #[test]
     fn render_3d_options_deserialize_defaults() {
