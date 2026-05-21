@@ -4454,27 +4454,21 @@ impl PathTraceCompute {
         );
         queue.submit(std::iter::once(encoder.finish()));
 
-        let slice = self.pick_readback_buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
         log::trace!("PT pick: waiting for map");
-        // Must wait for map_async callback before rx.recv()
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv().ok().and_then(|r| r.ok())?;
-
-        let data = slice.get_mapped_range();
-        let result = bytemuck::from_bytes::<PickResult>(&data);
-        let hit = if result.hit == 1 {
-            Some((result.object_id, result.t))
-        } else {
-            None
-        };
-        drop(data);
-        self.pick_readback_buffer.unmap();
+        // Shared readback helper. None on device-lost / map failure (logged).
+        let hit = render_core::map_buffer_read(device, &self.pick_readback_buffer, |bytes| {
+            let result = bytemuck::from_bytes::<PickResult>(bytes);
+            if result.hit == 1 {
+                Some((result.object_id, result.t))
+            } else {
+                None
+            }
+        })
+        .map_err(|e| log::warn!("PT pick: {e}"))
+        .ok()
+        .flatten();
         let elapsed_ms = pick_start.elapsed().as_secs_f64() * 1000.0;
-        log::trace!("PT pick: done hit={:?} ({:.2}ms)", hit, elapsed_ms);
+        log::trace!("PT pick: done hit={hit:?} ({elapsed_ms:.2}ms)");
         hit
     }
 

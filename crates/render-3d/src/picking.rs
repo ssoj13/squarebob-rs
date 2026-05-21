@@ -187,37 +187,29 @@ impl PickingState {
         // Ensure the copy command has finished before mapping (map_async before submit caused BufferStillMapped)
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
 
-        let buffer_slice = buf.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        // Outer recv fails if the callback was dropped (device lost); inner Err
-        // reports map_async failure. Either way, bail without panicking.
-        match rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                log::warn!("picking::poll_result - map_async failed: {e:?}");
-                self.pending_px = None;
-                return;
-            }
-            Err(e) => {
-                log::warn!("picking::poll_result - map callback dropped: {e}");
-                self.pending_px = None;
-                return;
-            }
-        }
-
-        let data = buffer_slice.get_mapped_range();
+        // Shared readback helper. On device-lost / map failure: log + clear
+        // pending_px so the next frame retries cleanly instead of panicking.
         let offset = (px as usize) * 4;
-        if offset + 4 <= data.len() {
-            let raw = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]);
+        let raw = match render_core::map_buffer_read(device, buf, |data| {
+            if offset + 4 <= data.len() {
+                Some(u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]))
+            } else {
+                None
+            }
+        }) {
+            Ok(raw) => raw,
+            Err(e) => {
+                log::warn!("picking::poll_result - {e}");
+                self.pending_px = None;
+                return;
+            }
+        };
+        if let Some(raw) = raw {
             // Texture encodes selected instances as id | SELECTED_BIT; id_map uses canonical ids only.
             self.hovered_id = canonical_object_id(raw);
             log::trace!(
@@ -225,8 +217,6 @@ impl PickingState {
                 self.hovered_id
             );
         }
-        drop(data);
-        buf.unmap();
         self.pending_px = None;
     }
 

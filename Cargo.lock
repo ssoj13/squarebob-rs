@@ -906,6 +906,7 @@ dependencies = [
  "bytemuck",
  "log",
  "pt-core",
+ "render-core",
  "wgpu",
 ]
 
@@ -5594,6 +5595,7 @@ dependencies = [
  "log",
  "pt-core",
  "pt-wavefront",
+ "render-core",
  "wgpu",
 ]
 

@@ -213,6 +213,9 @@ pub mod gpu {
     }
 
     /// Map a readback buffer and extract pixels, removing row padding.
+    /// Returns an empty `Vec` on map failure / device-lost (logged) — keeps
+    /// callers (screenshots, picking) on the graceful-skip path the old code
+    /// also expected, but without the `.unwrap().unwrap()` panic.
     pub fn map_readback(
         ctx: &GpuContext,
         buffer: &wgpu::Buffer,
@@ -221,25 +224,79 @@ pub mod gpu {
     ) -> Vec<u8> {
         let bytes_per_row = 4 * width;
         let padded_bytes_per_row = (bytes_per_row + 255) & !255;
+        let row_len = (width * 4) as usize;
+        let total = (width * height * 4) as usize;
 
-        let buffer_slice = buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
-        });
-        // Must wait for map_async callback before rx.recv()
-        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv().unwrap().unwrap();
-
-        let data = buffer_slice.get_mapped_range();
-        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-        for row in 0..height {
-            let start = (row * padded_bytes_per_row) as usize;
-            let end = start + (width * 4) as usize;
-            pixels.extend_from_slice(&data[start..end]);
+        match map_buffer_read(&ctx.device, buffer, |data| {
+            let mut pixels = Vec::with_capacity(total);
+            for row in 0..height {
+                let start = (row * padded_bytes_per_row) as usize;
+                pixels.extend_from_slice(&data[start..start + row_len]);
+            }
+            pixels
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("map_readback: {e}");
+                Vec::new()
+            }
         }
-        drop(data);
-        buffer.unmap();
-        pixels
     }
+}
+
+/// Error from a buffer readback. `DeviceLost` fires when the map_async
+/// callback was dropped (e.g. wgpu device hot-unplug); `MapFailed` carries
+/// the inner `Result` the callback emits.
+#[derive(Debug)]
+pub enum BufferReadError {
+    /// `rx.recv()` failed — the map_async callback was dropped without sending.
+    DeviceLost(std::sync::mpsc::RecvError),
+    /// `map_async` reported a failure (e.g. buffer still mapped, OOM).
+    MapFailed(wgpu::BufferAsyncError),
+}
+
+impl std::fmt::Display for BufferReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeviceLost(e) => write!(f, "map callback dropped (device lost?): {e}"),
+            Self::MapFailed(e) => write!(f, "map_async failed: {e:?}"),
+        }
+    }
+}
+
+impl std::error::Error for BufferReadError {}
+
+/// Maps `buffer` for `Read` on `device` (blocking poll), runs `f` on the
+/// mapped byte slice, unmaps, and returns `f`'s result. Encapsulates the
+/// `map_async + poll + recv + get_mapped_range + drop + unmap` ritual so
+/// every readback site shares one error-handling code path — instead of
+/// each one re-doing the `.unwrap().unwrap()` panic dance (or the
+/// per-site match arm that replaced it).
+///
+/// The caller must have already submitted any encoder work that fills
+/// `buffer` before calling this.
+pub fn map_buffer_read<R, F>(
+    device: &wgpu::Device,
+    buffer: &wgpu::Buffer,
+    f: F,
+) -> Result<R, BufferReadError>
+where
+    F: FnOnce(&[u8]) -> R,
+{
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    match rx.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(BufferReadError::MapFailed(e)),
+        Err(e) => return Err(BufferReadError::DeviceLost(e)),
+    }
+    let data = slice.get_mapped_range();
+    let result = f(&data);
+    drop(data);
+    buffer.unmap();
+    Ok(result)
 }

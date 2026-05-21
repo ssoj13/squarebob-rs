@@ -11,3 +11,4 @@ glam = "0.32"
 pt-core = { path = "../pt-core" }
 bvh-gpu = { path = "../bvh-gpu" }
 pt-wavefront = { path = "../pt-wavefront" }
+render-core = { path = "../render-core" }

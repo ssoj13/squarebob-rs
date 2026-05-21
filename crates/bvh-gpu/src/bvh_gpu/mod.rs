@@ -7,9 +7,8 @@
 //! Based on Karras 2012 "Maximizing Parallelism in the Construction of BVHs"
 
 use log::{debug, info, trace, warn};
-use std::sync::mpsc;
-
 use bytemuck::{Pod, Zeroable};
+use render_core::map_buffer_read;
 
 use pt_core::bvh::{BvhNode, GpuAabb, Instance};
 
@@ -1446,33 +1445,16 @@ fn read_buffer_vec<T: Pod>(
     encoder.copy_buffer_to_buffer(src, 0, &staging, 0, size);
     queue.submit(Some(encoder.finish()));
 
-    let slice = staging.slice(..);
-    let (tx, rx) = mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    // Must wait for map_async callback before rx.recv()
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    // Outer recv fails if the callback was dropped without sending (device lost);
-    // inner Err reports the map_async outcome. Either failure: log and return
-    // empty so callers see no data and skip CPU-side verification paths instead
-    // of panicking mid-frame.
-    match rx.recv() {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            log::warn!("bvh_readback: map_async failed: {e:?}");
-            return Vec::new();
-        }
-        Err(e) => {
-            log::warn!("bvh_readback: map callback dropped (device lost?): {e}");
-            return Vec::new();
-        }
-    }
-    let data = slice.get_mapped_range();
-    let out = bytemuck::cast_slice(&data[..(size as usize)]).to_vec();
-    drop(data);
-    staging.unmap();
-    out
+    // Shared helper handles the `map_async + poll + recv + unmap` ritual;
+    // on device-lost / map_async failure it logs and we return an empty
+    // Vec so callers see "no data" and skip CPU verify rather than panic.
+    map_buffer_read(device, &staging, |bytes| {
+        bytemuck::cast_slice(&bytes[..(size as usize)]).to_vec()
+    })
+    .unwrap_or_else(|e| {
+        log::warn!("bvh_readback: {e}");
+        Vec::new()
+    })
 }
 
 // Helper to create bind group layout entry

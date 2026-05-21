@@ -8,3 +8,4 @@ bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
 wgpu = "29"
 pt-core = { path = "../pt-core" }
+render-core = { path = "../render-core" }
