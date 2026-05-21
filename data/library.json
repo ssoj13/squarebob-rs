@@ -1,0 +1,824 @@
+{
+  "materials": [
+    {
+      "uuid": "718ea149-7a04-482d-a3e4-ac93559a6811",
+      "name": "Matte White",
+      "weight": 1.0,
+      "params": {
+        "base_color_weight": [
+          0.8,
+          0.8,
+          0.8,
+          1.0
+        ],
+        "specular_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "opacity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "params1": [
+          0.5,
+          0.0,
+          0.35,
+          1.5
+        ],
+        "params2": [
+          0.0,
+          0.1,
+          1.5,
+          0.0
+        ]
+      },
+      "variance": {
+        "base_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "specular_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "opacity": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params2": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "uuid": "254554b8-48bb-422c-a68e-1969a7f40ce4",
+      "name": "Glossy Plastic",
+      "weight": 1.0,
+      "params": {
+        "base_color_weight": [
+          0.15,
+          0.55,
+          0.85,
+          1.0
+        ],
+        "specular_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transmission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.6
+        ],
+        "emission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "opacity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.25,
+          1.5
+        ],
+        "params2": [
+          0.0,
+          0.05,
+          1.5,
+          0.0
+        ]
+      },
+      "variance": {
+        "base_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "specular_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "opacity": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params2": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "uuid": "5054a4d0-9ec8-4e15-8b85-56f5176cdc56",
+      "name": "Brushed Gold",
+      "weight": 1.0,
+      "params": {
+        "base_color_weight": [
+          1.0,
+          0.78,
+          0.34,
+          1.0
+        ],
+        "specular_color_weight": [
+          5.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transmission_color_weight": [
+          -8.1,
+          -5.7,
+          -9.6,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "opacity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "params1": [
+          0.0,
+          1.0,
+          0.35,
+          1.5
+        ],
+        "params2": [
+          0.0,
+          0.1,
+          1.5,
+          0.0
+        ]
+      },
+      "variance": {
+        "base_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "specular_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "opacity": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params2": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "uuid": "99e8c286-9f67-4c5d-80a6-77e4808d7393",
+      "name": "Clear Glass",
+      "weight": 1.5,
+      "params": {
+        "base_color_weight": [
+          0.8,
+          0.8,
+          0.8,
+          0.0
+        ],
+        "specular_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transmission_color_weight": [
+          1.5,
+          2.0,
+          2.0,
+          1.0
+        ],
+        "subsurface_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "opacity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.0,
+          1.52
+        ],
+        "params2": [
+          0.0,
+          0.37,
+          2.95,
+          0.0
+        ]
+      },
+      "variance": {
+        "base_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "specular_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "opacity": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params2": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "uuid": "769edd2f-42ae-44a6-bbe6-220a6f239b95",
+      "name": "Neon Cyan",
+      "weight": 0.1,
+      "params": {
+        "base_color_weight": [
+          1.8,
+          0.8,
+          0.8,
+          0.0
+        ],
+        "specular_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          1.0,
+          1.6,
+          1.0,
+          3.3
+        ],
+        "opacity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.2,
+          1.5
+        ],
+        "params2": [
+          0.0,
+          0.1,
+          1.5,
+          0.0
+        ]
+      },
+      "variance": {
+        "base_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "specular_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "opacity": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params2": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "uuid": "cf418acc-c876-4053-a378-c368ac363fdc",
+      "name": "Polished Marble",
+      "weight": 1.0,
+      "params": {
+        "base_color_weight": [
+          0.6,
+          1.6,
+          0.88,
+          1.0
+        ],
+        "specular_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transmission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          0.95,
+          0.92,
+          0.85,
+          0.15
+        ],
+        "coat_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "opacity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "params1": [
+          0.32,
+          0.36,
+          0.35,
+          1.5
+        ],
+        "params2": [
+          0.0,
+          0.1,
+          1.5,
+          0.0
+        ]
+      },
+      "variance": {
+        "base_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "specular_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "opacity": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params2": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "uuid": "dc2eace0-cbb2-4aa1-b364-d499d9de3c21",
+      "name": "material_6",
+      "weight": 1.0,
+      "params": {
+        "base_color_weight": [
+          0.4,
+          0.2,
+          0.8,
+          1.0
+        ],
+        "specular_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transmission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "emission_color_weight": [
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "opacity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "params1": [
+          0.42,
+          0.62,
+          0.72,
+          2.55
+        ],
+        "params2": [
+          0.36,
+          0.13,
+          1.35,
+          0.0
+        ]
+      },
+      "variance": {
+        "base_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "specular_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "transmission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "subsurface_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "coat_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emission_color_weight": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "opacity": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "params2": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    }
+  ],
+  "active": 4
+}

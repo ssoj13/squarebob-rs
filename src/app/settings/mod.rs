@@ -107,7 +107,13 @@ pub(super) fn tinted_section<R>(
             // state but the band-level click below owns the toggle.
             let _ = &icon_resp;
             egui::collapsing_header::paint_default_icon(ui, openness, &icon_resp);
-            ui.label(egui::RichText::new(title).heading());
+            // `Label::selectable(false)` so the heading text doesn't
+            // intercept the cursor as an I-beam — the whole tinted
+            // band is meant to read as one clickable strip, not a
+            // text-selection target.
+            ui.add(
+                egui::Label::new(egui::RichText::new(title).heading()).selectable(false),
+            );
         });
     });
 
