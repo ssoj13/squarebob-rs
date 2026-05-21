@@ -921,6 +921,15 @@ impl Renderer3D {
         self.cached_instances_rebuild_count
     }
 
+    /// How many cubes each `material_overrides[i]` slot painted on
+    /// the most recent PBR `collect_cubes` pass. UI shows this
+    /// next to each override's controls so the user has live
+    /// feedback that probability + distribution actually claim the
+    /// expected fraction of the scene.
+    pub fn material_overlay_counts(&self) -> [u32; 2] {
+        self.mat_cache.overlay_applied()
+    }
+
     /// Last resolved object under the cursor (updated by GPU readback after `pick_from_existing` / `render_to_view`).
     pub fn hovered_id(&self) -> u32 {
         self.picking.hovered_id

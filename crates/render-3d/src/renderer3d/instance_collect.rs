@@ -51,6 +51,10 @@ impl Renderer3D {
         }
         // Drop mat-class cache once per frame if mat-settings changed.
         self.mat_cache.ensure(opts);
+        // Zero per-frame override hit counters before any classify
+        // calls so the UI displays only cubes from THIS pass, not
+        // accumulated history.
+        self.mat_cache.reset_overlay_counts();
         // Pre-walk: compute scene normalisation bounds so `Depth`/`Size`
         // sources produce meaningful values (otherwise both collapse to a
         // single point and any distribute on top is a no-op).

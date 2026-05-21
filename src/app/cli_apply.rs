@@ -133,18 +133,6 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
     if let Some(mode) = cli.materialize_mode {
         opts.materialize_mode = mode;
     }
-    if let Some(allow) = cli.mat_allow_lights {
-        opts.mat_allow_lights = allow;
-    }
-    if let Some(prob) = cli.mat_light_prob {
-        opts.mat_light_prob = prob;
-    }
-    if let Some(allow) = cli.mat_allow_glass {
-        opts.mat_allow_glass = allow;
-    }
-    if let Some(prob) = cli.mat_glass_prob {
-        opts.mat_glass_prob = prob;
-    }
     if let Some(intensity) = cli.env_map_intensity {
         opts.env_map_intensity = intensity;
     }
@@ -308,10 +296,6 @@ mod tests {
             flat_shading: Some(true),
             double_sided: Some(true),
             materialize_mode: Some(MaterializeMode::ByExtension),
-            mat_allow_lights: Some(true),
-            mat_light_prob: Some(0.77),
-            mat_allow_glass: Some(true),
-            mat_glass_prob: Some(0.55),
             env_map_intensity: Some(2.0),
             env_map_rotation: Some(180.0),
             env_map_enabled: Some(true),
@@ -410,10 +394,6 @@ mod tests {
             opts.materialize_mode,
             MaterializeMode::ByExtension
         ));
-        assert!(opts.mat_allow_lights);
-        assert_eq!(opts.mat_light_prob, 0.77);
-        assert!(opts.mat_allow_glass);
-        assert_eq!(opts.mat_glass_prob, 0.55);
         assert_eq!(opts.env_map_intensity, 2.0);
         // env_map_rotation is converted from degrees → radians.
         assert!((opts.env_map_rotation - 180.0_f32.to_radians()).abs() < 1e-6);

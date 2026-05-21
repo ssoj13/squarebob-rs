@@ -221,16 +221,26 @@
   "mat_palette": null,
   "mat_path_hierarchical": true,
   "materialize_mix": 0.0,
-  "mat_allow_lights": true,
-  "mat_light_prob": 0.016921047,
-  "mat_light_count": 500,
-  "mat_light_warm": 0.0,
-  "mat_light_cool": 0.0,
-  "mat_light_intensity": 0.5,
-  "mat_light_color_randomness": 0.0,
-  "mat_allow_glass": true,
-  "mat_glass_prob": 0.06768419,
-  "mat_glass_count": 2000,
+  "material_overrides": [
+    {
+      "enabled": false,
+      "material_uuid": null,
+      "probability": 0.1,
+      "distribution": "Direct",
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "seed": 2654435761
+    },
+    {
+      "enabled": false,
+      "material_uuid": null,
+      "probability": 0.1,
+      "distribution": "Direct",
+      "band_count": 8,
+      "spatial_scale": 0.01,
+      "seed": 1062731486
+    }
+  ],
   "mat_include_dirs": false,
   "mat_seed": 15000,
   "pt_global_transparency": 0.0,

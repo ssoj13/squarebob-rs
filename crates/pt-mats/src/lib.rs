@@ -184,12 +184,6 @@ impl MaterializeMode {
 
 #[derive(Debug, Clone, Copy)]
 pub struct MaterializeSettings {
-    pub allow_lights: bool,
-    pub light_prob: f32,
-    pub light_warm: f32,
-    pub light_cool: f32,
-    pub allow_glass: bool,
-    pub glass_prob: f32,
     pub is_pt: bool,
     pub seed: u32,
     pub source: MaterialSource,
@@ -218,12 +212,6 @@ pub struct MaterializeSettings {
 impl Default for MaterializeSettings {
     fn default() -> Self {
         Self {
-            allow_lights: false,
-            light_prob: 0.15,
-            light_warm: 0.5,
-            light_cool: 0.5,
-            allow_glass: false,
-            glass_prob: 0.5,
             is_pt: false,
             seed: 2_654_435_761,
             source: MaterialSource::None,
@@ -443,6 +431,41 @@ fn reshape(
             t * t * (3.0 - 2.0 * t)
         }
     }
+}
+
+/// Per-cube vote (`[0, 1)`) for a `MaterialOverride`. Used by
+/// `render-3d::material_cache::classify_or_get` to decide whether
+/// the override claims a cube: compare the returned scalar against
+/// the override's probability.
+///
+/// The voting reuses the same [`reshape`] machinery as the main
+/// `classify_to_index`, so the override sees the same family of
+/// per-cube structures (Direct uniform, Stratified bands, Spatial
+/// cells, Perlin clusters, Gradient smoothstep) — just driven off
+/// the override's own seed instead of `MaterializeSettings::seed`,
+/// which is what guarantees that two overrides with different
+/// seeds claim *disjoint* cube subsets.
+pub fn override_picker(
+    input: &MaterialInput,
+    distribution: MaterialDistribution,
+    band_count: u32,
+    spatial_scale: f32,
+    seed: u32,
+) -> f32 {
+    let raw = hash_to_float(
+        input
+            .path_hash
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add(seed),
+    );
+    let settings = MaterializeSettings {
+        seed,
+        distribution,
+        band_count,
+        spatial_scale,
+        ..Default::default()
+    };
+    reshape(raw, input, &settings).clamp(0.0, 1.0)
 }
 
 /// 3D coherent value noise with trilinear interpolation. Output in

@@ -9,6 +9,7 @@ license.workspace = true
 bytemuck = { workspace = true }
 glam = { workspace = true }
 serde = { workspace = true }
+uuid = { workspace = true }
 pt-mats = { workspace = true }
 pt-material = { workspace = true }
 

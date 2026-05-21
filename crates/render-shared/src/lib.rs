@@ -3,6 +3,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub mod viz;
 pub use viz::{
@@ -489,6 +490,62 @@ fn default_animation_speed() -> f32 {
     1.0
 }
 
+/// One of `Render3DOptions::material_overrides` — a post-classify
+/// hook that re-points a fraction of cubes at a specific library
+/// material, regardless of what the global Source / Distribution
+/// path picked. Two overrides live on `Render3DOptions`; each gets
+/// its own `MaterialDistribution` + seed so they fire on *different*
+/// random subsets of cubes (e.g. "5 % of cubes become glass" *and*
+/// independently "10 % become emissive").
+///
+/// Replaces the legacy `mat_allow_lights` / `mat_allow_glass` flags
+/// and their warm/cool/intensity satellites — light / glass are
+/// just materials in the library now, so the user controls them
+/// by aiming an override at the right slot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MaterialOverride {
+    /// When false the override is bypassed; the base classification
+    /// stands.
+    pub enabled: bool,
+    /// UUID of the library material to paint onto claimed cubes.
+    /// UUIDs survive reorder / rename; the resolver falls back to a
+    /// no-op when the UUID is missing from the active library.
+    /// `None` ⇒ the override is inactive even if `enabled`.
+    pub material_uuid: Option<Uuid>,
+    /// Fraction of cubes the override claims (0..=1). Combined with
+    /// `distribution` to pick which cubes specifically.
+    pub probability: f32,
+    /// Per-cube voting shape (Direct / Stratified / Spatial /
+    /// Perlin / Gradient). Same enum the global classify uses, but
+    /// evaluated independently here so two overrides can use
+    /// different shapes — e.g. emissive in 3D clusters via Spatial
+    /// and glass in stratified bands via Stratified.
+    pub distribution: MaterialDistribution,
+    pub band_count: u32,
+    pub spatial_scale: f32,
+    /// Seed for the voting. Two overrides with the same `enabled`,
+    /// `material_uuid`, `probability`, and `distribution` but
+    /// different seeds land on *disjoint* cube sets — that's what
+    /// makes "two random distributions, one per override" not
+    /// collide on the same cubes.
+    pub seed: u32,
+}
+
+impl Default for MaterialOverride {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            material_uuid: None,
+            probability: 0.1,
+            distribution: MaterialDistribution::Direct,
+            band_count: 8,
+            spatial_scale: 0.01,
+            seed: 2_654_435_761,
+        }
+    }
+}
+
 /// Options for 3D rendering
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -572,30 +629,13 @@ pub struct Render3DOptions {
     pub mat_path_hierarchical: bool,
     #[serde(default = "default_materialize_mix")]
     pub materialize_mix: f32, // 0=use color_mode, 1=use materialize color
-    #[serde(default = "default_true")]
-    pub mat_allow_lights: bool, // Allow emissive/neon materials
-    #[serde(default = "default_prob")]
-    pub mat_light_prob: f32, // Probability of assigning light material (0.0-1.0). Derived from mat_light_count when > 0.
-    /// Target count of cubes to receive a light material. When > 0, drives mat_light_prob = count / total_cubes.
-    /// 0 means "use mat_light_prob directly" (legacy/CLI behavior).
-    #[serde(default)]
-    pub mat_light_count: u32,
-    #[serde(default = "default_light_warm")]
-    pub mat_light_warm: f32, // Warm light bias (0-1)
-    #[serde(default = "default_light_cool")]
-    pub mat_light_cool: f32, // Cool light bias (0-1)
-    #[serde(default = "default_light_intensity")]
-    pub mat_light_intensity: f32, // Global light intensity multiplier
-    #[serde(default = "default_light_color_randomness")]
-    pub mat_light_color_randomness: f32, // Per-light color randomness (0-1)
-    #[serde(default = "default_false")]
-    pub mat_allow_glass: bool, // Allow glass/transparent materials
-    #[serde(default = "default_prob")]
-    pub mat_glass_prob: f32, // Probability of assigning glass material (0.0-1.0). Derived from mat_glass_count when > 0.
-    /// Target count of cubes to receive a glass material. When > 0, drives mat_glass_prob = count / total_cubes.
-    /// 0 means "use mat_glass_prob directly" (legacy/CLI behavior).
-    #[serde(default)]
-    pub mat_glass_count: u32,
+    /// Post-classify overrides — two independent slots that re-point
+    /// a configurable fraction of cubes at a chosen library
+    /// material. Each slot has its own [`MaterialDistribution`] +
+    /// seed, so the two random subsets are disjoint. Replaces the
+    /// legacy `mat_allow_lights` / `mat_allow_glass` family.
+    #[serde(default = "default_material_overrides")]
+    pub material_overrides: [MaterialOverride; 2],
     #[serde(default)]
     pub mat_include_dirs: bool, // Allow materialization for directories
     #[serde(default = "default_mat_seed")]
@@ -1300,23 +1340,18 @@ fn default_true() -> bool {
 fn default_false() -> bool {
     false
 }
-fn default_prob() -> f32 {
-    0.5
-}
 fn default_materialize_mix() -> f32 {
     1.0
 }
-fn default_light_warm() -> f32 {
-    0.5
-}
-fn default_light_cool() -> f32 {
-    0.5
-}
-fn default_light_intensity() -> f32 {
-    1.0
-}
-fn default_light_color_randomness() -> f32 {
-    0.0
+fn default_material_overrides() -> [MaterialOverride; 2] {
+    // Two overrides start disabled with disjoint seeds so the
+    // moment a user enables both, they don't pile on the same
+    // cubes. Seed #2 = #1 ^ 0xDEAD_BEEF — pure bit-twiddle, no
+    // semantic meaning.
+    let a = MaterialOverride::default();
+    let mut b = MaterialOverride::default();
+    b.seed = a.seed ^ 0xDEAD_BEEF;
+    [a, b]
 }
 fn default_mat_seed() -> u32 {
     2654435761
@@ -1464,16 +1499,7 @@ impl Default for Render3DOptions {
             mat_palette: None,
             mat_path_hierarchical: true,
             materialize_mix: 1.0,
-            mat_allow_lights: true,
-            mat_light_prob: 0.15,
-            mat_light_count: 0,
-            mat_light_warm: 0.5,
-            mat_light_cool: 0.5,
-            mat_light_intensity: default_light_intensity(),
-            mat_light_color_randomness: default_light_color_randomness(),
-            mat_allow_glass: false,
-            mat_glass_prob: 0.61,
-            mat_glass_count: 0,
+            material_overrides: default_material_overrides(),
             mat_include_dirs: false,
             mat_seed: default_mat_seed(),
             pt_global_transparency: 0.0,

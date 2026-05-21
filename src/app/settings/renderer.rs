@@ -808,9 +808,6 @@ impl App {
     fn ui_3d_materials(&mut self, ui: &mut egui::Ui) {
         let path_tracing = self.render_3d_opts.path_tracing;
         let total_cubes = self.pt_total_cubes();
-        if path_tracing {
-            self.backfill_pt_material_counts(total_cubes);
-        }
 
         tinted_section(
             ui,
@@ -1071,32 +1068,22 @@ impl App {
                         });
                 }
 
-                // PT-only material overrides. Each is a self-contained
-                // subsection that groups every knob affecting that
-                // material class — count, percentage, and BSDF
-                // parameters — instead of scattering them across
-                // Materials grid + path-tracer body.
+                // Two independent post-classify overrides. Each
+                // re-points a configurable fraction of cubes at a
+                // chosen library material — user can wire one to a
+                // light, the other to a glass slot, or both to
+                // whatever else makes sense. The previous
+                // hard-coded Glass / Lights sections (with their
+                // own probability / warm-cool / intensity knobs)
+                // are gone; everything they used to do flows
+                // through a library material now.
                 if path_tracing {
                     let header_h = self.settings_section_header_height;
-                    compact_section(ui, "Glass", false, header_h, |ui| {
-                        settings_grid(ui, "material_glass_cubes_grid", |ui| {
-                            self.ui_pt_material_counts(ui, total_cubes);
-                        });
-                        // BSDF params — transparency, preset, IoR,
-                        // dispersion, etc. Used to live under
-                        // Render → Path Tracer → Glass; promoted here
-                        // because they are conceptually material
-                        // overrides applied to the glass-assigned
-                        // cubes above.
-                        let mut pt_changed = false;
-                        self.ui_pt_glass(ui, &mut pt_changed);
-                        if pt_changed
-                            && let Some(r) = &mut self.renderer_3d {
-                                r.reset_pt_accumulation();
-                            }
+                    compact_section(ui, "Material override #1", false, header_h, |ui| {
+                        self.ui_material_override(ui, 0, total_cubes);
                     });
-                    compact_section(ui, "Lights", false, header_h, |ui| {
-                        self.ui_material_light_cubes(ui, total_cubes);
+                    compact_section(ui, "Material override #2", false, header_h, |ui| {
+                        self.ui_material_override(ui, 1, total_cubes);
                     });
                 }
             },
@@ -1152,26 +1139,6 @@ impl App {
             .unwrap_or(0)
     }
 
-    fn backfill_pt_material_counts(&mut self, total_cubes: u32) {
-        if self.render_3d_opts.mat_allow_lights
-            && self.render_3d_opts.mat_light_count == 0
-            && self.render_3d_opts.mat_light_prob > 0.0
-            && total_cubes > 0
-        {
-            self.render_3d_opts.mat_light_count =
-                (self.render_3d_opts.mat_light_prob * total_cubes as f32).round() as u32;
-        }
-
-        if self.render_3d_opts.mat_allow_glass
-            && self.render_3d_opts.mat_glass_count == 0
-            && self.render_3d_opts.mat_glass_prob > 0.0
-            && total_cubes > 0
-        {
-            self.render_3d_opts.mat_glass_count =
-                (self.render_3d_opts.mat_glass_prob * total_cubes as f32).round() as u32;
-        }
-    }
-
     fn pt_count_drag_max(total_cubes: u32) -> u32 {
         if total_cubes > 0 {
             total_cubes.clamp(1, MAX_PT_MAT_CUBE_COUNT)
@@ -1180,142 +1147,135 @@ impl App {
         }
     }
 
-    /// Glass-cube count row shown inside Materials (PT-only). Light cubes
-    /// moved to their own top-level `ui_3d_lights` section per VFX-order
-    /// layout.
-    fn ui_pt_material_counts(&mut self, ui: &mut egui::Ui, total_cubes: u32) {
-        control_label(ui, "Glass Cubes:");
-        ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut self.render_3d_opts.mat_allow_glass, "")
-                .on_hover_text("Enable glass/transparent materials")
-                .changed()
-            {
-                self.mark_pt_scene_dirty();
-            }
-            if self.render_3d_opts.mat_allow_glass {
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut self.render_3d_opts.mat_glass_count)
-                            .range(0..=Self::pt_count_drag_max(total_cubes))
-                            .clamp_existing_to_range(false)
-                            .speed(1.0)
-                            .suffix(" cubes"),
-                    )
-                    .on_hover_text("Number of cubes to receive a glass material")
-                    .changed()
-                {
-                    let total = total_cubes.max(1) as f32;
-                    self.render_3d_opts.mat_glass_prob =
-                        (self.render_3d_opts.mat_glass_count as f32 / total).clamp(0.0, 1.0);
-                    self.mark_pt_scene_dirty();
-                }
-                if total_cubes > 0 {
-                    ui.small(format!(
-                        "/{} ({:.1}%)",
-                        total_cubes,
-                        self.render_3d_opts.mat_glass_prob * 100.0
-                    ));
-                }
-            }
-        });
-        ui.end_row();
-    }
+    /// Single-slot Material override widget. Drives one entry of
+    /// `Render3DOptions.material_overrides`. Two of these are placed
+    /// in `ui_3d_materials` so the user can stack two independent
+    /// distributions (e.g. emissive in 3D clusters + glass in
+    /// stratified bands) without writing custom plumbing.
+    fn ui_material_override(&mut self, ui: &mut egui::Ui, idx: usize, total_cubes: u32) {
+        let applied = self
+            .renderer_3d
+            .as_ref()
+            .map(|r| r.material_overlay_counts()[idx])
+            .unwrap_or(0);
+        // Snapshot the library for the material dropdown — we need
+        // an immutable view of slots/UUIDs while a `&mut self`
+        // borrow is held on the override entry below.
+        let library_slots: Vec<(uuid::Uuid, String)> = self
+            .render_3d_opts
+            .material_library
+            .materials
+            .iter()
+            .map(|m| (m.uuid, m.name.clone()))
+            .collect();
+        let mut changed = false;
+        let over = &mut self.render_3d_opts.material_overrides[idx];
+        settings_grid(ui, &format!("material_override_grid_{idx}"), |ui| {
+            control_label(ui, "Enabled:");
+            changed |= ui.checkbox(&mut over.enabled, "").changed();
+            ui.end_row();
 
-    /// Light Cubes assignment grid — emissive cube counts plus warm/cool
-    /// tinting and intensity. Lives as a subsection of `Materials` (no
-    /// own tinted wrapper) so all PT material-assignment knobs are
-    /// grouped together.
-    fn ui_material_light_cubes(&mut self, ui: &mut egui::Ui, total_cubes: u32) {
-        settings_grid(ui, "material_light_cubes_grid", |ui| {
-                    control_label(ui, "Light Cubes:");
-                    ui.horizontal(|ui| {
+            // Target material — UUID-based picker. UUIDs survive
+            // reorder/rename of slots.
+            control_label(ui, "Material:");
+            let current_label = match over.material_uuid {
+                Some(u) => library_slots
+                    .iter()
+                    .find(|(id, _)| *id == u)
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or_else(|| format!("(missing) {}", u)),
+                None => "(none)".to_string(),
+            };
+            egui::ComboBox::from_id_salt(format!("material_override_pick_{idx}"))
+                .selected_text(current_label)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(over.material_uuid.is_none(), "(none)")
+                        .clicked()
+                    {
+                        over.material_uuid = None;
+                        changed = true;
+                    }
+                    for (uuid, name) in &library_slots {
                         if ui
-                            .checkbox(&mut self.render_3d_opts.mat_allow_lights, "")
-                            .on_hover_text("Enable PT light materials")
-                            .changed()
+                            .selectable_label(over.material_uuid == Some(*uuid), name)
+                            .clicked()
                         {
-                            self.mark_pt_scene_dirty();
+                            over.material_uuid = Some(*uuid);
+                            changed = true;
                         }
-                        if self.render_3d_opts.mat_allow_lights {
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut self.render_3d_opts.mat_light_count)
-                                        .range(0..=Self::pt_count_drag_max(total_cubes))
-                                        .clamp_existing_to_range(false)
-                                        .speed(1.0)
-                                        .suffix(" cubes"),
-                                )
-                                .on_hover_text("Number of cubes to receive a light material")
-                                .changed()
-                            {
-                                let total = total_cubes.max(1) as f32;
-                                self.render_3d_opts.mat_light_prob =
-                                    (self.render_3d_opts.mat_light_count as f32 / total)
-                                        .clamp(0.0, 1.0);
-                                self.mark_pt_scene_dirty();
-                            }
-                            if total_cubes > 0 {
-                                ui.small(format!(
-                                    "/{} ({:.1}%)",
-                                    total_cubes,
-                                    self.render_3d_opts.mat_light_prob * 100.0
-                                ));
-                            }
-                        }
-                    });
-                    ui.end_row();
-
-                    if self.render_3d_opts.mat_allow_lights {
-                        control_label(ui, "Warm Bias:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.mat_light_warm,
-                                0.0..=1.0,
-                            ))
-                            .changed()
-                        {
-                            self.mark_pt_scene_dirty();
-                        }
-                        ui.end_row();
-
-                        control_label(ui, "Cool Bias:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.mat_light_cool,
-                                0.0..=1.0,
-                            ))
-                            .changed()
-                        {
-                            self.mark_pt_scene_dirty();
-                        }
-                        ui.end_row();
-
-                        control_label(ui, "Light Power:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.mat_light_intensity,
-                                0.0..=10.0,
-                            ))
-                            .changed()
-                        {
-                            self.mark_pt_scene_dirty();
-                        }
-                        ui.end_row();
-
-                        control_label(ui, "Light Rand:");
-                        if ui
-                            .add(egui::Slider::new(
-                                &mut self.render_3d_opts.mat_light_color_randomness,
-                                0.0..=1.0,
-                            ))
-                            .changed()
-                        {
-                            self.mark_pt_scene_dirty();
-                        }
-                        ui.end_row();
                     }
                 });
+            ui.end_row();
+
+            control_label(ui, "Probability:");
+            changed |= ui
+                .add(egui::Slider::new(&mut over.probability, 0.0..=1.0))
+                .on_hover_text(
+                    "Fraction of cubes this override claims. Combined \
+                     with the Distribute shape below.",
+                )
+                .changed();
+            ui.end_row();
+
+            control_label(ui, "Distribute:");
+            ui.horizontal(|ui| {
+                for (variant, label) in [
+                    (MaterialDistribution::Direct, "Direct"),
+                    (MaterialDistribution::Stratified, "Bands"),
+                    (MaterialDistribution::Spatial, "Cells"),
+                    (MaterialDistribution::Perlin, "Perlin"),
+                    (MaterialDistribution::Gradient, "Grad"),
+                ] {
+                    if ui
+                        .selectable_value(&mut over.distribution, variant, label)
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                }
+            });
+            ui.end_row();
+
+            match over.distribution {
+                MaterialDistribution::Stratified => {
+                    control_label(ui, "Bands:");
+                    changed |= ui
+                        .add(egui::Slider::new(&mut over.band_count, 2..=20))
+                        .changed();
+                    ui.end_row();
+                }
+                MaterialDistribution::Spatial | MaterialDistribution::Perlin => {
+                    control_label(ui, "Scale:");
+                    changed |= ui
+                        .add(
+                            egui::Slider::new(&mut over.spatial_scale, 0.001..=0.1)
+                                .logarithmic(true),
+                        )
+                        .changed();
+                    ui.end_row();
+                }
+                _ => {}
+            }
+
+            control_label(ui, "Seed:");
+            changed |= ui
+                .add(egui::Slider::new(&mut over.seed, 1..=u32::MAX).logarithmic(true))
+                .changed();
+            ui.end_row();
+
+            control_label(ui, "Applied:");
+            let pct = if total_cubes > 0 {
+                100.0 * (applied as f32) / (total_cubes as f32)
+            } else {
+                0.0
+            };
+            ui.label(format!("{applied} / {total_cubes} cubes ({pct:.1}%)"));
+            ui.end_row();
+        });
+        if changed {
+            self.mark_pt_scene_dirty();
+        }
     }
 
     /// Samples section — sampling budget + adaptive variance controls.

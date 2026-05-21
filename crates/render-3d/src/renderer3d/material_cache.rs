@@ -66,6 +66,12 @@ pub(crate) struct MaterialCache {
     pub(crate) ids_pt: std::collections::HashMap<u32, u32>,
     scene_max_depth: u32,
     scene_max_size: u64,
+    /// How many cubes each `Render3DOptions.material_overrides` slot
+    /// painted this pass. Counted only on the PBR pass
+    /// (`is_pt == false`) so the UI gets one number per override,
+    /// not double. Reset on `ensure()` settings-change AND on every
+    /// fresh `collect_cubes` (via [`Self::reset_overlay_counts`]).
+    overlay_applied: [u32; 2],
 }
 
 impl Default for MaterialCache {
@@ -76,6 +82,7 @@ impl Default for MaterialCache {
             ids_pt: std::collections::HashMap::new(),
             scene_max_depth: 1,
             scene_max_size: 1,
+            overlay_applied: [0, 0],
         }
     }
 }
@@ -89,7 +96,22 @@ impl MaterialCache {
             self.ids_pbr.clear();
             self.ids_pt.clear();
             self.settings_hash = h;
+            self.overlay_applied = [0, 0];
         }
+    }
+
+    /// Per-override cube counts from the most recent PBR
+    /// `collect_cubes` pass. Indexed parallel to
+    /// `Render3DOptions.material_overrides`.
+    pub fn overlay_applied(&self) -> [u32; 2] {
+        self.overlay_applied
+    }
+
+    /// Reset both overlay counters. Called at the start of each
+    /// `collect_cubes` pass so the cubes we count this frame are
+    /// only the ones that survive into the live instance buffer.
+    pub(crate) fn reset_overlay_counts(&mut self) {
+        self.overlay_applied = [0, 0];
     }
 
     /// Read the most recent scene-level bounds (max_depth, max_size).
@@ -164,16 +186,6 @@ impl MaterialCache {
             pt_mats::MaterialDistribution::Spatial
                 | pt_mats::MaterialDistribution::Perlin
         );
-        let bucket = if is_pt {
-            &mut self.ids_pt
-        } else {
-            &mut self.ids_pbr
-        };
-        if !position_dependent
-            && let Some(&id) = bucket.get(&path_key)
-        {
-            return id;
-        }
         let input = MaterialInput {
             name_hash: ext_key,
             path_hash: path_key,
@@ -187,17 +199,67 @@ impl MaterialCache {
             position,
             path_hierarchical_value: hierarchical_path_value(path),
         };
-        // Per-slot user-editable weights drive the distribution: each
-        // slot claims `weight / sum(weights)` of cubes. Default weight
-        // is 1.0 → uniform. Sliced to the same cap so PBR storage and
-        // classification stay in sync.
-        let weights: Vec<f32> = raw_lib.materials[..lib_len]
-            .iter()
-            .map(|m| m.weight.max(0.0))
-            .collect();
-        let id = classify_to_index(&input, &settings, &weights);
-        if !position_dependent {
-            bucket.insert(path_key, id);
+
+        // Base classification — cached by `path_key` for non-position
+        // distributions. The `Vec<f32>` is rebuilt on cache miss only,
+        // so cost is bounded.
+        let base_id = {
+            let bucket = if is_pt {
+                &mut self.ids_pt
+            } else {
+                &mut self.ids_pbr
+            };
+            if !position_dependent && let Some(&cached) = bucket.get(&path_key) {
+                cached
+            } else {
+                let weights: Vec<f32> = raw_lib.materials[..lib_len]
+                    .iter()
+                    .map(|m| m.weight.max(0.0))
+                    .collect();
+                let id = classify_to_index(&input, &settings, &weights);
+                if !position_dependent {
+                    bucket.insert(path_key, id);
+                }
+                id
+            }
+        };
+
+        // Post-classify overrides — two independent slots, each
+        // with its own (distribution, seed) vote. The base id is
+        // kept when no override claims the cube; otherwise the
+        // last override that claims the cube wins (deterministic
+        // by array order, not by random precedence). Overrides
+        // are evaluated on EVERY call, not cached — the base
+        // cache above already cut the expensive part; the per-
+        // override coin flip + UUID lookup is O(lib_len).
+        let mut id = base_id;
+        for (i, over) in opts.material_overrides.iter().enumerate() {
+            if !over.enabled {
+                continue;
+            }
+            let Some(uuid) = over.material_uuid else {
+                continue;
+            };
+            let p = over.probability.clamp(0.0, 1.0);
+            if p <= 0.0 {
+                continue;
+            }
+            let picker = pt_mats::override_picker(
+                &input,
+                over.distribution,
+                over.band_count,
+                over.spatial_scale,
+                over.seed,
+            );
+            if picker < p
+                && let Some(slot) =
+                    raw_lib.materials[..lib_len].iter().position(|m| m.uuid == uuid)
+            {
+                id = slot as u32;
+                if !is_pt && i < self.overlay_applied.len() {
+                    self.overlay_applied[i] = self.overlay_applied[i].saturating_add(1);
+                }
+            }
         }
         id
     }
@@ -209,12 +271,6 @@ pub(crate) fn mat_settings_hash(opts: &Render3DOptions) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (opts.materialize_mode as u8).hash(&mut h);
-    opts.mat_allow_lights.hash(&mut h);
-    opts.mat_light_prob.to_bits().hash(&mut h);
-    opts.mat_light_warm.to_bits().hash(&mut h);
-    opts.mat_light_cool.to_bits().hash(&mut h);
-    opts.mat_allow_glass.hash(&mut h);
-    opts.mat_glass_prob.to_bits().hash(&mut h);
     opts.mat_seed.hash(&mut h);
     (opts.mat_source as u8).hash(&mut h);
     (opts.mat_distribution as u8).hash(&mut h);
@@ -224,6 +280,22 @@ pub(crate) fn mat_settings_hash(opts: &Render3DOptions) -> u64 {
     opts.mat_include_dirs.hash(&mut h);
     opts.mat_palette.hash(&mut h);
     opts.mat_path_hierarchical.hash(&mut h);
+    // Each override fully contributes — toggling the enabled flag,
+    // changing the target material, the probability, the
+    // distribution shape, or the seed must invalidate the cache.
+    for over in &opts.material_overrides {
+        over.enabled.hash(&mut h);
+        if let Some(uuid) = over.material_uuid {
+            uuid.hash(&mut h);
+        } else {
+            0u128.hash(&mut h);
+        }
+        over.probability.to_bits().hash(&mut h);
+        (over.distribution as u8).hash(&mut h);
+        over.band_count.hash(&mut h);
+        over.spatial_scale.to_bits().hash(&mut h);
+        over.seed.hash(&mut h);
+    }
     // Library identity drives the classify_to_index range AND per-cube
     // index meaning. Hash slot UUIDs (cheap, identity-only) AND
     // weights so that reorders / deletions / insertions AND weight
@@ -241,12 +313,6 @@ pub(crate) fn mat_settings_hash(opts: &Render3DOptions) -> u64 {
 /// and PT paths stay in sync.
 pub(crate) fn settings_from_opts(opts: &Render3DOptions, is_pt: bool) -> MaterializeSettings {
     MaterializeSettings {
-        allow_lights: opts.mat_allow_lights,
-        light_prob: opts.mat_light_prob,
-        light_warm: opts.mat_light_warm,
-        light_cool: opts.mat_light_cool,
-        allow_glass: opts.mat_allow_glass,
-        glass_prob: opts.mat_glass_prob,
         is_pt,
         seed: opts.mat_seed,
         source: opts.mat_source,
@@ -277,8 +343,6 @@ pub(crate) struct PtExpandCacheEntry {
 fn pt_expand_opts_hash(opts: &Render3DOptions) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    opts.mat_light_intensity.to_bits().hash(&mut h);
-    opts.mat_light_color_randomness.to_bits().hash(&mut h);
     opts.pt_global_transparency.to_bits().hash(&mut h);
     (opts.pt_global_glass as u8).hash(&mut h);
     opts.pt_glass_specular.to_bits().hash(&mut h);

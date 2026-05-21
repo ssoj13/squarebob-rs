@@ -50,10 +50,6 @@ pub struct CliOptions {
     pub flat_shading: Option<bool>,
     pub double_sided: Option<bool>,
     pub materialize_mode: Option<MaterializeMode>,
-    pub mat_allow_lights: Option<bool>,
-    pub mat_light_prob: Option<f32>,
-    pub mat_allow_glass: Option<bool>,
-    pub mat_glass_prob: Option<f32>,
     pub env_map_intensity: Option<f32>,
     pub env_map_rotation: Option<f32>,
     pub env_map_enabled: Option<bool>,
@@ -784,30 +780,6 @@ pub fn parse_args() -> CliOptions {
                 i += 1;
                 if i < args.len() {
                     opts.materialize_mode = parse_materialize_mode(&args[i]);
-                }
-            }
-            "--mat-allow-lights" => {
-                opts.mat_allow_lights = Some(true);
-            }
-            "--no-mat-allow-lights" => {
-                opts.mat_allow_lights = Some(false);
-            }
-            "--mat-light-prob" => {
-                i += 1;
-                if i < args.len() {
-                    opts.mat_light_prob = args[i].parse::<f32>().ok();
-                }
-            }
-            "--mat-allow-glass" => {
-                opts.mat_allow_glass = Some(true);
-            }
-            "--no-mat-allow-glass" => {
-                opts.mat_allow_glass = Some(false);
-            }
-            "--mat-glass-prob" => {
-                i += 1;
-                if i < args.len() {
-                    opts.mat_glass_prob = args[i].parse::<f32>().ok();
                 }
             }
             "--env-intensity" => {
