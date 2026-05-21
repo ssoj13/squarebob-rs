@@ -974,19 +974,34 @@ impl PathTraceCompute {
             source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
         });
 
-        // Blit-time uniforms (currently exposure_mult in `.x`; the
-        // other three lanes are reserved for follow-up display knobs:
-        // vignette intensity, chromatic-aberration radius, tonemap-
-        // operator selector index).
+        // Blit-time uniforms. Two vec4 lanes — first is the legacy
+        // physical-camera exposure lane (`.x` = multiplier, `.yzw` =
+        // reserved); second is the colour-pipeline lane consumed by
+        // the C-2 tonemap switch (`.x` = TonemapKind::gpu_tag(),
+        // `.y` = display EV stops, `.z` = WB normalised around 6500K,
+        // `.w` = gamut-compress strength). Total 32 bytes — both lanes
+        // are bytemuck-friendly and bind as a single uniform buffer.
         let blit_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pt_blit_uniforms"),
-            size: 16, // vec4<f32>
+            size: 32, // 2× vec4<f32>
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // Initialise to identity (exposure = 1.0) so first frame in
-        // Manual mode reproduces the previous bit-exact behaviour.
-        queue.write_buffer(&blit_uniform_buffer, 0, bytemuck::cast_slice(&[1.0_f32, 0.0, 0.0, 0.0]));
+        // Initialise to identity:
+        //   exposure lane = [1.0, 0, 0, 0]      → bit-exact passthrough
+        //   colour lane   = [3.0, 0, 1.0, 0]    → tonemap = AcesFilmic
+        //                                         (gpu_tag = 3), display
+        //                                         EV = 0, WB = neutral
+        //                                         (1.0 = 6500/6500), no
+        //                                         gamut compress.
+        queue.write_buffer(
+            &blit_uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[
+                1.0_f32, 0.0, 0.0, 0.0, // exposure lane
+                3.0_f32, 0.0, 1.0, 0.0, // colour lane (AcesFilmic default)
+            ]),
+        );
 
         let blit_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -4549,10 +4564,43 @@ impl PathTraceCompute {
     /// [`Self::blit_with_source`]. `1.0` reproduces the legacy
     /// behaviour (manual / no physical-camera scaling).
     pub fn set_blit_exposure(&self, queue: &wgpu::Queue, exposure: f32) {
-        // Layout matches BlitParams in blit.wgsl: vec4<f32> with the
-        // multiplier in .x. Other lanes reserved for future knobs.
+        // Only writes the first vec4 lane (offset 0..16). Leaves the
+        // colour-pipeline lane (offset 16..32) intact — it's owned by
+        // `set_blit_color`. The two lanes are decoupled by design so a
+        // per-frame exposure update doesn't churn the colour state.
         let params: [f32; 4] = [exposure, 0.0, 0.0, 0.0];
         queue.write_buffer(&self.blit_uniform_buffer, 0, bytemuck::cast_slice(&params));
+    }
+
+    /// Push the colour-pipeline lane of the blit uniform buffer.
+    /// Mirrors the C-2 layout in `blit.wgsl`:
+    ///
+    /// - `tonemap_tag` — `TonemapKind::gpu_tag()` (3 = AcesFilmic =
+    ///   legacy bit-exact default).
+    /// - `display_exposure_ev` — additive EV stops applied AFTER the
+    ///   physical-camera exposure. `0.0` is passthrough.
+    /// - `white_balance_norm` — `target_K / 6500.0`. `1.0` is neutral.
+    /// - `gamut_compress` — `[0,1]` rolloff strength. `0.0` bypasses
+    ///   the (forward-looking) compressor.
+    ///
+    /// Default invocation `(3, 0.0, 1.0, 0.0)` reproduces the pre-C-2
+    /// behaviour exactly. Writes a single 16-byte block at offset 16
+    /// so it doesn't clobber the physical-camera exposure lane.
+    pub fn set_blit_color(
+        &self,
+        queue: &wgpu::Queue,
+        tonemap_tag: u32,
+        display_exposure_ev: f32,
+        white_balance_norm: f32,
+        gamut_compress: f32,
+    ) {
+        let params: [f32; 4] = [
+            tonemap_tag as f32,
+            display_exposure_ev,
+            white_balance_norm,
+            gamut_compress,
+        ];
+        queue.write_buffer(&self.blit_uniform_buffer, 16, bytemuck::cast_slice(&params));
     }
 
     pub fn blit(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {

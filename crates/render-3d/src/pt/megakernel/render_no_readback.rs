@@ -396,6 +396,8 @@ pub(crate) fn render_path_traced_no_readback(
     // OIDN denoise is invoked from the app layer (`pt-denoise-oidn`),
     // not from the megakernel render path.
     pt.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
+    let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
+    pt.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);
     pt.blit(&mut encoder, &targets.render_view);
     log::trace!("PT: blit called, target size {:?}", targets.size);
 

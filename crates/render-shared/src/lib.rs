@@ -864,6 +864,26 @@ impl Render3DOptions {
         }
     }
 
+    /// Pack the colour-pipeline knobs into the 4-tuple the blit
+    /// shader's second `vec4` consumes (see `compute.rs::set_blit_color`).
+    ///
+    /// Returns `(tonemap_tag, display_exposure_ev, white_balance_norm,
+    /// gamut_compress)` where:
+    /// - `tonemap_tag` is `TonemapKind::gpu_tag()` (3 = AcesFilmic, the
+    ///   bit-exact pre-C-2 default).
+    /// - `white_balance_norm` is `target_K / 6500.0`.
+    ///
+    /// The C-2 GPU lane treats `AcesFull` as `AcesFilmic` for now — the
+    /// IDT/LMT/RRT/ODT matrices are baked in by C-3.
+    pub fn blit_color_lane(&self) -> (u32, f32, f32, f32) {
+        (
+            self.color_tonemap.gpu_tag(),
+            self.color_exposure_ev,
+            self.color_white_balance_k / 6500.0,
+            self.color_gamut_compress,
+        )
+    }
+
     /// Scene-linear exposure multiplier applied at display + as the
     /// OIDN `input_scale` override. `1.0` in `Manual` mode so the
     /// existing autoexposure / display behaviour is preserved bit-
@@ -934,6 +954,21 @@ pub enum TonemapKind {
     #[default]
     AcesFilmic,
     AcesFull,
+}
+
+impl TonemapKind {
+    /// Stable numeric tag for the GPU side. WGSL `switch` consumes this
+    /// directly. Values are fixed by ABI — never renumber without bumping
+    /// the blit shader at the same time.
+    pub const fn gpu_tag(self) -> u32 {
+        match self {
+            TonemapKind::None => 0,
+            TonemapKind::Linear => 1,
+            TonemapKind::Reinhard => 2,
+            TonemapKind::AcesFilmic => 3,
+            TonemapKind::AcesFull => 4,
+        }
+    }
 }
 
 /// Input Device Transform — maps scene-referred RGB into the ACES

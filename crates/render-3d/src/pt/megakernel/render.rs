@@ -459,6 +459,8 @@ pub(crate) fn render_path_traced(
     // the PT accumulator; if OIDN is active, the app blits its result texture
     // separately on top.
     pt.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
+    let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
+    pt.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);
     pt.blit(&mut encoder, &targets.render_view);
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);
