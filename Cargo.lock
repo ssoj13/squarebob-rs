@@ -5377,6 +5377,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "egui-colorpicker",
  "egui_extras",
  "serde",
  "serde_json",

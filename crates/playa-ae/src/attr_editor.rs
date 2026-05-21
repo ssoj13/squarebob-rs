@@ -301,40 +301,80 @@ fn render_value_editor(
             AttrValue::Float(v) => {
                 scope_changed |= ui.add(egui::DragValue::new(v).speed(0.1)).changed();
             }
+            // Vec3/Vec4 honour an optional `"color"` hint in
+            // ui_options — when present, the row gets a Nuke-style
+            // swatch button on the right that opens the
+            // `egui-colorpicker` popup. Without the hint, the
+            // fallback is XYZ(W) drag values, since not every Vec3
+            // is a color (could be a position, normal, etc.).
             AttrValue::Vec3(arr) => {
+                let is_color = ui_options.contains(&"color");
                 ui.horizontal(|ui| {
-                    ui.label("X:");
+                    let (l0, l1, l2) = if is_color {
+                        ("R:", "G:", "B:")
+                    } else {
+                        ("X:", "Y:", "Z:")
+                    };
+                    let speed: f64 = if is_color { 0.005 } else { 0.1 };
+                    ui.label(l0);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[0]).speed(0.1))
+                        .add(egui::DragValue::new(&mut arr[0]).speed(speed))
                         .changed();
-                    ui.label("Y:");
+                    ui.label(l1);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[1]).speed(0.1))
+                        .add(egui::DragValue::new(&mut arr[1]).speed(speed))
                         .changed();
-                    ui.label("Z:");
+                    ui.label(l2);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[2]).speed(0.1))
+                        .add(egui::DragValue::new(&mut arr[2]).speed(speed))
                         .changed();
+                    if is_color {
+                        let mut rgba = [arr[0], arr[1], arr[2], 1.0];
+                        let before = rgba;
+                        let mut cfg = egui_colorpicker::PickerConfig::default();
+                        cfg.alpha_enabled = false;
+                        egui_colorpicker::color_button_with(ui, &mut rgba, &mut cfg);
+                        if rgba != before {
+                            arr[0] = rgba[0];
+                            arr[1] = rgba[1];
+                            arr[2] = rgba[2];
+                            scope_changed = true;
+                        }
+                    }
                 });
             }
             AttrValue::Vec4(arr) => {
+                let is_color = ui_options.contains(&"color");
                 ui.horizontal(|ui| {
-                    ui.label("X:");
+                    let (l0, l1, l2, l3) = if is_color {
+                        ("R:", "G:", "B:", "A:")
+                    } else {
+                        ("X:", "Y:", "Z:", "W:")
+                    };
+                    let speed: f64 = if is_color { 0.005 } else { 0.1 };
+                    ui.label(l0);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[0]).speed(0.1))
+                        .add(egui::DragValue::new(&mut arr[0]).speed(speed))
                         .changed();
-                    ui.label("Y:");
+                    ui.label(l1);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[1]).speed(0.1))
+                        .add(egui::DragValue::new(&mut arr[1]).speed(speed))
                         .changed();
-                    ui.label("Z:");
+                    ui.label(l2);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[2]).speed(0.1))
+                        .add(egui::DragValue::new(&mut arr[2]).speed(speed))
                         .changed();
-                    ui.label("W:");
+                    ui.label(l3);
                     scope_changed |= ui
-                        .add(egui::DragValue::new(&mut arr[3]).speed(0.1))
+                        .add(egui::DragValue::new(&mut arr[3]).speed(speed))
                         .changed();
+                    if is_color {
+                        let before = *arr;
+                        egui_colorpicker::color_button(ui, arr);
+                        if *arr != before {
+                            scope_changed = true;
+                        }
+                    }
                 });
             }
             AttrValue::Mat3(_) => {
