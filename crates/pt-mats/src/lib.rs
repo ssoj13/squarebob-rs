@@ -8,12 +8,13 @@
 //! Public surface:
 //! - [`MaterialSource`] — what scalar dimension to classify on
 //!   (extension / path / size / age / depth / random).
-//! - [`MaterialDistribution`] — how the scalar maps to slot indices
-//!   (direct / quantised / gradient / spatial / bands).
+//! - [`MaterialDistribution`] — how the seeded source value is
+//!   reshaped before the weighted CDF lookup (Direct / Stratified /
+//!   Spatial / Perlin / Gradient).
 //! - [`MaterializeMode`] — preset shortcut for `MaterialSource`.
 //! - [`MaterializeSettings`] — full classification knob bundle.
 //! - [`MaterialInput`] — per-cube inputs handed to [`classify_to_index`].
-//! - [`classify_to_index`] — pick one `material_index` in `0..library_size`.
+//! - [`classify_to_index`] — pick one `material_index` in `0..weights.len()`.
 //! - palette helpers re-exported from [`palette`].
 
 use serde::{Deserialize, Serialize};
@@ -66,37 +67,63 @@ impl MaterialSource {
 }
 
 // ============================================================================
-// Material Distribution - how values map to materials
+// Material Distribution - how the seeded source value is reshaped
 // ============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Distribution modes that reshape the seeded source value *before*
+/// the weighted CDF lookup. Each mode preserves the per-slot weight
+/// ratio (slot `i` still gets `weight[i] / total` of cubes globally),
+/// but rearranges *which* cube lands on which slot.
+///
+/// Serde aliases keep older presets parseable:
+/// * `"Quantized"` → [`Direct`](Self::Direct)
+/// * `"Bands"`     → [`Stratified`](Self::Stratified)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
 pub enum MaterialDistribution {
+    /// Raw seeded source → weighted CDF. Standard weighted picking.
     #[default]
+    #[serde(alias = "Quantized")]
     Direct,
-    Quantized,
-    Gradient,
+    /// Partition the source axis into `band_count` bands. Inside each
+    /// band the picker walks the full `[0, 1)` range, so the weighted
+    /// CDF still hits every slot proportionally — every band sees a
+    /// fresh draw of the whole library. Effect: clean per-band
+    /// material zoning without starving narrow weight slots.
+    #[serde(alias = "Bands")]
+    Stratified,
+    /// 3D cellular (Voronoi-style) noise from cube position. All
+    /// cubes inside the same `spatial_scale`-sized cell share the
+    /// same picker → chunky clusters of one material. Source still
+    /// contributes 30 % so `Extension` / `Size` etc. are not lost.
     Spatial,
-    Bands,
+    /// 3D smooth value noise from cube position. Soft pastel-like
+    /// clusters without the hard cell edges of [`Spatial`](Self::Spatial).
+    /// Source contributes 30 %, noise 70 %.
+    Perlin,
+    /// Smoothstep curve on the seeded source. Concentrates cube mass
+    /// at the source extremes — useful when the library has many
+    /// mid-tone variants you want under-represented.
+    Gradient,
 }
 
 impl MaterialDistribution {
     pub fn name(self) -> &'static str {
         match self {
             MaterialDistribution::Direct => "Direct",
-            MaterialDistribution::Quantized => "Quantized",
-            MaterialDistribution::Gradient => "Gradient",
+            MaterialDistribution::Stratified => "Stratified",
             MaterialDistribution::Spatial => "Spatial",
-            MaterialDistribution::Bands => "Bands",
+            MaterialDistribution::Perlin => "Perlin",
+            MaterialDistribution::Gradient => "Gradient",
         }
     }
 
     pub fn all() -> &'static [MaterialDistribution] {
         &[
             MaterialDistribution::Direct,
-            MaterialDistribution::Quantized,
-            MaterialDistribution::Gradient,
+            MaterialDistribution::Stratified,
             MaterialDistribution::Spatial,
-            MaterialDistribution::Bands,
+            MaterialDistribution::Perlin,
+            MaterialDistribution::Gradient,
         ]
     }
 }
@@ -167,17 +194,24 @@ pub struct MaterializeSettings {
     pub seed: u32,
     pub source: MaterialSource,
     pub distribution: MaterialDistribution,
-    pub quant_levels: u32,
+    /// Number of bands for [`MaterialDistribution::Stratified`].
     pub band_count: u32,
+    /// Strength of the source-vs-noise mix for [`MaterialDistribution::Spatial`]
+    /// and [`MaterialDistribution::Perlin`]. Higher = bigger clusters,
+    /// lower = noisier picks.
     pub spatial_scale: f32,
-    /// `Some(p)` pins the palette for tinting; `None` means auto-pick from
-    /// `source`. The library is now driven by `pt-material` so the palette
-    /// is only used by upstream colour-ramp consumers (`render-3d`
-    /// instance_collect), not by [`classify_to_index`].
+    /// Held for symmetry with the color-ramp side; classify itself
+    /// no longer reads it (distribution shaping replaces what
+    /// Quantized used to do).
+    pub quant_levels: u32,
+    /// `Some(p)` pins the palette for tinting; `None` means auto-pick
+    /// from `source`. Consumed by the color-ramp side
+    /// (`render-3d::instance_collect::sample_color_ramp`), not by
+    /// [`classify_to_index`].
     pub palette: Option<Palette>,
     /// When true, the `Path` source uses `hierarchical_path_value` so
-    /// sibling files cluster into nearby indices. When false, `Path` uses a
-    /// flat FNV hash and adjacent files scatter randomly.
+    /// sibling files cluster into nearby indices. When false, `Path`
+    /// uses a flat FNV hash and adjacent files scatter randomly.
     pub path_hierarchical: bool,
 }
 
@@ -194,9 +228,9 @@ impl Default for MaterializeSettings {
             seed: 2_654_435_761,
             source: MaterialSource::None,
             distribution: MaterialDistribution::Direct,
-            quant_levels: 5,
             band_count: 8,
             spatial_scale: 0.01,
+            quant_levels: 5,
             palette: None,
             path_hierarchical: true,
         }
@@ -209,16 +243,25 @@ impl Default for MaterializeSettings {
 
 #[derive(Debug, Clone, Copy)]
 pub struct MaterialInput {
+    /// Hash of the file *extension* only (e.g. `"jpg"`). All cubes
+    /// with the same extension share this hash, so
+    /// `MaterialSource::Extension` actually groups by extension.
     pub name_hash: u32,
+    /// Hash of the full path. Unique per cube — `MaterialSource::Path`
+    /// scatters across the library.
     pub path_hash: u32,
     pub size: u64,
     pub max_size: u64,
     pub depth: u32,
     pub max_depth: u32,
     pub age_normalized: f32,
+    /// World-space cube centre. Drives the [`MaterialDistribution::Spatial`]
+    /// and [`MaterialDistribution::Perlin`] modes; left at zero for
+    /// callers that don't have position handy (Direct / Stratified /
+    /// Gradient ignore it).
     pub position: [f32; 3],
-    /// Hierarchical accumulation of the path components (0..1). Set by the
-    /// caller so the classifier doesn't have to own the `&Path`.
+    /// Hierarchical accumulation of the path components (0..1). Set by
+    /// the caller so the classifier doesn't have to own the `&Path`.
     pub path_hierarchical_value: f32,
 }
 
@@ -248,26 +291,23 @@ impl Default for MaterialInput {
 /// `weights` are unnormalised non-negative magnitudes — they're summed
 /// and treated as a probability mass function. Slot `i` claims a
 /// fraction `weights[i] / sum(weights)` of the cube population, so
-/// `[5, 1]` yields ~83% on slot 0 and ~17% on slot 1. Pass
-/// `&[1.0; n]` for uniform sampling (the legacy behaviour).
+/// `[5, 1]` yields ~83 % on slot 0 and ~17 % on slot 1. Pass
+/// `&[1.0; n]` for uniform sampling.
 ///
 /// The flow is:
 /// 1. Pull a normalised scalar (0..1) from the chosen `source`.
-/// 2. Mix in a seed-derived noise so identical inputs across libraries
-///    don't all collapse onto slot 0.
-/// 3. Apply the distribution shaping (quantise / gradient / bands /
-///    spatial noise).
+/// 2. Mix in a seed-derived phase rotation so identical inputs
+///    across seeds scatter to entirely different slots.
+/// 3. Apply the distribution reshape (`Direct` / `Stratified` /
+///    `Spatial` / `Perlin` / `Gradient`) — every mode preserves the
+///    per-slot weight ratio globally; only the per-cube structure
+///    of the picker changes.
 /// 4. Walk the cumulative weight array to pick the slot.
 ///
 /// Edge cases:
 /// - Empty `weights` or all-zero weights: returns 0.
 /// - `MaterialSource::None`: pins slot 0 regardless of weights.
 /// - Negative weights are clamped to zero before normalisation.
-///
-/// Light / glass overrides from the old library are now handled by the
-/// per-material PT shader path, not by classification — once a cube
-/// has resolved its `Material`, the renderer applies emission / IOR /
-/// dispersion based on the StandardSurface params themselves.
 pub fn classify_to_index(
     input: &MaterialInput,
     settings: &MaterializeSettings,
@@ -287,19 +327,9 @@ pub fn classify_to_index(
 
     let raw = source_value(input, settings);
     let seeded = apply_seed(raw, input.name_hash, settings.seed).clamp(0.0, 1.0);
-    debug_assert!(seeded.is_finite(), "seeded source returned non-finite value");
-    // Distribution shaping (Bands / Quantized / Gradient / Spatial)
-    // is intentionally NOT applied here. Quantising the source before
-    // the CDF lookup makes narrow weight slots unreachable whenever
-    // the quantisation step exceeds a slot's width: e.g. weights
-    // `[1, 1, 1, 1, 0.42, 1, 1]` (sum 6.42) with `Bands(14)` produce
-    // a target step of 0.459 — larger than the 0.42 window assigned
-    // to slot 4, which is therefore never picked. The shaping enum
-    // is a *color ramp* visual control (see
-    // `render-3d/.../instance_collect::sample_color_ramp`); per-slot
-    // material picking always uses the raw seeded value so the
-    // weighted distribution stays mathematically proportional.
-    let target = seeded * total;
+    let picker = reshape(seeded, input, settings).clamp(0.0, 1.0);
+
+    let target = picker * total;
     let mut cum = 0.0f32;
     for (i, &w) in weights.iter().enumerate() {
         cum += w.max(0.0);
@@ -312,21 +342,21 @@ pub fn classify_to_index(
 
 /// Get normalised value (0.0-1.0) from the selected source.
 ///
-/// Note on `Path` source: the classifier always uses the *flat* path
-/// hash, never `path_hierarchical_value`. The hierarchical value
-/// concentrates everyone in a real file tree on a narrow band —
-/// component weights decay 1.0, 0.4, 0.16, ... so a shared root
-/// prefix collapses the source value, and the weighted CDF then
-/// dumps the whole tree into a single material slot. The
-/// hierarchical signal is useful for *color ramps* (smooth gradient
-/// across siblings) but breaks material *bucketing*, which needs to
-/// span the full [0, 1) range to spread across slots. Use the
-/// `path_hierarchical` setting upstream for ramps only.
+/// `Path` honours `settings.path_hierarchical`: when true, cubes
+/// sharing a common path prefix cluster into nearby source values
+/// (siblings end up on neighbouring slots); when false, the flat
+/// FNV hash scatters them.
 fn source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     match settings.source {
         MaterialSource::None => 0.5,
         MaterialSource::Extension => hash_to_float(input.name_hash),
-        MaterialSource::Path => hash_to_float(input.path_hash),
+        MaterialSource::Path => {
+            if settings.path_hierarchical {
+                input.path_hierarchical_value.clamp(0.0, 1.0)
+            } else {
+                hash_to_float(input.path_hash)
+            }
+        }
         MaterialSource::Size => {
             if input.max_size == 0 {
                 0.5
@@ -348,61 +378,76 @@ fn source_value(input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     }
 }
 
-/// Mix the seed into the value so identical inputs across different seeds
-/// scatter to different library slots. Keeps result in [0, 1).
+/// Mix the seed into the value as a full phase rotation. Two cubes
+/// with the same source value but different `name_hash` end up at
+/// completely different points in `[0, 1)`, and swapping the seed
+/// reshuffles the entire mapping (not just a 10 % jitter).
+///
+/// `seed == 0` is a passthrough — useful for tests / determinism.
 fn apply_seed(value: f32, hash: u32, seed: u32) -> f32 {
-    let seeded_hash = hash.wrapping_mul(seed);
-    let noise = hash_to_float(seeded_hash) * 0.1;
-    (value + noise).fract()
+    if seed == 0 {
+        return value;
+    }
+    let phase =
+        hash_to_float(hash.wrapping_mul(0x9E37_79B9).wrapping_add(seed));
+    (value + phase).fract()
 }
 
-/// Apply the distribution shaping to a normalised scalar.
-///
-/// Staged for a future `MaterializeSettings::distribution` UI pull-through —
-/// the shader-side path already exists; only the Rust-side caller is missing.
-/// Kept in tree (with `#[allow(dead_code)]`) rather than deleted so the
-/// implementation stays paired with its WGSL counterpart and the next wire-up
-/// commit doesn't have to reconstruct it from the shader.
-#[allow(dead_code)]
-fn apply_distribution(value: f32, input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
+/// Apply [`MaterialDistribution`] reshape to `seeded` and return the
+/// final picker that the weighted CDF samples. Every branch returns
+/// a value in `[0, 1)` and preserves the global weight-as-PMF
+/// invariant — see [`classify_to_index`] for the contract.
+fn reshape(
+    seeded: f32,
+    input: &MaterialInput,
+    settings: &MaterializeSettings,
+) -> f32 {
     match settings.distribution {
-        MaterialDistribution::Direct => value,
-
-        MaterialDistribution::Quantized => {
-            let levels = settings.quant_levels.max(1) as f32;
-            (value * levels).floor() / (levels - 1.0).max(1.0)
+        MaterialDistribution::Direct => seeded,
+        MaterialDistribution::Stratified => {
+            let n = settings.band_count.max(1) as f32;
+            let band = (seeded * n).floor();
+            let local = (seeded * n).fract();
+            // Per-band phase permutation so adjacent bands don't both
+            // start at slot 0.
+            let perm = hash_to_float(
+                (band as u32)
+                    .wrapping_mul(0x9E37_79B9)
+                    .wrapping_add(settings.seed),
+            );
+            (local + perm).fract()
         }
-
-        MaterialDistribution::Gradient => {
-            let t = value.clamp(0.0, 1.0);
-            // Smoothstep: more visual weight near the ends, fewer
-            // mid-tone slots — useful when most materials in the
-            // library are mid-tone variants.
-            t * t * (3.0 - 2.0 * t)
-        }
-
         MaterialDistribution::Spatial => {
-            let scale = settings.spatial_scale;
-            let px = input.position[0] * scale;
-            let py = input.position[1] * scale;
-            let pz = input.position[2] * scale;
-            let noise = spatial_noise(px, py, pz, settings.seed);
-            (value * 0.3 + noise * 0.7).clamp(0.0, 1.0)
+            let s = settings.spatial_scale.max(1.0e-4);
+            let cx = (input.position[0] / s).floor() as i32;
+            let cy = (input.position[1] / s).floor() as i32;
+            let cz = (input.position[2] / s).floor() as i32;
+            let cell = grid_hash(cx, cy, cz, settings.seed);
+            // Mix source 30 % / cell 70 %: source semantics survive
+            // but cubes inside one cell share a slot family.
+            (cell * 0.7 + seeded * 0.3).fract()
         }
-
-        MaterialDistribution::Bands => {
-            let bands = settings.band_count.max(1) as f32;
-            let band_idx = (value * bands).floor();
-            band_idx / (bands - 1.0).max(1.0)
+        MaterialDistribution::Perlin => {
+            let s = settings.spatial_scale.max(1.0e-4);
+            let n = spatial_noise(
+                input.position[0] / s,
+                input.position[1] / s,
+                input.position[2] / s,
+                settings.seed,
+            );
+            (n * 0.7 + seeded * 0.3).fract()
+        }
+        MaterialDistribution::Gradient => {
+            // Smoothstep: heavier tails, lighter middle.
+            let t = seeded;
+            t * t * (3.0 - 2.0 * t)
         }
     }
 }
 
-/// Simple 3D coherent noise. Used by `MaterialDistribution::Spatial` via
-/// `apply_distribution`; both are currently dead until the distribution UI
-/// wire-up lands (see `apply_distribution` doc).
-#[allow(dead_code)]
-fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
+/// 3D coherent value noise with trilinear interpolation. Output in
+/// `[0, 1)`. Used by [`MaterialDistribution::Perlin`].
+pub fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     let ix = x.floor() as i32;
     let iy = y.floor() as i32;
     let iz = z.floor() as i32;
@@ -437,8 +482,10 @@ fn spatial_noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     lerp(y0, y1, uz)
 }
 
-#[allow(dead_code)]
-fn grid_hash(x: i32, y: i32, z: i32, seed: u32) -> f32 {
+/// Hash a 3D integer cell to a `[0, 1)` scalar. Used as the
+/// cellular kernel for [`MaterialDistribution::Spatial`] and the
+/// lattice corners for [`spatial_noise`].
+pub fn grid_hash(x: i32, y: i32, z: i32, seed: u32) -> f32 {
     let h = (x as u32).wrapping_mul(73_856_093)
         ^ (y as u32).wrapping_mul(19_349_663)
         ^ (z as u32).wrapping_mul(83_492_791)
@@ -497,17 +544,28 @@ mod tests {
     }
 
     #[test]
-    fn index_in_range() {
-        let s = MaterializeSettings {
-            source: MaterialSource::Extension,
-            ..Default::default()
-        };
-        for lib in [1usize, 2, 5, 8, 16, 64] {
-            let w = uniform(lib);
-            for h in 0..200u32 {
-                let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
-                let idx = classify_to_index(&i, &s, &w) as usize;
-                assert!(idx < lib, "idx {idx} >= lib {lib}");
+    fn index_in_range_across_distributions() {
+        for distribution in [
+            MaterialDistribution::Direct,
+            MaterialDistribution::Stratified,
+            MaterialDistribution::Spatial,
+            MaterialDistribution::Perlin,
+            MaterialDistribution::Gradient,
+        ] {
+            let s = MaterializeSettings {
+                source: MaterialSource::Extension,
+                distribution,
+                band_count: 5,
+                ..Default::default()
+            };
+            for lib in [1usize, 2, 5, 8, 16, 64] {
+                let w = uniform(lib);
+                for h in 0..200u32 {
+                    let mut i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
+                    i.position = [h as f32 * 0.5, h as f32 * 0.3, h as f32 * 0.7];
+                    let idx = classify_to_index(&i, &s, &w) as usize;
+                    assert!(idx < lib, "idx {idx} >= lib {lib} ({distribution:?})");
+                }
             }
         }
     }
@@ -528,38 +586,45 @@ mod tests {
     }
 
     #[test]
-    fn distribution_shaping_does_not_affect_slot_picking() {
-        // Distribution shaping (Quantized / Bands / etc.) is now a
-        // color-ramp concern only; it must NOT change material slot
-        // assignment vs the default (Direct). Same inputs + same
-        // weights + different `distribution` → same slot per cube.
-        let s_direct = MaterializeSettings {
+    fn seed_phase_rotation_reshuffles() {
+        // Same library, same inputs, two different seeds → the slot
+        // assignment for at least 80 % of inputs must change. With
+        // the old `noise * 0.1` jitter this was ~10 %.
+        let mut s = MaterializeSettings {
             source: MaterialSource::Extension,
-            distribution: MaterialDistribution::Direct,
+            seed: 1,
             ..Default::default()
         };
-        let s_bands = MaterializeSettings {
-            distribution: MaterialDistribution::Bands,
-            band_count: 14,
-            ..s_direct
-        };
-        let w = uniform(7);
-        for h in 0..200u32 {
+        let w = uniform(8);
+        let mut a = Vec::with_capacity(500);
+        for h in 0..500u32 {
             let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
-            let a = classify_to_index(&i, &s_direct, &w);
-            let b = classify_to_index(&i, &s_bands, &w);
-            assert_eq!(a, b, "shaping should not affect slot for hash {h}");
+            a.push(classify_to_index(&i, &s, &w));
         }
+        s.seed = 0xDEAD_BEEF;
+        let mut diff = 0;
+        for h in 0..500u32 {
+            let i = input_for(h.wrapping_mul(2_654_435_761), 0.0);
+            if classify_to_index(&i, &s, &w) != a[h as usize] {
+                diff += 1;
+            }
+        }
+        let frac = diff as f32 / 500.0;
+        assert!(
+            frac >= 0.5,
+            "seed change reshuffled only {frac:.0%} of slots (want ≥50 %)"
+        );
     }
 
     #[test]
-    fn narrow_weight_still_reachable_with_bands() {
-        // The exact case the user reported: 7 slots, one with a
-        // narrow weight (~0.07 of total), Bands distribution at 14.
-        // Slot 4 must still receive a non-trivial share of cubes.
+    fn narrow_weight_still_reachable_with_stratified() {
+        // 7 slots, one with a narrow weight (~6.5 % of total),
+        // Stratified at 14 bands. Slot 4 must still receive a
+        // non-trivial share of cubes — Stratified must not starve
+        // narrow weight slots.
         let s = MaterializeSettings {
             source: MaterialSource::Extension,
-            distribution: MaterialDistribution::Bands,
+            distribution: MaterialDistribution::Stratified,
             band_count: 14,
             ..Default::default()
         };
@@ -571,19 +636,15 @@ mod tests {
                 hits += 1;
             }
         }
-        // Expected 6.5% — accept anything in [3%, 12%] for hash bias.
+        // Expected ~6.5 % — accept [3 %, 12 %] for hash bias.
         assert!(
             (300..1200).contains(&hits),
-            "expected slot 4 to receive ~6.5% of cubes, got {hits} of 10000"
+            "expected slot 4 to receive ~6.5 % of cubes, got {hits} of 10000"
         );
     }
 
     #[test]
     fn weights_skew_distribution() {
-        // weight 9 vs 1 → ~90% of cubes on slot 0, ~10% on slot 1.
-        // Verify by counting over a large sample; the per-slot count
-        // ratio should follow the weight ratio within a generous
-        // tolerance (this is a probabilistic test, not a tight one).
         let s = MaterializeSettings {
             source: MaterialSource::Extension,
             ..Default::default()
@@ -600,7 +661,6 @@ mod tests {
             }
         }
         let ratio = c0 as f32 / c1.max(1) as f32;
-        // Expected ~9.0; allow 5..15 — wide tolerance for hash bias.
         assert!(
             (5.0..15.0).contains(&ratio),
             "expected slot0:slot1 ~9:1, got {c0}:{c1} (ratio {ratio:.2})"
@@ -624,5 +684,17 @@ mod tests {
     fn hierarchical_path_re_exports_correctly() {
         let v = hierarchical_path_value(Path::new("/a/b/c"));
         assert!((0.0..=1.0).contains(&v));
+    }
+
+    #[test]
+    fn legacy_quantized_deserializes_as_direct() {
+        let d: MaterialDistribution = serde_json::from_str("\"Quantized\"").unwrap();
+        assert_eq!(d, MaterialDistribution::Direct);
+    }
+
+    #[test]
+    fn legacy_bands_deserializes_as_stratified() {
+        let d: MaterialDistribution = serde_json::from_str("\"Bands\"").unwrap();
+        assert_eq!(d, MaterialDistribution::Stratified);
     }
 }

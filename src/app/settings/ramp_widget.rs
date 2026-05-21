@@ -107,10 +107,10 @@ pub fn ramp_rows(ui: &mut egui::Ui, params: &mut RampParams, ctx: RampUiCtx) -> 
         ui.horizontal(|ui| {
             for (variant, label) in [
                 (MaterialDistribution::Direct, "Direct"),
-                (MaterialDistribution::Quantized, "Quant"),
+                (MaterialDistribution::Stratified, "Bands"),
+                (MaterialDistribution::Spatial, "Cells"),
+                (MaterialDistribution::Perlin, "Perlin"),
                 (MaterialDistribution::Gradient, "Grad"),
-                (MaterialDistribution::Spatial, "Spatial"),
-                (MaterialDistribution::Bands, "Bands"),
             ] {
                 if ui
                     .selectable_value(&mut params.distribution, variant, label)
@@ -125,17 +125,7 @@ pub fn ramp_rows(ui: &mut egui::Ui, params: &mut RampParams, ctx: RampUiCtx) -> 
         // Conditional sub-param row matches the distribution shape so
         // unused knobs stay hidden — keeps the grid compact.
         match params.distribution {
-            MaterialDistribution::Quantized => {
-                control_label(ui, "Levels");
-                if ui
-                    .add(egui::Slider::new(&mut params.quant_levels, 2..=14))
-                    .changed()
-                {
-                    changed = true;
-                }
-                ui.end_row();
-            }
-            MaterialDistribution::Bands => {
+            MaterialDistribution::Stratified => {
                 control_label(ui, "Bands");
                 if ui
                     .add(egui::Slider::new(&mut params.band_count, 2..=20))
@@ -145,7 +135,7 @@ pub fn ramp_rows(ui: &mut egui::Ui, params: &mut RampParams, ctx: RampUiCtx) -> 
                 }
                 ui.end_row();
             }
-            MaterialDistribution::Spatial => {
+            MaterialDistribution::Spatial | MaterialDistribution::Perlin => {
                 control_label(ui, "Noise Scale");
                 if ui
                     .add(

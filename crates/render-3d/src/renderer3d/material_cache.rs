@@ -112,14 +112,19 @@ impl MaterialCache {
         }
     }
 
-    /// Look up the cached material id for `path` or compute it. `is_pt`
-    /// selects the PT-specific cache bucket. `depth` is the node's
-    /// position in the directory tree — required for the `Depth` source.
+    /// Look up the cached material id for `path` or compute it.
+    /// `is_pt` selects the PT-specific cache bucket. `depth` is the
+    /// node's position in the directory tree (drives `Depth` source).
+    /// `position` is the world-space cube centre — required by the
+    /// `Spatial` / `Perlin` distributions; pass `[0.0; 3]` from
+    /// callers that don't have it (Direct / Stratified / Gradient
+    /// ignore it).
     pub(crate) fn classify_or_get(
         &mut self,
         path: &std::path::Path,
         size: u64,
         depth: u32,
+        position: [f32; 3],
         opts: &Render3DOptions,
         is_pt: bool,
     ) -> u32 {
@@ -133,30 +138,53 @@ impl MaterialCache {
             return 0;
         }
         let path_str = path.to_string_lossy();
-        let key = name_hash(&path_str);
+        let path_key = name_hash(&path_str);
+        // `Extension` source needs all cubes that share an extension
+        // to land on the *same* source value — that's the whole point
+        // of the mode. The previous implementation hashed the full
+        // path for both `name_hash` and `path_hash`, which made
+        // Extension and Path behave identically. Now `name_hash` is
+        // a hash of just the extension; `path_hash` keeps the full
+        // path.
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let ext_key = name_hash(ext);
+        let mut settings = settings_from_opts(opts, is_pt);
+        // Sync legacy `materialize_mode` → `source` so classify_to_index
+        // sees the right source even if callers updated only the legacy field.
+        settings.source = opts.materialize_mode.to_source();
+        // Position-dependent distributions can't use the per-path
+        // cache: re-layout changes positions while leaving paths
+        // intact, and we'd return stale slot picks. Recompute on
+        // every call instead — `classify_to_index` is cheap.
+        let position_dependent = matches!(
+            settings.distribution,
+            pt_mats::MaterialDistribution::Spatial
+                | pt_mats::MaterialDistribution::Perlin
+        );
         let bucket = if is_pt {
             &mut self.ids_pt
         } else {
             &mut self.ids_pbr
         };
-        if let Some(&id) = bucket.get(&key) {
+        if !position_dependent
+            && let Some(&id) = bucket.get(&path_key)
+        {
             return id;
         }
-        let mut settings = settings_from_opts(opts, is_pt);
-        // Sync legacy `materialize_mode` → `source` so classify_to_index
-        // sees the right source even if callers updated only the legacy field.
-        settings.source = opts.materialize_mode.to_source();
         let input = MaterialInput {
-            name_hash: key,
-            path_hash: key,
+            name_hash: ext_key,
+            path_hash: path_key,
             size,
             max_size: self.scene_max_size,
             depth,
             max_depth: self.scene_max_depth,
             // No file mtime is plumbed through the pipeline yet, so Age
             // falls back to a deterministic hash-based proxy.
-            age_normalized: (key as f32) / (u32::MAX as f32),
-            position: [0.0, 0.0, 0.0],
+            age_normalized: (path_key as f32) / (u32::MAX as f32),
+            position,
             path_hierarchical_value: hierarchical_path_value(path),
         };
         // Per-slot user-editable weights drive the distribution: each
@@ -168,7 +196,9 @@ impl MaterialCache {
             .map(|m| m.weight.max(0.0))
             .collect();
         let id = classify_to_index(&input, &settings, &weights);
-        bucket.insert(key, id);
+        if !position_dependent {
+            bucket.insert(path_key, id);
+        }
         id
     }
 }
@@ -340,7 +370,12 @@ pub(crate) fn expand_pt_materials_and_ids(
                 if is_dir && !opts.mat_include_dirs {
                     0
                 } else {
-                    mat_cache.classify_or_get(path, size, 0, opts, true) as usize
+                    // Translation column of the column-major model
+                    // matrix → world-space cube centre. Required by
+                    // the position-dependent (Spatial / Perlin)
+                    // distributions; ignored otherwise.
+                    let pos = [inst.model[3][0], inst.model[3][1], inst.model[3][2]];
+                    mat_cache.classify_or_get(path, size, 0, pos, opts, true) as usize
                 }
             } else {
                 0

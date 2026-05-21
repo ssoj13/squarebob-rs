@@ -923,10 +923,10 @@ impl App {
                                 &mut self.render_3d_opts.mat_distribution,
                                 &[
                                     (MaterialDistribution::Direct, "Direct"),
-                                    (MaterialDistribution::Quantized, "Quant"),
+                                    (MaterialDistribution::Stratified, "Bands"),
+                                    (MaterialDistribution::Spatial, "Cells"),
+                                    (MaterialDistribution::Perlin, "Perlin"),
                                     (MaterialDistribution::Gradient, "Grad"),
-                                    (MaterialDistribution::Spatial, "Spatial"),
-                                    (MaterialDistribution::Bands, "Bands"),
                                 ],
                                 MultiButtonAxis::Horizontal,
                             ) {
@@ -938,20 +938,7 @@ impl App {
                             ui.end_row();
 
                             match self.render_3d_opts.mat_distribution {
-                                MaterialDistribution::Quantized => {
-                                    control_label(ui, "Levels:");
-                                    if ui
-                                        .add(egui::Slider::new(
-                                            &mut self.render_3d_opts.mat_quant_levels,
-                                            2..=14,
-                                        ))
-                                        .changed()
-                                    {
-                                        self.mark_pt_scene_dirty();
-                                    }
-                                    ui.end_row();
-                                }
-                                MaterialDistribution::Bands => {
+                                MaterialDistribution::Stratified => {
                                     control_label(ui, "Bands:");
                                     if ui
                                         .add(egui::Slider::new(
@@ -964,7 +951,7 @@ impl App {
                                     }
                                     ui.end_row();
                                 }
-                                MaterialDistribution::Spatial => {
+                                MaterialDistribution::Spatial | MaterialDistribution::Perlin => {
                                     control_label(ui, "Scale:");
                                     if ui
                                         .add(

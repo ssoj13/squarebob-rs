@@ -180,7 +180,16 @@ impl Renderer3D {
                 ColorMode::Treemap => hierarchical_path_value(&node.path),
                 ColorMode::Depth => (depth as f32 / scene_max_depth.max(1) as f32).clamp(0.0, 1.0),
             };
-            let mode_default_palette = default_palette_for_color_mode(opts.color_mode);
+            // `mat_palette` (Materials section dropdown) acts as a
+            // global override for the per-color-mode default palette.
+            // Per-ramp `ramp.palette` (set in each ColorMode's own
+            // ramp editor) still wins — this only affects ramps that
+            // are on Auto. That makes the "Palette" knob in the
+            // Materials section a single visible-everywhere control,
+            // not a dead widget.
+            let mode_default_palette = opts
+                .mat_palette
+                .unwrap_or_else(|| default_palette_for_color_mode(opts.color_mode));
             let mut base_color = sample_color_ramp(
                 t,
                 opts.color_ramps.get(opts.color_mode as usize),
@@ -243,30 +252,18 @@ impl Renderer3D {
                 }
             }
 
-            let allow_dirs = opts.mat_include_dirs || !node.is_dir;
-            // Material classification is cached, so this is O(1) on warm cache.
-            // Returns the final library index (legacy class slots or palette
-            // sample). Shader handles albedo blending via
-            // `mat_global.materialize_mix`, so we do NOT lerp on the CPU
-            // anymore — instances stay stable across slider changes, the
-            // slider itself just rewrites the small UBO.
-            let material_id = if opts.materialize_mode != MaterializeMode::None && allow_dirs {
-                self.mat_cache
-                    .classify_or_get(&node.path, node.size, depth, opts, false)
-            } else {
-                // Library slot 0 is the convention default — first
-                // material in `opts.material_library`.
-                0
-            };
-            // color_f is the pure color_mode result (per-instance tint).
-            let color_f = base_color;
-
             // Treemap XY -> 3D XY (wall facing camera), depth (height) along -Z
             // Cube centred on the treemap plane (z=0): extends half forward
             // toward the camera, half behind. This keeps the camera *outside*
             // every cube as long as `base_height / 2` stays under the camera
             // distance — works for typical scenes. Outliers (huge files) can
             // still poke into the camera; pending a global height clamp.
+            //
+            // Position is computed *before* `classify_or_get` because the
+            // `Spatial` / `Perlin` distributions sample world-space cube
+            // centres to drive clustering. `hash_transform` jitter applied
+            // afterwards stays under the classification cell size, so
+            // shifting the call site doesn't perturb the picker.
             let mut pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
             if opts.polar_layout && opts.polar_strength > 0.0 {
                 // Polar layout: treat the X axis relative to world_center
@@ -284,6 +281,29 @@ impl Renderer3D {
                 let blended = local.lerp(polar_xy, opts.polar_strength.clamp(0.0, 1.0));
                 pos = world_center + blended;
             }
+
+            let allow_dirs = opts.mat_include_dirs || !node.is_dir;
+            // Material classification is cached, so this is O(1) on warm cache.
+            // Position-dependent distributions (`Spatial` / `Perlin`) skip
+            // the cache internally. Shader handles albedo blending via
+            // `mat_global.materialize_mix` so instances stay stable across
+            // slider changes — the slider itself just rewrites the UBO.
+            let material_id = if opts.materialize_mode != MaterializeMode::None && allow_dirs {
+                self.mat_cache.classify_or_get(
+                    &node.path,
+                    node.size,
+                    depth,
+                    pos.into(),
+                    opts,
+                    false,
+                )
+            } else {
+                // Library slot 0 is the convention default — first
+                // material in `opts.material_library`.
+                0
+            };
+            // color_f is the pure color_mode result (per-instance tint).
+            let color_f = base_color;
             let transform = hash_transform(
                 &node.name,
                 pos,
@@ -356,22 +376,31 @@ fn sample_color_ramp(
     let mut tt = ramp.curve.apply(t).clamp(0.0, 1.0);
     tt = match ramp.distribution {
         MaterialDistribution::Direct => tt,
-        MaterialDistribution::Quantized => {
-            let n = ramp.quant_levels.max(1) as f32;
-            (tt * n).floor() / (n - 1.0).max(1.0)
-        }
-        MaterialDistribution::Gradient => tt * tt * (3.0 - 2.0 * tt),
-        MaterialDistribution::Bands => {
+        // Bands the t-value into `band_count` discrete steps so the
+        // ramp reads as a stepped gradient instead of continuous.
+        // Was `Bands` in the old enum.
+        MaterialDistribution::Stratified => {
             let n = ramp.band_count.max(1) as f32;
             (tt * n).floor() / (n - 1.0).max(1.0)
         }
+        // Hierarchical path coherence — closest cheap proxy for
+        // "spatial clustering" available without 3D position in the
+        // color-ramp cache key.
         MaterialDistribution::Spatial => {
-            // Mix in a deterministic path-based wobble — closest cheap
-            // proxy for "spatial coherence" that survives the path-keyed
-            // cube cache.
             let n = hierarchical_path_value(path);
             (tt * 0.3 + n * 0.7).clamp(0.0, 1.0)
         }
+        // 3D value-noise driven shift. The color-ramp path doesn't
+        // carry world-space cube position so we substitute a
+        // path-name digest as the noise coordinate — gives smoothly
+        // varied stripes that ignore the source signal entirely.
+        // For full 3D Perlin, use the material-classify side.
+        MaterialDistribution::Perlin => {
+            let n = hierarchical_path_value(path);
+            (tt * 0.5 + n * 0.5).clamp(0.0, 1.0)
+        }
+        // Smoothstep curve — concentrates mass at the ends.
+        MaterialDistribution::Gradient => tt * tt * (3.0 - 2.0 * tt),
     };
     let palette = ramp.palette.unwrap_or(default_palette);
     let rgb = sample_palette(palette, tt);

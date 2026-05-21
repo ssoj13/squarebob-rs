@@ -119,7 +119,7 @@
     },
     {
       "palette": null,
-      "distribution": "Quantized",
+      "distribution": "Direct",
       "quant_levels": 5,
       "band_count": 8,
       "spatial_scale": 0.01,
