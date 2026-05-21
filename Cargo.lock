@@ -2433,6 +2433,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-colorpicker"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "serde",
+]
+
+[[package]]
 name = "egui-phosphor"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6734,6 +6742,7 @@ dependencies = [
  "directories",
  "eframe",
  "egui",
+ "egui-colorpicker",
  "egui-phosphor",
  "egui-wgpu",
  "egui_dock",

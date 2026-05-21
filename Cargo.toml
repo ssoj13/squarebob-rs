@@ -33,6 +33,7 @@ members = [
     "crates/squarebob-widgets",
     "crates/pt-material",
     "crates/playa-ae",
+    "crates/egui-colorpicker",
 ]
 resolver = "2"
 
@@ -129,6 +130,7 @@ media-encoder = { path = "crates/media-encoder" }
 standard-surface = { path = "crates/standard-surface" }
 squarebob-widgets = { path = "crates/squarebob-widgets" }
 playa-ae = { path = "crates/playa-ae" }
+egui-colorpicker = { path = "crates/egui-colorpicker" }
 
 [dependencies]
 # https://dev.to/yeauty/double-your-performance-with-one-line-of-code-the-memory-superpower-every-rust-developer-should-1g93
@@ -172,6 +174,7 @@ pt-mats = { workspace = true }
 pt-material = { workspace = true }
 squarebob-widgets = { workspace = true }
 playa-ae = { workspace = true }
+egui-colorpicker = { workspace = true }
 uuid = { workspace = true }
 pt-denoise-oidn = { workspace = true }
 sysinfo = { workspace = true }

@@ -34,21 +34,16 @@ use crate::events::MaterialsChangedEvent;
 fn material_schema() -> &'static AttrSchema {
     static SCHEMA: OnceLock<AttrSchema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        // Order: colour-weight Vec4s first (visually grouped), opacity,
-        // then the params1/params2 scalars in their natural pack order.
-        // ui_options on Float rows: ["min", "max", "step"] — slider.
-        const COLOR_FLAGS: AttrFlags = FLAG_DISPLAY;
+        // Scalar-only schema: the seven colour-weight Vec4 fields
+        // (Base Color, Specular, …) are now rendered above the AE
+        // by `color_rows()` with the Maya-style egui-colorpicker
+        // widget — they no longer go through playa-ae's generic
+        // Vec4 row. The AE here owns just the params1/params2
+        // scalar lanes (roughness / metalness / IOR / etc.).
         const FLOAT_FLAGS: AttrFlags = FLAG_DISPLAY;
         AttrSchema::new(
             "StandardSurfaceParams",
             &[
-                AttrDef::with_order("Base Color", AttrType::Vec4, COLOR_FLAGS, 1.0),
-                AttrDef::with_order("Specular", AttrType::Vec4, COLOR_FLAGS, 2.0),
-                AttrDef::with_order("Transmission", AttrType::Vec4, COLOR_FLAGS, 3.0),
-                AttrDef::with_order("Subsurface", AttrType::Vec4, COLOR_FLAGS, 4.0),
-                AttrDef::with_order("Coat", AttrType::Vec4, COLOR_FLAGS, 5.0),
-                AttrDef::with_order("Emission", AttrType::Vec4, COLOR_FLAGS, 6.0),
-                AttrDef::with_order("Opacity", AttrType::Vec4, COLOR_FLAGS, 7.0),
                 AttrDef::with_ui_order(
                     "Diffuse Roughness",
                     AttrType::Float,
@@ -110,13 +105,9 @@ fn material_schema() -> &'static AttrSchema {
 /// meaningful.
 fn material_to_attrs(p: &StandardSurfaceParams) -> Attrs {
     let mut a = Attrs::with_schema(material_schema());
-    a.set_vec4("Base Color", p.base_color_weight.into());
-    a.set_vec4("Specular", p.specular_color_weight.into());
-    a.set_vec4("Transmission", p.transmission_color_weight.into());
-    a.set_vec4("Subsurface", p.subsurface_color_weight.into());
-    a.set_vec4("Coat", p.coat_color_weight.into());
-    a.set_vec4("Emission", p.emission_color_weight.into());
-    a.set_vec4("Opacity", p.opacity.into());
+    // Vec4 colour-weights deliberately omitted — the colour rows
+    // are rendered separately by `color_rows()` with the picker
+    // widget, not via playa-ae.
     a.set("Diffuse Roughness", AttrValue::Float(p.params1.x));
     a.set("Metalness", AttrValue::Float(p.params1.y));
     a.set("Specular Roughness", AttrValue::Float(p.params1.z));
@@ -132,27 +123,9 @@ fn material_to_attrs(p: &StandardSurfaceParams) -> Attrs {
 /// `StandardSurfaceParams`. Missing keys leave the corresponding field
 /// untouched, so partial schemas are tolerated.
 fn attrs_to_material(a: &Attrs, p: &mut StandardSurfaceParams) {
-    if let Some(v) = a.get_vec4("Base Color") {
-        p.base_color_weight = v.into();
-    }
-    if let Some(v) = a.get_vec4("Specular") {
-        p.specular_color_weight = v.into();
-    }
-    if let Some(v) = a.get_vec4("Transmission") {
-        p.transmission_color_weight = v.into();
-    }
-    if let Some(v) = a.get_vec4("Subsurface") {
-        p.subsurface_color_weight = v.into();
-    }
-    if let Some(v) = a.get_vec4("Coat") {
-        p.coat_color_weight = v.into();
-    }
-    if let Some(v) = a.get_vec4("Emission") {
-        p.emission_color_weight = v.into();
-    }
-    if let Some(v) = a.get_vec4("Opacity") {
-        p.opacity = v.into();
-    }
+    // Vec4 colour-weights are written directly by `color_rows()`
+    // — playa-ae only carries the scalar params now, so this
+    // function only reads back the scalar keys.
     if let Some(v) = a.get_float("Diffuse Roughness") {
         p.params1.x = v;
     }
@@ -260,17 +233,91 @@ impl App {
         ui.label(egui::RichText::new(format!("uuid: {}", mat.uuid)).weak().small());
         ui.separator();
 
+        // Colour rows go through the Maya-style picker widget; the
+        // remaining scalar lanes (roughness / metalness / IOR / …)
+        // still ride playa-ae for free table layout + sliders.
+        let mut any_changed = color_rows(ui, &mut mat.params);
+
+        ui.separator();
         let mut attrs = material_to_attrs(&mat.params);
-        let changed = playa_ae::render(ui, &mut attrs, &mut self.materials_ae_state, "Material");
-        if changed {
+        if playa_ae::render(ui, &mut attrs, &mut self.materials_ae_state, "Material") {
             attrs_to_material(&attrs, &mut mat.params);
-            // Borrow on `lib`/`mat` ends here (the if-block scope
-            // closes via the function); emit the change event so the
-            // render loop resets PT accumulation and forces a fresh
-            // viewport frame.
+            any_changed = true;
+        }
+        if any_changed {
             self.events.emit(MaterialsChangedEvent);
         }
     }
+}
+
+/// Maya-style colour pickers for the seven `StandardSurfaceParams`
+/// Vec4 lanes. Each row shows the lane label, the swatch button
+/// (click → popup), and the four numeric `DragValue`s so direct
+/// keyboard input still works for power-users. Returns `true` when
+/// any field changed.
+fn color_rows(ui: &mut egui::Ui, p: &mut StandardSurfaceParams) -> bool {
+    let mut changed = false;
+    egui::Grid::new("material_color_grid")
+        .num_columns(2)
+        .spacing([6.0, 2.0])
+        .show(ui, |ui| {
+            changed |= color_row(ui, "Base Color", &mut p.base_color_weight);
+            changed |= color_row(ui, "Specular", &mut p.specular_color_weight);
+            changed |= color_row(ui, "Transmission", &mut p.transmission_color_weight);
+            changed |= color_row(ui, "Subsurface", &mut p.subsurface_color_weight);
+            changed |= color_row(ui, "Coat", &mut p.coat_color_weight);
+            changed |= color_row(ui, "Emission", &mut p.emission_color_weight);
+            changed |= color_row(ui, "Opacity", &mut p.opacity);
+        });
+    changed
+}
+
+/// One `StandardSurfaceParams` colour-weight row: label · swatch
+/// button · `x` · `y` · `z` · `w` (weight) `DragValue`s. Edits in
+/// either the picker or the numeric inputs propagate to `*v`.
+fn color_row(ui: &mut egui::Ui, label: &str, v: &mut glam::Vec4) -> bool {
+    let mut changed = false;
+    ui.label(label);
+    ui.horizontal(|ui| {
+        let mut tmp = v.to_array();
+        let before = tmp;
+        let _ = egui_colorpicker::color_button(ui, &mut tmp);
+        if tmp != before {
+            *v = glam::Vec4::from(tmp);
+            changed = true;
+        }
+        // Direct numeric edit kept alongside the picker — useful
+        // when the user needs an exact HDR value the picker
+        // sliders won't easily hit.
+        let mut x = v.x;
+        let mut y = v.y;
+        let mut z = v.z;
+        let mut w = v.w;
+        let mut row_changed = false;
+        row_changed |= ui
+            .add(egui::DragValue::new(&mut x).speed(0.01).max_decimals(3))
+            .changed();
+        row_changed |= ui
+            .add(egui::DragValue::new(&mut y).speed(0.01).max_decimals(3))
+            .changed();
+        row_changed |= ui
+            .add(egui::DragValue::new(&mut z).speed(0.01).max_decimals(3))
+            .changed();
+        row_changed |= ui
+            .add(
+                egui::DragValue::new(&mut w)
+                    .speed(0.01)
+                    .range(0.0..=1.0)
+                    .max_decimals(3),
+            )
+            .changed();
+        if row_changed {
+            *v = glam::Vec4::new(x, y, z, w);
+            changed = true;
+        }
+    });
+    ui.end_row();
+    changed
 }
 
 // ============================================================================

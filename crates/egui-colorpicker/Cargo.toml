@@ -1,0 +1,11 @@
+[package]
+name = "egui-colorpicker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Maya-style HDR color picker popup widget for egui. Working + display space sliders side by side, RGB linear / HSV / hex tabs, alpha, history strip, eyedropper callback hook."
+
+[dependencies]
+egui = { workspace = true }
+serde = { workspace = true }
