@@ -234,6 +234,12 @@ impl App {
                 }
             },
         );
+        // 7.5 Color — display-side pipeline (exposure / tonemap / ACES).
+        //     Sits directly under Render because it's the next stage in
+        //     the visual chain (scene-linear → display). Controls only
+        //     fire `dirty.preset()`, never restart PT accumulation —
+        //     mirror of the denoise-interval bug-fix contract.
+        self.ui_settings_color(ui, dirty);
         // 8. Samples — sampling budget + adaptive (PT-only).
         if self.render_3d_opts.path_tracing {
             self.ui_3d_samples(ui);

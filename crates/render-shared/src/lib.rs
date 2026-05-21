@@ -776,6 +776,48 @@ pub struct Render3DOptions {
     #[serde(default)]
     pub pt_physical_camera: PhysicalCamera,
 
+    /// Display-side colour pipeline — sits between the PT accumulator
+    /// and the egui texture. All knobs are pure post-process: changing
+    /// them MUST fire `dirty.preset()` only, never restart PT
+    /// accumulation (mirror of the denoise-interval lesson).
+    ///
+    /// Default = `TonemapKind::AcesFilmic`, which matches the current
+    /// blit-shader behaviour bit-exactly. The IDT / LMT / RRT / ODT
+    /// lanes are dormant until `tonemap == AcesFull` — they round-trip
+    /// through presets immediately so saved configs survive across the
+    /// later phases that actually wire them to the GPU.
+    /// See `docs/aces-color-pipeline-plan.md`.
+    #[serde(default = "default_color_working")]
+    pub color_working: ColorWorkingSpace,
+    #[serde(default = "default_color_tonemap")]
+    pub color_tonemap: TonemapKind,
+    #[serde(default = "default_color_idt")]
+    pub color_idt: AcesIdt,
+    #[serde(default = "default_color_lmt")]
+    pub color_lmt: AcesLmt,
+    #[serde(default = "default_color_rrt")]
+    pub color_rrt: AcesRrt,
+    #[serde(default = "default_color_odt")]
+    pub color_odt: AcesOdt,
+    /// Display-side exposure in EV stops. Multiplies scene-linear RGB
+    /// by `2^ev` before tonemap. `0.0` keeps the image unchanged.
+    #[serde(default = "default_color_exposure_ev")]
+    pub color_exposure_ev: f32,
+    /// White-balance target in Kelvin. `6500.0` ≈ D65 reference white
+    /// (no tint). Lower values warm the image, higher cool it.
+    #[serde(default = "default_color_white_balance_k")]
+    pub color_white_balance_k: f32,
+    /// Gamut-compression strength in `[0, 1]`. Pulls out-of-gamut
+    /// samples back inside the target ODT gamut with a soft rolloff.
+    /// `0.0` disables the pass.
+    #[serde(default = "default_color_gamut_compress")]
+    pub color_gamut_compress: f32,
+    /// When on, automatically applies the gamut compressor at the
+    /// strength implied by the ODT (Rec.709 / sRGB only). Overrides
+    /// the manual slider when `true`.
+    #[serde(default = "default_color_gamut_compress_auto")]
+    pub color_gamut_compress_auto: bool,
+
     /// Per-scene material library — the canonical source of cube
     /// materials going forward. Cubes get a `material_index` into
     /// `material_library.materials` (chosen by `mat_source` /
@@ -861,6 +903,117 @@ pub enum OidnQualityOption {
     #[default]
     Base,
     Small,
+}
+
+/// Working colour space the display pipeline operates in. Today the
+/// path tracer always writes plain linear-sRGB, so anything other than
+/// `LinearSRGB` is a forward-looking knob — wiring lands in a later
+/// phase (see `docs/aces-color-pipeline-plan.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ColorWorkingSpace {
+    #[default]
+    LinearSRGB,
+    ACEScg,
+    ACES2065_1,
+}
+
+/// Display-side tonemap selector. `AcesFilmic` is the default so this
+/// whole block is purely additive: nothing about the rendered frame
+/// changes until the user actively switches mode.
+///
+/// - `None`        : clamp [0,1], no curve, no exposure
+/// - `Linear`      : exposure + WB only, no curve
+/// - `Reinhard`    : `x / (1 + x)` legacy path
+/// - `AcesFilmic`  : current Narkowicz fit (DEFAULT — bit-exact today)
+/// - `AcesFull`    : unlocks the IDT/LMT/RRT/ODT lanes (vfx-rs backed)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TonemapKind {
+    None,
+    Linear,
+    Reinhard,
+    #[default]
+    AcesFilmic,
+    AcesFull,
+}
+
+/// Input Device Transform — maps scene-referred RGB into the ACES
+/// working space (AP0 / AP1). `SrgbToAp1` is the production default
+/// once `AcesFull` is selected; until then this field is dormant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AcesIdt {
+    None,
+    #[default]
+    SrgbToAp1,
+    Rec709ToAp1,
+    Ap1Passthrough,
+}
+
+/// Look Modification Transform — optional creative grade between IDT
+/// and RRT. `None` is the neutral default; named looks (Neutral /
+/// Punchy) are placeholders for the vfx-rs LMT catalogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AcesLmt {
+    #[default]
+    None,
+    Neutral,
+    Punchy,
+}
+
+/// Reference Rendering Transform variant. ACES 1.x ships two; `Off`
+/// short-circuits the curve, which is useful for debugging the IDT/ODT
+/// matrices in isolation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AcesRrt {
+    #[default]
+    Standard,
+    A1_1,
+    Off,
+}
+
+/// Output Device Transform — display-referred target. Must agree with
+/// the swapchain surface format (e.g. selecting `Srgb100nits` while the
+/// surface is `Rgba8UnormSrgb` means we must skip the final OETF to
+/// avoid double-encoding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AcesOdt {
+    #[default]
+    Srgb100nits,
+    Rec709,
+    Rec2020_1000nits,
+    P3D65,
+    DciP3,
+    SrgbHdrSim,
+}
+
+fn default_color_working() -> ColorWorkingSpace {
+    ColorWorkingSpace::LinearSRGB
+}
+fn default_color_tonemap() -> TonemapKind {
+    TonemapKind::AcesFilmic
+}
+fn default_color_idt() -> AcesIdt {
+    AcesIdt::SrgbToAp1
+}
+fn default_color_lmt() -> AcesLmt {
+    AcesLmt::None
+}
+fn default_color_rrt() -> AcesRrt {
+    AcesRrt::Standard
+}
+fn default_color_odt() -> AcesOdt {
+    AcesOdt::Srgb100nits
+}
+fn default_color_exposure_ev() -> f32 {
+    0.0
+}
+fn default_color_white_balance_k() -> f32 {
+    6500.0
+}
+fn default_color_gamut_compress() -> f32 {
+    0.0
+}
+fn default_color_gamut_compress_auto() -> bool {
+    true
 }
 
 fn default_oidn_mode() -> OidnModeOption {
@@ -1156,6 +1309,21 @@ impl Default for Render3DOptions {
             pt_oidn_adaptive_clamp: true,
             pt_camera_type: CameraType::Physical,
             pt_physical_camera: PhysicalCamera::default(),
+            // Colour pipeline defaults: tonemap = current blit shader's
+            // ACES Filmic so this whole new block is a no-op until the
+            // user actually flips a control. Other lanes are seeded with
+            // production-grade values so flipping to `AcesFull` lands on
+            // a sensible sRGB / 100 nits view without further setup.
+            color_working: ColorWorkingSpace::LinearSRGB,
+            color_tonemap: TonemapKind::AcesFilmic,
+            color_idt: AcesIdt::SrgbToAp1,
+            color_lmt: AcesLmt::None,
+            color_rrt: AcesRrt::Standard,
+            color_odt: AcesOdt::Srgb100nits,
+            color_exposure_ev: 0.0,
+            color_white_balance_k: 6500.0,
+            color_gamut_compress: 0.0,
+            color_gamut_compress_auto: true,
             material_library: pt_material::MaterialLibrary::default(),
         }
     }

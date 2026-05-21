@@ -1,6 +1,7 @@
 //! Settings panel modules.
 
 mod appearance;
+mod color;
 mod denoiser;
 mod dirty;
 mod exclusions;
