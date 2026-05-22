@@ -4907,6 +4907,11 @@ impl PathTraceCompute {
         queue: &wgpu::Queue,
         apply: impl FnOnce(&mut [[f32; 3]]),
     ) {
+        // Zero-size viewport (hidden / collapsed panel) — a 0-byte
+        // buffer trips wgpu validation. Cheap guard.
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
         const BPP: u32 = 16; // Rgba32Float = 4 channels × 4 B
         let row_unaligned = BPP * self.width;
         // 256-byte alignment is required for `copy_texture_to_buffer`
@@ -4967,14 +4972,19 @@ impl PathTraceCompute {
         }
         let mapped = slice.get_mapped_range();
         let row_len = row_unaligned as usize;
-        let mut pixels: Vec<[f32; 3]> =
-            Vec::with_capacity((self.width * self.height) as usize);
+        let texel_count = (self.width * self.height) as usize;
+        let mut pixels: Vec<[f32; 3]> = Vec::with_capacity(texel_count);
+        // Preserve the original alpha so the writeback doesn't
+        // clobber it with 1.0 — denoiser / screenshot consumers
+        // share `output_texture` and may read alpha later.
+        let mut alphas: Vec<f32> = Vec::with_capacity(texel_count);
         for y in 0..self.height {
             let row_start = (y * row_padded) as usize;
             let row = &mapped[row_start..row_start + row_len];
             let row_floats: &[f32] = bytemuck::cast_slice(row);
             for px in row_floats.chunks_exact(4) {
                 pixels.push([px[0], px[1], px[2]]);
+                alphas.push(px[3]);
             }
         }
         drop(mapped);
@@ -4983,8 +4993,8 @@ impl PathTraceCompute {
         apply(&mut pixels);
 
         let mut packed: Vec<[f32; 4]> = Vec::with_capacity(pixels.len());
-        for p in &pixels {
-            packed.push([p[0], p[1], p[2], 1.0]);
+        for (p, &a) in pixels.iter().zip(alphas.iter()) {
+            packed.push([p[0], p[1], p[2], a]);
         }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {

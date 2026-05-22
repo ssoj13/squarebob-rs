@@ -299,6 +299,27 @@ pub struct BakedLut3D {
 /// the right compromise for an interactive viewport.
 pub const DEFAULT_LUT_SIZE: usize = 33;
 
+/// Generate an identity 3D LUT (input == output) over `[0,1]^3`
+/// in `size³` scan-order RGB triples, matching the
+/// `r + g*size + b*size²` convention `vfx_ocio::Baker` emits.
+/// Used as a safe sentinel when a real bake fails — the GPU
+/// upload then shows scene-linear samples unchanged rather than
+/// keeping the previous, possibly unrelated, OCIO bake bound.
+fn identity_lut_data(size: usize) -> Vec<f32> {
+    let denom = (size.saturating_sub(1)).max(1) as f32;
+    let mut out = Vec::with_capacity(size * size * size * 3);
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                out.push(r as f32 / denom);
+                out.push(g as f32 / denom);
+                out.push(b as f32 / denom);
+            }
+        }
+    }
+    out
+}
+
 impl ColorPipeline {
     /// Initialise from a settings struct. Loads the appropriate
     /// `Config` (built-in / bundled / external) and builds the
@@ -390,23 +411,25 @@ impl ColorPipeline {
         // shader does a trilinear sample.
         let baker = vfx_ocio::Baker::new(&proc);
         let baked = match baker.bake_lut_3d(DEFAULT_LUT_SIZE) {
-            Ok(b) => Some(BakedLut3D {
+            Ok(b) => BakedLut3D {
                 size: DEFAULT_LUT_SIZE,
                 data: b.as_slice().to_vec(),
-            }),
+            },
             Err(e) => {
                 log::warn!(
                     "color-pipeline: bake_lut_3d({DEFAULT_LUT_SIZE}) failed: {e}; \
-                     GPU codepath will fall back to AgX until the next rebuild"
+                     pushing an identity LUT so the GPU codepath shows the raw \
+                     scene-linear sample instead of a stale prior bake"
                 );
-                None
+                BakedLut3D {
+                    size: DEFAULT_LUT_SIZE,
+                    data: identity_lut_data(DEFAULT_LUT_SIZE),
+                }
             }
         };
         self.processor = Some(proc);
-        self.lut_3d = baked;
-        // Signal a pending GPU upload to the renderer host. Cleared
-        // by the host via `take_pending_lut`.
-        self.lut_upload_pending = self.lut_3d.is_some();
+        self.lut_3d = Some(baked);
+        self.lut_upload_pending = true;
         Ok(())
     }
 
