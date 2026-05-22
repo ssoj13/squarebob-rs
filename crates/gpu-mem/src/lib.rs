@@ -1,7 +1,19 @@
 //! Query GPU video memory (VRAM) on Windows, Linux, and macOS.
 //!
-//! **Zero `unsafe`, zero dependencies** — every platform is queried through
-//! safe OS interfaces (`nvidia-smi`, `reg query`, sysfs, `system_profiler`).
+//! Platform strategy:
+//!
+//! | Platform | Primary | Fallback |
+//! |---|---|---|
+//! | Windows | DXGI `IDXGIAdapter3::QueryVideoMemoryInfo` (in-process, µs) | `nvidia-smi`, registry |
+//! | Linux NVIDIA | `nvidia-smi` (~4 ms) | — |
+//! | Linux AMD/Intel | sysfs (`mem_info_vram_total`) | — |
+//! | macOS Apple Silicon | `sysctl hw.memsize` + `vm_stat` | — |
+//! | macOS Intel | `system_profiler SPDisplaysDataType` | — |
+//!
+//! The Windows DXGI path lives in a single `unsafe` block; everything
+//! else is safe OS-tool shell-outs. The shell-out variants cost a
+//! subprocess spawn per call (50–200 ms on Windows for nvidia-smi)
+//! and should be polled from a worker thread, not the UI loop.
 //!
 //! # Platform methods
 //!
@@ -25,8 +37,6 @@
 //!     );
 //! }
 //! ```
-
-#![forbid(unsafe_code)]
 
 use std::process::Command;
 
@@ -331,18 +341,75 @@ fn platform_query() -> Option<GpuMemInfo> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Windows strategy:
-/// 1. Try `nvidia-smi` first — gives total, free, and name in one call.
-/// 2. Fall back to the Display Adapter registry class for total VRAM
-///    (AMD / Intel / older NVIDIA without nvidia-smi in PATH).
+/// 1. **Primary**: DXGI `IDXGIAdapter3::QueryVideoMemoryInfo`.
+///    In-process, microseconds, works across NVIDIA / AMD / Intel
+///    in one shot. No subprocess on the UI thread.
+/// 2. Fallback to `nvidia-smi` for the rare case DXGI fails
+///    (extremely old drivers, headless box).
+/// 3. Last resort: Display Adapter registry class (total VRAM
+///    only, no free).
 #[cfg(target_os = "windows")]
 fn windows_query() -> Option<GpuMemInfo> {
-    // Fast path: nvidia-smi gives us everything, including free VRAM.
+    if let Some(info) = dxgi_query() {
+        return Some(info);
+    }
     if let Some(info) = nvidia_smi_query() {
         return Some(info);
     }
-
-    // Fallback: registry (total only, no free VRAM).
     windows_registry_query()
+}
+
+/// DXGI VRAM query — the proper Windows API. Uses
+/// `IDXGIAdapter3::QueryVideoMemoryInfo` to read the OS-managed
+/// budget and current usage for the local (dedicated) memory
+/// segment, plus the adapter description for the friendly name and
+/// hardware-installed VRAM size.
+///
+/// All-`unsafe` because COM. Wrapped behind a single function so
+/// the call sites stay clean and the `unsafe` surface is reviewable.
+#[cfg(target_os = "windows")]
+fn dxgi_query() -> Option<GpuMemInfo> {
+    use windows::core::Interface;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
+        IDXGIAdapter3, IDXGIFactory1,
+    };
+
+    // SAFETY: every COM call is checked for HRESULT failure via
+    // `.ok()?`; we never deref a null pointer. `Description` is a
+    // `[u16; 128]` C-style array of UTF-16 with a NUL terminator,
+    // safe to slice + convert.
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+        let adapter = factory.EnumAdapters1(0).ok()?;
+        let adapter3: IDXGIAdapter3 = adapter.cast().ok()?;
+        let desc = adapter3.GetDesc1().ok()?;
+        let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        adapter3
+            .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
+            .ok()?;
+
+        // `Budget` is what the OS lets us allocate right now —
+        // a moving target under memory pressure. We report it as
+        // the "free" axis because that's what the user wants
+        // ("how much can I still allocate?"), not raw dedicated.
+        let free = info.Budget.saturating_sub(info.CurrentUsage);
+
+        let nul = desc
+            .Description
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(desc.Description.len());
+        let name = String::from_utf16_lossy(&desc.Description[..nul]);
+
+        Some(GpuMemInfo {
+            name,
+            dedicated_vram: desc.DedicatedVideoMemory as u64,
+            free_vram: free,
+            shared_memory: desc.SharedSystemMemory as u64,
+            unified: false,
+        })
+    }
 }
 
 /// Reads total VRAM and GPU name from the display adapter registry class.
