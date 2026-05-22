@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 /// Distinct from the OCIO Display/View path: this is the "I don't
 /// want a colour management system, just give me a curve" lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(u8)]
 pub enum BuiltInTonemap {
     /// Clamp `[0, +∞)` to `[0, 1]`. Debug — highlights become flat
     /// white blobs, only useful for sanity checks.
@@ -87,6 +88,7 @@ pub enum ConfigSource {
 /// CPU vs GPU dispatch. Persisted in the preset because flipping
 /// between them changes frame-time characteristics significantly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(u8)]
 pub enum ColorCodepath {
     /// `Processor::apply_rgb` on the readback buffer each frame.
     /// Slow (`O(W*H)` per frame plus a GPU→CPU readback), but
@@ -105,6 +107,7 @@ pub enum ColorCodepath {
 
 /// Which family of transforms the colour stage runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(u8)]
 pub enum ColorMode {
     /// Use the [`BuiltInTonemap`] selection below.
     BuiltIn,
@@ -171,5 +174,184 @@ impl Default for ColorPipelineSettings {
             ocio_look: None,
             ocio_custom_lut: None,
         }
+    }
+}
+
+impl ColorPipelineSettings {
+    /// Hash that changes whenever any field that affects the
+    /// `Processor` build changes. The runtime uses this to decide
+    /// when to rebuild — equal hash = same processor, skip rebuild.
+    fn build_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Mode + tonemap kind + codepath gate the whole pipeline
+        // shape, so they belong in the hash even though only the
+        // OCIO branch reads the OCIO fields.
+        (self.mode as u8).hash(&mut h);
+        (self.builtin as u8).hash(&mut h);
+        (self.codepath as u8).hash(&mut h);
+        match &self.ocio_config {
+            ConfigSource::BuiltIn => 0u8.hash(&mut h),
+            ConfigSource::Bundled(name) => {
+                1u8.hash(&mut h);
+                name.hash(&mut h);
+            }
+            ConfigSource::External(p) => {
+                2u8.hash(&mut h);
+                p.hash(&mut h);
+            }
+        }
+        self.ocio_input_space.hash(&mut h);
+        self.ocio_display.hash(&mut h);
+        self.ocio_view.hash(&mut h);
+        self.ocio_look.hash(&mut h);
+        self.ocio_custom_lut.hash(&mut h);
+        h.finish()
+    }
+}
+
+// ── Runtime ───────────────────────────────────────────────────────────
+
+/// Live colour pipeline owned by the renderer. Holds the active
+/// `vfx_ocio::Config` plus a cached `Processor` built from the
+/// current [`ColorPipelineSettings`]. Call [`Self::ensure`] each
+/// frame before applying — it rebuilds the `Processor` if any
+/// setting changed since the last build, otherwise it's a hash
+/// compare and noop.
+pub struct ColorPipeline {
+    config: vfx_ocio::Config,
+    config_source: ConfigSource,
+    processor: Option<vfx_ocio::Processor>,
+    last_hash: u64,
+}
+
+impl ColorPipeline {
+    /// Initialise from a settings struct. Loads the appropriate
+    /// `Config` (built-in / bundled / external) and builds the
+    /// initial `Processor`. Falls back to the built-in ACES 1.3
+    /// config if external loading fails, so the renderer always
+    /// has *some* config to work with.
+    pub fn new(settings: &ColorPipelineSettings, bundled_dir: &std::path::Path) -> Self {
+        let (config, resolved_source) = load_config(&settings.ocio_config, bundled_dir);
+        let mut pipe = Self {
+            config,
+            config_source: resolved_source,
+            processor: None,
+            last_hash: 0,
+        };
+        // Initial build — errors are logged and leave `processor`
+        // as `None`. Callers that try to `apply_cpu` on a `None`
+        // processor get a no-op pass-through and a log entry.
+        let _ = pipe.rebuild(settings);
+        pipe
+    }
+
+    /// Rebuild the processor if `settings.build_hash()` differs
+    /// from the cached one. No-op otherwise. Returns `Ok(())` on
+    /// success or a no-op skip; `Err` is reserved for hard
+    /// build failures that the host wants to surface.
+    pub fn ensure(
+        &mut self,
+        settings: &ColorPipelineSettings,
+        bundled_dir: &std::path::Path,
+    ) -> Result<(), vfx_ocio::OcioError> {
+        let hash = settings.build_hash();
+        if hash == self.last_hash {
+            return Ok(());
+        }
+        // Config source itself may have changed — reload if so.
+        if self.config_source != settings.ocio_config {
+            let (config, resolved_source) = load_config(&settings.ocio_config, bundled_dir);
+            self.config = config;
+            self.config_source = resolved_source;
+        }
+        self.rebuild(settings)?;
+        self.last_hash = hash;
+        Ok(())
+    }
+
+    fn rebuild(
+        &mut self,
+        settings: &ColorPipelineSettings,
+    ) -> Result<(), vfx_ocio::OcioError> {
+        if settings.mode == ColorMode::BuiltIn {
+            // Built-in tonemaps don't need an OCIO processor —
+            // their math is in the blit shader.
+            self.processor = None;
+            return Ok(());
+        }
+        // OCIO mode — build a display processor for
+        // (input_space, display, view). The named look (if any)
+        // is folded in by chaining a `LookTransform` on top.
+        let proc = self.config.display_processor(
+            &settings.ocio_input_space,
+            &settings.ocio_display,
+            &settings.ocio_view,
+        )?;
+        self.processor = Some(proc);
+        Ok(())
+    }
+
+    /// Apply the cached processor to a slice of RGB triples.
+    /// CPU codepath — slow per-frame, but deterministic and
+    /// matches the OCIO reference bit-for-bit. No-op when
+    /// `mode == BuiltIn` (the shader does the work) or when the
+    /// processor failed to build.
+    pub fn apply_cpu(&self, pixels: &mut [[f32; 3]]) {
+        if let Some(proc) = &self.processor {
+            proc.apply_rgb(pixels);
+        }
+    }
+
+    /// Live `Config` reference for the UI to enumerate displays
+    /// / views / colour spaces / looks. Always returns a valid
+    /// config because `load_config` falls back to the built-in.
+    pub fn config(&self) -> &vfx_ocio::Config {
+        &self.config
+    }
+
+    /// Which `ConfigSource` is actually live right now. May
+    /// differ from the requested source when an external load
+    /// failed and the pipeline degraded to `BuiltIn`.
+    pub fn active_config_source(&self) -> &ConfigSource {
+        &self.config_source
+    }
+}
+
+/// Load the requested config, falling back to the built-in
+/// ACES 1.3 on any error. Returns both the loaded `Config` and
+/// the source that actually backed it (which may be `BuiltIn`
+/// even if the caller asked for `External`).
+fn load_config(
+    source: &ConfigSource,
+    bundled_dir: &std::path::Path,
+) -> (vfx_ocio::Config, ConfigSource) {
+    match source {
+        ConfigSource::BuiltIn => (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn),
+        ConfigSource::Bundled(name) => {
+            let path = bundled_dir.join(name);
+            match vfx_ocio::Config::from_file(&path) {
+                Ok(cfg) => (cfg, ConfigSource::Bundled(name.clone())),
+                Err(e) => {
+                    log::warn!(
+                        "color-pipeline: failed to load bundled config {}: {e} \
+                         — falling back to built-in ACES 1.3",
+                        path.display()
+                    );
+                    (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn)
+                }
+            }
+        }
+        ConfigSource::External(path) => match vfx_ocio::Config::from_file(path) {
+            Ok(cfg) => (cfg, ConfigSource::External(path.clone())),
+            Err(e) => {
+                log::warn!(
+                    "color-pipeline: failed to load external config {}: {e} \
+                     — falling back to built-in ACES 1.3",
+                    path.display()
+                );
+                (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn)
+            }
+        },
     }
 }
