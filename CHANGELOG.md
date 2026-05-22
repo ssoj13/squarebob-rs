@@ -6,6 +6,166 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-05-21 / 22 — Color v2 (OCIO) lands; vfx-rs OCIO parity alignment
+
+Closes phases 5–11 of the OCIO color-pipeline migration that started
+this sprint (`color-pipeline` crate + render-3d wiring) and then
+follows the vfx-rs parity push that came out of debugging the
+ACES 2.0 viewport. By the end of the sprint the renderer drives
+the full OCIO pipeline — built-in tonemaps, GPU LUT bake, OCIO
+CPU codepath, embedded ACES 2.0 release configs — and the legacy
+"Color v1" ACES-Full pre/post-matrix lane is gone from the
+codebase.
+
+### Phase 5 — Built-in tonemap wiring + AgX
+- **Added** `agx_filmic()` to the blit shader (Eary Chow 6th-order
+  polynomial, hue-preserving filmic). New `BuiltInTonemap::AgX`
+  variant. `ColorPipelineSettings::resolved_tonemap_tag()` drives
+  the blit's tonemap-tag switch from settings alone.
+- **Changed** `Render3DOptions` to call `set_blit_color(...,
+  resolved_tag, ...)`; the legacy `set_blit_rrt_tag` lane retired.
+
+### Phase 6 — OCIO 3D LUT bake → GPU sample
+- **Added** `ColorPipeline::bake_3d_lut(33)` invoked from
+  `ensure()` whenever the OCIO processor rebuilds. Result lives
+  next to the runtime as a cached `BakedLut3D`.
+- **Added** `texture_3d<f32>` + filtering sampler @binding(3/4) on
+  the blit pipeline. `case 6u` in `blit.wgsl` trilinear-samples the
+  LUT with half-texel correction `(saturate(scene) * (N-1) + 0.5) / N`;
+  `kind == 6u` short-circuits the trailing OETF because the OCIO
+  display processor already folds in the EOTF^-1.
+- **Added** `PathTraceCompute::set_blit_lut_3d(queue, &[f32], size)`
+  that converts f32 → f16 and pushes to the texture; LUT data is
+  half-precision on-GPU to stay filterable on every wgpu backend.
+- **Fixed** R↔B swap in the LUT upload. `vfx_ocio::Baker` stores
+  triples in OCIO canonical order (B fastest, R slowest); wgpu's
+  `write_texture` expects X-fastest layout. Streaming the slice
+  unchanged put B values into the texture's X dim, producing a
+  perfect hue rotation (cyan input → yellow output). Fixed by
+  transposing on upload to match the shader's `textureSample`
+  convention.
+
+### Phase 8 — Bundled ACES configs + `bootstrap.py d`
+- **Added** `data/ocio/studio-config-all-views-v4.0.0_aces-v2.0_ocio-v2.5.ocio`
+  (the latest, most complete ACES Studio release). Other variants
+  later retired in favour of routing through vfx-ocio's embedded
+  registry.
+- **Added** `bootstrap.py d` / `download` subcommand —
+  idempotent fetch of pinned ACES configs into `data/ocio/`. Two
+  backends: `gh release download` first (authenticated, retries),
+  then stdlib urllib as a fallback. Currently pins the v4.0.0
+  All-Views config (was previously v2.2.0 Studio + CG; switched
+  after the vfx-rs embedded registry became canonical).
+- **Added** `color_pipeline::available_bundled_configs()` enumerator
+  used by the (now-removed) Bundled UI lane.
+
+### Phase 10 — OCIO CPU codepath
+- **Added** `PathTraceCompute::apply_cpu_color_in_place(...)` —
+  synchronous readback of `output_texture` → caller closure →
+  re-upload, with 256-byte row alignment and `wait_indefinitely`
+  poll. `output_texture` usage flags grew `COPY_DST`.
+- **Added** `Renderer3D::apply_cpu_color_pass(pipeline, opts)` —
+  bails on `frame_count == 0`, calls `pipeline.apply_cpu(...)` on
+  the in-place pixel slice, then `composite_overlay(None, opts)`
+  to re-blit. Debug `warn!` fires per frame in dev builds.
+- **Added** routing from `treemap_view.rs`: when
+  `mode == Ocio && codepath == Cpu`, the host calls the CPU pass
+  after `render_to_view`. `ColorPipelineSettings::resolved_tonemap_tag`
+  returns `0` (clamp passthrough) for that combination so the
+  intermediate blit doesn't re-tonemap.
+
+### Phase 11 — Delete legacy color stack
+- **Removed** legacy `AcesIdt` / `AcesLmt` / `AcesRrt` / `AcesOdt` /
+  `ColorWorkingSpace` / `TonemapKind` enums and every
+  `default_color_*` helper.
+- **Removed** `aces_full_matrices`, the `SRGB_TO_ACESCG` family of
+  constants, `saturation_matrix`, `diag_tint`, the
+  `set_blit_rrt_tag` lane, and the entire "Full" ACES UI section.
+- **Removed** `Render3DOptions.color_*` flat fields plus the matrix
+  bake on the renderer side.
+- **Verified** with `git grep AcesIdt|AcesLmt|...` clean; preset
+  round-trip on a real `.json` preset still loads via the
+  `#[serde(default)]` skip-unknown semantics.
+
+### Color settings UI evolution
+- **Added** a Color v2 (OCIO) settings section — Mode (BuiltIn /
+  Ocio), Codepath (GPU / CPU), Config source picker, Input space /
+  Display / View / Look / Custom LUT dropdowns. Initial revision
+  used `selectable_label` buttons for the source toggle.
+- **Added** real config-introspected ComboBoxes — Input / Display /
+  View / Look populated dynamically from the active OCIO config
+  via `ColorPipeline::available_*` accessors. Stale presets show
+  a `? ` prefix instead of silently dropping to the first option.
+- **Added** rfd-driven Browse… buttons on the External config and
+  Custom LUT lanes. Picker bias: parent of the current path first,
+  exe directory second, OS default last.
+- **Added** per-source OCIO persistence. `ColorPipelineSettings`
+  grows `builtin_ocio` / `external_ocio` slots; flipping the
+  source button preserves each side's last-picked input / display
+  / view / look / custom LUT instead of forcing the user to re-pick.
+- **Removed** the `Bundled` UI lane — folded into `External`. Old
+  presets carrying `ConfigSource::Bundled` silently coerce to
+  `External(default)` at first edit. Filenames under `data/ocio/`
+  reachable via the External file picker.
+- **Replaced** the BuiltIn / External toggle buttons with a
+  ComboBox listing every embedded release config plus the default
+  + External entries. Adding a config to vfx-rs's
+  `embedded::REGISTRY` auto-surfaces it in the UI.
+- **Added** compact External path field — `TextEdit` width 180 px,
+  full path on hover. ComboBox width bumped 220 → 360 px so the
+  longest ACES 2.0 view names (e.g. *"ACES 2.0 - HDR 4000 nits
+  (Rec.2020 D60 in Rec.2020 D65)"*) fit without truncation.
+
+### Code-review follow-ups
+- **Added** zero-size viewport guard in `apply_cpu_color_in_place`
+  — `width * height == 0` triggers wgpu validation on a 0-byte
+  readback buffer.
+- **Changed** the CPU-color readback to preserve the original
+  alpha channel through readback → callback → writeback. Denoiser
+  and screenshot consumers also read `output_texture`; resetting
+  alpha to 1.0 masked the PT-accumulated value.
+- **Changed** `ColorPipeline::rebuild` to always populate `lut_3d`
+  with an identity sentinel when `vfx_ocio::Baker::bake_lut_3d`
+  fails — previously a failed bake left the GPU bound to the
+  *previous* OCIO config's LUT until the next successful rebake.
+
+### `ConfigSource::Embedded` + vfx-rs OCIO parity alignment
+- **Added** `ConfigSource::Embedded(String)` carrying a canonical
+  name from `vfx_ocio::builtin::embedded::REGISTRY`. `load_config`
+  resolves via `embedded::get(name)` and falls back to
+  `default_config()` with a `warn!` on unknown names.
+- **Changed** `ColorPipeline::rebuild` to construct a
+  `DisplayViewTransform` and route through vfx-ocio's new
+  `processor_for_display_view_transform`. When the user picks a
+  Look from the UI, the look is set via `with_looks_override(name)`;
+  previously the `ocio_look` field was captured by `build_hash`
+  (triggering rebuilds) but the look was *never passed through*
+  because `display_processor(src, display, view)` doesn't accept
+  one. Look selections were silently no-ops; now they actually
+  change the LUT bake.
+- **Changed** `color-pipeline::available_views(display)` to use
+  vfx-ocio's new `Config::get_views(display)` merged enumerator
+  — UI dropdowns now show both local `!<View>` entries and
+  `!<Views>` shared-view references. Modern OCIO 2.3+ configs
+  (Studio v4.0.0) previously appeared to have only `Raw` as the
+  available view.
+- **Re-exported** `vfx_ocio` from `color_pipeline` so the squarebob
+  binary can drive the embedded registry through
+  `color_pipeline::vfx_ocio::builtin::embedded::*` without taking
+  a direct dependency.
+- **Changed** `ConfigSource::BuiltIn` to resolve via
+  `vfx_ocio::builtin::default_config()` (the latest embedded
+  release — currently ACES 2.0 Studio All-Views v4.0.0). UI label
+  updated from "ACES 1.3 (built-in)" to "Default (latest embedded)"
+  to match what the renderer actually returns.
+
+### `Cargo.toml`
+- **Added** workspace-level `[patch."https://github.com/ssoj13/vfx-rs.git"]`
+  pointing every vfx crate at the adjacent `../vfx-rs` worktree.
+  Local development override so the OCIO parity work above is
+  picked up without a release tag bump on `ssoj13/vfx-rs`.
+  Remove once the parity commits land on `main`.
+
 ## 2026-05-16 — OIDN denoise regression diagnostics
 
 Stabilised the denoise debugging surface after repeated OIDN passes were
