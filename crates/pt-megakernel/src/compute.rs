@@ -4618,6 +4618,15 @@ impl PathTraceCompute {
         queue.write_buffer(&self.blit_uniform_buffer, 4, bytemuck::cast_slice(&params));
     }
 
+    /// Push the AcesRrt tag to `exposure.z` so the shader can pick
+    /// between Standard / A1.1 / Off filmic curves at runtime. Writes
+    /// a single float at offset 8 (`exposure.z`) so it doesn't
+    /// clobber the per-frame exposure or ODT-tag lanes.
+    pub fn set_blit_rrt_tag(&self, queue: &wgpu::Queue, rrt_tag: u32) {
+        let params: [f32; 1] = [rrt_tag as f32];
+        queue.write_buffer(&self.blit_uniform_buffer, 8, bytemuck::cast_slice(&params));
+    }
+
     /// Push the colour-pipeline lane of the blit uniform buffer.
     /// Mirrors the C-2 layout in `blit.wgsl`:
     ///

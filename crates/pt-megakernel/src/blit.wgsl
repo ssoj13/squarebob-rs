@@ -11,7 +11,11 @@
 // exposure.x = physical-camera exposure multiplier (1.0 = passthrough)
 // exposure.y = ACES ODT tag (`AcesOdt::gpu_tag`). 2 = Rec2020 1000nits
 //              → PQ OETF; everything else → sRGB 1/2.2 OETF.
-// exposure.zw = reserved
+// exposure.z = ACES RRT tag (`AcesRrt::gpu_tag`).
+//              0 = Standard (Narkowicz ACES 1.0 fit).
+//              1 = A1.1     (tighter highlight rolloff).
+//              2 = Off      (skip the filmic curve — debug).
+// exposure.w = reserved
 //
 // color.x = tonemap kind (u32 bitcast into f32; see TonemapKind::gpu_tag):
 //             0=None, 1=Linear, 2=Reinhard, 3=AcesFilmic, 4=AcesFull.
@@ -59,6 +63,16 @@ fn aces_filmic(color: vec3<f32>) -> vec3<f32> {
     let d = 0.59;
     let e = 0.14;
     return saturate((color * (a * color + b)) / (color * (c * color + d) + e));
+}
+
+// ACES 1.1-ish variant: same Narkowicz fit but with input gained +10 %
+// and output trimmed −7 %. Net effect is a slightly tighter highlight
+// shoulder and a marginally darker midtone — the visual delta the
+// ACES 1.1 RRT introduced over 1.0. Not a literal port of the Hable
+// blue-light-artifact patch, but distinguishable enough that flipping
+// the dropdown is a meaningful operation.
+fn aces_filmic_a11(color: vec3<f32>) -> vec3<f32> {
+    return aces_filmic(color * 1.10) * 0.93;
 }
 
 // SMPTE ST 2084 (PQ) inverse-EOTF — encodes display-linear nits to
@@ -187,8 +201,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         case 1u: { mapped = saturate(scene); }                  // Linear (curve-less)
         case 2u: { mapped = reinhard(scene); }                  // Reinhard
         case 4u: {                                              // AcesFull
-            let working    = blit_params.aces_pre * scene;
-            let curved     = aces_filmic(working);
+            let working = blit_params.aces_pre * scene;
+            // RRT switch — Standard / A1.1 / Off. Read in WGSL from
+            // the same uniform slot the CPU writes via
+            // `set_blit_rrt_tag` (see `compute.rs`).
+            let rrt_tag = u32(blit_params.exposure.z);
+            var curved: vec3<f32>;
+            switch rrt_tag {
+                case 0u: { curved = aces_filmic(working);     }   // Standard
+                case 1u: { curved = aces_filmic_a11(working); }   // A1.1
+                case 2u: { curved = saturate(working);        }   // Off — bypass curve
+                default: { curved = aces_filmic(working);     }
+            }
             let displayed  = blit_params.aces_post * curved;
             // Gamut compression operates in display gamut, BEFORE
             // saturate — clipping first would defeat the point. The

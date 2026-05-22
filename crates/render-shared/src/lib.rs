@@ -1205,6 +1205,21 @@ pub enum AcesRrt {
     Off,
 }
 
+impl AcesRrt {
+    /// Tag value packed into `BlitParams.exposure.z` so the shader
+    /// can switch the filmic curve at runtime. The order is pinned —
+    /// the WGSL `switch` and the tests in this module both depend on
+    /// these exact values, so adding a new variant must extend the
+    /// tail rather than reshuffle.
+    pub const fn gpu_tag(self) -> u32 {
+        match self {
+            AcesRrt::Standard => 0,
+            AcesRrt::A1_1 => 1,
+            AcesRrt::Off => 2,
+        }
+    }
+}
+
 /// Output Device Transform — display-referred target. Must agree with
 /// the swapchain surface format (e.g. selecting `Srgb100nits` while the
 /// surface is `Rgba8UnormSrgb` means we must skip the final OETF to
