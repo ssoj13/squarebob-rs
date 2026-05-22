@@ -462,39 +462,56 @@ impl EncodeDialog {
                 ui.separator();
 
                 // === Export Mode Tabs (Video / Sequence) ===
+                //
+                // Smart-rename rules — keep the user from manually
+                // adding / removing the `####` frame token every
+                // time they flip the mode:
+                //   Video → strip any padding token from the stem
+                //           (`####`, `%04d`, `@@@@`, with or without
+                //           a leading `.`), then set the container
+                //           extension.
+                //   Sequence → append `.####` to the stem (skipped
+                //              if any padding token is already
+                //              there), then set the image-format
+                //              extension.
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!self.is_encoding, |ui| {
-                        // Video mode button
                         let video_btn = egui::Button::new("Video")
                             .selected(self.export_mode == ExportMode::Video)
                             .min_size(egui::vec2(80.0, 0.0));
                         if ui.add(video_btn).clicked() {
                             self.export_mode = ExportMode::Video;
-                            // Restore video extension
-                            self.output_path.set_extension(self.container.extension());
+                            let stem = self
+                                .output_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("output");
+                            let clean = strip_frame_token(stem);
+                            let ext = self.container.extension();
+                            self.output_path = rebuild_path(
+                                self.output_path.parent(),
+                                &clean,
+                                ext,
+                            );
                         }
 
-                        // Sequence mode button
                         let seq_btn = egui::Button::new("Sequence")
                             .selected(self.export_mode == ExportMode::Sequence)
                             .min_size(egui::vec2(80.0, 0.0));
                         if ui.add(seq_btn).clicked() {
                             self.export_mode = ExportMode::Sequence;
-                            // Update extension and add padding pattern if needed
-                            let stem = self.output_path.file_stem()
+                            let stem = self
+                                .output_path
+                                .file_stem()
                                 .and_then(|s| s.to_str())
                                 .unwrap_or("frame");
-                            // Add #### padding if not present
-                            let new_stem = if !stem.contains('#') && !stem.contains('%') && !stem.contains('@') {
-                                format!("{}.####", stem)
-                            } else {
-                                stem.to_string()
-                            };
-                            if let Some(parent) = self.output_path.parent() {
-                                self.output_path = parent.join(format!("{}.{}", new_stem, self.sequence_settings.format.extension()));
-                            } else {
-                                self.output_path = PathBuf::from(format!("{}.{}", new_stem, self.sequence_settings.format.extension()));
-                            }
+                            let with_token = ensure_frame_token(stem);
+                            let ext = self.sequence_settings.format.extension();
+                            self.output_path = rebuild_path(
+                                self.output_path.parent(),
+                                &with_token,
+                                ext,
+                            );
                         }
                     });
                 });
@@ -1386,4 +1403,165 @@ fn render_h26x_settings(
 
     ui.add_space(4.0);
     ui.label(""); // Spacer for visual alignment with other codec tabs
+}
+
+/// Remove any frame-padding token from a filename stem so video
+/// output names don't carry the sequence-mode `####` after the
+/// user flips back to Video. Recognises the three formats
+/// `media-encoder` accepts as inputs:
+///
+/// * `####`  — hash padding (any run of `#`)
+/// * `@@@@`  — at-sign padding (Houdini convention)
+/// * `%04d` / `%4d` / `%08d` — printf-style padding
+///
+/// Tokens are dropped along with the `.` that typically separates
+/// them from the rest of the stem (e.g. `frame.####` → `frame`).
+/// A token at the very start of the stem is also stripped. If
+/// stripping leaves an empty string the literal `output` is
+/// returned so the user never ends up with `.mp4` as a filename.
+fn strip_frame_token(stem: &str) -> String {
+    let mut s = stem.to_string();
+    // Walk every padding family; loop until no change so a stem
+    // like `out.####.%04d` still ends up clean.
+    loop {
+        let before = s.clone();
+        s = strip_hash_token(&s);
+        s = strip_at_token(&s);
+        s = strip_printf_token(&s);
+        if s == before {
+            break;
+        }
+    }
+    // Trim any leftover `.` boundary the token leaves behind.
+    let trimmed = s.trim_matches('.').to_string();
+    if trimmed.is_empty() {
+        "output".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Inverse of [`strip_frame_token`]: append `.####` if no padding
+/// token is already present. Picks 4-hash as a sensible default —
+/// users editing the field by hand can change padding width
+/// directly.
+fn ensure_frame_token(stem: &str) -> String {
+    let has_token = stem.contains('#') || stem.contains('@') || has_printf_token(stem);
+    if has_token {
+        stem.to_string()
+    } else {
+        format!("{stem}.####")
+    }
+}
+
+fn strip_hash_token(s: &str) -> String {
+    if let Some(start) = s.find('#') {
+        let end = s[start..]
+            .find(|c: char| c != '#')
+            .map(|idx| start + idx)
+            .unwrap_or(s.len());
+        let mut head = s[..start].to_string();
+        if head.ends_with('.') {
+            head.pop();
+        }
+        head.push_str(&s[end..]);
+        head
+    } else {
+        s.to_string()
+    }
+}
+
+fn strip_at_token(s: &str) -> String {
+    if let Some(start) = s.find('@') {
+        let end = s[start..]
+            .find(|c: char| c != '@')
+            .map(|idx| start + idx)
+            .unwrap_or(s.len());
+        let mut head = s[..start].to_string();
+        if head.ends_with('.') {
+            head.pop();
+        }
+        head.push_str(&s[end..]);
+        head
+    } else {
+        s.to_string()
+    }
+}
+
+fn strip_printf_token(s: &str) -> String {
+    // `%04d`, `%4d`, `%08d`, etc. Scan for `%`, then skip an
+    // optional width, then expect `d` to commit the strip.
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let start = i;
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'd' && j > i + 1 {
+                let mut head = s[..start].to_string();
+                if head.ends_with('.') {
+                    head.pop();
+                }
+                head.push_str(&s[j + 1..]);
+                return head;
+            }
+        }
+        i += 1;
+    }
+    s.to_string()
+}
+
+fn has_printf_token(s: &str) -> bool {
+    strip_printf_token(s) != s
+}
+
+fn rebuild_path(parent: Option<&std::path::Path>, stem: &str, ext: &str) -> PathBuf {
+    let filename = format!("{stem}.{ext}");
+    match parent {
+        Some(p) if !p.as_os_str().is_empty() => p.join(filename),
+        _ => PathBuf::from(filename),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_hash() {
+        assert_eq!(strip_frame_token("frame.####"), "frame");
+        assert_eq!(strip_frame_token("frame.###"), "frame");
+        assert_eq!(strip_frame_token("####"), "output");
+    }
+
+    #[test]
+    fn strip_at() {
+        assert_eq!(strip_frame_token("frame.@@@@"), "frame");
+    }
+
+    #[test]
+    fn strip_printf() {
+        assert_eq!(strip_frame_token("frame.%04d"), "frame");
+        assert_eq!(strip_frame_token("frame.%4d"), "frame");
+        assert_eq!(strip_frame_token("frame%08d"), "frame");
+    }
+
+    #[test]
+    fn strip_no_token_is_noop() {
+        assert_eq!(strip_frame_token("plain"), "plain");
+    }
+
+    #[test]
+    fn ensure_adds_when_missing() {
+        assert_eq!(ensure_frame_token("frame"), "frame.####");
+    }
+
+    #[test]
+    fn ensure_keeps_existing() {
+        assert_eq!(ensure_frame_token("frame.###"), "frame.###");
+        assert_eq!(ensure_frame_token("frame.%04d"), "frame.%04d");
+    }
 }
