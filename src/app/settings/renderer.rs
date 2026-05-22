@@ -233,10 +233,6 @@ impl App {
         //     fire `dirty.preset()`, never restart PT accumulation —
         //     mirror of the denoise-interval bug-fix contract.
         self.ui_settings_color(ui, dirty);
-        // 7b. Color v2 (OCIO migration) — new pipeline preview.
-        //     Lives alongside the legacy section until phase 5
-        //     deletes the old one. Same `dirty.preset()` contract.
-        self.ui_settings_color_v2(ui, dirty);
         // 8. Samples — sampling budget + adaptive (PT-only).
         if self.render_3d_opts.path_tracing {
             self.ui_3d_samples(ui);
