@@ -787,6 +787,13 @@ pub struct Render3DOptions {
     pub color_rrt: AcesRrt,
     #[serde(default = "default_color_odt")]
     pub color_odt: AcesOdt,
+    /// New OCIO-backed colour pipeline (phase 1–8 migration). Lives
+    /// alongside the legacy `color_idt/lmt/rrt/odt/working/tonemap`
+    /// fields above so old presets keep loading; phase 5 deletes
+    /// the legacy fields once the new path is wired end-to-end.
+    /// See `crates/color-pipeline/src/lib.rs` for the data model.
+    #[serde(default)]
+    pub color_pipeline: color_pipeline::ColorPipelineSettings,
     /// Display-side exposure in EV stops. Multiplies scene-linear RGB
     /// by `2^ev` before tonemap. `0.0` keeps the image unchanged.
     #[serde(default = "default_color_exposure_ev")]
@@ -1572,6 +1579,7 @@ impl Default for Render3DOptions {
             color_lmt: AcesLmt::None,
             color_rrt: AcesRrt::Standard,
             color_odt: AcesOdt::Srgb100nits,
+            color_pipeline: color_pipeline::ColorPipelineSettings::default(),
             color_exposure_ev: 0.0,
             color_white_balance_k: 6500.0,
             color_gamut_compress: 0.0,
