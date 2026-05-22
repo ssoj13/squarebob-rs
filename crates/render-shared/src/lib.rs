@@ -775,43 +775,12 @@ pub struct Render3DOptions {
     /// through presets immediately so saved configs survive across the
     /// later phases that actually wire them to the GPU.
     /// See `docs/aces-color-pipeline-plan.md`.
-    #[serde(default = "default_color_working")]
-    pub color_working: ColorWorkingSpace,
-    #[serde(default = "default_color_tonemap")]
-    pub color_tonemap: TonemapKind,
-    #[serde(default = "default_color_idt")]
-    pub color_idt: AcesIdt,
-    #[serde(default = "default_color_lmt")]
-    pub color_lmt: AcesLmt,
-    #[serde(default = "default_color_rrt")]
-    pub color_rrt: AcesRrt,
-    #[serde(default = "default_color_odt")]
-    pub color_odt: AcesOdt,
-    /// New OCIO-backed colour pipeline (phase 1–8 migration). Lives
-    /// alongside the legacy `color_idt/lmt/rrt/odt/working/tonemap`
-    /// fields above so old presets keep loading; phase 5 deletes
-    /// the legacy fields once the new path is wired end-to-end.
-    /// See `crates/color-pipeline/src/lib.rs` for the data model.
+    /// OCIO-backed colour pipeline. Replaces the legacy
+    /// `color_idt/lmt/rrt/odt/working/tonemap/exposure/wb/gamut`
+    /// cascade that lived here before phase 11. See
+    /// `crates/color-pipeline/src/lib.rs` for the data model.
     #[serde(default)]
     pub color_pipeline: color_pipeline::ColorPipelineSettings,
-    /// Display-side exposure in EV stops. Multiplies scene-linear RGB
-    /// by `2^ev` before tonemap. `0.0` keeps the image unchanged.
-    #[serde(default = "default_color_exposure_ev")]
-    pub color_exposure_ev: f32,
-    /// White-balance target in Kelvin. `6500.0` ≈ D65 reference white
-    /// (no tint). Lower values warm the image, higher cool it.
-    #[serde(default = "default_color_white_balance_k")]
-    pub color_white_balance_k: f32,
-    /// Gamut-compression strength in `[0, 1]`. Pulls out-of-gamut
-    /// samples back inside the target ODT gamut with a soft rolloff.
-    /// `0.0` disables the pass.
-    #[serde(default = "default_color_gamut_compress")]
-    pub color_gamut_compress: f32,
-    /// When on, automatically applies the gamut compressor at the
-    /// strength implied by the ODT (Rec.709 / sRGB only). Overrides
-    /// the manual slider when `true`.
-    #[serde(default = "default_color_gamut_compress_auto")]
-    pub color_gamut_compress_auto: bool,
 
     /// Per-scene material library — the single source of truth for
     /// cube materials. Cubes get a `material_index` chosen by
@@ -852,97 +821,20 @@ impl Render3DOptions {
         }
     }
 
-    /// Bake the IDT and ODT lanes into a pair of std140-packed 3×3
-    /// matrices the blit shader applies around the RRT curve when
-    /// `tonemap == AcesFull`.
-    ///
-    /// Returns `(pre, post)` where:
-    /// - `pre`  is the IDT (∘ LMT, future) — scene-linear → ACEScg.
-    /// - `post` is the ODT — ACEScg → display.
-    ///
-    /// Each matrix is encoded as 3 `vec4` columns with `.w = 0` padding
-    /// (12 floats, 48 bytes). Unimplemented lane combinations fall back
-    /// to identity — that means the AcesFull GPU branch degrades to a
-    /// plain filmic curve in sRGB space, which is the same as the
-    /// AcesFilmic default. No black frames on unhandled combos.
+    /// Stub identity matrices for the unused `BlitParams.aces_pre /
+    /// aces_post` GPU lanes. Phase 11 removed the legacy
+    /// `Idt/Lmt/Rrt/Odt/Working` matrix bake — the new OCIO pipeline
+    /// drives the colour transform either via the GPU LUT (mode =
+    /// Ocio, tag 6) or via a shader-side curve (mode = BuiltIn,
+    /// tags 0–2 / 5), neither of which reads pre/post. A follow-up
+    /// commit will drop the uniforms entirely.
     pub fn aces_full_matrices(&self) -> ([[f32; 4]; 3], [[f32; 4]; 3]) {
-        // Step 1 — IDT (scene-referred → ACEScg / AP1). All non-passthrough
-        // IDT variants land in AP1 first; working-space conversion to AP0
-        // (if requested) happens in the next step. None / Ap1Passthrough
-        // assume PT already writes ACEScg.
-        let idt_to_ap1: [[f32; 3]; 3] = match self.color_idt {
-            AcesIdt::SrgbToAp1 | AcesIdt::Rec709ToAp1 => SRGB_TO_ACESCG,
-            AcesIdt::Ap1Passthrough | AcesIdt::None => MAT3_IDENTITY,
-        };
-
-        // Step 2 — LMT on the AP1 working domain. Each variant is a
-        // (saturation, per-channel tint) pair: saturation lifts /
-        // damps colour intensity, tint applies an RGB diagonal that
-        // shifts the white point toward a creative direction. Values
-        // are perceptible but production-safe.
-        let (lmt_sat, lmt_tint): (f32, [f32; 3]) = match self.color_lmt {
-            AcesLmt::None => (1.0, [1.0, 1.0, 1.0]),
-            AcesLmt::Neutral => (1.05, [1.0, 1.0, 1.0]),
-            AcesLmt::Punchy => (1.15, [1.0, 1.0, 1.0]),
-            AcesLmt::Warm => (0.95, [1.06, 1.02, 0.94]),
-            AcesLmt::Cool => (0.95, [0.94, 1.0, 1.06]),
-            AcesLmt::Bleach => (0.70, [1.05, 1.05, 1.05]),
-            AcesLmt::Vintage => (0.80, [1.08, 0.97, 0.88]),
-        };
-        let identity_sat = (lmt_sat - 1.0).abs() < f32::EPSILON;
-        let identity_tint = (lmt_tint[0] - 1.0).abs() < f32::EPSILON
-            && (lmt_tint[1] - 1.0).abs() < f32::EPSILON
-            && (lmt_tint[2] - 1.0).abs() < f32::EPSILON;
-        let idt_lmt = if identity_sat && identity_tint {
-            idt_to_ap1
-        } else {
-            let sat_mat = if identity_sat {
-                MAT3_IDENTITY
-            } else {
-                saturation_matrix(lmt_sat)
-            };
-            let combined = if identity_tint {
-                sat_mat
-            } else {
-                mat3_mul(&diag_tint(lmt_tint), &sat_mat)
-            };
-            mat3_mul(&combined, &idt_to_ap1)
-        };
-
-        // Step 3 — fold the chosen working space into pre/post. The
-        // RRT (filmic curve) is applied between pre and post on GPU, so
-        // working space is where the filmic curve operates:
-        //   * LinearSRGB  : skip the IDT entirely (identity pre/post).
-        //                   Filmic runs on raw sRGB — the AcesFull
-        //                   branch then matches the AcesFilmic default.
-        //   * ACEScg (AP1): pre = idt_lmt; post = ACEScg → display.
-        //                   This is the canonical ACES 1.x pipeline.
-        //   * ACES2065-1  : pre = AP1→AP0 · idt_lmt;
-        //                   post = ACEScg → display · AP0→AP1.
-        //                   Filmic runs in AP0 — wider gamut, softer
-        //                   highlight rolloff than AP1.
-        //
-        // odt_in_ap1 = "ACEScg → display gamut" matrix for the chosen ODT.
-        let odt_in_ap1: [[f32; 3]; 3] = match self.color_odt {
-            AcesOdt::Srgb100nits | AcesOdt::Rec709 | AcesOdt::SrgbHdrSim => ACESCG_TO_SRGB,
-            AcesOdt::Rec2020_1000nits => ACESCG_TO_REC2020,
-            AcesOdt::P3D65 => ACESCG_TO_P3D65,
-            AcesOdt::DciP3 => ACESCG_TO_DCIP3,
-        };
-
-        let (pre_src, post_src): ([[f32; 3]; 3], [[f32; 3]; 3]) = match self.color_working {
-            ColorWorkingSpace::LinearSRGB => (MAT3_IDENTITY, MAT3_IDENTITY),
-            ColorWorkingSpace::ACEScg => (idt_lmt, odt_in_ap1),
-            ColorWorkingSpace::ACES2065_1 => (
-                mat3_mul(&AP1_TO_AP0, &idt_lmt),
-                mat3_mul(&odt_in_ap1, &AP0_TO_AP1),
-            ),
-        };
-
-        (
-            mat3_to_std140_columns(&pre_src),
-            mat3_to_std140_columns(&post_src),
-        )
+        let id3 = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        (id3, id3)
     }
 
     /// Pack the colour-pipeline knobs into the 4-tuple the blit
@@ -957,38 +849,19 @@ impl Render3DOptions {
     /// The C-2 GPU lane treats `AcesFull` as `AcesFilmic` for now — the
     /// IDT/LMT/RRT/ODT matrices are baked in by C-3.
     pub fn blit_color_lane(&self) -> (u32, f32, f32, f32) {
-        // The new colour-pipeline (`color_pipeline`) drives the
-        // tonemap tag now. Mode = BuiltIn picks the matching
-        // `BuiltInTonemap::gpu_tag()` (None / Linear / Reinhard /
-        // AgX); Mode = Ocio returns the phase-6 LUT sentinel.
-        // Exposure / WB / gamut-compress stay on the legacy
-        // scene-linear lanes for now — phase 11 either ports
-        // them onto the OCIO pipeline (CDL / GradingPrimary) or
-        // drops them entirely.
+        // Phase 11 deletion: legacy exposure / white-balance /
+        // gamut-compress lanes are gone. Callers that want
+        // exposure or WB now stage them inside the OCIO pipeline
+        // (CDL / GradingPrimary / ExposureContrastTransform). The
+        // shader's color.{y, z, w} channels are passed through as
+        // identity defaults (EV = 0, WB norm = 1.0, gc = 0.0) so
+        // the existing uniform layout stays binary-compatible.
         (
             self.color_pipeline.resolved_tonemap_tag(),
-            self.color_exposure_ev,
-            self.color_white_balance_k / 6500.0,
-            self.effective_gamut_compress(),
+            0.0,
+            1.0,
+            0.0,
         )
-    }
-
-    /// Resolve the effective gamut-compression strength. When
-    /// `color_gamut_compress_auto` is `true`, the manual slider is
-    /// overridden by a per-ODT default — full strength for narrow-gamut
-    /// targets (sRGB / Rec.709 / sRGB HDR sim) where ACEScg → display
-    /// invariably produces out-of-gamut samples, zero otherwise. Wide-
-    /// gamut targets (Rec.2020, P3) cover most of ACEScg natively so
-    /// the compressor would just dull the image.
-    pub fn effective_gamut_compress(&self) -> f32 {
-        if self.color_gamut_compress_auto {
-            match self.color_odt {
-                AcesOdt::Srgb100nits | AcesOdt::Rec709 | AcesOdt::SrgbHdrSim => 1.0,
-                AcesOdt::Rec2020_1000nits | AcesOdt::P3D65 | AcesOdt::DciP3 => 0.0,
-            }
-        } else {
-            self.color_gamut_compress.clamp(0.0, 1.0)
-        }
     }
 
     /// Scene-linear exposure multiplier applied at display + as the
@@ -1583,17 +1456,7 @@ impl Default for Render3DOptions {
             // user actually flips a control. Other lanes are seeded with
             // production-grade values so flipping to `AcesFull` lands on
             // a sensible sRGB / 100 nits view without further setup.
-            color_working: ColorWorkingSpace::ACEScg,
-            color_tonemap: TonemapKind::AcesFilmic,
-            color_idt: AcesIdt::SrgbToAp1,
-            color_lmt: AcesLmt::None,
-            color_rrt: AcesRrt::Standard,
-            color_odt: AcesOdt::Srgb100nits,
             color_pipeline: color_pipeline::ColorPipelineSettings::default(),
-            color_exposure_ev: 0.0,
-            color_white_balance_k: 6500.0,
-            color_gamut_compress: 0.0,
-            color_gamut_compress_auto: true,
             material_library: pt_material::MaterialLibrary::default(),
         }
     }

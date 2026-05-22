@@ -462,14 +462,9 @@ pub(crate) fn render_path_traced(
     // the PT accumulator; if OIDN is active, the app blits its result texture
     // separately on top.
     pt.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
-    pt.set_blit_odt_tag(&renderer.ctx.queue, opts.color_odt.gpu_tag());
-    pt.set_blit_rrt_tag(&renderer.ctx.queue, opts.color_rrt.gpu_tag());
+    // Phase 11 deletion — see render-3d/src/lib.rs for context.
     let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
     pt.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);
-    if opts.color_tonemap == render_shared::TonemapKind::AcesFull {
-        let (pre, post) = opts.aces_full_matrices();
-        pt.set_blit_aces_matrices(&renderer.ctx.queue, &pre, &post);
-    }
     pt.blit(&mut encoder, &targets.render_view);
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);

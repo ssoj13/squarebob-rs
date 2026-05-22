@@ -1047,14 +1047,12 @@ impl Renderer3D {
         // a user changing Color settings while the denoise is on-screen
         // would see no effect until the next PT render frame.
         pt.set_blit_exposure(&self.ctx.queue, opts.effective_exposure_multiplier());
-        pt.set_blit_odt_tag(&self.ctx.queue, opts.color_odt.gpu_tag());
-        pt.set_blit_rrt_tag(&self.ctx.queue, opts.color_rrt.gpu_tag());
+        // Legacy ODT / RRT tag + aces_pre/post matrix uploads
+        // gone with phase 11 — `color_pipeline.resolved_tonemap_tag()`
+        // is the sole tag now and the shader's aces_pre/post lanes
+        // are unused (will be removed in the follow-up shader pass).
         let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
         pt.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
-        if opts.color_tonemap == render_shared::TonemapKind::AcesFull {
-            let (pre, post) = opts.aces_full_matrices();
-            pt.set_blit_aces_matrices(&self.ctx.queue, &pre, &post);
-        }
         pt.blit_with_source(&self.ctx.device, &mut encoder, &state.targets.render_view, source);
         let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
         if has_active {
