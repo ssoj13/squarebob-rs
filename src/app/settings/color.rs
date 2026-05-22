@@ -161,11 +161,28 @@ impl App {
                                 ConfigSource::BuiltIn => {}
                                 ConfigSource::Bundled(name) => {
                                     ui.label("File:").on_hover_text(
-                                        "Filename under data/ocio/ (e.g. \
-                                         studio-config-v2.ocio).",
+                                        "An OCIO config shipped under data/ocio/. \
+                                         Populate with `python bootstrap.py d`.",
                                     );
-                                    if ui.text_edit_singleline(name).changed() {
-                                        dirty.preset();
+                                    let bundled = color_pipeline::available_bundled_configs();
+                                    if bundled.is_empty() {
+                                        ui.label(
+                                            egui::RichText::new("no configs in data/ocio/")
+                                                .color(ui.visuals().warn_fg_color),
+                                        )
+                                        .on_hover_text(
+                                            "Run `python bootstrap.py d` to fetch the \
+                                             pinned ACES Studio + CG configs.",
+                                        );
+                                    } else {
+                                        ocio_dropdown(
+                                            ui,
+                                            "color_bundled_cb",
+                                            name,
+                                            &bundled,
+                                            false,
+                                            dirty,
+                                        );
                                     }
                                     ui.end_row();
                                 }

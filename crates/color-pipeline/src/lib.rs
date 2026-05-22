@@ -505,6 +505,32 @@ impl ColorPipeline {
     }
 }
 
+/// Names of every `.ocio` / `.ocioz` / `.json` file in the
+/// bundled OCIO directory (see [`default_bundled_dir`]). Sorted
+/// alphabetically. Empty when the directory is missing or empty
+/// — callers should fall back to `ConfigSource::BuiltIn` in that
+/// case. Associated (not `&self`) because the directory location
+/// doesn't depend on the live `ColorPipeline` state.
+pub fn available_bundled_configs() -> Vec<String> {
+    let dir = default_bundled_dir();
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = rd
+        .flatten()
+        .filter_map(|ent| {
+            let p = ent.path();
+            let ext = p.extension().and_then(|e| e.to_str())?;
+            if !matches!(ext, "ocio" | "ocioz" | "json") {
+                return None;
+            }
+            p.file_name().and_then(|n| n.to_str()).map(str::to_string)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// Resolve the directory holding bundled `.ocio` files. Probes
 /// `<exe_dir>/data/ocio` first, then `<cwd>/data/ocio`. Either
 /// path may not exist on disk — `load_config` checks for the

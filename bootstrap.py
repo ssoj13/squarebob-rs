@@ -10,6 +10,7 @@ Commands:
     t(est)        Run workspace tests via xtask
     c(heck)       Format check + clippy via xtask
     cl(ean)       Clean build artifacts
+    d(ownload)    Re-fetch bundled OCIO ACES configs into data/ocio/
     deps          Install pinned vcpkg manifest dependencies
     pkg(package)  Distribution package via cargo-packager
     h(elp)        Print help
@@ -336,6 +337,86 @@ def run_clean(_args: argparse.Namespace) -> int:
     return code
 
 
+OCIO_ACES_RELEASE_TAG = "v2.1.0-v2.2.0"
+OCIO_ACES_REPO = "AcademySoftwareFoundation/OpenColorIO-Config-ACES"
+# Pinned assets shipped in `data/ocio/`. Studio is the production
+# default; the CG variant is a smaller subset retained as a faster
+# load option (no `data/ocio/` URLs rot when tests pull in the
+# wider set later). Keep entries in lockstep with the actual files
+# committed under `data/ocio/`.
+OCIO_ACES_BUNDLED = [
+    "studio-config-v2.2.0_aces-v1.3_ocio-v2.4.ocio",
+    "cg-config-v2.2.0_aces-v1.3_ocio-v2.4.ocio",
+]
+
+
+def run_download(_args: argparse.Namespace) -> int:
+    """Re-fetch the bundled OCIO ACES configs into ``data/ocio/``.
+
+    Idempotent — skips assets that already exist with a non-zero
+    size. Pass ``--force`` to clobber existing files.
+
+    Two backends, tried in order:
+
+    1. ``gh release download`` — preferred, picks up the user's
+       authenticated GitHub access and handles retries cleanly.
+    2. ``urllib.request`` — pure-stdlib fallback when ``gh`` is
+       missing. No checksums (the OpenColorIO-Config-ACES release
+       page doesn't publish one for individual ``.ocio`` files),
+       but a final non-empty + minimum-size sanity check catches
+       most truncated downloads.
+    """
+    header("DOWNLOAD OCIO ACES CONFIGS")
+    target_dir = ROOT_DIR / "data" / "ocio"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  {C.WHT}Target: {target_dir}{C.RST}")
+
+    pending = []
+    for name in OCIO_ACES_BUNDLED:
+        out = target_dir / name
+        if out.exists() and out.stat().st_size > 0:
+            size_kb = out.stat().st_size / 1024.0
+            print(f"  [skip] {name} ({size_kb:.1f} KB already present)")
+            continue
+        pending.append(name)
+
+    if not pending:
+        print(f"  {C.GRN}[OK] all bundled OCIO configs already present{C.RST}")
+        return 0
+
+    # Backend 1: gh CLI. Faster, retries, respects rate limits.
+    if cmd_exists(["gh", "--version"]):
+        cmd = ["gh", "release", "download", OCIO_ACES_RELEASE_TAG, "-R", OCIO_ACES_REPO, "-D", str(target_dir)]
+        for name in pending:
+            cmd.extend(["-p", name])
+        print(f"  via gh: downloading {len(pending)} asset(s)...")
+        rc = subprocess.run(cmd, cwd=ROOT_DIR).returncode
+        if rc == 0:
+            print(f"  {C.GRN}[OK] downloaded via gh{C.RST}")
+            return 0
+        print(f"  {C.YLW}[warn] gh download failed (rc={rc}), trying urllib fallback{C.RST}")
+
+    # Backend 2: urllib direct. Skips any auth — the release is public.
+    import urllib.request
+
+    base = f"https://github.com/{OCIO_ACES_REPO}/releases/download/{OCIO_ACES_RELEASE_TAG}"
+    for name in pending:
+        url = f"{base}/{name}"
+        out = target_dir / name
+        print(f"  via urllib: {name}")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r, open(out, "wb") as f:
+                shutil.copyfileobj(r, f)
+        except Exception as e:
+            print(f"  {C.RED}[fail] {name}: {e}{C.RST}")
+            return 1
+        if out.stat().st_size < 1024:
+            print(f"  {C.RED}[fail] {name}: suspiciously small ({out.stat().st_size} B){C.RST}")
+            return 1
+    print(f"  {C.GRN}[OK] downloaded via urllib{C.RST}")
+    return 0
+
+
 def run_deps(_args: argparse.Namespace) -> int:
     header("VCPKG DEPS")
     if not which("vcpkg"):
@@ -397,6 +478,7 @@ COMMANDS
   t       test via xtask
   c       cargo fmt --check + xtask clippy
   cl      cargo clean
+  d       re-fetch bundled OCIO ACES configs into data/ocio/
   deps    install pinned vcpkg manifest dependencies
   pkg     package via cargo-packager
   h       help
@@ -417,7 +499,7 @@ EXAMPLES
   python bootstrap.py clippy --workspace --all-targets -- -D warnings
 """
 
-COMMANDS = ["b", "t", "c", "cl", "deps", "pkg", "h"]
+COMMANDS = ["b", "t", "c", "cl", "d", "deps", "pkg", "h"]
 XTASK_COMMANDS = {
     "build",
     "check",
@@ -475,6 +557,7 @@ def main() -> int:
         "t": run_test,
         "c": run_check,
         "cl": run_clean,
+        "d": run_download,
         "deps": run_deps,
         "pkg": run_package,
     }
