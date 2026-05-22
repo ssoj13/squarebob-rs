@@ -153,40 +153,23 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
 
     paint_swatch_icon(ui, rect, color, cfg, response.hovered());
 
+    // Hand off to egui's own popup builder rather than rolling our
+    // own outside-click detection. The builder knows about the
+    // anchoring widget (`response`) and exempts its hit-rect from
+    // the close-on-click-outside check, so the very click that
+    // opens the popup can no longer close it on the same frame.
     let popup_id = response.id.with("colorpicker_popup");
-    let just_toggled = response.clicked();
-    if just_toggled {
+    if response.clicked() {
         egui::Popup::toggle_id(ui.ctx(), popup_id);
     }
-    if egui::Popup::is_id_open(ui.ctx(), popup_id) {
-        let area = egui::Area::new(popup_id)
-            .order(egui::Order::Foreground)
-            .fixed_pos(rect.left_bottom() + Vec2::new(0.0, 4.0))
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_min_width(360.0);
-                    picker_popup_contents(ui, color, cfg);
-                });
-            });
-        // Auto-close on click outside — but only on frames where
-        // the swatch button itself wasn't just clicked. Without
-        // this guard the very click that opens the popup also
-        // qualifies as "a click happened" and closes it again,
-        // producing the brief-flash bug.
-        if !just_toggled {
-            let pointer = ui.ctx().input(|i| i.pointer.interact_pos());
-            let inside_popup = pointer
-                .map(|p| area.response.rect.contains(p))
-                .unwrap_or(false);
-            let inside_button = pointer.map(|p| rect.contains(p)).unwrap_or(false);
-            if !inside_popup
-                && !inside_button
-                && ui.ctx().input(|i| i.pointer.any_click())
-            {
-                egui::Popup::close_id(ui.ctx(), popup_id);
-            }
-        }
-    }
+    egui::Popup::from_response(&response)
+        .id(popup_id)
+        .gap(4.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(360.0);
+            picker_popup_contents(ui, color, cfg);
+        });
     response
 }
 
