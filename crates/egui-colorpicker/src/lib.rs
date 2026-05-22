@@ -174,31 +174,68 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
         .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
         .show(|ui| picker_popup_contents(ui, color, cfg));
 
-    // Auto-close after `IDLE_CLOSE_SECS` with no pointer hover on
-    // either the swatch chip or the popup itself — keeps the
-    // picker from sticking around when the user moves on without
-    // explicitly clicking it shut. The eyedropper-sampling
-    // override skips this so a host that's mid-sample doesn't get
-    // its popup yanked out from under it.
+    // Three exit paths for the open popup:
+    //   1. Mouse outside the popup AND outside the swatch chip
+    //      for `IDLE_CLOSE_SECS` straight — primary close path.
+    //   2. `Esc` pressed at any time the popup is open.
+    //   3. Re-click on the swatch chip — handled by the
+    //      `Popup::menu` gesture, no manual code needed here.
+    //
+    // While the idle timer is counting down, a 2 px progress
+    // strip painted across the popup's bottom edge gives the
+    // user a visual countdown — full width = just left the
+    // popup, empty = closing now. Re-entering refills it.
     if let Some(inner) = popup_response {
         const IDLE_CLOSE_SECS: f64 = 1.0;
         let timer_key = popup_id.with("idle_close_timer");
         let now = ui.ctx().input(|i| i.time);
         let hovered = response.hovered() || inner.response.contains_pointer();
         let sampling = cfg.eyedropper_sampling;
-        if hovered || sampling {
+        let last_seen = if hovered || sampling {
             ui.memory_mut(|m| m.data.insert_temp::<f64>(timer_key, now));
+            now
         } else {
-            let last_seen = ui.memory_mut(|m| {
-                m.data.get_temp::<f64>(timer_key).unwrap_or(now)
-            });
-            if now - last_seen > IDLE_CLOSE_SECS {
-                egui::Popup::close_id(ui.ctx(), popup_id);
-            }
-            // Force a fast repaint while the timer is running so
-            // the close fires even if egui is in on-demand mode
-            // and no other UI input is happening.
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+            ui.memory_mut(|m| m.data.get_temp::<f64>(timer_key).unwrap_or(now))
+        };
+
+        // Close on Esc — convenient keyboard exit independent of
+        // mouse position.
+        if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+            egui::Popup::close_id(ui.ctx(), popup_id);
+        }
+
+        // Close on idle timeout.
+        let elapsed = now - last_seen;
+        if !(hovered || sampling) && elapsed > IDLE_CLOSE_SECS {
+            egui::Popup::close_id(ui.ctx(), popup_id);
+        }
+
+        // Visual countdown. While hovered the bar is full width;
+        // while idle it shrinks linearly to zero over
+        // `IDLE_CLOSE_SECS`. Painted on a foreground layer so it
+        // sits above the popup frame.
+        let progress = if hovered || sampling {
+            1.0_f32
+        } else {
+            (((IDLE_CLOSE_SECS - elapsed) / IDLE_CLOSE_SECS).clamp(0.0, 1.0)) as f32
+        };
+        let popup_rect = inner.response.rect;
+        let bar_h = 2.0;
+        let bar_rect = Rect::from_min_size(
+            popup_rect.left_bottom() - Vec2::new(0.0, bar_h),
+            Vec2::new(popup_rect.width() * progress, bar_h),
+        );
+        let layer = egui::LayerId::new(egui::Order::Foreground, popup_id.with("idle_bar"));
+        let painter = ui.ctx().layer_painter(layer);
+        painter.rect_filled(bar_rect, 0.0, Color32::from_gray(180));
+
+        // Repaint on a tight tick while the timer is running so
+        // the bar animates and the close fires even in on-demand
+        // mode. When hovered we don't need the wakeup — input
+        // events already drive repaints.
+        if !(hovered || sampling) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
         }
     }
     response
