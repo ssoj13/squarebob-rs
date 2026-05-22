@@ -498,6 +498,21 @@ impl App {
         ui: &mut egui::Ui,
         dirty: &mut SettingsDirty,
     ) {
+        // Keep the live `ColorPipeline` in sync with the settings
+        // BEFORE we sample any dropdown lists from it. `ensure` is
+        // a hash-compare noop when nothing changed.
+        let _ = self.color_pipeline.ensure(&self.render_3d_opts.color_pipeline);
+
+        // Snapshot the dropdown contents up front. This is the
+        // only spot we can read `&self.color_pipeline` because the
+        // tinted-section closure below takes `&mut self` through
+        // `cp` and that re-borrow would block live config access.
+        let input_spaces = self.color_pipeline.available_input_spaces();
+        let displays = self.color_pipeline.available_displays();
+        let views_for_current =
+            self.color_pipeline.available_views(&self.render_3d_opts.color_pipeline.ocio_display);
+        let looks = self.color_pipeline.available_looks();
+
         tinted_section(
             ui,
             "Color v2 (OCIO)",
@@ -661,18 +676,28 @@ impl App {
                                 "OCIO colour space the path tracer writes into. \
                                  Usually the `scene_linear` role.",
                             );
-                            if ui.text_edit_singleline(&mut cp.ocio_input_space).changed() {
-                                dirty.preset();
-                            }
+                            ocio_dropdown(
+                                ui,
+                                "color_v2_input_cb",
+                                &mut cp.ocio_input_space,
+                                &input_spaces,
+                                false,
+                                dirty,
+                            );
                             ui.end_row();
 
                             ui.label("Display:").on_hover_text(
                                 "Display device from the OCIO config — sRGB / \
                                  Rec.709 / Rec.2020 / P3 / DCI etc.",
                             );
-                            if ui.text_edit_singleline(&mut cp.ocio_display).changed() {
-                                dirty.preset();
-                            }
+                            ocio_dropdown(
+                                ui,
+                                "color_v2_display_cb",
+                                &mut cp.ocio_display,
+                                &displays,
+                                false,
+                                dirty,
+                            );
                             ui.end_row();
 
                             ui.label("View:").on_hover_text(
@@ -680,23 +705,36 @@ impl App {
                                  Common: 'ACES 1.0 SDR-video', 'Raw', \
                                  'Un-tone-mapped'.",
                             );
-                            if ui.text_edit_singleline(&mut cp.ocio_view).changed() {
-                                dirty.preset();
-                            }
+                            ocio_dropdown(
+                                ui,
+                                "color_v2_view_cb",
+                                &mut cp.ocio_view,
+                                &views_for_current,
+                                false,
+                                dirty,
+                            );
                             ui.end_row();
 
                             ui.label("Look:").on_hover_text(
-                                "Optional named look from the config. Leave empty \
-                                 for no look. Custom LUTs go in the row below.",
+                                "Optional named look from the config. \"(none)\" \
+                                 disables the look slot. Custom LUTs go in the \
+                                 row below.",
                             );
                             let mut look_str = cp.ocio_look.clone().unwrap_or_default();
-                            if ui.text_edit_singleline(&mut look_str).changed() {
+                            let look_changed = ocio_dropdown(
+                                ui,
+                                "color_v2_look_cb",
+                                &mut look_str,
+                                &looks,
+                                true, // allow "(none)" empty entry
+                                dirty,
+                            );
+                            if look_changed {
                                 cp.ocio_look = if look_str.trim().is_empty() {
                                     None
                                 } else {
                                     Some(look_str)
                                 };
-                                dirty.preset();
                             }
                             ui.end_row();
 
@@ -721,16 +759,6 @@ impl App {
                             ui.end_row();
                         });
 
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Note: text-edit fields are Phase 4 wireframe. \
-                                 Phase 7 replaces them with dropdowns populated \
-                                 from the loaded Config.",
-                            )
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                        );
                     }
                 }
             },
@@ -913,4 +941,59 @@ fn odt_hover(o: AcesOdt) -> &'static str {
              100 nits. Useful for previewing HDR grades without HDR hardware."
         }
     }
+}
+
+/// Dropdown for OCIO-introspected lists (input spaces / displays /
+/// views / looks). Renders a `ComboBox` populated from `options`
+/// plus an optional empty `(none)` entry when `allow_none` is true.
+/// When the user picks a different option the new value is written
+/// back into `current` and `dirty.preset()` fires. Returns true on
+/// any actual change so the caller can do follow-up work (e.g. wrap
+/// the value in `Option<String>` for the look slot).
+///
+/// The current value is shown in the closed selector even if it
+/// isn't in `options` — that way a stale preset (config swapped
+/// after the preset was saved) still displays the chosen name,
+/// flagged with a `?` prefix, instead of silently dropping back
+/// to the first available entry.
+fn ocio_dropdown(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    current: &mut String,
+    options: &[String],
+    allow_none: bool,
+    dirty: &mut SettingsDirty,
+) -> bool {
+    let display = if current.trim().is_empty() && allow_none {
+        "(none)".to_string()
+    } else if options.iter().any(|o| o == current) {
+        current.clone()
+    } else if current.trim().is_empty() {
+        "(empty)".to_string()
+    } else {
+        format!("? {current}")
+    };
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id_salt)
+        .width(220.0)
+        .selected_text(display)
+        .show_ui(ui, |ui| {
+            if allow_none {
+                let is_none = current.trim().is_empty();
+                if ui.selectable_label(is_none, "(none)").clicked() && !is_none {
+                    current.clear();
+                    dirty.preset();
+                    changed = true;
+                }
+            }
+            for opt in options {
+                let selected = opt == current;
+                if ui.selectable_label(selected, opt).clicked() && !selected {
+                    *current = opt.clone();
+                    dirty.preset();
+                    changed = true;
+                }
+            }
+        });
+    changed
 }

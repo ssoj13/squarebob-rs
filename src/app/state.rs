@@ -246,6 +246,11 @@ pub struct App {
     /// rename via [`crate::app::settings::material_presets::save_preset_bank`].
     pub(super) materials_preset_bank: playa_ae::PresetBank,
     pub(super) materials_preset_button_state: playa_ae::PresetButtonState,
+    /// Live OCIO colour pipeline. Owns the loaded `vfx_ocio::Config`
+    /// and a cached `Processor`; the UI introspects it to populate
+    /// the Color v2 dropdowns, and the renderer (phase 6) will
+    /// invoke its CPU / GPU apply paths.
+    pub(super) color_pipeline: color_pipeline::ColorPipeline,
     pub(super) expanded: std::collections::HashSet<PathBuf>,
     pub(super) needs_layout: bool,
     pub(super) needs_render_3d: bool,
@@ -489,6 +494,9 @@ impl Default for App {
             materials_preset_bank:
                 crate::app::settings::material_presets::load_preset_bank(),
             materials_preset_button_state: playa_ae::PresetButtonState::default(),
+            color_pipeline: color_pipeline::ColorPipeline::new(
+                &color_pipeline::ColorPipelineSettings::default(),
+            ),
             expanded: std::collections::HashSet::new(),
             needs_layout: false,
             needs_render_3d: false,

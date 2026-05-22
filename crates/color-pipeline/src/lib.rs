@@ -231,8 +231,15 @@ impl ColorPipeline {
     /// initial `Processor`. Falls back to the built-in ACES 1.3
     /// config if external loading fails, so the renderer always
     /// has *some* config to work with.
-    pub fn new(settings: &ColorPipelineSettings, bundled_dir: &std::path::Path) -> Self {
-        let (config, resolved_source) = load_config(&settings.ocio_config, bundled_dir);
+    ///
+    /// `Bundled` configs are resolved against [`default_bundled_dir`],
+    /// which probes `current_exe()/data/ocio` first, then the same
+    /// path relative to the current working directory. This keeps
+    /// the crate API self-contained — callers don't have to thread
+    /// a data-dir reference through the renderer.
+    pub fn new(settings: &ColorPipelineSettings) -> Self {
+        let bundled_dir = default_bundled_dir();
+        let (config, resolved_source) = load_config(&settings.ocio_config, &bundled_dir);
         let mut pipe = Self {
             config,
             config_source: resolved_source,
@@ -253,7 +260,6 @@ impl ColorPipeline {
     pub fn ensure(
         &mut self,
         settings: &ColorPipelineSettings,
-        bundled_dir: &std::path::Path,
     ) -> Result<(), vfx_ocio::OcioError> {
         let hash = settings.build_hash();
         if hash == self.last_hash {
@@ -261,7 +267,8 @@ impl ColorPipeline {
         }
         // Config source itself may have changed — reload if so.
         if self.config_source != settings.ocio_config {
-            let (config, resolved_source) = load_config(&settings.ocio_config, bundled_dir);
+            let bundled_dir = default_bundled_dir();
+            let (config, resolved_source) = load_config(&settings.ocio_config, &bundled_dir);
             self.config = config;
             self.config_source = resolved_source;
         }
@@ -316,6 +323,77 @@ impl ColorPipeline {
     pub fn active_config_source(&self) -> &ConfigSource {
         &self.config_source
     }
+
+    /// Names of every colour space in the active config, plus
+    /// every role name (`scene_linear`, `compositing_linear`, …).
+    /// Both are valid identifiers for the "input space" lane,
+    /// and the UI shows them in the same dropdown.
+    pub fn available_input_spaces(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .config
+            .colorspaces()
+            .iter()
+            .map(|cs| cs.name().to_string())
+            .collect();
+        // Roles surface here too because users typically pin to a
+        // semantic name (`scene_linear`) instead of a technical
+        // colour-space name (`ACEScg`) — keeps presets portable
+        // across configs that swap the underlying space.
+        for (role, _cs) in self.config.roles().iter() {
+            if !out.iter().any(|n| n == role) {
+                out.push(role.to_string());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Names of every display device in the active config.
+    pub fn available_displays(&self) -> Vec<String> {
+        self.config
+            .displays()
+            .displays()
+            .iter()
+            .map(|d| d.name().to_string())
+            .collect()
+    }
+
+    /// View names available for `display`. Empty if the display
+    /// isn't in the config (e.g. user typed a name into the
+    /// settings before this code knew about ComboBoxes).
+    pub fn available_views(&self, display: &str) -> Vec<String> {
+        self.config
+            .displays()
+            .display(display)
+            .map(|d| d.views().iter().map(|v| v.name().to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Named looks in the active config. The UI surfaces an
+    /// empty "no look" entry on top of this list separately.
+    pub fn available_looks(&self) -> Vec<String> {
+        self.config
+            .looks()
+            .names()
+            .map(|s| s.to_string())
+            .collect()
+    }
+}
+
+/// Resolve the directory holding bundled `.ocio` files. Probes
+/// `<exe_dir>/data/ocio` first, then `<cwd>/data/ocio`. Either
+/// path may not exist on disk — `load_config` checks for the
+/// specific file when it joins the bundled name in.
+fn default_bundled_dir() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let p = parent.join("data").join("ocio");
+        if p.exists() {
+            return p;
+        }
+    }
+    std::path::PathBuf::from("data").join("ocio")
 }
 
 /// Load the requested config, falling back to the built-in
