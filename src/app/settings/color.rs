@@ -207,7 +207,15 @@ impl App {
                             .width(220.0)
                             .selected_text(lmt_label(*lmt))
                             .show_ui(ui, |ui| {
-                                for opt in [AcesLmt::None, AcesLmt::Neutral, AcesLmt::Punchy] {
+                                for opt in [
+                                    AcesLmt::None,
+                                    AcesLmt::Neutral,
+                                    AcesLmt::Punchy,
+                                    AcesLmt::Warm,
+                                    AcesLmt::Cool,
+                                    AcesLmt::Bleach,
+                                    AcesLmt::Vintage,
+                                ] {
                                     if ui
                                         .selectable_label(*lmt == opt, lmt_label(opt))
                                         .on_hover_text(lmt_hover(opt))
@@ -564,6 +572,10 @@ fn lmt_label(l: AcesLmt) -> &'static str {
         AcesLmt::None => "None",
         AcesLmt::Neutral => "Neutral",
         AcesLmt::Punchy => "Punchy",
+        AcesLmt::Warm => "Warm",
+        AcesLmt::Cool => "Cool",
+        AcesLmt::Bleach => "Bleach Bypass",
+        AcesLmt::Vintage => "Vintage",
     }
 }
 
@@ -571,12 +583,24 @@ fn lmt_hover(l: AcesLmt) -> &'static str {
     match l {
         AcesLmt::None => "No look applied — neutral grade.",
         AcesLmt::Neutral => {
-            "Subtle contrast + saturation lift, preserves midtones. \
-             Production-safe default LMT."
+            "+5 % saturation lift. Subtle production-safe bump."
         }
         AcesLmt::Punchy => {
-            "Higher contrast + saturation. Cinematic look — bright highlights, \
-             rich shadows."
+            "+15 % saturation. Cinematic, more colour pop."
+        }
+        AcesLmt::Warm => {
+            "−5 % saturation + warm tint (R↑, B↓). Sunset / candlelight feel."
+        }
+        AcesLmt::Cool => {
+            "−5 % saturation + cool tint (B↑, R↓). Moonlight / night feel."
+        }
+        AcesLmt::Bleach => {
+            "−30 % saturation + slight luma lift. Bleach-bypass / \
+             desaturated high-contrast look."
+        }
+        AcesLmt::Vintage => {
+            "−20 % saturation + heavy warm tint + green damp. \
+             Pulled-back vintage film look."
         }
     }
 }

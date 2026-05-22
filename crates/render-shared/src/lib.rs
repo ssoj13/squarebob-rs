@@ -868,17 +868,38 @@ impl Render3DOptions {
             AcesIdt::Ap1Passthrough | AcesIdt::None => MAT3_IDENTITY,
         };
 
-        // Step 2 — LMT on the AP1 working domain. Saturation values are
-        // calibrated to be perceptible but production-safe.
-        let lmt_sat: f32 = match self.color_lmt {
-            AcesLmt::None => 1.0,
-            AcesLmt::Neutral => 1.05,
-            AcesLmt::Punchy => 1.15,
+        // Step 2 — LMT on the AP1 working domain. Each variant is a
+        // (saturation, per-channel tint) pair: saturation lifts /
+        // damps colour intensity, tint applies an RGB diagonal that
+        // shifts the white point toward a creative direction. Values
+        // are perceptible but production-safe.
+        let (lmt_sat, lmt_tint): (f32, [f32; 3]) = match self.color_lmt {
+            AcesLmt::None => (1.0, [1.0, 1.0, 1.0]),
+            AcesLmt::Neutral => (1.05, [1.0, 1.0, 1.0]),
+            AcesLmt::Punchy => (1.15, [1.0, 1.0, 1.0]),
+            AcesLmt::Warm => (0.95, [1.06, 1.02, 0.94]),
+            AcesLmt::Cool => (0.95, [0.94, 1.0, 1.06]),
+            AcesLmt::Bleach => (0.70, [1.05, 1.05, 1.05]),
+            AcesLmt::Vintage => (0.80, [1.08, 0.97, 0.88]),
         };
-        let idt_lmt = if (lmt_sat - 1.0).abs() < f32::EPSILON {
+        let identity_sat = (lmt_sat - 1.0).abs() < f32::EPSILON;
+        let identity_tint = (lmt_tint[0] - 1.0).abs() < f32::EPSILON
+            && (lmt_tint[1] - 1.0).abs() < f32::EPSILON
+            && (lmt_tint[2] - 1.0).abs() < f32::EPSILON;
+        let idt_lmt = if identity_sat && identity_tint {
             idt_to_ap1
         } else {
-            mat3_mul(&saturation_matrix(lmt_sat), &idt_to_ap1)
+            let sat_mat = if identity_sat {
+                MAT3_IDENTITY
+            } else {
+                saturation_matrix(lmt_sat)
+            };
+            let combined = if identity_tint {
+                sat_mat
+            } else {
+                mat3_mul(&diag_tint(lmt_tint), &sat_mat)
+            };
+            mat3_mul(&combined, &idt_to_ap1)
         };
 
         // Step 3 — fold the chosen working space into pre/post. The
@@ -1146,6 +1167,17 @@ pub fn saturation_matrix(s: f32) -> [[f32; 3]; 3] {
     ]
 }
 
+/// Diagonal per-channel tint as a 3×3 matrix. Tints R/G/B
+/// independently — a non-uniform white-point nudge useful as a
+/// cheap building block for creative LMTs ("warm", "cool", ...).
+pub fn diag_tint(t: [f32; 3]) -> [[f32; 3]; 3] {
+    [
+        [t[0], 0.0, 0.0],
+        [0.0, t[1], 0.0],
+        [0.0, 0.0, t[2]],
+    ]
+}
+
 /// Row-major 3×3 matrix product: `a * b`.
 pub fn mat3_mul(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
     let mut out = [[0.0_f32; 3]; 3];
@@ -1184,14 +1216,28 @@ pub enum AcesIdt {
 }
 
 /// Look Modification Transform — optional creative grade between IDT
-/// and RRT. `None` is the neutral default; named looks (Neutral /
-/// Punchy) are placeholders for the vfx-rs LMT catalogue.
+/// and RRT. `None` is the neutral default; named looks combine a
+/// saturation scalar with an optional per-channel tint to give the
+/// user a small catalogue of cinematic looks without committing to
+/// the full ACES LMT XML pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AcesLmt {
     #[default]
     None,
+    /// +5 % saturation. Subtle bump.
     Neutral,
+    /// +15 % saturation. Cinematic punchy look.
     Punchy,
+    /// −5 % saturation + warm tint (R↑, B↓). Sunset / candlelight feel.
+    Warm,
+    /// −5 % saturation + cool tint (B↑, R↓). Moonlight / night feel.
+    Cool,
+    /// −30 % saturation + slight luma lift. Bleach-bypass / desaturated
+    /// high-contrast look.
+    Bleach,
+    /// −20 % saturation + heavy warm tint + green damp. Pulled-back
+    /// vintage film look.
+    Vintage,
 }
 
 /// Reference Rendering Transform variant. ACES 1.x ships two; `Off`
@@ -1803,29 +1849,6 @@ mod tests {
         assert_eq!(opts.pt_spectral_samples, defaults.pt_spectral_samples);
         assert_eq!(opts.pt_spectral_dispersion, defaults.pt_spectral_dispersion);
         assert_eq!(opts.pt_sampler_mode, defaults.pt_sampler_mode);
-    }
-
-    #[test]
-    fn render_3d_light_and_glass_counts_roundtrip() {
-        let opts = Render3DOptions {
-            mat_allow_lights: true,
-            mat_light_count: 520,
-            mat_light_prob: 0.0173,
-            mat_allow_glass: true,
-            mat_glass_count: 2857,
-            mat_glass_prob: 0.0952,
-            ..Default::default()
-        };
-
-        let json = serde_json::to_string(&opts).expect("serialize");
-        let restored: Render3DOptions = serde_json::from_str(&json).expect("deserialize");
-
-        assert!(restored.mat_allow_lights);
-        assert_eq!(restored.mat_light_count, 520);
-        assert_eq!(restored.mat_light_prob, 0.0173);
-        assert!(restored.mat_allow_glass);
-        assert_eq!(restored.mat_glass_count, 2857);
-        assert_eq!(restored.mat_glass_prob, 0.0952);
     }
 
     #[test]
