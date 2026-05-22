@@ -288,8 +288,13 @@ pub struct BakedLut3D {
     /// Grid dimensions per axis. The flat buffer length is
     /// `size * size * size * 3` floats.
     pub size: usize,
-    /// Scan order is `r + g * size + b * size * size`, matching
-    /// `vfx_ocio::BakedLut3D::as_slice()`.
+    /// Scan order matches `vfx_ocio::BakedLut3D::as_slice()`:
+    /// `idx = r * size² + g * size + b` — **B varies fastest, R
+    /// slowest** (OCIO canonical). The renderer host transposes
+    /// this into `wgpu`'s X-fastest layout when uploading to a
+    /// `Texture3D`, so consumers never see the difference, but
+    /// authors of synthetic LUTs (e.g. [`identity_lut_data`])
+    /// must respect this order.
     pub data: Vec<f32>,
 }
 
@@ -308,9 +313,13 @@ pub const DEFAULT_LUT_SIZE: usize = 33;
 fn identity_lut_data(size: usize) -> Vec<f32> {
     let denom = (size.saturating_sub(1)).max(1) as f32;
     let mut out = Vec::with_capacity(size * size * size * 3);
-    for b in 0..size {
+    // OCIO canonical order — `idx = r*N² + g*N + b`. Matches
+    // `vfx_ocio::Baker::bake_lut_3d`'s output layout so the
+    // renderer's upload code can use one transposition path for
+    // both real bakes and this identity sentinel.
+    for r in 0..size {
         for g in 0..size {
-            for r in 0..size {
+            for b in 0..size {
                 out.push(r as f32 / denom);
                 out.push(g as f32 / denom);
                 out.push(b as f32 / denom);

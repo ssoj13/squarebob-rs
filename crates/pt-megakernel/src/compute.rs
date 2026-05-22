@@ -4855,15 +4855,34 @@ impl PathTraceCompute {
             );
             return;
         }
+        // vfx_ocio's `BakedLut3D::as_slice` stores triples in the
+        // OCIO canonical order `idx = r*N² + g*N + b` — **B varies
+        // fastest, R slowest** (baker.rs:237). `wgpu::write_texture`
+        // on a 3D texture expects the upload buffer in **X-fastest**
+        // order, where X is the dimension the WGSL `textureSample`
+        // call indexes with `uvw.x` — and `blit.wgsl @ case 6u` puts
+        // R into `uvw.x`. Streaming the slice through `chunks_exact`
+        // would map B into the X dim instead, silently swapping R↔B
+        // in the texture and producing a hue rotation that looks
+        // like cyan→yellow.
+        //
+        // Transpose on upload so the texture layout matches the
+        // shader's sampling convention.
+        let n = size as usize;
         let one = f16::from_f32(1.0).to_bits();
-        let mut texels: Vec<[u16; 4]> = Vec::with_capacity(rgb.len() / 3);
-        for chunk in rgb.chunks_exact(3) {
-            texels.push([
-                f16::from_f32(chunk[0]).to_bits(),
-                f16::from_f32(chunk[1]).to_bits(),
-                f16::from_f32(chunk[2]).to_bits(),
-                one,
-            ]);
+        let mut texels: Vec<[u16; 4]> = Vec::with_capacity(n * n * n);
+        for bi in 0..n {
+            for gi in 0..n {
+                for ri in 0..n {
+                    let src = (ri * n * n + gi * n + bi) * 3;
+                    texels.push([
+                        f16::from_f32(rgb[src]).to_bits(),
+                        f16::from_f32(rgb[src + 1]).to_bits(),
+                        f16::from_f32(rgb[src + 2]).to_bits(),
+                        one,
+                    ]);
+                }
+            }
         }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
