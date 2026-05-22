@@ -254,8 +254,34 @@ pub struct ColorPipeline {
     config: vfx_ocio::Config,
     config_source: ConfigSource,
     processor: Option<vfx_ocio::Processor>,
+    /// Cached 33×33×33 RGB baked LUT. Rebuilt alongside the
+    /// processor on a `last_hash` change. Lives here (not in the
+    /// renderer) so multiple consumers (CPU codepath + GPU
+    /// codepath upload + future LUT export) can read the same
+    /// baked data without re-baking.
+    lut_3d: Option<BakedLut3D>,
     last_hash: u64,
 }
+
+/// Baked 3D LUT snapshot — raw flat RGB array plus the grid size.
+/// Stored as `Vec<f32>` so the GPU upload path can `bytemuck`-cast
+/// it straight into a `Rgba32Float` (or `Rgb32Float`) texture
+/// payload without a second copy.
+#[derive(Clone, Debug)]
+pub struct BakedLut3D {
+    /// Grid dimensions per axis. The flat buffer length is
+    /// `size * size * size * 3` floats.
+    pub size: usize,
+    /// Scan order is `r + g * size + b * size * size`, matching
+    /// `vfx_ocio::BakedLut3D::as_slice()`.
+    pub data: Vec<f32>,
+}
+
+/// Default LUT side length. 33 matches the .cube standard and
+/// the OCIO Studio config baseline. 65 would be more accurate
+/// at 8× the memory; 17 is too coarse for ACES rolloff. 33 is
+/// the right compromise for an interactive viewport.
+pub const DEFAULT_LUT_SIZE: usize = 33;
 
 impl ColorPipeline {
     /// Initialise from a settings struct. Loads the appropriate
@@ -276,6 +302,7 @@ impl ColorPipeline {
             config,
             config_source: resolved_source,
             processor: None,
+            lut_3d: None,
             last_hash: 0,
         };
         // Initial build — errors are logged and leave `processor`
@@ -317,6 +344,7 @@ impl ColorPipeline {
             // Built-in tonemaps don't need an OCIO processor —
             // their math is in the blit shader.
             self.processor = None;
+            self.lut_3d = None;
             return Ok(());
         }
         // OCIO mode — build a display processor for
@@ -327,7 +355,26 @@ impl ColorPipeline {
             &settings.ocio_display,
             &settings.ocio_view,
         )?;
+        // Bake the processor into a 3D LUT for the GPU codepath.
+        // The CPU codepath calls `processor.apply_rgb` directly;
+        // GPU uploads `lut_3d.data` into a Texture3D and the blit
+        // shader does a trilinear sample.
+        let baker = vfx_ocio::Baker::new(&proc);
+        let baked = match baker.bake_lut_3d(DEFAULT_LUT_SIZE) {
+            Ok(b) => Some(BakedLut3D {
+                size: DEFAULT_LUT_SIZE,
+                data: b.as_slice().to_vec(),
+            }),
+            Err(e) => {
+                log::warn!(
+                    "color-pipeline: bake_lut_3d({DEFAULT_LUT_SIZE}) failed: {e}; \
+                     GPU codepath will fall back to AgX until the next rebuild"
+                );
+                None
+            }
+        };
         self.processor = Some(proc);
+        self.lut_3d = baked;
         Ok(())
     }
 
@@ -340,6 +387,14 @@ impl ColorPipeline {
         if let Some(proc) = &self.processor {
             proc.apply_rgb(pixels);
         }
+    }
+
+    /// Cached 3D LUT for the GPU codepath. `None` when the
+    /// pipeline is in `BuiltIn` mode or the bake failed; the
+    /// renderer treats either case as "no LUT available, fall
+    /// back to the shader-side AgX in `case 6u`".
+    pub fn lut_3d(&self) -> Option<&BakedLut3D> {
+        self.lut_3d.as_ref()
     }
 
     /// Live `Config` reference for the UI to enumerate displays
