@@ -466,14 +466,24 @@ impl ColorPipeline {
             }
             return Ok(());
         }
-        // OCIO mode — build a display processor for
-        // (input_space, display, view). The named look (if any)
-        // is folded in by chaining a `LookTransform` on top.
-        let proc = self.config.display_processor(
-            &settings.ocio_input_space,
-            &settings.ocio_display,
-            &settings.ocio_view,
-        )?;
+        // OCIO mode — build a display processor via
+        // `DisplayViewTransform`. The user-picked look from the UI
+        // (when present) goes into the transform's
+        // `looks_override` field, mirroring OCIO C++
+        // `DisplayViewTransform::setLooksOverride` /
+        // `setLooksOverrideEnabled(true)`.
+        let mut dvt = vfx_ocio::DisplayViewTransform {
+            src: settings.ocio_input_space.clone(),
+            display: settings.ocio_display.clone(),
+            view: settings.ocio_view.clone(),
+            ..vfx_ocio::DisplayViewTransform::default()
+        };
+        if let Some(look) = settings.ocio_look.as_deref() {
+            if !look.is_empty() {
+                dvt = dvt.with_looks_override(look);
+            }
+        }
+        let proc = self.config.processor_for_display_view_transform(&dvt)?;
         // Bake the processor into a 3D LUT for the GPU codepath.
         // The CPU codepath calls `processor.apply_rgb` directly;
         // GPU uploads `lut_3d.data` into a Texture3D and the blit
@@ -583,15 +593,16 @@ impl ColorPipeline {
             .collect()
     }
 
-    /// View names available for `display`. Empty if the display
-    /// isn't in the config (e.g. user typed a name into the
-    /// settings before this code knew about ComboBoxes).
+    /// View names available for `display`. Includes both local
+    /// `!<View>` entries and `!<Views>` shared-view references the
+    /// display pulls from `Config::shared_views`. Empty when the
+    /// display isn't registered.
     pub fn available_views(&self, display: &str) -> Vec<String> {
         self.config
-            .displays()
-            .display(display)
-            .map(|d| d.views().iter().map(|v| v.name().to_string()).collect())
-            .unwrap_or_default()
+            .get_views(display)
+            .into_iter()
+            .map(|v| v.name().to_string())
+            .collect()
     }
 
     /// Named looks in the active config. The UI surfaces an

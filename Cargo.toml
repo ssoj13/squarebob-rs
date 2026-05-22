@@ -231,3 +231,13 @@ minimum-system-version = "13.0"
 
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
+
+# Local development override for vfx-rs while the OCIO display-views
+# merging + LooksOverride changes land upstream. Remove (or comment
+# out) once those land on `ssoj13/vfx-rs` `main`.
+[patch."https://github.com/ssoj13/vfx-rs.git"]
+vfx-core = { path = "../vfx-rs/crates/foundation/vfx-core" }
+vfx-exr  = { path = "../vfx-rs/crates/exr/vfx-exr" }
+vfx-io   = { path = "../vfx-rs/crates/oiio/vfx-io" }
+vfx-ocio = { path = "../vfx-rs/crates/ocio/vfx-ocio" }
+vfx-lut  = { path = "../vfx-rs/crates/ocio/vfx-lut" }

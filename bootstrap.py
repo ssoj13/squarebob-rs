@@ -349,13 +349,6 @@ OCIO_ACES_REPO = "AcademySoftwareFoundation/OpenColorIO-Config-ACES"
 #   The richest looks + view catalogue available; needs OCIO 2.5+.
 OCIO_ACES_BUNDLED: list[tuple[str, list[str]]] = [
     (
-        "v2.1.0-v2.2.0",
-        [
-            "studio-config-v2.2.0_aces-v1.3_ocio-v2.4.ocio",
-            "cg-config-v2.2.0_aces-v1.3_ocio-v2.4.ocio",
-        ],
-    ),
-    (
         "v4.0.0",
         ["studio-config-all-views-v4.0.0_aces-v2.0_ocio-v2.5.ocio"],
     ),
