@@ -97,11 +97,18 @@ impl App {
                     labeled_row(
                         ui,
                         "Tonemap:",
-                        "Display-side curve that maps scene-linear HDR into the \
-                         [0,1] display range. None = clamp only (debug). Linear \
-                         = no curve (highlights blow). Reinhard = soft, washed. \
-                         ACES Filmic = current fast path (Narkowicz fit). ACES \
-                         Full = unlocks IDT/LMT/RRT/ODT lanes and Working space.",
+                        "How HDR light gets squeezed to your monitor's 0–1 range.\n\
+                         Path tracer can output any brightness; the monitor can't show > 1.\n\
+                         \n\
+                         · None — just clamp. Bright emissives become flat-white blobs (debug).\n\
+                         · Linear — no curve, highlights blow out the same way.\n\
+                         · Reinhard — soft, slightly washed out.\n\
+                         · ACES Filmic — single-formula approximation, fast, the default.\n\
+                         · ACES Full — full 4-stage cinema pipeline (IDT/LMT/RRT/ODT)\n\
+                           with the best highlight roll-off. Unlocks Working space\n\
+                           and the four rows below.\n\
+                         \n\
+                         Recommended: ACES Full for final renders, Filmic for quick scrub.",
                     );
                     let tm = &mut self.render_3d_opts.color_tonemap;
                     egui::ComboBox::from_id_salt("color_tonemap_cb")
@@ -151,9 +158,12 @@ impl App {
                         labeled_row(
                             ui,
                             "IDT:",
-                            "Input Device Transform — maps the scene-referred RGB \
-                             from PT into the ACES working space. Default sRGB → \
-                             AP1 matches what the path tracer writes today.",
+                            "Input Device Transform — \"what colour space did the renderer write\".\n\
+                             First step of the ACES chain. A 3×3 matrix that converts the\n\
+                             PT's output (linear sRGB primaries) into ACES wide-gamut working\n\
+                             space (AP1). Wrong IDT = wrong hues throughout the rest of the chain.\n\
+                             \n\
+                             Recommended: sRGB → AP1 (matches the path tracer).",
                         );
                         let idt = &mut self.render_3d_opts.color_idt;
                         egui::ComboBox::from_id_salt("color_idt_cb")
@@ -182,10 +192,15 @@ impl App {
                         labeled_row(
                             ui,
                             "LMT (look):",
-                            "Look Modification Transform — optional creative grade \
-                             that runs in the working space, between IDT and the \
-                             filmic curve. Neutral = subtle +5 % saturation. \
-                             Punchy = +15 % saturation, cinematic.",
+                            "Look Modification Transform — optional creative \"filter\".\n\
+                             Runs between IDT and RRT in ACES working space.\n\
+                             Think Instagram preset, but inside the color pipeline.\n\
+                             \n\
+                             · None — no creative grade (honest rendering).\n\
+                             · Neutral — gentle +5 % saturation lift.\n\
+                             · Punchy — +15 % saturation, cinematic feel.\n\
+                             \n\
+                             Recommended: None for technical work, Neutral for screenshots.",
                         );
                         let lmt = &mut self.render_3d_opts.color_lmt;
                         egui::ComboBox::from_id_salt("color_lmt_cb")
@@ -209,10 +224,16 @@ impl App {
                         labeled_row(
                             ui,
                             "RRT:",
-                            "Reference Rendering Transform — the filmic curve \
-                             applied in working space. Standard = ACES 1.0 \
-                             reference. RRT.a1.1 = ACES 1.1+ highlight tweak. \
-                             Off = skip the curve (debug-only).",
+                            "Reference Rendering Transform — the HEART of ACES.\n\
+                             The famous filmic S-curve that softly rolls off highlights\n\
+                             instead of clipping them. Bright emissives become saturated\n\
+                             coloured glow rather than flat-white blobs.\n\
+                             \n\
+                             · Standard — ACES 1.0 reference. The default everyone uses.\n\
+                             · RRT.a1.1 — ACES 1.1 update, slightly better highlights.\n\
+                             · Off — skip the curve entirely (debug only).\n\
+                             \n\
+                             Recommended: Standard.",
                         );
                         let rrt = &mut self.render_3d_opts.color_rrt;
                         egui::ComboBox::from_id_salt("color_rrt_cb")
@@ -236,11 +257,18 @@ impl App {
                         labeled_row(
                             ui,
                             "ODT:",
-                            "Output Device Transform — maps working space to the \
-                             display's native primaries. Must match what the \
-                             monitor expects. sRGB / Rec.709 are standard SDR; \
-                             Rec.2020 / P3 are wide-gamut; Rec.2020 1000nits \
-                             enables PQ encoding (HDR10).",
+                            "Output Device Transform — \"what monitor are you looking at\".\n\
+                             Final step. Converts ACES working space into the colour\n\
+                             space your display speaks. Wrong ODT = picture-correct math,\n\
+                             but the screen shows it in wrong hues.\n\
+                             \n\
+                             · sRGB 100 nits — regular SDR monitor / laptop. Default.\n\
+                             · Rec.709 — same gamut as sRGB but for video pipelines.\n\
+                             · P3-D65 / DCI-P3 — Apple displays, cinema projectors.\n\
+                             · Rec.2020 1000 nits — true HDR display (HDR10 / PQ-encoded).\n\
+                             · sRGB HDR-Sim — \"how it would look on HDR\" preview on SDR.\n\
+                             \n\
+                             Recommended: sRGB 100nits unless you have an HDR display.",
                         );
                         let odt = &mut self.render_3d_opts.color_odt;
                         egui::ComboBox::from_id_salt("color_odt_cb")

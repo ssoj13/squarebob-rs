@@ -159,14 +159,19 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
 
     paint_swatch_icon(ui, rect, color, cfg, response.hovered());
 
-    // Use `Popup::menu(&response)` — the only `Popup` constructor
-    // that wires both pieces of click semantics for us:
-    //   * `gesture(Click)`     — clicking the anchor toggles open.
-    //   * `CloseOnClickOutside` — clicking outside closes it.
+    // `Popup::menu(&response)` wires the anchor click → toggle
+    // gesture. We then override close-behaviour to
+    // `IgnoreClicks`: a click landing anywhere — on the HS
+    // gradient, on a DragValue, on the hex field, even outside
+    // the popup — never closes the picker. The only close path
+    // is the 1-second-no-hover timer below, plus an explicit
+    // re-click on the swatch chip (which toggles via the
+    // gesture and bypasses close-behaviour).
     let popup_id = response.id.with("colorpicker_popup");
     let popup_response = egui::Popup::menu(&response)
         .id(popup_id)
         .gap(4.0)
+        .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
         .show(|ui| picker_popup_contents(ui, color, cfg));
 
     // Auto-close after `IDLE_CLOSE_SECS` with no pointer hover on

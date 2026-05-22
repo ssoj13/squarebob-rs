@@ -296,6 +296,32 @@ fn materials_footer(ui: &mut egui::Ui, app: &mut App) {
                     }
                     library_dirty = true;
                 }
+                if ui
+                    .button("Rand")
+                    .on_hover_text(
+                        "Randomise every material weight to a fresh value in 0.0..=1.0. \
+                         Useful for quickly exploring distribution variety without \
+                         dialing each slider by hand.",
+                    )
+                    .clicked()
+                {
+                    // xorshift64 from a wall-clock seed — no PRNG
+                    // dep, deterministic step per slot.
+                    let mut state = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos() as u64)
+                        .unwrap_or(0xDEAD_BEEF)
+                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        .max(1);
+                    for mat in &mut lib.materials {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        let u = (state as f32) / (u64::MAX as f32);
+                        mat.weight = u.clamp(0.0, 1.0);
+                    }
+                    library_dirty = true;
+                }
             });
         }
         ui.separator();
