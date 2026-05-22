@@ -39,6 +39,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Re-export `vfx_ocio` so downstream callers can drive the embedded
+/// builtin registry (`vfx_ocio::builtin::embedded`) and other OCIO
+/// types through this crate without taking a direct `vfx-ocio`
+/// dependency.
+pub use vfx_ocio;
+
 // ── Built-in tonemaps ──────────────────────────────────────────────────
 
 /// Built-in tonemap kinds — purely shader-side, no external data.
@@ -86,13 +92,18 @@ impl BuiltInTonemap {
 /// Where to source the active OCIO `Config` from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ConfigSource {
-    /// `vfx_ocio::builtin::aces_1_3()` — zero-file fallback, ACES
-    /// 1.3 reference shipping inside the binary.
+    /// `vfx_ocio::builtin::aces_1_3()` — zero-file ACES 1.3 baseline
+    /// programmatically built inside the vfx-ocio crate.
     #[default]
     BuiltIn,
-    /// A `.ocio` (or `.ocioz` / `.json`) bundled under `data/ocio/`
-    /// in the app distribution. The string is the file's path
-    /// relative to that directory (e.g. `"studio-config-v2.ocio"`).
+    /// One of the embedded release configs (`vfx_ocio::builtin::embedded`).
+    /// The string is the canonical name from
+    /// `vfx_ocio::builtin::embedded::REGISTRY` — e.g.
+    /// `"studio-config-v4.0.0_aces-v2.0_ocio-v2.5"`.
+    Embedded(String),
+    /// Legacy variant kept for back-compat with old presets that
+    /// referenced a file under `data/ocio/`. New UIs route through
+    /// `External` instead.
     Bundled(String),
     /// A user-loaded config from anywhere on disk. Supports plain
     /// `.ocio`, OCIO archives `.ocioz`, and OCIO 2.x `.json`.
@@ -299,6 +310,10 @@ impl ColorPipelineSettings {
             ConfigSource::External(p) => {
                 2u8.hash(&mut h);
                 p.hash(&mut h);
+            }
+            ConfigSource::Embedded(name) => {
+                3u8.hash(&mut h);
+                name.hash(&mut h);
             }
         }
         self.ocio_input_space.hash(&mut h);
@@ -668,6 +683,16 @@ fn load_config(
 ) -> (vfx_ocio::Config, ConfigSource) {
     match source {
         ConfigSource::BuiltIn => (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn),
+        ConfigSource::Embedded(name) => match vfx_ocio::builtin::embedded::get(name) {
+            Some(cfg) => (cfg, ConfigSource::Embedded(name.clone())),
+            None => {
+                log::warn!(
+                    "color-pipeline: embedded config {name:?} not found in registry \
+                     — falling back to built-in ACES 1.3",
+                );
+                (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn)
+            }
+        },
         ConfigSource::Bundled(name) => {
             let path = bundled_dir.join(name);
             match vfx_ocio::Config::from_file(&path) {

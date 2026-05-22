@@ -131,45 +131,85 @@ impl App {
                     ColorMode::Ocio => {
                         settings_grid(ui, "color_ocio_grid", |ui| {
                             ui.label("Config:").on_hover_text(
-                                "Where the OCIO Config comes from.\n\
-                                 BuiltIn  — vfx-ocio's embedded ACES 1.3 (no file).\n\
-                                 External — load a .ocio / .ocioz / .json (browse \
-                                            data/ocio/ for the bundled ACES Studio \
-                                            / CG configs).",
+                                "Which OCIO Config to use.\n\
+                                 ACES 1.3 (built-in) — programmatic, no file.\n\
+                                 Embedded configs — full release `.ocio` files \
+                                 bundled into the binary (ACES 2.0 CG/Studio).\n\
+                                 External — load a .ocio / .ocioz / .json from disk.",
                             );
-                            ui.horizontal(|ui| {
-                                let is_builtin =
-                                    matches!(cp.ocio_config, ConfigSource::BuiltIn);
-                                let is_external =
-                                    matches!(cp.ocio_config, ConfigSource::External(_));
-                                if ui.selectable_label(is_builtin, "BuiltIn").clicked()
-                                    && !is_builtin
-                                {
-                                    // Back up the current External
-                                    // dropdowns before swapping, then
-                                    // restore whatever the user had on
-                                    // BuiltIn last time.
-                                    cp.external_ocio = cp.snapshot_active_ocio();
-                                    let restore = cp.builtin_ocio.clone();
-                                    cp.ocio_config = ConfigSource::BuiltIn;
-                                    cp.restore_ocio(&restore);
-                                    dirty.preset();
+                            // Build dropdown label for the currently-selected
+                            // source. Switching items in this ComboBox is what
+                            // routes between BuiltIn / Embedded(...) / External.
+                            let current_label: String = match &cp.ocio_config {
+                                ConfigSource::BuiltIn => "ACES 1.3 (built-in)".into(),
+                                ConfigSource::Embedded(name) => {
+                                    color_pipeline::vfx_ocio::builtin::embedded::find(name)
+                                        .map(|e| format!("{} (embedded)", e.ui_name))
+                                        .unwrap_or_else(|| format!("? {name}"))
                                 }
-                                if ui.selectable_label(is_external, "External").clicked()
-                                    && !is_external
-                                {
-                                    cp.builtin_ocio = cp.snapshot_active_ocio();
-                                    let restore = cp.external_ocio.clone();
-                                    cp.ocio_config =
-                                        ConfigSource::External(Default::default());
-                                    cp.restore_ocio(&restore);
-                                    dirty.preset();
-                                }
-                            });
+                                ConfigSource::External(_) => "External…".into(),
+                                ConfigSource::Bundled(_) => "External…".into(),
+                            };
+                            egui::ComboBox::from_id_salt("color_ocio_config_cb")
+                                .width(360.0)
+                                .selected_text(current_label)
+                                .show_ui(ui, |ui| {
+                                    // ACES 1.3 programmatic baseline.
+                                    let is_b =
+                                        matches!(cp.ocio_config, ConfigSource::BuiltIn);
+                                    if ui
+                                        .selectable_label(is_b, "ACES 1.3 (built-in)")
+                                        .clicked()
+                                        && !is_b
+                                    {
+                                        cp.external_ocio = cp.snapshot_active_ocio();
+                                        let restore = cp.builtin_ocio.clone();
+                                        cp.ocio_config = ConfigSource::BuiltIn;
+                                        cp.restore_ocio(&restore);
+                                        dirty.preset();
+                                    }
+                                    // Every embedded release config.
+                                    for entry in
+                                        color_pipeline::vfx_ocio::builtin::embedded::entries()
+                                    {
+                                        let is_sel = matches!(
+                                            &cp.ocio_config,
+                                            ConfigSource::Embedded(n) if n == entry.name
+                                        );
+                                        let label = format!("{} (embedded)", entry.ui_name);
+                                        if ui.selectable_label(is_sel, label).clicked()
+                                            && !is_sel
+                                        {
+                                            cp.external_ocio = cp.snapshot_active_ocio();
+                                            let restore = cp.builtin_ocio.clone();
+                                            cp.ocio_config =
+                                                ConfigSource::Embedded(entry.name.into());
+                                            cp.restore_ocio(&restore);
+                                            dirty.preset();
+                                        }
+                                    }
+                                    // External file picker.
+                                    let is_e = matches!(
+                                        cp.ocio_config,
+                                        ConfigSource::External(_)
+                                    );
+                                    if ui.selectable_label(is_e, "External…").clicked()
+                                        && !is_e
+                                    {
+                                        cp.builtin_ocio = cp.snapshot_active_ocio();
+                                        let restore = cp.external_ocio.clone();
+                                        cp.ocio_config = ConfigSource::External(
+                                            Default::default(),
+                                        );
+                                        cp.restore_ocio(&restore);
+                                        dirty.preset();
+                                    }
+                                });
                             ui.end_row();
 
                             match &mut cp.ocio_config {
                                 ConfigSource::BuiltIn => {}
+                                ConfigSource::Embedded(_) => {}
                                 ConfigSource::Bundled(_) => {
                                     // Legacy preset compatibility — silently
                                     // coerce to External so the user sees a
@@ -407,7 +447,9 @@ fn ocio_dropdown(
     };
     let mut changed = false;
     egui::ComboBox::from_id_salt(id_salt)
-        .width(220.0)
+        // Wide enough for the longest ACES 2.0 view/display name
+        // (e.g. "ACES 2.0 - HDR 4000 nits (Rec.2020 D60 in Rec.2020 D65)").
+        .width(360.0)
         .selected_text(display)
         .show_ui(ui, |ui| {
             if allow_none {
