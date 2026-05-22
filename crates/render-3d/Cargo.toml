@@ -16,6 +16,7 @@ wgpu = { workspace = true }
 squarebob-core = { workspace = true }
 render-core = { workspace = true }
 render-shared = { workspace = true }
+color-pipeline = { workspace = true }
 pt-core = { workspace = true }
 pt-megakernel = { workspace = true }
 pt-mats = { workspace = true }

@@ -1062,6 +1062,23 @@ impl Renderer3D {
     }
 
 
+    /// Push any pending baked OCIO LUT into the path tracer's blit
+    /// shader. Idempotent — `ColorPipeline::take_pending_lut` is the
+    /// one-shot signal, so calling this every frame is a hash compare
+    /// + early return when nothing changed.
+    ///
+    /// Must be invoked AFTER `color_pipeline::ColorPipeline::ensure`
+    /// — that's the call that re-bakes the LUT and arms the pending
+    /// flag.
+    pub fn sync_color_lut(&self, pipeline: &mut color_pipeline::ColorPipeline) {
+        let Some(pt) = self.pt.path_tracer.as_ref() else {
+            return;
+        };
+        if let Some(lut) = pipeline.take_pending_lut() {
+            pt.set_blit_lut_3d(&self.ctx.queue, &lut.data, lut.size as u32);
+        }
+    }
+
     fn pt_frame_count_impl(&self) -> u32 {
         self.pt
             .path_tracer

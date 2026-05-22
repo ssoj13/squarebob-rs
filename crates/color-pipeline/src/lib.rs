@@ -261,6 +261,14 @@ pub struct ColorPipeline {
     /// baked data without re-baking.
     lut_3d: Option<BakedLut3D>,
     last_hash: u64,
+    /// Set to `true` whenever [`Self::rebuild`] produces a fresh
+    /// baked LUT (including the initial bake in [`Self::new`]).
+    /// The renderer host polls it via [`Self::take_pending_lut`]
+    /// once per frame and uploads when it observes a pending flag.
+    /// Keeps the upload signal decoupled from the `ensure()` return
+    /// value, so callers that just want to refresh dropdown lists
+    /// don't need to thread the renderer through.
+    lut_upload_pending: bool,
 }
 
 /// Baked 3D LUT snapshot — raw flat RGB array plus the grid size.
@@ -304,6 +312,7 @@ impl ColorPipeline {
             processor: None,
             lut_3d: None,
             last_hash: 0,
+            lut_upload_pending: false,
         };
         // Initial build — errors are logged and leave `processor`
         // as `None`. Callers that try to `apply_cpu` on a `None`
@@ -344,7 +353,19 @@ impl ColorPipeline {
             // Built-in tonemaps don't need an OCIO processor —
             // their math is in the blit shader.
             self.processor = None;
+            // Mark a pending upload so the host re-pushes the
+            // identity LUT (or whatever the renderer's default is)
+            // when the user toggles back from OCIO mode. Without
+            // this the previous OCIO bake would stay bound until
+            // the next OCIO rebuild — case 6u doesn't run in
+            // BuiltIn mode so it's not visible, but keeping the
+            // bound texture meaningful is the less surprising
+            // contract.
+            let lut_changed = self.lut_3d.is_some();
             self.lut_3d = None;
+            if lut_changed {
+                self.lut_upload_pending = true;
+            }
             return Ok(());
         }
         // OCIO mode — build a display processor for
@@ -375,7 +396,24 @@ impl ColorPipeline {
         };
         self.processor = Some(proc);
         self.lut_3d = baked;
+        // Signal a pending GPU upload to the renderer host. Cleared
+        // by the host via `take_pending_lut`.
+        self.lut_upload_pending = self.lut_3d.is_some();
         Ok(())
+    }
+
+    /// One-shot poll for the host's per-frame GPU upload step.
+    /// Returns `Some(&BakedLut3D)` exactly once per fresh bake;
+    /// subsequent calls return `None` until the next rebuild
+    /// sets the flag again. Caller is expected to push the
+    /// returned slice into the renderer's blit-side 3D LUT
+    /// binding (see `pt_megakernel::PathTraceCompute::set_blit_lut_3d`).
+    pub fn take_pending_lut(&mut self) -> Option<&BakedLut3D> {
+        if !self.lut_upload_pending {
+            return None;
+        }
+        self.lut_upload_pending = false;
+        self.lut_3d.as_ref()
     }
 
     /// Apply the cached processor to a slice of RGB triples.

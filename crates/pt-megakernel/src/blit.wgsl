@@ -5,6 +5,14 @@
 @group(0) @binding(0) var pt_texture: texture_2d<f32>;
 @group(0) @binding(1) var pt_sampler: sampler;
 
+// Baked OCIO display 3D LUT (33³ Rgba16Float) + filtering sampler.
+// Populated by `PathTraceCompute::set_blit_lut_3d`. Default content is
+// an identity LUT so a passthrough sample of the bind slot never
+// corrupts the image even when ColorMode == BuiltIn (case 6u is the
+// only branch that samples it).
+@group(0) @binding(3) var lut_3d:   texture_3d<f32>;
+@group(0) @binding(4) var lut_samp: sampler;
+
 // Display-pipeline parameters pushed each frame from CPU. Layout
 // mirrors `BlitParamsGpu` on the Rust side (compute.rs).
 //
@@ -285,12 +293,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             mapped = saturate(agx_filmic(scene));
         }
         case 6u: {
-            // OCIO 3D-LUT sampler — phase 6 wires the wgpu binding
-            // and the texture sampling. Until then this branch
-            // falls through to AgX so the colour-v2 OCIO toggle
-            // already produces a tonemapped image, just not yet
-            // honouring the loaded Config.
-            mapped = saturate(agx_filmic(scene));
+            // OCIO 3D-LUT sampler. The LUT was baked from the active
+            // `vfx_ocio::Processor` over `[0,1]^3` in scene-linear input
+            // space and stored RGB in scan order `r + g*N + b*N²`,
+            // which maps cleanly to WGPU's texel order (X fastest).
+            //
+            // Clamp scene to [0,1] — HDR values above 1.0 saturate to
+            // the LUT's top corner. A proper HDR shaper LUT would
+            // require an extra log encode pre-step; that lives behind
+            // a future shaper-aware bake.
+            //
+            // Half-texel correction: a trilinear sample over an N³ LUT
+            // centred on cell midpoints needs `(c*(N-1) + 0.5) / N`,
+            // otherwise the edges interpolate against the implicit
+            // out-of-bounds clamp value and the result drifts.
+            //
+            // Output is already display-encoded (the OCIO display
+            // processor folds the OETF in) — Stage 5 skips the
+            // trailing gamma pow for tag 6.
+            let lut_size: f32 = 33.0;
+            let lut_uvw = (saturate(scene) * (lut_size - 1.0) + 0.5) / lut_size;
+            mapped = textureSample(lut_3d, lut_samp, lut_uvw).rgb;
         }
         default: { mapped = aces_filmic(scene); }               // AcesFilmic (default)
     }
@@ -310,6 +333,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // through wgpu. That surface plumbing is the remaining open work on
     // this pipeline (TaskList #8).
     if kind == 0u {
+        return vec4<f32>(mapped, 1.0);
+    }
+    // Tag 6 (OCIO LUT): the OCIO display processor's view transform
+    // already includes the output-side EOTF^-1 (display encoding), so
+    // re-applying the legacy 1/2.2 here would double-encode and crush
+    // midtones. Return the LUT sample as-is.
+    if kind == 6u {
         return vec4<f32>(mapped, 1.0);
     }
     let odt_tag = u32(blit_params.exposure.y);

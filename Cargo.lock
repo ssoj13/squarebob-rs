@@ -5739,6 +5739,7 @@ dependencies = [
  "bvh-gpu",
  "bytemuck",
  "glam",
+ "half",
  "log",
  "pt-core",
  "pt-wavefront",
@@ -6191,6 +6192,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "color-pipeline",
  "glam",
  "half",
  "image",

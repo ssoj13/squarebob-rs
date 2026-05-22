@@ -1069,6 +1069,16 @@ impl App {
             if let Some(r) = &mut self.renderer_3d {
                 // Sync selected IDs for outline rendering
                 r.set_selected_ids(&self.selected_3d_ids);
+                // Make sure the OCIO `Processor` + baked 3D LUT are
+                // in sync with the live settings BEFORE blitting.
+                // `ensure` is a hash-compare noop when nothing
+                // changed; `sync_color_lut` early-returns when the
+                // pending flag is clear. Both calls are cheap on
+                // the steady-state path.
+                let _ = self
+                    .color_pipeline
+                    .ensure(&self.render_3d_opts.color_pipeline);
+                r.sync_color_lut(&mut self.color_pipeline);
                 // SAFETY: `root_ptr` aliases self.tree (DirEntry storage owned by
                 // `self`) and is not invalidated for this scope — `set_selected_ids`
                 // mutates a separate field (`selected_3d_ids`), not the tree.
