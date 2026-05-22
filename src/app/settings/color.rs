@@ -132,26 +132,37 @@ impl App {
                         settings_grid(ui, "color_ocio_grid", |ui| {
                             ui.label("Config:").on_hover_text(
                                 "Where the OCIO Config comes from.\n\
-                                 BuiltIn  — vfx-ocio's bundled ACES 1.3 (no file).\n\
-                                 Bundled  — a .ocio shipped under data/ocio/.\n\
-                                 External — user-loaded .ocio / .ocioz / .json.",
+                                 BuiltIn  — vfx-ocio's embedded ACES 1.3 (no file).\n\
+                                 External — load a .ocio / .ocioz / .json (browse \
+                                            data/ocio/ for the bundled ACES Studio \
+                                            / CG configs).",
                             );
                             ui.horizontal(|ui| {
-                                let is_builtin = matches!(cp.ocio_config, ConfigSource::BuiltIn);
-                                let is_bundled =
-                                    matches!(cp.ocio_config, ConfigSource::Bundled(_));
+                                let is_builtin =
+                                    matches!(cp.ocio_config, ConfigSource::BuiltIn);
                                 let is_external =
                                     matches!(cp.ocio_config, ConfigSource::External(_));
-                                if ui.selectable_label(is_builtin, "BuiltIn").clicked() {
+                                if ui.selectable_label(is_builtin, "BuiltIn").clicked()
+                                    && !is_builtin
+                                {
+                                    // Back up the current External
+                                    // dropdowns before swapping, then
+                                    // restore whatever the user had on
+                                    // BuiltIn last time.
+                                    cp.external_ocio = cp.snapshot_active_ocio();
+                                    let restore = cp.builtin_ocio.clone();
                                     cp.ocio_config = ConfigSource::BuiltIn;
+                                    cp.restore_ocio(&restore);
                                     dirty.preset();
                                 }
-                                if ui.selectable_label(is_bundled, "Bundled").clicked() {
-                                    cp.ocio_config = ConfigSource::Bundled(String::new());
-                                    dirty.preset();
-                                }
-                                if ui.selectable_label(is_external, "External").clicked() {
-                                    cp.ocio_config = ConfigSource::External(Default::default());
+                                if ui.selectable_label(is_external, "External").clicked()
+                                    && !is_external
+                                {
+                                    cp.builtin_ocio = cp.snapshot_active_ocio();
+                                    let restore = cp.external_ocio.clone();
+                                    cp.ocio_config =
+                                        ConfigSource::External(Default::default());
+                                    cp.restore_ocio(&restore);
                                     dirty.preset();
                                 }
                             });
@@ -159,37 +170,20 @@ impl App {
 
                             match &mut cp.ocio_config {
                                 ConfigSource::BuiltIn => {}
-                                ConfigSource::Bundled(name) => {
-                                    ui.label("File:").on_hover_text(
-                                        "An OCIO config shipped under data/ocio/. \
-                                         Populate with `python bootstrap.py d`.",
-                                    );
-                                    let bundled = color_pipeline::available_bundled_configs();
-                                    if bundled.is_empty() {
-                                        ui.label(
-                                            egui::RichText::new("no configs in data/ocio/")
-                                                .color(ui.visuals().warn_fg_color),
-                                        )
-                                        .on_hover_text(
-                                            "Run `python bootstrap.py d` to fetch the \
-                                             pinned ACES Studio + CG configs.",
-                                        );
-                                    } else {
-                                        ocio_dropdown(
-                                            ui,
-                                            "color_bundled_cb",
-                                            name,
-                                            &bundled,
-                                            false,
-                                            dirty,
-                                        );
-                                    }
-                                    ui.end_row();
+                                ConfigSource::Bundled(_) => {
+                                    // Legacy preset compatibility — silently
+                                    // coerce to External so the user sees a
+                                    // file picker instead of the removed
+                                    // Bundled lane.
+                                    cp.ocio_config =
+                                        ConfigSource::External(Default::default());
+                                    dirty.preset();
                                 }
                                 ConfigSource::External(path) => {
                                     ui.label("Path:").on_hover_text(
-                                        "Absolute path to a .ocio / .ocioz / .json \
-                                         OCIO config.",
+                                        "Path to a .ocio / .ocioz / .json file. \
+                                         Pinned ACES configs live under data/ocio/ \
+                                         (populate via `python bootstrap.py d`).",
                                     );
                                     ui.horizontal(|ui| {
                                         let mut s = path.display().to_string();
@@ -200,7 +194,8 @@ impl App {
                                         if ui
                                             .button("Browse…")
                                             .on_hover_text(
-                                                "Pick an OCIO config (.ocio / .ocioz / .json).",
+                                                "Pick an OCIO config — opens \
+                                                 data/ocio/ by default if it exists.",
                                             )
                                             .clicked()
                                             && let Some(picked) = rfd_pick_ocio_config()
@@ -331,10 +326,17 @@ impl App {
 /// rfd-driven open dialog for an OCIO config file. Filters cover
 /// the three formats `vfx_ocio::Config::from_file` understands.
 fn rfd_pick_ocio_config() -> Option<std::path::PathBuf> {
-    rfd::FileDialog::new()
+    let mut dlg = rfd::FileDialog::new()
         .add_filter("OCIO config", &["ocio", "ocioz", "json"])
-        .add_filter("All files", &["*"])
-        .pick_file()
+        .add_filter("All files", &["*"]);
+    // Bias the dialog toward `data/ocio/` so the bundled ACES
+    // Studio / CG configs are one click away. Falls back to the
+    // OS default if the directory doesn't exist yet.
+    let bundled = std::path::PathBuf::from("data").join("ocio");
+    if bundled.is_dir() {
+        dlg = dlg.set_directory(&bundled);
+    }
+    dlg.pick_file()
 }
 
 /// rfd-driven open dialog for a LUT file. The five extensions

@@ -134,6 +134,34 @@ pub enum ColorMode {
 
 // ── Settings ───────────────────────────────────────────────────────────
 
+/// Snapshot of the per-OCIO-source settings (input space / display
+/// / view / look / custom LUT). Stored separately for each
+/// [`ConfigSource`] so flipping `BuiltIn ↔ External` keeps each
+/// side's last-used selections instead of forcing the user to
+/// re-pick every dropdown.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PerSourceOcio {
+    /// Input colour-space name from the config (e.g.
+    /// `"ACEScg"` or the `"scene_linear"` role). Path-traced
+    /// scene-linear output is fed into this space.
+    #[serde(default)]
+    pub input_space: String,
+    /// Display name from the config (e.g. `"sRGB"` / `"Rec.709"`).
+    #[serde(default)]
+    pub display: String,
+    /// View name from the config, restricted to the views
+    /// available for the selected `display`.
+    #[serde(default)]
+    pub view: String,
+    /// Optional named look from the config (`None` = no look).
+    #[serde(default)]
+    pub look: Option<String>,
+    /// Optional user-loaded LUT (`.cube / .3dl / .spi1d / .spi3d /
+    /// .csp`). Applied AFTER the display/view chain.
+    #[serde(default)]
+    pub custom_lut: Option<PathBuf>,
+}
+
 /// Full colour-pipeline settings owned by `Render3DOptions`.
 ///
 /// In `BuiltIn` mode only [`Self::builtin`] is consulted. In `Ocio`
@@ -151,25 +179,55 @@ pub struct ColorPipelineSettings {
     pub codepath: ColorCodepath,
 
     // ── OCIO-mode fields ──
-    /// Which OCIO config to use.
+    /// Which OCIO config the pipeline is currently consulting.
     pub ocio_config: ConfigSource,
-    /// Input colour-space name from the config (e.g.
-    /// `"ACEScg"` or the `"scene_linear"` role). Path-traced
-    /// scene-linear output is fed into this space.
+    /// Live input colour-space name from the *active* config.
+    /// Source-specific backups live in [`Self::builtin_ocio`] /
+    /// [`Self::external_ocio`]; the renderer's `ColorPipeline`
+    /// reads from these flat fields.
     pub ocio_input_space: String,
-    /// Display name from the config (e.g. `"sRGB"` / `"Rec.709"` /
-    /// `"Rec.2020"`).
+    /// Live display name. See `ocio_input_space`.
     pub ocio_display: String,
-    /// View name from the config, restricted to the views
-    /// available for the selected `ocio_display`.
+    /// Live view name. See `ocio_input_space`.
     pub ocio_view: String,
-    /// Optional named look from the config (`None` = no look).
+    /// Live optional look. See `ocio_input_space`.
     pub ocio_look: Option<String>,
-    /// Optional user-loaded LUT (`.cube` / `.3dl` / `.spi1d` /
-    /// `.spi3d` / `.csp`). Applied AFTER the display/view chain
-    /// — i.e. the LUT operates in display space, the same place
-    /// a vendor "creative LUT" usually sits.
+    /// Live optional custom LUT. See `ocio_input_space`.
     pub ocio_custom_lut: Option<PathBuf>,
+
+    // ── Per-source persistence ──
+    /// Saved settings for the `BuiltIn` source. The UI swaps these
+    /// into the flat `ocio_*` fields when the user re-selects
+    /// `BuiltIn` so the previous selections come back unchanged.
+    #[serde(default)]
+    pub builtin_ocio: PerSourceOcio,
+    /// Saved settings for the `External` source. See `builtin_ocio`.
+    #[serde(default)]
+    pub external_ocio: PerSourceOcio,
+}
+
+impl ColorPipelineSettings {
+    /// Capture the live `ocio_*` flat fields into a snapshot.
+    /// Used by the UI to back up the current source's selections
+    /// before swapping to another source.
+    pub fn snapshot_active_ocio(&self) -> PerSourceOcio {
+        PerSourceOcio {
+            input_space: self.ocio_input_space.clone(),
+            display: self.ocio_display.clone(),
+            view: self.ocio_view.clone(),
+            look: self.ocio_look.clone(),
+            custom_lut: self.ocio_custom_lut.clone(),
+        }
+    }
+
+    /// Apply a snapshot back into the live `ocio_*` flat fields.
+    pub fn restore_ocio(&mut self, snap: &PerSourceOcio) {
+        self.ocio_input_space = snap.input_space.clone();
+        self.ocio_display = snap.display.clone();
+        self.ocio_view = snap.view.clone();
+        self.ocio_look = snap.look.clone();
+        self.ocio_custom_lut = snap.custom_lut.clone();
+    }
 }
 
 impl Default for ColorPipelineSettings {
@@ -189,6 +247,8 @@ impl Default for ColorPipelineSettings {
             ocio_view: "ACES 1.0 SDR-video".to_string(),
             ocio_look: None,
             ocio_custom_lut: None,
+            builtin_ocio: PerSourceOcio::default(),
+            external_ocio: PerSourceOcio::default(),
         }
     }
 }

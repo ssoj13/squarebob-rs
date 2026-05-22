@@ -337,16 +337,28 @@ def run_clean(_args: argparse.Namespace) -> int:
     return code
 
 
-OCIO_ACES_RELEASE_TAG = "v2.1.0-v2.2.0"
 OCIO_ACES_REPO = "AcademySoftwareFoundation/OpenColorIO-Config-ACES"
-# Pinned assets shipped in `data/ocio/`. Studio is the production
-# default; the CG variant is a smaller subset retained as a faster
-# load option (no `data/ocio/` URLs rot when tests pull in the
-# wider set later). Keep entries in lockstep with the actual files
-# committed under `data/ocio/`.
-OCIO_ACES_BUNDLED = [
-    "studio-config-v2.2.0_aces-v1.3_ocio-v2.4.ocio",
-    "cg-config-v2.2.0_aces-v1.3_ocio-v2.4.ocio",
+# Pinned OCIO ACES configs shipped in `data/ocio/`, keyed by the
+# GitHub release tag they live on. Each entry is `(tag, [asset, …])`.
+# Keep this list in lockstep with the files committed under
+# `data/ocio/` so the downloader stays idempotent.
+#
+# * `v2.1.0-v2.2.0` → ACES 1.3 / OCIO v2.4 configs (Studio + CG).
+#   Compact (~100 KB combined) and supported by every OCIO 2.x runtime.
+# * `v4.0.0`        → ACES 2.0 / OCIO v2.5 Studio-all-views config.
+#   The richest looks + view catalogue available; needs OCIO 2.5+.
+OCIO_ACES_BUNDLED: list[tuple[str, list[str]]] = [
+    (
+        "v2.1.0-v2.2.0",
+        [
+            "studio-config-v2.2.0_aces-v1.3_ocio-v2.4.ocio",
+            "cg-config-v2.2.0_aces-v1.3_ocio-v2.4.ocio",
+        ],
+    ),
+    (
+        "v4.0.0",
+        ["studio-config-all-views-v4.0.0_aces-v2.0_ocio-v2.5.ocio"],
+    ),
 ]
 
 
@@ -371,49 +383,62 @@ def run_download(_args: argparse.Namespace) -> int:
     target_dir.mkdir(parents=True, exist_ok=True)
     print(f"  {C.WHT}Target: {target_dir}{C.RST}")
 
-    pending = []
-    for name in OCIO_ACES_BUNDLED:
-        out = target_dir / name
-        if out.exists() and out.stat().st_size > 0:
-            size_kb = out.stat().st_size / 1024.0
-            print(f"  [skip] {name} ({size_kb:.1f} KB already present)")
-            continue
-        pending.append(name)
+    pending: list[tuple[str, str]] = []
+    for tag, assets in OCIO_ACES_BUNDLED:
+        for name in assets:
+            out = target_dir / name
+            if out.exists() and out.stat().st_size > 0:
+                size_kb = out.stat().st_size / 1024.0
+                print(f"  [skip] {name} ({size_kb:.1f} KB already present)")
+                continue
+            pending.append((tag, name))
 
     if not pending:
         print(f"  {C.GRN}[OK] all bundled OCIO configs already present{C.RST}")
         return 0
 
-    # Backend 1: gh CLI. Faster, retries, respects rate limits.
+    # Group pending downloads by release tag so we can issue one
+    # `gh release download` per tag instead of N.
+    by_tag: dict[str, list[str]] = {}
+    for tag, name in pending:
+        by_tag.setdefault(tag, []).append(name)
+
+    used_urllib = False
     if cmd_exists(["gh", "--version"]):
-        cmd = ["gh", "release", "download", OCIO_ACES_RELEASE_TAG, "-R", OCIO_ACES_REPO, "-D", str(target_dir)]
-        for name in pending:
-            cmd.extend(["-p", name])
-        print(f"  via gh: downloading {len(pending)} asset(s)...")
-        rc = subprocess.run(cmd, cwd=ROOT_DIR).returncode
-        if rc == 0:
+        gh_ok = True
+        for tag, names in by_tag.items():
+            cmd = ["gh", "release", "download", tag, "-R", OCIO_ACES_REPO, "-D", str(target_dir)]
+            for name in names:
+                cmd.extend(["-p", name])
+            print(f"  via gh: {tag} → {len(names)} asset(s)...")
+            rc = subprocess.run(cmd, cwd=ROOT_DIR).returncode
+            if rc != 0:
+                print(f"  {C.YLW}[warn] gh download {tag} failed (rc={rc}){C.RST}")
+                gh_ok = False
+                break
+        if gh_ok:
             print(f"  {C.GRN}[OK] downloaded via gh{C.RST}")
             return 0
-        print(f"  {C.YLW}[warn] gh download failed (rc={rc}), trying urllib fallback{C.RST}")
+        used_urllib = True
 
-    # Backend 2: urllib direct. Skips any auth — the release is public.
-    import urllib.request
+    if not cmd_exists(["gh", "--version"]) or used_urllib:
+        import urllib.request
 
-    base = f"https://github.com/{OCIO_ACES_REPO}/releases/download/{OCIO_ACES_RELEASE_TAG}"
-    for name in pending:
-        url = f"{base}/{name}"
-        out = target_dir / name
-        print(f"  via urllib: {name}")
-        try:
-            with urllib.request.urlopen(url, timeout=60) as r, open(out, "wb") as f:
-                shutil.copyfileobj(r, f)
-        except Exception as e:
-            print(f"  {C.RED}[fail] {name}: {e}{C.RST}")
-            return 1
-        if out.stat().st_size < 1024:
-            print(f"  {C.RED}[fail] {name}: suspiciously small ({out.stat().st_size} B){C.RST}")
-            return 1
-    print(f"  {C.GRN}[OK] downloaded via urllib{C.RST}")
+        for tag, name in pending:
+            url = f"https://github.com/{OCIO_ACES_REPO}/releases/download/{tag}/{name}"
+            out = target_dir / name
+            print(f"  via urllib: {tag}/{name}")
+            try:
+                with urllib.request.urlopen(url, timeout=60) as r, open(out, "wb") as f:
+                    shutil.copyfileobj(r, f)
+            except Exception as e:
+                print(f"  {C.RED}[fail] {name}: {e}{C.RST}")
+                return 1
+            if out.stat().st_size < 1024:
+                print(f"  {C.RED}[fail] {name}: suspiciously small ({out.stat().st_size} B){C.RST}")
+                return 1
+        print(f"  {C.GRN}[OK] downloaded via urllib{C.RST}")
+        return 0
     return 0
 
 
