@@ -414,6 +414,13 @@ pub struct App {
     pub(super) vram_free_mb: u64,
     pub(super) vram_name: String,
     pub(super) vram_unified: bool,
+    /// Background `gpu_mem::query()` poller. On Windows the query
+    /// shells out to `nvidia-smi`, which can block the UI thread
+    /// for 50–200 ms per call. Off-load to its own thread, push
+    /// `GpuMemInfo` updates through a channel, drain on each
+    /// status-bar frame.
+    pub(super) gpu_info_rx: Option<crossbeam_channel::Receiver<gpu_mem::GpuMemInfo>>,
+    pub(super) gpu_info_thread: Option<std::thread::JoinHandle<()>>,
     pub(super) wgpu_error_flag: Arc<AtomicBool>,
     pub(super) pt_auto_spp_tick: std::time::Instant,
     pub(super) show_encode_panel: bool,
@@ -591,6 +598,8 @@ impl Default for App {
             vram_free_mb: 0,
             vram_name: String::new(),
             vram_unified: false,
+            gpu_info_rx: None,
+            gpu_info_thread: None,
             wgpu_error_flag: Arc::new(AtomicBool::new(false)),
             pt_auto_spp_tick: std::time::Instant::now(),
             show_encode_panel: false,

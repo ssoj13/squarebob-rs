@@ -62,16 +62,25 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let now = std::time::Instant::now();
                     if now.duration_since(self.last_mem_update).as_secs_f32() > 0.5 {
+                        // RAM via sysinfo — fast OS syscall, fine on the UI
+                        // thread.
                         self.sys.refresh_memory();
                         let total_kb = self.sys.total_memory();
                         let used_kb = self.sys.used_memory();
                         self.mem_total_mb = (total_kb / 1024).max(1);
                         self.mem_used_mb = used_kb / 1024;
-                        // VRAM is shelled out via `gpu_mem::query()` (≤4 ms
-                        // for nvidia-smi, ~instant for sysfs/registry).
-                        // Sharing the 0.5 s heartbeat keeps polling cost
-                        // bounded; first poll fills the GPU name string.
-                        if let Some(info) = gpu_mem::query() {
+                        self.last_mem_update = now;
+                    }
+                    // VRAM is polled on a background thread (see
+                    // `ensure_gpu_info_worker`). On Windows the underlying
+                    // `gpu_mem::query()` shells out to `nvidia-smi`, which
+                    // can block the UI thread for 50–200 ms per call — a
+                    // visible per-second hiccup at every refresh. The
+                    // worker pushes updates through a `crossbeam_channel`
+                    // and we just drain whatever's available this frame.
+                    self.ensure_gpu_info_worker();
+                    if let Some(rx) = &self.gpu_info_rx {
+                        while let Ok(info) = rx.try_recv() {
                             let to_mib = |b: u64| b / (1024 * 1024);
                             self.vram_total_mb = to_mib(info.dedicated_vram);
                             self.vram_free_mb = to_mib(info.free_vram);
@@ -80,7 +89,6 @@ impl App {
                                 self.vram_name = info.name;
                             }
                         }
-                        self.last_mem_update = now;
                     }
                     if self.vram_total_mb > 0 {
                         // Show used VRAM when `gpu-mem` could read free
@@ -176,5 +184,33 @@ impl App {
                 });
             });
         });
+    }
+
+    /// Spawn the background `gpu_mem::query()` poller exactly once.
+    /// The thread runs forever (joined at process exit), sleeps
+    /// 2 s between queries, and pushes each successful result
+    /// through a `crossbeam_channel`. Polling cadence is
+    /// deliberately slower than the 0.5 s sysinfo heartbeat — VRAM
+    /// rarely changes that fast in normal use, and `nvidia-smi`
+    /// is the expensive call (subprocess spawn + driver round-trip).
+    pub(super) fn ensure_gpu_info_worker(&mut self) {
+        if self.gpu_info_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded::<gpu_mem::GpuMemInfo>(2);
+        let handle = std::thread::Builder::new()
+            .name("squarebob-gpu-mem-poller".to_string())
+            .spawn(move || loop {
+                if let Some(info) = gpu_mem::query() {
+                    if tx.send(info).is_err() {
+                        // Receiver dropped — app shutting down.
+                        break;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            })
+            .ok();
+        self.gpu_info_rx = Some(rx);
+        self.gpu_info_thread = handle;
     }
 }
