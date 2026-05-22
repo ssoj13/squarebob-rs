@@ -186,19 +186,34 @@ impl App {
                                          (populate via `python bootstrap.py d`).",
                                     );
                                     ui.horizontal(|ui| {
+                                        // Compact path field — keep it
+                                        // narrow so the Browse button
+                                        // stays on the same row and
+                                        // long ACES filenames don't
+                                        // push the settings panel wide.
                                         let mut s = path.display().to_string();
-                                        if ui.text_edit_singleline(&mut s).changed() {
+                                        let full = s.clone();
+                                        if ui
+                                            .add(
+                                                egui::TextEdit::singleline(&mut s)
+                                                    .desired_width(180.0),
+                                            )
+                                            .on_hover_text(&full)
+                                            .changed()
+                                        {
                                             *path = std::path::PathBuf::from(&s);
                                             dirty.preset();
                                         }
                                         if ui
                                             .button("Browse…")
                                             .on_hover_text(
-                                                "Pick an OCIO config — opens \
-                                                 data/ocio/ by default if it exists.",
+                                                "Pick an OCIO config — opens the \
+                                                 current path's directory if set, \
+                                                 otherwise the executable folder.",
                                             )
                                             .clicked()
-                                            && let Some(picked) = rfd_pick_ocio_config()
+                                            && let Some(picked) =
+                                                rfd_pick_ocio_config(Some(path.as_path()))
                                         {
                                             *path = picked;
                                             dirty.preset();
@@ -325,16 +340,28 @@ impl App {
 
 /// rfd-driven open dialog for an OCIO config file. Filters cover
 /// the three formats `vfx_ocio::Config::from_file` understands.
-fn rfd_pick_ocio_config() -> Option<std::path::PathBuf> {
+fn rfd_pick_ocio_config(current: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
     let mut dlg = rfd::FileDialog::new()
         .add_filter("OCIO config", &["ocio", "ocioz", "json"])
         .add_filter("All files", &["*"]);
-    // Bias the dialog toward `data/ocio/` so the bundled ACES
-    // Studio / CG configs are one click away. Falls back to the
-    // OS default if the directory doesn't exist yet.
-    let bundled = std::path::PathBuf::from("data").join("ocio");
-    if bundled.is_dir() {
-        dlg = dlg.set_directory(&bundled);
+    // Seed the dialog's start directory in priority order:
+    //   1. parent of the currently-set path — so re-Browse reopens
+    //      where the user last picked from;
+    //   2. the executable's directory — common case when no path
+    //      is set yet;
+    //   3. fall through to the OS default.
+    let start = current
+        .and_then(|p| p.parent())
+        .filter(|p| p.is_dir())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(std::path::PathBuf::from))
+                .filter(|p| p.is_dir())
+        });
+    if let Some(dir) = start {
+        dlg = dlg.set_directory(&dir);
     }
     dlg.pick_file()
 }
