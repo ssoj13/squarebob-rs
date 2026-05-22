@@ -1,0 +1,13 @@
+[package]
+name = "color-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Display-side colour pipeline. Two modes: a small set of shader-side built-in tonemaps (Linear / Reinhard / AgX) and a full OpenColorIO-compatible chain via vfx-ocio (Config / Processor / Display / View / Look + .cube / .3dl / .ocio loading). Replaces the hand-rolled ACES Idt/Lmt/Rrt/Odt enum cascade."
+
+[dependencies]
+vfx-ocio = { workspace = true }
+vfx-lut = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }

@@ -34,6 +34,7 @@ members = [
     "crates/pt-material",
     "crates/playa-ae",
     "crates/egui-colorpicker",
+    "crates/color-pipeline",
 ]
 resolver = "2"
 
@@ -111,6 +112,17 @@ playa-ffmpeg = { git = "https://github.com/ssoj13/playa-ffmpeg", default-feature
 vfx-core = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main" }
 vfx-exr = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", features = ["htj2k"] }
 vfx-io = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", default-features = false, features = ["exr", "htj2k", "png", "jpeg", "tiff", "dpx", "hdr"] }
+# Full OCIO-compatible colour management. Replaces the hand-rolled
+# ACES Idt/Lmt/Rrt/Odt enums + matrix bake on the CPU side with a
+# proper `Config` / `Processor` / `Look` model, plus LUT loading
+# (`.cube` / `.3dl` / `.spi1d` / `.spi3d` / `.csp`) and GPU shader
+# generation. Bundles a built-in ACES 1.3 config so the app works
+# without any external `.ocio` file.
+vfx-ocio = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main" }
+# LUT baker / loader counterpart — same crate family, separate
+# split so callers can pull just LUT IO without dragging the whole
+# OCIO config machinery.
+vfx-lut = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main" }
 
 # Internal crate paths
 squarebob-core = { path = "crates/squarebob-core" }
@@ -131,6 +143,7 @@ standard-surface = { path = "crates/standard-surface" }
 squarebob-widgets = { path = "crates/squarebob-widgets" }
 playa-ae = { path = "crates/playa-ae" }
 egui-colorpicker = { path = "crates/egui-colorpicker" }
+color-pipeline = { path = "crates/color-pipeline" }
 
 [dependencies]
 # https://dev.to/yeauty/double-your-performance-with-one-line-of-code-the-memory-superpower-every-rust-developer-should-1g93
