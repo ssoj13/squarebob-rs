@@ -6,6 +6,33 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-05-22 (afternoon) — vfx-rs chain-construction parity rolls in
+
+Squarebob proper got no code changes in this round, but the bundled
+`vfx-ocio` upgrade (workspace dep) closes the last set of behaviour
+gaps between vfx-rs and the OCIO C++ reference for chain
+construction. That ripples into squarebob's color pipeline directly:
+
+- `processor("ACEScg", "sRGB - Display")` now applies the ACES SDR
+  output transform end-to-end instead of returning an identity chain.
+  The earlier OCIO loader fixes had restored the v4 ACES catalogue and
+  the display-referred colorspace, but the chain builder was still
+  picking only the scene-reference accessor pair and ignoring the
+  default scene-to-display view transform — so the renderer was
+  silently emitting linear-light into an sRGB texture for that combo.
+- `display_processor(...)` no longer requires a workaround for
+  configs where the display's first stored view is `Raw`; the merged
+  local + shared view list is consulted and `active_views` filters
+  apply, matching OCIO C++ `Config::getDefaultView` semantics.
+- `processor_from_configs*` short-circuits to an empty chain when
+  either endpoint is a data colorspace, matching
+  `Config::GetProcessorFromConfigs` (Config.cpp:4994-4996). Avoids
+  garbage output if a future workflow points at a data space by
+  mistake.
+
+See `vfx-rs/CHANGELOG.md` "chain-construction parity" entry for the
+full audit and the cross-references into the OCIO C++ source.
+
 ## 2026-05-21 / 22 — Color v2 (OCIO) lands; vfx-rs OCIO parity alignment
 
 Closes phases 5–11 of the OCIO color-pipeline migration that started
