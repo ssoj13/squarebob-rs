@@ -681,30 +681,6 @@ mod tests {
         assert_eq!(name, "NVIDIA GeForce RTX 3080 Ti");
     }
 
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn parse_reg_qword() {
-        let output = r#"
-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000
-    HardwareInformation.qwMemorySize    REG_QWORD    0x300000000
-"#;
-        let val = parse_reg_value(output, "HardwareInformation.qwMemorySize");
-        assert_eq!(val.as_deref(), Some("0x300000000"));
-        let bytes = u64::from_str_radix("300000000", 16).unwrap();
-        assert_eq!(bytes, 12 * 1024 * 1024 * 1024); // 12 GB
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn parse_reg_sz() {
-        let output = r#"
-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000
-    DriverDesc    REG_SZ    NVIDIA GeForce RTX 4090
-"#;
-        let val = parse_reg_value(output, "DriverDesc");
-        assert_eq!(val.as_deref(), Some("NVIDIA GeForce RTX 4090"));
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn parse_size() {

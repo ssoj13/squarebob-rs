@@ -188,6 +188,7 @@ pt-material = { workspace = true }
 squarebob-widgets = { workspace = true }
 playa-ae = { workspace = true }
 egui-colorpicker = { workspace = true }
+color-pipeline = { workspace = true }
 uuid = { workspace = true }
 pt-denoise-oidn = { workspace = true }
 sysinfo = { workspace = true }

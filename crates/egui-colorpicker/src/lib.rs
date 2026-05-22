@@ -601,14 +601,14 @@ fn hs_picker(ui: &mut Ui, size: f32, h: &mut f32, s: &mut f32) -> bool {
     painter.circle_stroke(cur, 6.0, Stroke::new(1.0, Color32::BLACK));
 
     let mut changed = false;
-    if response.dragged() || response.clicked() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            let u = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
-            let v = ((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
-            *h = u * 360.0;
-            *s = 1.0 - v;
-            changed = true;
-        }
+    if (response.dragged() || response.clicked())
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let u = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+        let v = ((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
+        *h = u * 360.0;
+        *s = 1.0 - v;
+        changed = true;
     }
     changed
 }
@@ -664,12 +664,12 @@ fn v_slider(
     );
 
     let mut changed = false;
-    if response.dragged() || response.clicked() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            let t = ((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
-            *v = (1.0 - t) * hdr_max;
-            changed = true;
-        }
+    if (response.dragged() || response.clicked())
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let t = ((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
+        *v = (1.0 - t) * hdr_max;
+        changed = true;
     }
     changed
 }

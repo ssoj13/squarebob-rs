@@ -356,8 +356,10 @@ fn render_value_editor(
                     if is_color {
                         let mut rgba = [arr[0], arr[1], arr[2], 1.0];
                         let before = rgba;
-                        let mut cfg = egui_colorpicker::PickerConfig::default();
-                        cfg.alpha_enabled = false;
+                        let mut cfg = egui_colorpicker::PickerConfig {
+                            alpha_enabled: false,
+                            ..egui_colorpicker::PickerConfig::default()
+                        };
                         egui_colorpicker::color_button_with(ui, &mut rgba, &mut cfg);
                         if rgba != before {
                             arr[0] = rgba[0];

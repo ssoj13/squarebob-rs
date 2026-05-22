@@ -1365,8 +1365,10 @@ fn default_material_overrides() -> [MaterialOverride; 2] {
     // cubes. Seed #2 = #1 ^ 0xDEAD_BEEF — pure bit-twiddle, no
     // semantic meaning.
     let a = MaterialOverride::default();
-    let mut b = MaterialOverride::default();
-    b.seed = a.seed ^ 0xDEAD_BEEF;
+    let b = MaterialOverride {
+        seed: a.seed ^ 0xDEAD_BEEF,
+        ..MaterialOverride::default()
+    };
     [a, b]
 }
 fn default_mat_seed() -> u32 {

@@ -722,12 +722,12 @@ pub fn resolve_weights_dir() -> Result<PathBuf> {
             return Ok(pb);
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let pb = dir.join("data").join("oidn-weights");
-            if pb.exists() {
-                return Ok(pb);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let pb = dir.join("data").join("oidn-weights");
+        if pb.exists() {
+            return Ok(pb);
         }
     }
     let pb = std::path::Path::new("data").join("oidn-weights");

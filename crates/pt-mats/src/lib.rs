@@ -635,7 +635,8 @@ mod tests {
         let frac = diff as f32 / 500.0;
         assert!(
             frac >= 0.5,
-            "seed change reshuffled only {frac:.0%} of slots (want ≥50 %)"
+            "seed change reshuffled only {pct:.0}% of slots (want ≥50 %)",
+            pct = frac * 100.0
         );
     }
 

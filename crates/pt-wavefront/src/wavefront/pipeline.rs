@@ -254,7 +254,7 @@ impl WavefrontPipeline {
         // Largest single binding — must fit under WebGPU's
         // `max_storage_buffer_binding_size` per buffer.
         let per_pixel_single = ray_sz.max(hit_sz).max(aov_sz).max(1);
-        let binding_limit = device.limits().max_storage_buffer_binding_size as u64;
+        let binding_limit = device.limits().max_storage_buffer_binding_size;
         let max_pixels_binding = (binding_limit / per_pixel_single).max(1);
         // Total per-frame VRAM consumed by the wavefront per-pixel
         // buffer set (2 ray + 1 hit + 2 AOV). The ping-pong ray

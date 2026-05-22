@@ -2809,8 +2809,11 @@ impl PathTraceCompute {
         // Pre-pack per-tile pathguide sample params (one slot per tile).
         // The buffer is fixed-size at MAX_TILE_CAPACITY slots so no bind
         // group rebuild is needed when tile count changes.
-        if self.pathguide_config.enabled && self.pathguide.is_some() {
-            if let Some(pg_bgs) = self.pathguide_bind_groups.as_ref() {
+        if self.pathguide_config.enabled
+            && self.pathguide.is_some()
+            && let Some(pg_bgs) = self.pathguide_bind_groups.as_ref()
+        {
+            {
                 let scene_min_v = self.scene_bounds.map(|b| b.0).unwrap_or([0.0; 3]);
                 let scene_max_v = self.scene_bounds.map(|b| b.1).unwrap_or([1.0; 3]);
                 let svo_res = self.pathguide_config.svo_resolution;
