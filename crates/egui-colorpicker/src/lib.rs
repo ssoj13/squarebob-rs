@@ -186,7 +186,7 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
     // user a visual countdown — full width = just left the
     // popup, empty = closing now. Re-entering refills it.
     if let Some(inner) = popup_response {
-        const IDLE_CLOSE_SECS: f64 = 1.0;
+        const IDLE_CLOSE_SECS: f64 = 0.5;
         let timer_key = popup_id.with("idle_close_timer");
         let now = ui.ctx().input(|i| i.time);
         let hovered = response.hovered() || inner.response.contains_pointer();
@@ -199,8 +199,13 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
         };
 
         // Close on Esc — convenient keyboard exit independent of
-        // mouse position.
-        if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+        // mouse position. `consume_key` (vs `key_pressed`) marks
+        // the event consumed so the app-level handler doesn't
+        // also see it and close the whole window.
+        if ui
+            .ctx()
+            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
             egui::Popup::close_id(ui.ctx(), popup_id);
         }
 
