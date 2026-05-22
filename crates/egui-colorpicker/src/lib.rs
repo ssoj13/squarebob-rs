@@ -58,6 +58,11 @@ pub struct PickerConfig {
     /// the actual color update happens later, when the host writes
     /// back into the `&mut [f32; 4]` handle on the next frame.
     pub eyedropper: Option<Box<dyn FnMut()>>,
+    /// `true` while the host is in eyedropper-sampling mode — the
+    /// popup's idle-auto-close is suppressed so the user can move
+    /// the mouse off into the viewport, click a sample, and come
+    /// back without the popup vanishing.
+    pub eyedropper_sampling: bool,
 }
 
 impl Default for PickerConfig {
@@ -69,6 +74,7 @@ impl Default for PickerConfig {
                 [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2])]
             }),
             eyedropper: None,
+            eyedropper_sampling: false,
         }
     }
 }
@@ -157,16 +163,39 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
     // that wires both pieces of click semantics for us:
     //   * `gesture(Click)`     — clicking the anchor toggles open.
     //   * `CloseOnClickOutside` — clicking outside closes it.
-    //
-    // `Popup::from_response` on its own has no gesture and no
-    // close behaviour by default, so the popup renders every
-    // frame for every row (which is what we saw: pickers
-    // permanently open on every Vec4 attribute).
     let popup_id = response.id.with("colorpicker_popup");
-    egui::Popup::menu(&response)
+    let popup_response = egui::Popup::menu(&response)
         .id(popup_id)
         .gap(4.0)
         .show(|ui| picker_popup_contents(ui, color, cfg));
+
+    // Auto-close after `IDLE_CLOSE_SECS` with no pointer hover on
+    // either the swatch chip or the popup itself — keeps the
+    // picker from sticking around when the user moves on without
+    // explicitly clicking it shut. The eyedropper-sampling
+    // override skips this so a host that's mid-sample doesn't get
+    // its popup yanked out from under it.
+    if let Some(inner) = popup_response {
+        const IDLE_CLOSE_SECS: f64 = 1.0;
+        let timer_key = popup_id.with("idle_close_timer");
+        let now = ui.ctx().input(|i| i.time);
+        let hovered = response.hovered() || inner.response.contains_pointer();
+        let sampling = cfg.eyedropper_sampling;
+        if hovered || sampling {
+            ui.memory_mut(|m| m.data.insert_temp::<f64>(timer_key, now));
+        } else {
+            let last_seen = ui.memory_mut(|m| {
+                m.data.get_temp::<f64>(timer_key).unwrap_or(now)
+            });
+            if now - last_seen > IDLE_CLOSE_SECS {
+                egui::Popup::close_id(ui.ctx(), popup_id);
+            }
+            // Force a fast repaint while the timer is running so
+            // the close fires even if egui is in on-demand mode
+            // and no other UI input is happening.
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+        }
+    }
     response
 }
 
