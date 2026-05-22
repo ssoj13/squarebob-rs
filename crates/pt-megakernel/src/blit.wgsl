@@ -75,6 +75,66 @@ fn aces_filmic_a11(color: vec3<f32>) -> vec3<f32> {
     return aces_filmic(color * 1.10) * 0.93;
 }
 
+// AgX (Eary Chow). Modern open-source filmic transform that
+// preserves hue better than ACES at the cost of some saturation.
+// Three-stage pipeline:
+//   1. inset matrix — Rec.709 → AgX working primaries.
+//   2. log encode  — clamp + linear → [0,1] via log2 mapping.
+//   3. 6th-order   — Eary Chow's "default contrast" polynomial
+//      curve, then the outset matrix back to Rec.709.
+//
+// Visually distinct from ACES in three places: skin tones drift
+// less, saturated blues stay blue (the famous ACES "blue-light
+// artifact"), and highlights desaturate more gently. Coefficients
+// from the published shader; matrices match the open-source AgX
+// reference (Blender 4.x baseline).
+fn agx_default_contrast(x: vec3<f32>) -> vec3<f32> {
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    return 15.5 * x4 * x2
+        - 40.14 * x4 * x
+        + 31.96 * x4
+        - 6.868 * x2 * x
+        + 0.4298 * x2
+        + 0.1191 * x
+        - vec3<f32>(0.00232);
+}
+
+fn agx_filmic(color: vec3<f32>) -> vec3<f32> {
+    // Rec.709 → AgX inset primaries.
+    let inset_r = vec3<f32>(0.842479, 0.042328, 0.042394);
+    let inset_g = vec3<f32>(0.078398, 0.878894, 0.078399);
+    let inset_b = vec3<f32>(0.079131, 0.078778, 0.879183);
+    // AgX → Rec.709 outset (inverse-ish, matches the published mat).
+    let outset_r = vec3<f32>( 1.196879, -0.052960, -0.052931);
+    let outset_g = vec3<f32>(-0.098000,  1.151474, -0.098158);
+    let outset_b = vec3<f32>(-0.099160, -0.090520,  1.151207);
+
+    let safe = max(color, vec3<f32>(0.0));
+    var c = vec3<f32>(
+        dot(inset_r, safe),
+        dot(inset_g, safe),
+        dot(inset_b, safe),
+    );
+
+    // Log encode. min_ev/max_ev are AgX's open exposure window.
+    let min_ev = -12.47393;
+    let max_ev =   4.026069;
+    c = log2(max(c, vec3<f32>(1.0e-10)));
+    c = (c - min_ev) / (max_ev - min_ev);
+    c = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    c = agx_default_contrast(c);
+
+    // Outset matrix back to display primaries.
+    let out = vec3<f32>(
+        dot(outset_r, c),
+        dot(outset_g, c),
+        dot(outset_b, c),
+    );
+    return max(out, vec3<f32>(0.0));
+}
+
 // SMPTE ST 2084 (PQ) inverse-EOTF — encodes display-linear nits to
 // the 10-bit PQ-encoded signal expected by HDR10 displays. Input is
 // nits normalised to 1.0 = 10_000 nits (so an Rec.2020 1000-nit signal
@@ -200,7 +260,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         case 0u: { mapped = saturate(scene); }                  // None
         case 1u: { mapped = saturate(scene); }                  // Linear (curve-less)
         case 2u: { mapped = reinhard(scene); }                  // Reinhard
-        case 4u: {                                              // AcesFull
+        case 4u: {                                              // AcesFull (legacy)
             let working = blit_params.aces_pre * scene;
             // RRT switch — Standard / A1.1 / Off. Read in WGSL from
             // the same uniform slot the CPU writes via
@@ -220,6 +280,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             // -> per-ODT default).
             let compressed = gamut_compress(displayed, blit_params.color.w);
             mapped         = saturate(compressed);
+        }
+        case 5u: {                                              // AgX (built-in, new pipeline)
+            mapped = saturate(agx_filmic(scene));
+        }
+        case 6u: {
+            // OCIO 3D-LUT sampler — phase 6 wires the wgpu binding
+            // and the texture sampling. Until then this branch
+            // falls through to AgX so the colour-v2 OCIO toggle
+            // already produces a tonemapped image, just not yet
+            // honouring the loaded Config.
+            mapped = saturate(agx_filmic(scene));
         }
         default: { mapped = aces_filmic(scene); }               // AcesFilmic (default)
     }

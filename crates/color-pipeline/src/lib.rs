@@ -65,6 +65,22 @@ pub enum BuiltInTonemap {
     AgX,
 }
 
+impl BuiltInTonemap {
+    /// Tag value packed into `BlitParams.color.x` so the blit
+    /// shader can pick the right curve at runtime. The numbers
+    /// alias with the legacy `TonemapKind::gpu_tag()` codes for
+    /// `None / Linear / Reinhard` so the shader's existing
+    /// switch needs only the new `AgX` case appended.
+    pub const fn gpu_tag(self) -> u32 {
+        match self {
+            BuiltInTonemap::None => 0,
+            BuiltInTonemap::Linear => 1,
+            BuiltInTonemap::Reinhard => 2,
+            BuiltInTonemap::AgX => 5,
+        }
+    }
+}
+
 // ── OCIO config source ─────────────────────────────────────────────────
 
 /// Where to source the active OCIO `Config` from.
@@ -177,7 +193,23 @@ impl Default for ColorPipelineSettings {
     }
 }
 
+/// Sentinel value the blit shader uses when `mode == Ocio` — it
+/// switches the curve path from the built-in family to the 3D
+/// LUT sampler (added in phase 6).
+pub const OCIO_LUT_TAG: u32 = 6;
+
 impl ColorPipelineSettings {
+    /// Single tag the blit shader switches on. Combines the
+    /// `mode` toggle with the built-in selection:
+    /// `BuiltIn` returns the matching `BuiltInTonemap::gpu_tag()`;
+    /// `Ocio` returns [`OCIO_LUT_TAG`].
+    pub const fn resolved_tonemap_tag(&self) -> u32 {
+        match self.mode {
+            ColorMode::BuiltIn => self.builtin.gpu_tag(),
+            ColorMode::Ocio => OCIO_LUT_TAG,
+        }
+    }
+
     /// Hash that changes whenever any field that affects the
     /// `Processor` build changes. The runtime uses this to decide
     /// when to rebuild — equal hash = same processor, skip rebuild.

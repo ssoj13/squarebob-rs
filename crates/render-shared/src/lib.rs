@@ -957,8 +957,16 @@ impl Render3DOptions {
     /// The C-2 GPU lane treats `AcesFull` as `AcesFilmic` for now — the
     /// IDT/LMT/RRT/ODT matrices are baked in by C-3.
     pub fn blit_color_lane(&self) -> (u32, f32, f32, f32) {
+        // The new colour-pipeline (`color_pipeline`) drives the
+        // tonemap tag now. Mode = BuiltIn picks the matching
+        // `BuiltInTonemap::gpu_tag()` (None / Linear / Reinhard /
+        // AgX); Mode = Ocio returns the phase-6 LUT sentinel.
+        // Exposure / WB / gamut-compress stay on the legacy
+        // scene-linear lanes for now — phase 11 either ports
+        // them onto the OCIO pipeline (CDL / GradingPrimary) or
+        // drops them entirely.
         (
-            self.color_tonemap.gpu_tag(),
+            self.color_pipeline.resolved_tonemap_tag(),
             self.color_exposure_ev,
             self.color_white_balance_k / 6500.0,
             self.effective_gamut_compress(),
