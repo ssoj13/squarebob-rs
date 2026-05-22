@@ -12,6 +12,7 @@
 //! `docs/aces-color-pipeline-plan.md`.
 
 use super::{settings_grid, tinted_section, SettingsDirty};
+use color_pipeline::{BuiltInTonemap, ColorCodepath, ColorMode, ConfigSource};
 use crate::app::App;
 use eframe::egui;
 use render_shared::{AcesIdt, AcesLmt, AcesOdt, AcesRrt, ColorWorkingSpace, TonemapKind};
@@ -479,6 +480,258 @@ impl App {
                         .small()
                         .color(egui::Color32::from_rgb(220, 180, 90)),
                     );
+                }
+            },
+        );
+    }
+
+    /// New OCIO-backed colour section. Rendered ALONGSIDE the
+    /// legacy `ui_settings_color` while the migration is in
+    /// flight — that way the user can flip between the two and
+    /// spot-check the new pipeline against the matrix-baked
+    /// reference. Phase 5 removes the legacy section.
+    ///
+    /// All widgets here are display-side hyper-params; same
+    /// `dirty.preset()` contract as the legacy section.
+    pub(super) fn ui_settings_color_v2(
+        &mut self,
+        ui: &mut egui::Ui,
+        dirty: &mut SettingsDirty,
+    ) {
+        tinted_section(
+            ui,
+            "Color v2 (OCIO)",
+            true,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            |ui| {
+                let cp = &mut self.render_3d_opts.color_pipeline;
+
+                settings_grid(ui, "color_v2_top_grid", |ui| {
+                    // Top-level toggle: Built-in vs OCIO.
+                    ui.label("Mode:")
+                        .on_hover_text(
+                            "Built-in = shader-side tonemap, no colour management.\n\
+                             Ocio    = full vfx-ocio pipeline (Config + Processor +\n\
+                                       Display + View + Look + optional LUT).",
+                        );
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(cp.mode == ColorMode::BuiltIn, "Built-in")
+                            .on_hover_text("No colour management. Just a curve.")
+                            .clicked()
+                        {
+                            cp.mode = ColorMode::BuiltIn;
+                            dirty.preset();
+                        }
+                        if ui
+                            .selectable_label(cp.mode == ColorMode::Ocio, "OCIO")
+                            .on_hover_text(
+                                "OpenColorIO pipeline. Picks displays / views /\n\
+                                 looks from the loaded config.",
+                            )
+                            .clicked()
+                        {
+                            cp.mode = ColorMode::Ocio;
+                            dirty.preset();
+                        }
+                    });
+                    ui.end_row();
+
+                    // Codepath: CPU (Processor::apply_rgb on readback) vs
+                    // GPU (baked shader or 3D LUT in the blit pass).
+                    ui.label("Codepath:")
+                        .on_hover_text(
+                            "CPU = run vfx-ocio's Processor::apply_rgb on the\n\
+                                   readback buffer. Slow but bit-exact reference.\n\
+                             GPU = bake to a 3D LUT / WGSL stub on the blit pass.\n\
+                                   Fast — default for normal use.",
+                        );
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(cp.codepath == ColorCodepath::Gpu, "GPU")
+                            .clicked()
+                        {
+                            cp.codepath = ColorCodepath::Gpu;
+                            dirty.preset();
+                        }
+                        if ui
+                            .selectable_label(cp.codepath == ColorCodepath::Cpu, "CPU")
+                            .clicked()
+                        {
+                            cp.codepath = ColorCodepath::Cpu;
+                            dirty.preset();
+                        }
+                    });
+                    ui.end_row();
+                });
+
+                ui.add_space(4.0);
+                ui.separator();
+
+                match cp.mode {
+                    ColorMode::BuiltIn => {
+                        // Built-in tonemap selector. Pure shader-side.
+                        settings_grid(ui, "color_v2_builtin_grid", |ui| {
+                            ui.label("Tonemap:")
+                                .on_hover_text(
+                                    "Built-in curve applied to scene-linear HDR.\n\
+                                     None    — clamp only (debug).\n\
+                                     Linear  — no curve, highlights blow out.\n\
+                                     Reinhard — c / (1 + c), washed but cheap.\n\
+                                     AgX     — modern open filmic, hue-preserving.",
+                                );
+                            ui.horizontal(|ui| {
+                                for (variant, label) in [
+                                    (BuiltInTonemap::None, "None"),
+                                    (BuiltInTonemap::Linear, "Linear"),
+                                    (BuiltInTonemap::Reinhard, "Reinhard"),
+                                    (BuiltInTonemap::AgX, "AgX"),
+                                ] {
+                                    if ui
+                                        .selectable_label(cp.builtin == variant, label)
+                                        .clicked()
+                                    {
+                                        cp.builtin = variant;
+                                        dirty.preset();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        });
+                    }
+                    ColorMode::Ocio => {
+                        settings_grid(ui, "color_v2_ocio_grid", |ui| {
+                            // Config source — BuiltIn / Bundled / External.
+                            ui.label("Config:").on_hover_text(
+                                "Where the OCIO Config comes from.\n\
+                                 BuiltIn  — vfx-ocio's bundled ACES 1.3 (no file).\n\
+                                 Bundled  — a .ocio shipped under data/ocio/.\n\
+                                 External — user-loaded .ocio / .ocioz / .json.",
+                            );
+                            ui.horizontal(|ui| {
+                                let is_builtin = matches!(cp.ocio_config, ConfigSource::BuiltIn);
+                                let is_bundled =
+                                    matches!(cp.ocio_config, ConfigSource::Bundled(_));
+                                let is_external =
+                                    matches!(cp.ocio_config, ConfigSource::External(_));
+                                if ui.selectable_label(is_builtin, "BuiltIn").clicked() {
+                                    cp.ocio_config = ConfigSource::BuiltIn;
+                                    dirty.preset();
+                                }
+                                if ui.selectable_label(is_bundled, "Bundled").clicked() {
+                                    cp.ocio_config = ConfigSource::Bundled(String::new());
+                                    dirty.preset();
+                                }
+                                if ui.selectable_label(is_external, "External").clicked() {
+                                    cp.ocio_config = ConfigSource::External(Default::default());
+                                    dirty.preset();
+                                }
+                            });
+                            ui.end_row();
+
+                            // Conditional rows for the active config source.
+                            match &mut cp.ocio_config {
+                                ConfigSource::BuiltIn => {}
+                                ConfigSource::Bundled(name) => {
+                                    ui.label("File:").on_hover_text(
+                                        "Filename under data/ocio/ (e.g. \
+                                         studio-config-v2.ocio).",
+                                    );
+                                    if ui.text_edit_singleline(name).changed() {
+                                        dirty.preset();
+                                    }
+                                    ui.end_row();
+                                }
+                                ConfigSource::External(path) => {
+                                    ui.label("Path:").on_hover_text(
+                                        "Absolute path to a .ocio / .ocioz / .json \
+                                         OCIO config.",
+                                    );
+                                    let mut s = path.display().to_string();
+                                    if ui.text_edit_singleline(&mut s).changed() {
+                                        *path = std::path::PathBuf::from(&s);
+                                        dirty.preset();
+                                    }
+                                    ui.end_row();
+                                }
+                            }
+
+                            ui.label("Input:").on_hover_text(
+                                "OCIO colour space the path tracer writes into. \
+                                 Usually the `scene_linear` role.",
+                            );
+                            if ui.text_edit_singleline(&mut cp.ocio_input_space).changed() {
+                                dirty.preset();
+                            }
+                            ui.end_row();
+
+                            ui.label("Display:").on_hover_text(
+                                "Display device from the OCIO config — sRGB / \
+                                 Rec.709 / Rec.2020 / P3 / DCI etc.",
+                            );
+                            if ui.text_edit_singleline(&mut cp.ocio_display).changed() {
+                                dirty.preset();
+                            }
+                            ui.end_row();
+
+                            ui.label("View:").on_hover_text(
+                                "View transform for the selected Display. \
+                                 Common: 'ACES 1.0 SDR-video', 'Raw', \
+                                 'Un-tone-mapped'.",
+                            );
+                            if ui.text_edit_singleline(&mut cp.ocio_view).changed() {
+                                dirty.preset();
+                            }
+                            ui.end_row();
+
+                            ui.label("Look:").on_hover_text(
+                                "Optional named look from the config. Leave empty \
+                                 for no look. Custom LUTs go in the row below.",
+                            );
+                            let mut look_str = cp.ocio_look.clone().unwrap_or_default();
+                            if ui.text_edit_singleline(&mut look_str).changed() {
+                                cp.ocio_look = if look_str.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(look_str)
+                                };
+                                dirty.preset();
+                            }
+                            ui.end_row();
+
+                            ui.label("Custom LUT:").on_hover_text(
+                                "Optional user LUT file (.cube / .3dl / .spi1d / \
+                                 .spi3d / .csp). Applied AFTER the display/view \
+                                 chain.",
+                            );
+                            let mut lut_str = cp
+                                .ocio_custom_lut
+                                .as_ref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default();
+                            if ui.text_edit_singleline(&mut lut_str).changed() {
+                                cp.ocio_custom_lut = if lut_str.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(std::path::PathBuf::from(&lut_str))
+                                };
+                                dirty.preset();
+                            }
+                            ui.end_row();
+                        });
+
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Note: text-edit fields are Phase 4 wireframe. \
+                                 Phase 7 replaces them with dropdowns populated \
+                                 from the loaded Config.",
+                            )
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        );
+                    }
                 }
             },
         );
