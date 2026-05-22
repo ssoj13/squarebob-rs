@@ -353,6 +353,33 @@ pub struct ColorPipeline {
     /// value, so callers that just want to refresh dropdown lists
     /// don't need to thread the renderer through.
     lut_upload_pending: bool,
+    /// Outcome of the most recent `ocio_custom_lut` load attempt.
+    /// Surfaced to the UI so the user can see whether the file
+    /// actually loaded or fell through silently.
+    custom_lut_status: CustomLutStatus,
+}
+
+/// Status of the optional `Custom LUT` slot, observable by the host
+/// UI. Updated on every [`ColorPipeline::rebuild`] in `Ocio` mode.
+#[derive(Debug, Clone, Default)]
+pub enum CustomLutStatus {
+    /// No custom LUT requested (`ocio_custom_lut` is `None`).
+    #[default]
+    NotSet,
+    /// LUT loaded and chained onto the display processor.
+    Loaded {
+        /// Path of the file actually consumed.
+        path: PathBuf,
+    },
+    /// LUT was requested but the load or chain step failed. The
+    /// display processor was rebuilt without it; the error message
+    /// is suitable for inline UI display.
+    Failed {
+        /// Path the loader was asked for.
+        path: PathBuf,
+        /// One-line error description.
+        error: String,
+    },
 }
 
 /// Baked 3D LUT snapshot — raw flat RGB array plus the grid size.
@@ -427,6 +454,7 @@ impl ColorPipeline {
             lut_3d: None,
             last_hash: 0,
             lut_upload_pending: false,
+            custom_lut_status: CustomLutStatus::NotSet,
         };
         // Initial build — errors are logged and leave `processor`
         // as `None`. Callers that try to `apply_cpu` on a `None`
@@ -480,6 +508,9 @@ impl ColorPipeline {
             if lut_changed {
                 self.lut_upload_pending = true;
             }
+            // BuiltIn mode doesn't have a custom LUT slot; surface
+            // that clearly to the UI.
+            self.custom_lut_status = CustomLutStatus::NotSet;
             return Ok(());
         }
         // OCIO mode — build a display processor via
@@ -499,7 +530,81 @@ impl ColorPipeline {
                 dvt = dvt.with_looks_override(look);
             }
         }
-        let proc = self.config.processor_for_display_view_transform(&dvt)?;
+        // Build the display processor. If the user picked a custom
+        // LUT, treat it as an ACES LMT — the canonical VFX path
+        // documented in the ACES spec:
+        //
+        //   input → ACES2065-1 (interchange) → LUT → ACES2065-1
+        //   → ACES RRT/ODT → display
+        //
+        // i.e. the LUT operates in the AP0 working space, BEFORE the
+        // ACES output transform. This matches what Nuke's `OCIOLook`
+        // node and Resolve's "ACES Look" slot do. A LUT applied as a
+        // post-display "creative" transform (after sRGB encoding)
+        // bakes in the OETF and breaks linearity across views — the
+        // LMT path keeps the rest of the OCIO pipeline coherent.
+        //
+        // Routing: build (input → AP0) + Processor::from_transform(LUT) +
+        // (AP0 → display) and combine. The third leg re-runs the
+        // display chain from AP0 instead of the user-selected input
+        // space, so the LMT is sandwiched correctly.
+        let proc = match settings.ocio_custom_lut.as_ref() {
+            None => {
+                self.custom_lut_status = CustomLutStatus::NotSet;
+                self.config.processor_for_display_view_transform(&dvt)?
+            }
+            Some(lut_path) => {
+                // ACES configs wire `aces_interchange` to AP0 by
+                // spec (`OpenColorIO-Config-ACES` v1.0+); when the
+                // role is missing we use the canonical colorspace
+                // name directly — `find_view` and `processor()`
+                // accept either form.
+                let interchange = self
+                    .config
+                    .role_colorspace("aces_interchange")
+                    .unwrap_or("ACES2065-1")
+                    .to_string();
+                let mut dvt_from_aces = dvt.clone();
+                dvt_from_aces.src = interchange.clone();
+
+                let attempt = || -> Result<vfx_ocio::Processor, vfx_ocio::OcioError> {
+                    let to_aces = self
+                        .config
+                        .processor(&settings.ocio_input_space, &interchange)?;
+                    let lut_proc = vfx_ocio::Processor::from_transform(
+                        &vfx_ocio::Transform::file(lut_path.clone()),
+                        vfx_ocio::TransformDirection::Forward,
+                    )?;
+                    let display_from_aces = self
+                        .config
+                        .processor_for_display_view_transform(&dvt_from_aces)?;
+                    let lmt_chain = vfx_ocio::Processor::combine(&to_aces, &lut_proc)?;
+                    vfx_ocio::Processor::combine(&lmt_chain, &display_from_aces)
+                };
+                match attempt() {
+                    Ok(chained) => {
+                        self.custom_lut_status = CustomLutStatus::Loaded {
+                            path: lut_path.clone(),
+                        };
+                        chained
+                    }
+                    Err(e) => {
+                        let msg = format!("{e}");
+                        log::warn!(
+                            "color-pipeline: custom LUT {} failed to load as LMT: {msg} \
+                             — rebuilding the display processor without it",
+                            lut_path.display()
+                        );
+                        self.custom_lut_status = CustomLutStatus::Failed {
+                            path: lut_path.clone(),
+                            error: msg,
+                        };
+                        self.config.processor_for_display_view_transform(&dvt)?
+                    }
+                }
+            }
+        };
+
         // Bake the processor into a 3D LUT for the GPU codepath.
         // The CPU codepath calls `processor.apply_rgb` directly;
         // GPU uploads `lut_3d.data` into a Texture3D and the blit
@@ -534,6 +639,21 @@ impl ColorPipeline {
     /// sets the flag again. Caller is expected to push the
     /// returned slice into the renderer's blit-side 3D LUT
     /// binding (see `pt_megakernel::PathTraceCompute::set_blit_lut_3d`).
+    /// Outcome of the most recent custom-LUT load attempt (the
+    /// `ocio_custom_lut` slot on the live settings). Useful for the
+    /// host UI — render a green "Loaded: …" line or a red "Failed:
+    /// …" message under the Custom LUT field instead of leaving
+    /// the user guessing whether the file took effect.
+    pub fn custom_lut_status(&self) -> &CustomLutStatus {
+        &self.custom_lut_status
+    }
+
+    /// One-shot poll for the host's per-frame GPU upload step.
+    /// Returns `Some(&BakedLut3D)` exactly once per fresh bake;
+    /// subsequent calls return `None` until the next rebuild
+    /// sets the flag again. Caller is expected to push the
+    /// returned slice into the renderer's blit-side 3D LUT
+    /// binding.
     pub fn take_pending_lut(&mut self) -> Option<&BakedLut3D> {
         if !self.lut_upload_pending {
             return None;

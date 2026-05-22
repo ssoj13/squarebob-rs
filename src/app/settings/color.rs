@@ -32,6 +32,10 @@ impl App {
         let views_for_current =
             self.color_pipeline.available_views(&self.render_3d_opts.color_pipeline.ocio_display);
         let looks = self.color_pipeline.available_looks();
+        // Captured up-front for the same borrow-checker reason as
+        // the dropdown lists above — the closure cannot re-borrow
+        // `self.color_pipeline` while `cp` is alive.
+        let custom_lut_status = self.color_pipeline.custom_lut_status().clone();
 
         tinted_section(
             ui,
@@ -151,7 +155,7 @@ impl App {
                                 ConfigSource::Bundled(_) => "External…".into(),
                             };
                             egui::ComboBox::from_id_salt("color_ocio_config_cb")
-                                .width(360.0)
+                                .width(288.0)
                                 .selected_text(current_label)
                                 .show_ui(ui, |ui| {
                                     // ACES 1.3 programmatic baseline.
@@ -236,7 +240,7 @@ impl App {
                                         if ui
                                             .add(
                                                 egui::TextEdit::singleline(&mut s)
-                                                    .desired_width(180.0),
+                                                    .desired_width(144.0),
                                             )
                                             .on_hover_text(&full)
                                             .changed()
@@ -331,8 +335,10 @@ impl App {
 
                             ui.label("Custom LUT:").on_hover_text(
                                 "Optional user LUT file (.cube / .3dl / .spi1d / \
-                                 .spi3d / .csp). Applied AFTER the display/view \
-                                 chain.",
+                                 .spi3d / .csp). Applied as an ACES LMT in the \
+                                 working space (input → ACES2065-1 → LUT → ACES \
+                                 RRT/ODT → display), matching the canonical VFX \
+                                 workflow.",
                             );
                             ui.horizontal(|ui| {
                                 let mut lut_str = cp
@@ -340,7 +346,15 @@ impl App {
                                     .as_ref()
                                     .map(|p| p.display().to_string())
                                     .unwrap_or_default();
-                                if ui.text_edit_singleline(&mut lut_str).changed() {
+                                let full = lut_str.clone();
+                                if ui
+                                    .add(
+                                        egui::TextEdit::singleline(&mut lut_str)
+                                            .desired_width(144.0),
+                                    )
+                                    .on_hover_text(&full)
+                                    .changed()
+                                {
                                     cp.ocio_custom_lut = if lut_str.trim().is_empty() {
                                         None
                                     } else {
@@ -369,6 +383,41 @@ impl App {
                                     dirty.preset();
                                 }
                             });
+                            ui.end_row();
+
+                            // Status row — green "Loaded" / red "Failed"
+                            // line under the Custom LUT field so the
+                            // user can see whether the LUT actually
+                            // took effect. Empty cell when nothing is
+                            // requested.
+                            ui.label("");
+                            match &custom_lut_status {
+                                color_pipeline::CustomLutStatus::NotSet => {
+                                    ui.label("");
+                                }
+                                color_pipeline::CustomLutStatus::Loaded { path } => {
+                                    let name = path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| path.display().to_string());
+                                    ui.label(
+                                        egui::RichText::new(format!("✔ Loaded: {name}"))
+                                            .color(egui::Color32::from_rgb(120, 200, 120)),
+                                    )
+                                    .on_hover_text(path.display().to_string());
+                                }
+                                color_pipeline::CustomLutStatus::Failed { path, error } => {
+                                    let name = path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| path.display().to_string());
+                                    ui.label(
+                                        egui::RichText::new(format!("✗ Failed: {name}"))
+                                            .color(egui::Color32::from_rgb(220, 110, 110)),
+                                    )
+                                    .on_hover_text(format!("{}\n\n{error}", path.display()));
+                                }
+                            }
                             ui.end_row();
                         });
                     }
@@ -447,9 +496,10 @@ fn ocio_dropdown(
     };
     let mut changed = false;
     egui::ComboBox::from_id_salt(id_salt)
-        // Wide enough for the longest ACES 2.0 view/display name
-        // (e.g. "ACES 2.0 - HDR 4000 nits (Rec.2020 D60 in Rec.2020 D65)").
-        .width(360.0)
+        // ~20% narrower than the previous 360 px so the row fits
+        // inside the Settings panel without horizontal scroll on
+        // typical desktop layouts.
+        .width(288.0)
         .selected_text(display)
         .show_ui(ui, |ui| {
             if allow_none {
