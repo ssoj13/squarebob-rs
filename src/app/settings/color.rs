@@ -663,11 +663,24 @@ impl App {
                                         "Absolute path to a .ocio / .ocioz / .json \
                                          OCIO config.",
                                     );
-                                    let mut s = path.display().to_string();
-                                    if ui.text_edit_singleline(&mut s).changed() {
-                                        *path = std::path::PathBuf::from(&s);
-                                        dirty.preset();
-                                    }
+                                    ui.horizontal(|ui| {
+                                        let mut s = path.display().to_string();
+                                        if ui.text_edit_singleline(&mut s).changed() {
+                                            *path = std::path::PathBuf::from(&s);
+                                            dirty.preset();
+                                        }
+                                        if ui
+                                            .button("Browse…")
+                                            .on_hover_text(
+                                                "Pick an OCIO config (.ocio / .ocioz / .json).",
+                                            )
+                                            .clicked()
+                                            && let Some(picked) = rfd_pick_ocio_config()
+                                        {
+                                            *path = picked;
+                                            dirty.preset();
+                                        }
+                                    });
                                     ui.end_row();
                                 }
                             }
@@ -743,19 +756,41 @@ impl App {
                                  .spi3d / .csp). Applied AFTER the display/view \
                                  chain.",
                             );
-                            let mut lut_str = cp
-                                .ocio_custom_lut
-                                .as_ref()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default();
-                            if ui.text_edit_singleline(&mut lut_str).changed() {
-                                cp.ocio_custom_lut = if lut_str.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(std::path::PathBuf::from(&lut_str))
-                                };
-                                dirty.preset();
-                            }
+                            ui.horizontal(|ui| {
+                                let mut lut_str = cp
+                                    .ocio_custom_lut
+                                    .as_ref()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_default();
+                                if ui.text_edit_singleline(&mut lut_str).changed() {
+                                    cp.ocio_custom_lut = if lut_str.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(std::path::PathBuf::from(&lut_str))
+                                    };
+                                    dirty.preset();
+                                }
+                                if ui
+                                    .button("Browse…")
+                                    .on_hover_text(
+                                        "Pick a LUT file (.cube / .3dl / .spi1d / .spi3d / .csp).",
+                                    )
+                                    .clicked()
+                                    && let Some(picked) = rfd_pick_lut_file()
+                                {
+                                    cp.ocio_custom_lut = Some(picked);
+                                    dirty.preset();
+                                }
+                                if cp.ocio_custom_lut.is_some()
+                                    && ui
+                                        .button("Clear")
+                                        .on_hover_text("Drop the custom LUT slot.")
+                                        .clicked()
+                                {
+                                    cp.ocio_custom_lut = None;
+                                    dirty.preset();
+                                }
+                            });
                             ui.end_row();
                         });
 
@@ -956,6 +991,24 @@ fn odt_hover(o: AcesOdt) -> &'static str {
 /// after the preset was saved) still displays the chosen name,
 /// flagged with a `?` prefix, instead of silently dropping back
 /// to the first available entry.
+/// rfd-driven open dialog for an OCIO config file. Filters cover
+/// the three formats `vfx_ocio::Config::from_file` understands.
+fn rfd_pick_ocio_config() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter("OCIO config", &["ocio", "ocioz", "json"])
+        .add_filter("All files", &["*"])
+        .pick_file()
+}
+
+/// rfd-driven open dialog for a LUT file. The five extensions
+/// match the LUT formats vfx-ocio's `FileTransform` accepts.
+fn rfd_pick_lut_file() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter("LUT", &["cube", "3dl", "spi1d", "spi3d", "csp"])
+        .add_filter("All files", &["*"])
+        .pick_file()
+}
+
 fn ocio_dropdown(
     ui: &mut egui::Ui,
     id_salt: &str,
