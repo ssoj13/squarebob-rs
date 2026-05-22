@@ -273,16 +273,17 @@ fn sys_mem_platform() -> Option<SysMemInfo> {
     None
 }
 
-// ── Common helper: nvidia-smi ────────────────────────────────────────────
+// ── Linux helper: nvidia-smi ─────────────────────────────────────────────
 
 /// Queries `nvidia-smi` for total, free, used VRAM and GPU name.
 ///
-/// Works on both Windows and Linux.  The `nvidia-smi` binary is shipped
-/// with the NVIDIA driver and is typically in `PATH`
-/// (`C:\Windows\System32\nvidia-smi.exe` on Windows).
+/// Linux-only: on Windows the DXGI in-process query covers every
+/// vendor without a subprocess. The `nvidia-smi` binary ships with
+/// the NVIDIA driver and is normally on `PATH`.
 ///
 /// Returns `None` if `nvidia-smi` is not installed, exits with an error,
 /// or produces unparseable output.
+#[cfg(target_os = "linux")]
 fn nvidia_smi_query() -> Option<GpuMemInfo> {
     let output = Command::new("nvidia-smi")
         .args([
@@ -340,23 +341,14 @@ fn platform_query() -> Option<GpuMemInfo> {
 // Windows
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Windows strategy:
-/// 1. **Primary**: DXGI `IDXGIAdapter3::QueryVideoMemoryInfo`.
-///    In-process, microseconds, works across NVIDIA / AMD / Intel
-///    in one shot. No subprocess on the UI thread.
-/// 2. Fallback to `nvidia-smi` for the rare case DXGI fails
-///    (extremely old drivers, headless box).
-/// 3. Last resort: Display Adapter registry class (total VRAM
-///    only, no free).
+/// Windows VRAM query — DXGI is the **only** path on Windows.
+/// No subprocesses, no `nvidia-smi`, no `reg query`. If DXGI
+/// itself can't enumerate an adapter (running on a headless
+/// build server, GPU driver crashed, etc.) the caller gets
+/// `None` and the status bar simply shows no VRAM readout.
 #[cfg(target_os = "windows")]
 fn windows_query() -> Option<GpuMemInfo> {
-    if let Some(info) = dxgi_query() {
-        return Some(info);
-    }
-    if let Some(info) = nvidia_smi_query() {
-        return Some(info);
-    }
-    windows_registry_query()
+    dxgi_query()
 }
 
 /// DXGI VRAM query — the proper Windows API. Uses
@@ -410,122 +402,6 @@ fn dxgi_query() -> Option<GpuMemInfo> {
             unified: false,
         })
     }
-}
-
-/// Reads total VRAM and GPU name from the display adapter registry class.
-///
-/// This works for all GPU vendors but does **not** provide free VRAM.
-#[cfg(target_os = "windows")]
-fn windows_registry_query() -> Option<GpuMemInfo> {
-    /// Display adapter class GUID (stable across all Windows versions).
-    const DISPLAY_CLASS: &str =
-        r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
-
-    let mut best: Option<GpuMemInfo> = None;
-
-    // Enumerate sub-keys 0000 … 0015 (covers multi-GPU setups).
-    for i in 0..16u32 {
-        let subkey = format!(r"{DISPLAY_CLASS}\{i:04}");
-
-        // 64-bit VRAM (modern drivers, >4 GB GPUs).
-        let vram = reg_query_hex(&subkey, "HardwareInformation.qwMemorySize")
-            // Fallback: 32-bit VRAM (older drivers, ≤4 GB).
-            .or_else(|| reg_query_hex(&subkey, "HardwareInformation.MemorySize"))
-            .unwrap_or(0);
-
-        if vram == 0 {
-            continue;
-        }
-
-        let name = reg_query_string(&subkey, "DriverDesc")
-            .or_else(|| reg_query_string(&subkey, "Device Description"))
-            .unwrap_or_default();
-
-        let shared = reg_query_hex(&subkey, "HardwareInformation.SharedSystemMemory").unwrap_or(0);
-
-        let info = GpuMemInfo {
-            name,
-            dedicated_vram: vram,
-            free_vram: 0, // Registry doesn't expose free VRAM.
-            shared_memory: shared,
-            unified: false,
-        };
-
-        if best
-            .as_ref()
-            .is_none_or(|b| info.dedicated_vram > b.dedicated_vram)
-        {
-            best = Some(info);
-        }
-    }
-
-    best
-}
-
-// ── Windows registry helpers ─────────────────────────────────────────────
-
-/// Runs `reg query <key> /v <value>` and returns the raw data string.
-#[cfg(target_os = "windows")]
-fn reg_query_raw(key: &str, value_name: &str) -> Option<String> {
-    let output = Command::new("reg")
-        .args(["query", key, "/v", value_name])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_reg_value(&stdout, value_name)
-}
-
-/// Parses a hex value (`0x…`) from a `reg query` result line.
-#[cfg(target_os = "windows")]
-fn reg_query_hex(key: &str, value_name: &str) -> Option<u64> {
-    let data = reg_query_raw(key, value_name)?;
-    let hex = data.trim_start_matches("0x").trim_start_matches("0X");
-    u64::from_str_radix(hex, 16).ok()
-}
-
-/// Parses a string value (`REG_SZ`) from a `reg query` result line.
-#[cfg(target_os = "windows")]
-fn reg_query_string(key: &str, value_name: &str) -> Option<String> {
-    let data = reg_query_raw(key, value_name)?;
-    if data.is_empty() { None } else { Some(data) }
-}
-
-/// Extracts the data field from a `reg query` output line.
-///
-/// Expected format (language-independent):
-/// ```text
-///     HardwareInformation.qwMemorySize    REG_QWORD    0x200000000
-///     DriverDesc    REG_SZ    NVIDIA GeForce RTX 4090
-/// ```
-///
-/// The value name and `REG_*` type tag are always ASCII.
-#[cfg(target_os = "windows")]
-fn parse_reg_value(stdout: &str, value_name: &str) -> Option<String> {
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        // Locate the `REG_` type marker.
-        let Some(reg_pos) = trimmed.find("REG_") else {
-            continue;
-        };
-        // Everything before it is the value name.
-        let name = trimmed[..reg_pos].trim();
-        if !name.eq_ignore_ascii_case(value_name) {
-            continue;
-        }
-        // Everything after `REG_xxxx<whitespace>` is the data.
-        let type_and_data = &trimmed[reg_pos..];
-        let Some(space) = type_and_data.find(char::is_whitespace) else {
-            continue;
-        };
-        let data = type_and_data[space..].trim();
-        if !data.is_empty() {
-            return Some(data.to_string());
-        }
-    }
-    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

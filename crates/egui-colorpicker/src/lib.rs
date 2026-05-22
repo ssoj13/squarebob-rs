@@ -153,23 +153,20 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
 
     paint_swatch_icon(ui, rect, color, cfg, response.hovered());
 
-    // Hand off to egui's own popup builder rather than rolling our
-    // own outside-click detection. The builder knows about the
-    // anchoring widget (`response`) and exempts its hit-rect from
-    // the close-on-click-outside check, so the very click that
-    // opens the popup can no longer close it on the same frame.
+    // Use `Popup::menu(&response)` — the only `Popup` constructor
+    // that wires both pieces of click semantics for us:
+    //   * `gesture(Click)`     — clicking the anchor toggles open.
+    //   * `CloseOnClickOutside` — clicking outside closes it.
+    //
+    // `Popup::from_response` on its own has no gesture and no
+    // close behaviour by default, so the popup renders every
+    // frame for every row (which is what we saw: pickers
+    // permanently open on every Vec4 attribute).
     let popup_id = response.id.with("colorpicker_popup");
-    if response.clicked() {
-        egui::Popup::toggle_id(ui.ctx(), popup_id);
-    }
-    egui::Popup::from_response(&response)
+    egui::Popup::menu(&response)
         .id(popup_id)
         .gap(4.0)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.set_min_width(360.0);
-            picker_popup_contents(ui, color, cfg);
-        });
+        .show(|ui| picker_popup_contents(ui, color, cfg));
     response
 }
 
@@ -226,11 +223,23 @@ fn paint_checker(painter: &egui::Painter, rect: Rect, cell: f32) {
 }
 
 fn picker_popup_contents(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConfig) {
+    // Fixed popup width. The previous `ui.available_width()` based
+    // splitter created a feedback loop inside `Popup::show`: the
+    // popup sizes itself to its content's bounding box, but the
+    // content sized itself to whatever the parent gave (which was
+    // unbounded). Each frame the popup grew → more available width
+    // → content grew → ad infinitum. A hard-coded width breaks the
+    // loop and keeps the popup stable across frames.
+    const POPUP_W: f32 = 360.0;
+    const PREVIEW_W: f32 = (POPUP_W - 12.0) * 0.5;
+    ui.set_max_width(POPUP_W);
+    ui.set_min_width(POPUP_W);
+
     // --- Section 1: previews (working sRGB-encoded | display via
     // user-supplied transform). Side by side, equal size.
     let preview_h = 36.0;
     ui.horizontal(|ui| {
-        let half = (ui.available_width() - 6.0) * 0.5;
+        let half = PREVIEW_W;
         let working_disp = [
             linear_to_srgb(color[0]),
             linear_to_srgb(color[1]),
