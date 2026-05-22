@@ -1169,37 +1169,6 @@ pub enum AcesOdt {
     SrgbHdrSim,
 }
 
-fn default_color_working() -> ColorWorkingSpace {
-    ColorWorkingSpace::ACEScg
-}
-fn default_color_tonemap() -> TonemapKind {
-    TonemapKind::AcesFilmic
-}
-fn default_color_idt() -> AcesIdt {
-    AcesIdt::SrgbToAp1
-}
-fn default_color_lmt() -> AcesLmt {
-    AcesLmt::None
-}
-fn default_color_rrt() -> AcesRrt {
-    AcesRrt::Standard
-}
-fn default_color_odt() -> AcesOdt {
-    AcesOdt::Srgb100nits
-}
-fn default_color_exposure_ev() -> f32 {
-    0.0
-}
-fn default_color_white_balance_k() -> f32 {
-    6500.0
-}
-fn default_color_gamut_compress() -> f32 {
-    0.0
-}
-fn default_color_gamut_compress_auto() -> bool {
-    true
-}
-
 fn default_oidn_mode() -> OidnModeOption {
     OidnModeOption::ColorAlbedoNormal
 }
