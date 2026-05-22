@@ -1062,6 +1062,51 @@ impl Renderer3D {
     }
 
 
+    /// Run the OCIO CPU-color codepath in place on the PT output
+    /// texture, then re-composite to display the result.
+    ///
+    /// Only the `ColorMode::Ocio + ColorCodepath::Cpu` combination
+    /// hits this path. The blit-time tonemap tag is already coerced
+    /// to `0` (clamp passthrough) by
+    /// `ColorPipelineSettings::resolved_tonemap_tag` for this mode,
+    /// so `render_to_view` produces an intermediate frame that is
+    /// scene-linear-but-clamped on screen; this method then mutates
+    /// `output_texture` into display-encoded values and re-blits.
+    ///
+    /// Caller is responsible for only invoking this when the
+    /// CPU+OCIO combination is selected — wired in the per-frame
+    /// host loop in `treemap_view.rs`.
+    pub fn apply_cpu_color_pass(
+        &self,
+        pipeline: &color_pipeline::ColorPipeline,
+        opts: &Render3DOptions,
+    ) {
+        let Some(pt) = self.pt.path_tracer.as_ref() else {
+            return;
+        };
+        if pt.frame_count == 0 {
+            // PT hasn't produced an accumulated frame yet — nothing
+            // worth reading back. The first blit already painted the
+            // (zero-sample) output_texture; the next frame's CPU pass
+            // will pick up real data.
+            return;
+        }
+        #[cfg(debug_assertions)]
+        log::warn!(
+            "render-3d: CPU color path active — readback every frame is slow, \
+             this is a debug codepath"
+        );
+        pt.apply_cpu_color_in_place(&self.ctx.device, &self.ctx.queue, |pixels| {
+            pipeline.apply_cpu(pixels);
+        });
+        // Re-blit the now-display-encoded output_texture. tag is
+        // already 0 (clamp passthrough) via resolved_tonemap_tag, so
+        // the blit shader's `case 0u` runs and skips the trailing
+        // OETF — exactly what we need because the CPU pass already
+        // folded the OETF in via the OCIO display processor.
+        self.composite_overlay(None, opts);
+    }
+
     /// Push any pending baked OCIO LUT into the path tracer's blit
     /// shader. Idempotent — `ColorPipeline::take_pending_lut` is the
     /// one-shot signal, so calling this every frame is a hash compare

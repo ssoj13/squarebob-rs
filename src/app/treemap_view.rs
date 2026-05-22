@@ -1091,6 +1091,16 @@ impl App {
                     &self.render_3d_opts,
                     &self.opts,
                 );
+                // OCIO + CPU codepath: post-process the just-rendered
+                // PT output through `vfx_ocio::Processor::apply_rgb`
+                // on the CPU, then re-blit. Debug codepath — see the
+                // warn log inside `apply_cpu_color_pass`.
+                let cp = &self.render_3d_opts.color_pipeline;
+                if cp.mode == color_pipeline::ColorMode::Ocio
+                    && cp.codepath == color_pipeline::ColorCodepath::Cpu
+                {
+                    r.apply_cpu_color_pass(&self.color_pipeline, &self.render_3d_opts);
+                }
             }
             self.last_render_frame_3d = self.frame_count;
             self.needs_render_3d = false;

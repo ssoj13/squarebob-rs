@@ -3889,9 +3889,13 @@ impl PathTraceCompute {
             // `COPY_SRC` is required by `pt-denoise-oidn`, which runs
             // `copy_texture_to_buffer` on this texture every denoise call.
             // STORAGE+TEXTURE alone caused MissingTextureUsage validation.
+            // `COPY_DST` powers the OCIO CPU-color codepath
+            // (`apply_cpu_color_in_place`) — it reads back, mutates,
+            // and re-uploads the same texture.
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -4878,6 +4882,127 @@ impl PathTraceCompute {
                 width: size,
                 height: size,
                 depth_or_array_layers: size,
+            },
+        );
+    }
+
+    /// Read the PT accumulator's display-side `output_texture` back to
+    /// CPU, hand the unpacked RGB triples to `apply`, then re-upload
+    /// the mutated buffer in place. Intended for the OCIO CPU
+    /// codepath (`ColorCodepath::Cpu` with `ColorMode::Ocio`) — the
+    /// host runs `ColorPipeline::apply_cpu` inside the callback so
+    /// the next blit pass picks up a display-encoded image.
+    ///
+    /// Synchronous: submits a `copy_texture_to_buffer` + polls until
+    /// the readback maps. Fine for an interactive viewport at modest
+    /// resolutions but slow at 4K — that's by design, this is the
+    /// debug-only codepath.
+    ///
+    /// The texture is `Rgba32Float`; alpha is replaced with `1.0` on
+    /// re-upload (vfx-ocio's `apply_rgb` doesn't touch alpha, and the
+    /// blit shader's `case 0u` ignores it).
+    pub fn apply_cpu_color_in_place(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        apply: impl FnOnce(&mut [[f32; 3]]),
+    ) {
+        const BPP: u32 = 16; // Rgba32Float = 4 channels × 4 B
+        let row_unaligned = BPP * self.width;
+        // 256-byte alignment is required for `copy_texture_to_buffer`
+        // and matches `render-core::gpu::readback_texture`.
+        let row_padded = (row_unaligned + 255) & !255;
+        let buf_size = (row_padded * self.height) as u64;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pt_cpu_color_readback"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("pt_cpu_color_copy"),
+        });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.output_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row_padded),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(enc.finish()));
+
+        // Map readback. mpsc channel + `PollType::Wait` is the
+        // standard sync pattern (`render-core::gpu::map_buffer_read`
+        // does the same).
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        match rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                log::warn!("pt-megakernel: cpu-color map_async error: {e:?}");
+                return;
+            }
+            Err(e) => {
+                log::warn!("pt-megakernel: cpu-color recv error: {e}");
+                return;
+            }
+        }
+        let mapped = slice.get_mapped_range();
+        let row_len = row_unaligned as usize;
+        let mut pixels: Vec<[f32; 3]> =
+            Vec::with_capacity((self.width * self.height) as usize);
+        for y in 0..self.height {
+            let row_start = (y * row_padded) as usize;
+            let row = &mapped[row_start..row_start + row_len];
+            let row_floats: &[f32] = bytemuck::cast_slice(row);
+            for px in row_floats.chunks_exact(4) {
+                pixels.push([px[0], px[1], px[2]]);
+            }
+        }
+        drop(mapped);
+        readback.unmap();
+
+        apply(&mut pixels);
+
+        let mut packed: Vec<[f32; 4]> = Vec::with_capacity(pixels.len());
+        for p in &pixels {
+            packed.push([p[0], p[1], p[2], 1.0]);
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.output_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&packed),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(BPP * self.width),
+                rows_per_image: Some(self.height),
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
             },
         );
     }

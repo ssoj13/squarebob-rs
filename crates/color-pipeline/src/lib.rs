@@ -202,11 +202,19 @@ impl ColorPipelineSettings {
     /// Single tag the blit shader switches on. Combines the
     /// `mode` toggle with the built-in selection:
     /// `BuiltIn` returns the matching `BuiltInTonemap::gpu_tag()`;
-    /// `Ocio` returns [`OCIO_LUT_TAG`].
+    /// `Ocio + Gpu` returns [`OCIO_LUT_TAG`] (shader trilinear-samples
+    /// the baked 3D LUT);
+    /// `Ocio + Cpu` returns `0` — the host has already replaced the PT
+    /// output texture with display-encoded pixels via
+    /// `apply_cpu_color_in_place`, so the blit just needs to clamp-
+    /// passthrough.
     pub const fn resolved_tonemap_tag(&self) -> u32 {
         match self.mode {
             ColorMode::BuiltIn => self.builtin.gpu_tag(),
-            ColorMode::Ocio => OCIO_LUT_TAG,
+            ColorMode::Ocio => match self.codepath {
+                ColorCodepath::Gpu => OCIO_LUT_TAG,
+                ColorCodepath::Cpu => 0,
+            },
         }
     }
 
