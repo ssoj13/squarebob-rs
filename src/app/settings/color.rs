@@ -141,7 +141,7 @@ impl App {
                             // source. Switching items in this ComboBox is what
                             // routes between BuiltIn / Embedded(...) / External.
                             let current_label: String = match &cp.ocio_config {
-                                ConfigSource::BuiltIn => "ACES 1.3 (built-in)".into(),
+                                ConfigSource::BuiltIn => "Default (latest embedded)".into(),
                                 ConfigSource::Embedded(name) => {
                                     color_pipeline::vfx_ocio::builtin::embedded::find(name)
                                         .map(|e| format!("{} (embedded)", e.ui_name))
@@ -158,7 +158,7 @@ impl App {
                                     let is_b =
                                         matches!(cp.ocio_config, ConfigSource::BuiltIn);
                                     if ui
-                                        .selectable_label(is_b, "ACES 1.3 (built-in)")
+                                        .selectable_label(is_b, "Default (latest embedded)")
                                         .clicked()
                                         && !is_b
                                     {

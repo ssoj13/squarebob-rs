@@ -7,7 +7,7 @@
 //!   data files, no OCIO config. Used for quick scrubs, debugging,
 //!   and when the user just wants a fast filmic default.
 //! - **Ocio**: the full [`vfx-ocio`] pipeline — load a config
-//!   (built-in `aces_1_3()`, a bundled `.ocio` shipped under
+//!   (built-in `default_config()`, a bundled `.ocio` shipped under
 //!   `data/ocio/`, or a user-provided file) and route every frame
 //!   through a `Processor` built from `(input_space, display,
 //!   view)` plus an optional `Look` or external LUT file.
@@ -92,8 +92,9 @@ impl BuiltInTonemap {
 /// Where to source the active OCIO `Config` from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ConfigSource {
-    /// `vfx_ocio::builtin::aces_1_3()` — zero-file ACES 1.3 baseline
-    /// programmatically built inside the vfx-ocio crate.
+    /// `vfx_ocio::builtin::default_config()` — the latest embedded
+    /// release shipped with the vfx-ocio crate (currently ACES 2.0
+    /// Studio All-Views v4.0.0).
     #[default]
     BuiltIn,
     /// One of the embedded release configs (`vfx_ocio::builtin::embedded`).
@@ -682,7 +683,16 @@ fn load_config(
     bundled_dir: &std::path::Path,
 ) -> (vfx_ocio::Config, ConfigSource) {
     match source {
-        ConfigSource::BuiltIn => (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn),
+        ConfigSource::BuiltIn => {
+            // "BuiltIn" semantically = the default config that ships
+            // with vfx-ocio. With the programmatic ACES 1.3 port now
+            // retired (kept in-tree as a dormant experiment), the
+            // default is the latest embedded release.
+            (
+                vfx_ocio::builtin::default_config(),
+                ConfigSource::BuiltIn,
+            )
+        }
         ConfigSource::Embedded(name) => match vfx_ocio::builtin::embedded::get(name) {
             Some(cfg) => (cfg, ConfigSource::Embedded(name.clone())),
             None => {
@@ -690,7 +700,7 @@ fn load_config(
                     "color-pipeline: embedded config {name:?} not found in registry \
                      — falling back to built-in ACES 1.3",
                 );
-                (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn)
+                (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)
             }
         },
         ConfigSource::Bundled(name) => {
@@ -703,7 +713,7 @@ fn load_config(
                          — falling back to built-in ACES 1.3",
                         path.display()
                     );
-                    (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn)
+                    (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)
                 }
             }
         }
@@ -715,7 +725,7 @@ fn load_config(
                      — falling back to built-in ACES 1.3",
                     path.display()
                 );
-                (vfx_ocio::builtin::aces_1_3(), ConfigSource::BuiltIn)
+                (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)
             }
         },
     }
