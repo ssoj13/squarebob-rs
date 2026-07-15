@@ -326,7 +326,7 @@ fn cmd_build(release: bool, features: Option<&str>) -> Result<()> {
     println!("========================================");
     println!("Building squarebob-rs");
     println!("Profile: {}", if release { "release" } else { "debug" });
-    println!("Backend: vfx-exr (pure Rust, all compressions)");
+    println!("Backend: vfx-io/exr-core (pure Rust, all compressions)");
     if let Some(f) = features {
         println!("Features: {f}");
     }
@@ -353,7 +353,7 @@ fn cmd_build(release: bool, features: Option<&str>) -> Result<()> {
     }
 
     println!();
-    println!("✓ Build complete (vfx-exr backend, no external dependencies)");
+    println!("✓ Build complete (vfx-io/exr-core backend, no external dependencies)");
 
     Ok(())
 }
@@ -446,7 +446,11 @@ fn cmd_clippy(
         println!(
             "Auto-fix: enabled{}{}",
             if allow_dirty { " (--allow-dirty)" } else { "" },
-            if allow_staged { " (--allow-staged)" } else { "" },
+            if allow_staged {
+                " (--allow-staged)"
+            } else {
+                ""
+            },
         );
     }
     if !clippy_args.is_empty() {
@@ -950,7 +954,7 @@ fn cmd_deploy(install_dir: Option<&str>) -> Result<()> {
     std::fs::copy(&source_exe, &target_exe).context("Failed to copy executable")?;
     println!("  ✓ Copied {}", exe_name);
 
-    // Native deps are linked statically (vfx-exr, playa-ffmpeg, …); no extra DLL/SO bundles to ship.
+    // Native deps are linked statically (vfx-io/exr-core, playa-ffmpeg, …); no extra DLL/SO bundles to ship.
 
     // Copy shaders directory from project root (optional)
     let source_shaders = PathBuf::from("shaders");

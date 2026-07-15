@@ -6,9 +6,9 @@ use log::debug;
 use std::sync::Arc;
 
 use crate::{self as treemap, TreeMapOptions};
-use squarebob_core::DirEntry;
-use render_core::gpu::{self, GpuContext};
 use render_core::Viewport;
+use render_core::gpu::{self, GpuContext};
+use squarebob_core::DirEntry;
 
 /// A single rectangle instance for GPU rendering
 #[repr(C)]
@@ -213,6 +213,7 @@ pub struct GpuRenderer2D {
     current_size: (u32, u32),
     instance_buffer: Option<wgpu::Buffer>,
     instance_count: u32,
+    readback: gpu::TextureReadback,
 }
 
 impl GpuRenderer2D {
@@ -336,6 +337,7 @@ impl GpuRenderer2D {
             current_size: (0, 0),
             instance_buffer: None,
             instance_count: 0,
+            readback: gpu::TextureReadback::default(),
         }
     }
 
@@ -376,80 +378,53 @@ impl GpuRenderer2D {
     fn collect_rects(&self, root: &DirEntry, opts: &TreeMapOptions) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let grid_w = if opts.grid { 1.0 } else { 0.0 };
-        self.collect_rects_recursive(
-            root,
-            opts,
-            grid_w,
-            [0.0; 4],
-            opts.height,
-            true,
-            0,
-            &mut rects,
-        );
+        let mut pending = vec![(root, [0.0; 4], opts.height, true, 0u32)];
+
+        while let Some((node, surface, height, is_root, dir_hash)) = pending.pop() {
+            let [x, y, w, h_px] = node.rect.get();
+            if w <= 0.0 || h_px <= 0.0 {
+                continue;
+            }
+
+            let cushion = opts.ambient_light < 1.0 && opts.height > 0.0 && opts.scale_factor > 0.0;
+            let surface = if cushion && !is_root {
+                treemap::add_ridge_f32(x, y, w, h_px, surface, height)
+            } else {
+                surface
+            };
+            let too_small = w < treemap::MIN_RECT_SIZE || h_px < treemap::MIN_RECT_SIZE;
+
+            if !node.is_dir || node.children.is_empty() || too_small {
+                let color = if node.is_dir && !node.children.is_empty() {
+                    treemap::compute_avg_color(node, dir_hash)
+                } else {
+                    treemap::dir_tinted_color(&node.ext, dir_hash)
+                };
+                rects.push(RectInstance {
+                    bounds: [x + grid_w, y + grid_w, w - grid_w, h_px - grid_w],
+                    color: [
+                        color[0] as f32 / 255.0,
+                        color[1] as f32 / 255.0,
+                        color[2] as f32 / 255.0,
+                        1.0,
+                    ],
+                    surface,
+                });
+                continue;
+            }
+
+            let child_hash = treemap::path_hash(&node.name, dir_hash);
+            let child_height = height * opts.scale_factor;
+            pending.extend(
+                node.children
+                    .iter()
+                    .rev()
+                    .map(|child| (child, surface, child_height, false, child_hash)),
+            );
+        }
 
         debug!("Collected {} rectangles after consolidation", rects.len());
         rects
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn collect_rects_recursive(
-        &self,
-        node: &DirEntry,
-        opts: &TreeMapOptions,
-        grid_w: f32,
-        surface: [f32; 4],
-        h: f64,
-        is_root: bool,
-        dir_hash: u32,
-        rects: &mut Vec<RectInstance>,
-    ) {
-        let [x, y, w, h_px] = node.rect.get();
-        if w <= 0.0 || h_px <= 0.0 {
-            return;
-        }
-
-        let cushion = opts.ambient_light < 1.0 && opts.height > 0.0 && opts.scale_factor > 0.0;
-
-        // Add ridge for cushion (not for root)
-        let surface = if cushion && !is_root {
-            treemap::add_ridge_f32(x, y, w, h_px, surface, h)
-        } else {
-            surface
-        };
-
-        // Check if this node is too small to recurse into
-        let too_small = w < treemap::MIN_RECT_SIZE || h_px < treemap::MIN_RECT_SIZE;
-
-        if !node.is_dir || node.children.is_empty() || too_small {
-            // Leaf node OR consolidated small directory
-            let color = if node.is_dir && !node.children.is_empty() {
-                treemap::compute_avg_color(node, dir_hash)
-            } else {
-                treemap::dir_tinted_color(&node.ext, dir_hash)
-            };
-
-            let color_f = [
-                color[0] as f32 / 255.0,
-                color[1] as f32 / 255.0,
-                color[2] as f32 / 255.0,
-                1.0,
-            ];
-
-            rects.push(RectInstance {
-                bounds: [x + grid_w, y + grid_w, w - grid_w, h_px - grid_w],
-                color: color_f,
-                surface,
-            });
-        } else {
-            // Directory large enough to show children: recurse
-            let my_hash = treemap::path_hash(&node.name, dir_hash);
-            let next_h = h * opts.scale_factor;
-            for child in &node.children {
-                self.collect_rects_recursive(
-                    child, opts, grid_w, surface, next_h, false, my_hash, rects,
-                );
-            }
-        }
     }
 
     /// Render the 2D treemap into the internal `render_texture` (no
@@ -663,28 +638,31 @@ impl GpuRenderer2D {
         root: &DirEntry,
         viewport: &Viewport,
         opts: &TreeMapOptions,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, render_core::ReadbackError> {
         let width = viewport.width;
         let height = viewport.height;
         if !self.render_to_texture(root, viewport, opts) {
-            return vec![];
+            return Err(render_core::ReadbackError::MissingTarget);
         }
-        // After render_to_texture, render_texture is guaranteed Some
-        // (ensure_render_target ran with a non-zero size).
+        let render_texture = self
+            .render_texture
+            .as_ref()
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
         let mut encoder = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("2D Readback Encoder"),
             });
-        let output_buffer = gpu::readback_texture(
+        gpu::readback_texture(
             &self.ctx,
             &mut encoder,
-            self.render_texture.as_ref().unwrap(),
+            render_texture,
             width,
             height,
-        );
+            &mut self.readback,
+        )?;
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
-        gpu::map_readback(&self.ctx, &output_buffer, width, height)
+        gpu::map_readback(&self.ctx, &self.readback)
     }
 }

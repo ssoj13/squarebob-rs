@@ -9,7 +9,7 @@
 //! This dispatcher just normalises the sample count and routes to the
 //! requested backend; it does NOT force a megakernel fallback.
 
-use crate::{geometry, Renderer3D};
+use crate::{Renderer3D, geometry};
 use render_shared::{OrbitCamera, Render3DOptions};
 
 pub fn render_path_traced_no_readback(
@@ -19,12 +19,12 @@ pub fn render_path_traced_no_readback(
     opts: &Render3DOptions,
     width: u32,
     height: u32,
-) {
+) -> Result<(), render_core::ReadbackError> {
     let mut local_opts = opts.clone();
     if local_opts.pt_spectral_samples < 1 {
         local_opts.pt_spectral_samples = 1;
     }
-    renderer.render_path_traced_no_readback(instances, camera, &local_opts, width, height);
+    renderer.render_path_traced_no_readback(instances, camera, &local_opts, width, height)
 }
 
 pub fn render_path_traced(
@@ -34,7 +34,7 @@ pub fn render_path_traced(
     opts: &Render3DOptions,
     width: u32,
     height: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, render_core::ReadbackError> {
     let mut local_opts = opts.clone();
     if local_opts.pt_spectral_samples < 1 {
         local_opts.pt_spectral_samples = 1;

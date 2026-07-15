@@ -1,25 +1,6 @@
 // ReSTIR Final Shading pass.
 // Apply selected reservoir samples to produce final output.
 
-struct Sample {
-    position: vec3<f32>,
-    valid: u32,
-    wi: vec3<f32>,
-    light_type: u32,
-    radiance: vec3<f32>,
-    dist: f32,
-    normal: vec3<f32>,
-    _pad: u32,
-}
-
-struct Reservoir {
-    sample: Sample,
-    w_sum: f32,
-    m: u32,
-    w: f32,
-    _pad: u32,
-}
-
 struct Hit {
     t: f32,
     instance_id: u32,
@@ -36,32 +17,6 @@ struct Ray {
     throughput: vec3<f32>,
     flags: u32,
 }
-
-// GPU instance: 96 bytes, matches GpuInstance in Rust.
-struct Instance {
-    model_inv_0: vec4<f32>,
-    model_inv_1: vec4<f32>,
-    model_inv_2: vec4<f32>,
-    model_inv_3: vec4<f32>,
-    color: vec4<f32>,
-    object_id: u32,
-    material_id: u32,
-    _pad0: u32,
-    _pad1: u32,
-};
-
-// Material matching GpuMaterial layout (144 bytes, vec4-packed).
-struct Material {
-    base_color_weight: vec4<f32>,
-    specular_color_weight: vec4<f32>,
-    transmission_color_weight: vec4<f32>,
-    subsurface_color_weight: vec4<f32>,
-    coat_color_weight: vec4<f32>,
-    emission_color_weight: vec4<f32>,
-    opacity: vec4<f32>,
-    params1: vec4<f32>,
-    params2: vec4<f32>,
-};
 
 // Tile-aware params: width/height are the full image. rays/hits are
 // tile-local layout (sized by tile_w*tile_h); reservoirs/output/sample_map
@@ -105,6 +60,7 @@ struct EnvParams {
 @group(0) @binding(8) var env_map: texture_2d<f32>;
 @group(0) @binding(9) var env_sampler: sampler;
 @group(0) @binding(10) var<uniform> env: EnvParams;
+@group(0) @binding(11) var<storage, read> nodes: array<BvhNode>;
 
 const PI: f32 = 3.14159265;
 const EPS: f32 = 1e-5;
@@ -161,23 +117,6 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
     return atmospheric_sky(dir, env.time) * env.intensity;
 }
 
-fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
-    return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - cos_theta, 5.0);
-}
-
-fn ggx_d(ndoth: f32, alpha: f32) -> f32 {
-    let a2 = alpha * alpha;
-    let d = ndoth * ndoth * (a2 - 1.0) + 1.0;
-    return a2 / (PI * d * d + EPS);
-}
-
-fn smith_g1(ndotv: f32, alpha: f32) -> f32 {
-    let a = alpha;
-    let a2 = a * a;
-    let b = ndotv * ndotv;
-    return 2.0 * ndotv / (ndotv + sqrt(a2 + b - a2 * b) + EPS);
-}
-
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= params.tile_w || gid.y >= params.tile_h { return; }
@@ -197,65 +136,51 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // Check for valid sample and hit
-    if hit.hit == 0u || reservoir.sample.valid == 0u {
-        if hit.hit == 0u {
-            let ray = rays[local_id];
-            let dir = normalize(ray.dir);
-            output[pixel_id] += vec4<f32>(sky_color(dir), 1.0);
-        }
+    if hit.hit == 0u {
+        let ray = rays[local_id];
+        let dir = normalize(ray.dir);
+        output[pixel_id] += vec4<f32>(sky_color(dir), 1.0);
+        return;
+    }
+    if reservoir.sample.valid == 0u || reservoir.w <= 0.0
+        || reservoir.surface.valid == 0u
+        || reservoir.surface.instance_id != hit.instance_id
+    {
+        output[pixel_id] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
         return;
     }
 
-    // Compute shading contribution
-    let wi = normalize(reservoir.sample.wi);
-    var normal = normalize(hit.normal);
-    let cos_theta = max(dot(wi, normal), 0.0);
-
-    if cos_theta <= 0.0 {
+    let surface_p = reservoir.surface.position;
+    let normal = normalize(reservoir.surface.normal);
+    let wi = restir_sample_direction_at(reservoir.sample, surface_p);
+    let contribution = restir_contribution_at(reservoir.sample, reservoir.surface);
+    if restir_luminance(contribution) <= 0.0 {
+        output[pixel_id] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
         return;
     }
 
-    let inst = instances[hit.instance_id];
-    let mat = materials[inst.material_id];
+    let shadow_origin = offset_ray_origin(surface_p, normal, wi);
+    var shadow_ray = Ray(
+        shadow_origin,
+        pixel_id,
+        wi,
+        0u,
+        vec3<f32>(1.0),
+        0u,
+    );
+    var shadow_t_max = 1e30;
+    if reservoir.sample.light_type == 1u {
+        shadow_t_max = shadow_ray_max_t(
+            shadow_origin,
+            reservoir.sample.position,
+            reservoir.sample.normal,
+            wi,
+        );
+    }
+    if restir_trace_shadow_ray(shadow_ray, shadow_t_max) {
+        output[pixel_id] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
 
-    // PBR-mirror albedo blend (see bvh_traverse.wgsl base_color
-    // comment). Slider drives both PT pipelines from one host knob.
-    let base_color = mix(inst.color.rgb, mat.base_color_weight.rgb, params.materialize_mix);
-    let base_weight = mat.base_color_weight.a;
-    let spec_color = mat.specular_color_weight.rgb;
-    let spec_weight = mat.specular_color_weight.a;
-    let opacity = mat.opacity.x;
-
-    let metallic = mat.params1.y;
-    let roughness = max(mat.params1.z, 0.04);
-    let ior = mat.params1.w;
-
-    let ray = rays[local_id];
-    let surface_p = ray.origin + ray.dir * hit.t;
-    let v_dir = normalize(params.camera_pos - surface_p);
-    let ndotv = max(dot(normal, v_dir), EPS);
-
-    let h = normalize(v_dir + wi);
-    let ndoth = max(dot(normal, h), EPS);
-    let hdotv = max(dot(h, v_dir), EPS);
-
-    let alpha = roughness * roughness;
-    let f0_dielectric = vec3<f32>(pow((ior - 1.0) / (ior + 1.0), 2.0));
-    let f0 = mix(f0_dielectric * spec_color, base_color, metallic);
-    let f = fresnel_schlick(hdotv, f0);
-    let d = ggx_d(ndoth, alpha);
-    let g = smith_g1(ndotv, alpha) * smith_g1(cos_theta, alpha);
-    let spec = spec_weight * f * d * g / max(4.0 * ndotv * cos_theta, EPS);
-
-    let diffuse_color = (base_color * base_weight) * (1.0 - metallic);
-    let diffuse = diffuse_color * (vec3<f32>(1.0) - f) / PI;
-
-    let bsdf = (diffuse + spec) * opacity;
-
-    let radiance = reservoir.sample.radiance;
-    let contribution = radiance * bsdf * cos_theta * reservoir.w;
-
-    // Accumulate (progressive)
-    output[pixel_id] += vec4<f32>(contribution, 1.0);
+    output[pixel_id] += vec4<f32>(contribution * reservoir.w, 1.0);
 }

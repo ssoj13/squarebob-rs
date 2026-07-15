@@ -1,25 +1,6 @@
 // ReSTIR Spatial Resampling pass.
 // Combine with neighbor pixels for noise reduction.
 
-struct Sample {
-    position: vec3<f32>,
-    valid: u32,
-    wi: vec3<f32>,
-    light_type: u32,
-    radiance: vec3<f32>,
-    dist: f32,
-    normal: vec3<f32>,
-    _pad: u32,
-}
-
-struct Reservoir {
-    sample: Sample,
-    w_sum: f32,
-    m: u32,
-    w: f32,
-    _pad: u32,
-}
-
 // Tile-aware params: width/height are the full image. All bound buffers
 // (reservoirs_in/out, depth_buf, normal_buf) are full-image-sized. The
 // dispatch is tile-sized; gid.xy is remapped to global coords via tile_*.
@@ -44,17 +25,6 @@ struct Params {
 @group(0) @binding(3) var<storage, read> normal_buf: array<vec4<f32>>;
 @group(0) @binding(4) var<uniform> params: Params;
 
-fn pcg(n: u32) -> u32 {
-    var h = n * 747796405u + 2891336453u;
-    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-    return (h >> 22u) ^ h;
-}
-
-fn rand(seed: ptr<function, u32>) -> f32 {
-    *seed = pcg(*seed);
-    return f32(*seed) / 4294967295.0;
-}
-
 // Check if two pixels are geometrically similar
 fn geometry_test(
     depth1: f32, normal1: vec3<f32>,
@@ -62,7 +32,7 @@ fn geometry_test(
     depth_thresh: f32, normal_thresh: f32
 ) -> bool {
     // Depth test
-    if abs(depth1 - depth2) > depth_thresh * depth1 {
+    if abs(depth1 - depth2) > depth_thresh * max(abs(depth1), 1e-6) {
         return false;
     }
     // Normal test
@@ -70,21 +40,6 @@ fn geometry_test(
         return false;
     }
     return true;
-}
-
-// Combine reservoir r2 into r1
-fn combine_reservoirs(
-    r1: ptr<function, Reservoir>,
-    r2: Reservoir,
-    target_at_r1: f32,
-    seed: ptr<function, u32>
-) {
-    let w2 = target_at_r1 * r2.w * f32(r2.m);
-    (*r1).w_sum += w2;
-    (*r1).m += r2.m;
-    if rand(seed) * (*r1).w_sum < w2 {
-        (*r1).sample = r2.sample;
-    }
 }
 
 @compute @workgroup_size(8, 8)
@@ -96,10 +51,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gx >= params.width || gy >= params.height { return; }
     let pixel_id = gy * params.width + gx;
     var reservoir = reservoirs_in[pixel_id];
-    var seed = pixel_id ^ (params.frame_count * 31337u);
+    var seed = rng_seed(pixel_id, params.frame_count, params.frame_count, 0u, 3u);
 
-    // Check if we have a valid sample
-    if reservoir.sample.valid == 0u {
+    if reservoir.surface.valid == 0u {
         reservoirs_out[pixel_id] = reservoir;
         return;
     }
@@ -130,7 +84,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let neighbor_id = u32(ny) * params.width + u32(nx);
         let neighbor_reservoir = reservoirs_in[neighbor_id];
 
-        if neighbor_reservoir.sample.valid == 0u {
+        if neighbor_reservoir.sample.valid == 0u
+            || !restir_surfaces_compatible(reservoir.surface, neighbor_reservoir.surface)
+        {
             continue;
         }
 
@@ -146,20 +102,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
 
-        // Compute target at center pixel
-        // Simplified: use sample radiance directly
-        let target_val = length(neighbor_reservoir.sample.radiance);
-
-        combine_reservoirs(&reservoir, neighbor_reservoir, target_val, &seed);
+        let target_at_receiver = restir_target_at(
+            neighbor_reservoir.sample,
+            reservoir.surface,
+        );
+        restir_combine_reservoirs(
+            &reservoir,
+            neighbor_reservoir,
+            target_at_receiver,
+            &seed,
+        );
     }
 
-    // Update final weight
-    if reservoir.m > 0u && reservoir.w_sum > 0.0 {
-        let final_target = length(reservoir.sample.radiance);
-        if final_target > 0.0 {
-            reservoir.w = reservoir.w_sum / (f32(reservoir.m) * final_target);
-        }
-    }
+    restir_finalize_reservoir(&reservoir);
 
     reservoirs_out[pixel_id] = reservoir;
 }

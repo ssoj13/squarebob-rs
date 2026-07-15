@@ -18,8 +18,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
+#[cfg(feature = "ffmpeg")]
 use crate::ffmpeg;
-use crate::frame::{CropAlign, FrameConversion, PixelBuffer, PixelFormat, TonemapMode};
+#[cfg(feature = "ffmpeg")]
+use crate::frame::CropAlign;
+use crate::frame::{FrameConversion, PixelBuffer, PixelFormat, TonemapMode};
 use crate::source::Comp;
 
 /// Export mode - video or image sequence
@@ -395,8 +398,14 @@ impl VideoCodec {
         }
     }
 
-    /// Check if any encoder is available for this codec
+    /// Check if any encoder is available for this codec.
     pub fn is_available(&self) -> bool {
+        #[cfg(not(feature = "ffmpeg"))]
+        {
+            return false;
+        }
+
+        #[cfg(feature = "ffmpeg")]
         match self {
             VideoCodec::H264 => {
                 // Check all H.264 encoders
@@ -502,9 +511,8 @@ impl std::fmt::Display for QualityMode {
 // ============================================================================
 
 /// Image sequence format
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SequenceFormat {
-    #[default]
     Exr,
     Png,
     Jpeg,
@@ -512,15 +520,40 @@ pub enum SequenceFormat {
     Tga,
 }
 
+impl Default for SequenceFormat {
+    fn default() -> Self {
+        #[cfg(feature = "exr")]
+        {
+            Self::Exr
+        }
+        #[cfg(not(feature = "exr"))]
+        {
+            Self::Png
+        }
+    }
+}
+
 impl SequenceFormat {
     pub fn all() -> &'static [SequenceFormat] {
-        &[
-            SequenceFormat::Exr,
-            SequenceFormat::Png,
-            SequenceFormat::Jpeg,
-            SequenceFormat::Tiff,
-            SequenceFormat::Tga,
-        ]
+        #[cfg(feature = "exr")]
+        {
+            &[
+                SequenceFormat::Exr,
+                SequenceFormat::Png,
+                SequenceFormat::Jpeg,
+                SequenceFormat::Tiff,
+                SequenceFormat::Tga,
+            ]
+        }
+        #[cfg(not(feature = "exr"))]
+        {
+            &[
+                SequenceFormat::Png,
+                SequenceFormat::Jpeg,
+                SequenceFormat::Tiff,
+                SequenceFormat::Tga,
+            ]
+        }
     }
 
     pub fn extension(&self) -> &'static str {
@@ -692,7 +725,7 @@ pub enum ExrCompression {
     /// Per-scanline ZIP (smaller blocks, slightly faster random access)
     Zips,
     #[default]
-    /// 16-scanline ZIP (vfx-exr `ZIP16`, the OpenEXR default)
+    /// 16-scanline ZIP (the OpenEXR default)
     Zip,
     Piz,
     /// Lossless for f16/u32, lossy for f32 (drops 8 bits of mantissa)
@@ -705,7 +738,7 @@ pub enum ExrCompression {
     Dwaa,
     /// 256-scanline DCT, lossy. Faster full-frame decode than DWAA
     Dwab,
-    /// 32-scanline HTJ2K (requires `vfx-exr/htj2k` feature, enabled in Cargo.toml)
+    /// 32-scanline HTJ2K (enabled through the `vfx-io/htj2k` feature)
     HtJ2k32,
     /// 256-scanline HTJ2K
     HtJ2k256,
@@ -753,7 +786,7 @@ impl ExrCompression {
     /// level after a colon: `"dwaa:45"`. HTJ2K variants always carry an
     /// explicit `:32` / `:256` suffix to avoid ambiguity. Format matches
     /// `vfx_io::exr::compression_str::format` so vfx-io reads it back to
-    /// the right vfx-exr compression enum.
+    /// the right `exr-core` compression enum.
     pub fn to_oiio_string(self, dwa_quality: f32) -> String {
         match self {
             ExrCompression::None => "none".to_string(),
@@ -1001,10 +1034,16 @@ pub struct SequenceSettings {
 
 impl Default for SequenceSettings {
     fn default() -> Self {
+        let format = SequenceFormat::default();
+        let bit_depth = if matches!(format, SequenceFormat::Exr) {
+            OutputBitDepth::F16
+        } else {
+            OutputBitDepth::U8
+        };
         Self {
-            format: SequenceFormat::Exr,
+            format,
             channels: ChannelMode::Rgba,
-            bit_depth: OutputBitDepth::F16, // Default for EXR
+            bit_depth,
             apply_tonemap: false,
             tonemap_mode: TonemapMode::default(),
             format_settings: SequenceFormatSettings::default(),
@@ -1167,6 +1206,7 @@ pub enum EncodeStage {
 /// Encoding errors
 #[derive(Debug)]
 pub enum EncodeError {
+    BackendUnavailable(&'static str),
     EncoderNotFound,
     HardwareEncoderUnavailable,
     OutputCreateFailed(String),
@@ -1177,6 +1217,9 @@ pub enum EncodeError {
 impl std::fmt::Display for EncodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            EncodeError::BackendUnavailable(backend) => {
+                write!(f, "Encoding backend not available: {}", backend)
+            }
             EncodeError::EncoderNotFound => write!(f, "Encoder not found"),
             EncodeError::HardwareEncoderUnavailable => {
                 write!(f, "Hardware encoder not available")
@@ -1195,6 +1238,7 @@ impl std::fmt::Display for EncodeError {
 impl std::error::Error for EncodeError {}
 
 /// Get encoder name based on codec and implementation preference
+#[cfg(feature = "ffmpeg")]
 fn get_encoder_name(
     codec: VideoCodec,
     encoder_impl: EncoderImpl,
@@ -1306,6 +1350,7 @@ fn get_encoder_name(
 
 /// Convert f32 fps to rational (numerator, denominator).
 /// Detects common NTSC rates (23.976, 29.97, 59.94) and uses exact rationals.
+#[cfg(feature = "ffmpeg")]
 fn fps_to_rational(fps: f32) -> (i32, i32) {
     const NTSC_RATES: &[(f32, i32, i32)] = &[
         (23.976, 24000, 1001),
@@ -1331,6 +1376,7 @@ fn fps_to_rational(fps: f32) -> (i32, i32) {
 ///
 /// Encodes sequence from cache play_range to output file.
 /// Runs in separate thread, sends progress updates via channel.
+#[cfg(feature = "ffmpeg")]
 pub fn encode_sequence_from_comp(
     comp: &Comp,
     _project: &crate::source::Project,
@@ -1763,7 +1809,14 @@ pub fn encode_sequence_from_comp(
                 "Cropping frame {} from {}x{} to {}x{}",
                 frame_idx, frame_width, frame_height, width, height
             );
-            frame.crop_copy(width as usize, height as usize, CropAlign::Center)
+            frame
+                .crop_copy(width as usize, height as usize, CropAlign::Center)
+                .map_err(|error| {
+                    EncodeError::EncodeFrameFailed(format!(
+                        "Frame {} crop from {}x{} to {}x{} failed: {}",
+                        frame_idx, frame_width, frame_height, width, height, error
+                    ))
+                })?
         } else {
             frame.clone()
         };
@@ -2035,7 +2088,16 @@ pub fn encode_comp(
     progress_tx: Sender<EncodeProgress>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Result<(), EncodeError> {
-    encode_sequence_from_comp(comp, project, settings, progress_tx, cancel_flag)
+    #[cfg(feature = "ffmpeg")]
+    {
+        return encode_sequence_from_comp(comp, project, settings, progress_tx, cancel_flag);
+    }
+
+    #[cfg(not(feature = "ffmpeg"))]
+    {
+        let _ = (comp, project, settings, progress_tx, cancel_flag);
+        Err(EncodeError::BackendUnavailable("FFmpeg"))
+    }
 }
 
 /// Strip alpha channel from RGBA interleaved data.
@@ -2049,6 +2111,7 @@ fn strip_alpha<T: Copy>(rgba: &[T]) -> Vec<T> {
     rgb
 }
 
+#[cfg(feature = "exr")]
 fn f16_to_f32_buf(data: &[half::f16]) -> Vec<f32> {
     data.iter().map(|v| v.to_f32()).collect()
 }
@@ -2068,7 +2131,8 @@ fn pixel_buf_to_rgba8(buffer: &PixelBuffer) -> Vec<u8> {
     }
 }
 
-/// Write frame to EXR file using vfx-exr (pure Rust, all compressions)
+/// Write a frame through `vfx-io` and its pure-Rust `exr-core` backend.
+#[cfg(feature = "exr")]
 fn write_exr_frame(
     frame: &crate::frame::Frame,
     path: &std::path::Path,
@@ -2142,7 +2206,7 @@ fn write_exr_frame(
     }
 
     // Per-layer compression goes into spec.attributes — vfx-io's writer reads it
-    // back per layer (see vfx-rs commit 781aba9). Future multi-layer encode reuses
+    // back per layer. Future multi-layer encode reuses
     // this same path with more layers.
     let mut layer = ImageLayer {
         name: String::new(),
@@ -2179,6 +2243,7 @@ fn write_exr_frame(
 ///
 /// Returns `Ok(true)` if the pass-through succeeded, `Ok(false)` if no EXR
 /// source was found (caller should fall back to display-only encode).
+#[cfg(feature = "exr")]
 fn write_exr_pass_through(
     comp: &Comp,
     frame_idx: i32,
@@ -2191,9 +2256,8 @@ fn write_exr_pass_through(
         return Ok(false);
     }
 
-    // Byte-exact pass-through (Phase E in vfx-rs): read every chunk's raw
-    // compressed_block payload via vfx_exr::block::read, write it back via
-    // vfx_exr::block::write. No decompress + recompress, so DWAA / DWAB /
+    // Byte-exact pass-through: `vfx-io` preserves every raw `exr-core` chunk
+    // payload. No decompress + recompress, so DWAA / DWAB /
     // B44 / HTJ2K survive transcode without quality loss. Custom header
     // attrs (chromaticities, timecode, owner, …) preserved automatically
     // because the source Header is reused verbatim.
@@ -2620,23 +2684,31 @@ pub fn encode_image_sequence(
         // Write frame based on format
         match settings.format {
             SequenceFormat::Exr => {
-                let exr_settings = &settings.format_settings.exr;
-                let did_pass_through = match exr_settings.mode {
-                    ExrEncodeMode::PassThrough => {
-                        write_exr_pass_through(comp, frame_idx, &frame_path)?
+                #[cfg(not(feature = "exr"))]
+                {
+                    return Err(EncodeError::BackendUnavailable("OpenEXR"));
+                }
+
+                #[cfg(feature = "exr")]
+                {
+                    let exr_settings = &settings.format_settings.exr;
+                    let did_pass_through = match exr_settings.mode {
+                        ExrEncodeMode::PassThrough => {
+                            write_exr_pass_through(comp, frame_idx, &frame_path)?
+                        }
+                        ExrEncodeMode::DisplayOnly => false,
+                    };
+                    if !did_pass_through {
+                        // Either DisplayOnly mode or pass-through couldn't find an
+                        // EXR source — fall back to compositor-output single-layer write.
+                        write_exr_frame(
+                            &frame_to_write,
+                            &frame_path,
+                            exr_settings,
+                            settings.channels,
+                            settings.bit_depth,
+                        )?;
                     }
-                    ExrEncodeMode::DisplayOnly => false,
-                };
-                if !did_pass_through {
-                    // Either DisplayOnly mode or pass-through couldn't find an
-                    // EXR source — fall back to compositor-output single-layer write.
-                    write_exr_frame(
-                        &frame_to_write,
-                        &frame_path,
-                        exr_settings,
-                        settings.channels,
-                        settings.bit_depth,
-                    )?;
                 }
             }
             SequenceFormat::Png => {
@@ -2709,6 +2781,7 @@ pub fn encode_image_sequence(
 ///
 /// Provides efficient FFmpeg swscale-based conversion between pixel formats.
 /// Reuses swscale contexts to avoid expensive recreations.
+#[cfg(feature = "ffmpeg")]
 pub struct SwsContext {
     ctx: Option<ffmpeg::software::scaling::Context>,
     src_format: ffmpeg::format::Pixel,
@@ -2717,6 +2790,7 @@ pub struct SwsContext {
     height: u32,
 }
 
+#[cfg(feature = "ffmpeg")]
 impl SwsContext {
     /// Create new swscale context with custom formats
     pub fn new(

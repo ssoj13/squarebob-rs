@@ -33,8 +33,7 @@ pub fn material_schema_key() -> &'static str {
 /// stripped-down OSes). Callers fall back to factory-only in that
 /// case.
 pub fn preset_file_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "squarebob-rs")
-        .map(|d| d.config_dir().join(PRESET_FILE))
+    directories::ProjectDirs::from("", "", "squarebob-rs").map(|d| d.config_dir().join(PRESET_FILE))
 }
 
 /// Load the user-customised bank from disk, or fall back to the
@@ -84,7 +83,11 @@ pub fn save_preset_bank(bank: &PresetBank) {
         return;
     }
     if let Err(e) = std::fs::rename(&tmp, &path) {
-        log::warn!("material_presets: rename {} → {} failed: {e}", tmp.display(), path.display());
+        log::warn!(
+            "material_presets: rename {} → {} failed: {e}",
+            tmp.display(),
+            path.display()
+        );
     }
 }
 
@@ -143,22 +146,43 @@ fn factory_presets() -> Vec<(&'static str, StandardSurfaceParams)> {
         // ---- Plastics ----------------------------------------------------
         ("Plastic / Red Glossy", plastic_glossy([0.95, 0.10, 0.10])),
         ("Plastic / Blue Matte", plastic_matte([0.10, 0.30, 0.85])),
-        ("Plastic / Yellow Glossy", plastic_glossy([0.95, 0.85, 0.05])),
-        ("Plastic / Green Translucent", plastic_translucent([0.20, 0.80, 0.40])),
+        (
+            "Plastic / Yellow Glossy",
+            plastic_glossy([0.95, 0.85, 0.05]),
+        ),
+        (
+            "Plastic / Green Translucent",
+            plastic_translucent([0.20, 0.80, 0.40]),
+        ),
         ("Plastic / Black Rubber", rubber()),
         // ---- Metals ------------------------------------------------------
-        ("Metal / Brushed Gold", metal_brushed([1.0, 0.78, 0.34], 0.32)),
-        ("Metal / Polished Chrome", metal_polished([0.95, 0.95, 0.97], 0.04)),
+        (
+            "Metal / Brushed Gold",
+            metal_brushed([1.0, 0.78, 0.34], 0.32),
+        ),
+        (
+            "Metal / Polished Chrome",
+            metal_polished([0.95, 0.95, 0.97], 0.04),
+        ),
         ("Metal / Copper", metal_polished([0.95, 0.55, 0.30], 0.18)),
-        ("Metal / Brushed Aluminum", metal_brushed([0.91, 0.92, 0.94], 0.35)),
+        (
+            "Metal / Brushed Aluminum",
+            metal_brushed([0.91, 0.92, 0.94], 0.35),
+        ),
         ("Metal / Iron", metal_polished([0.55, 0.55, 0.55], 0.25)),
         ("Metal / Brass", metal_polished([0.95, 0.80, 0.45], 0.15)),
         // ---- Glass -------------------------------------------------------
         ("Glass / Clear", glass_clear([0.98, 0.99, 0.99], 1.52)),
-        ("Glass / Frosted", glass_rough([0.98, 0.98, 0.98], 1.52, 0.4)),
+        (
+            "Glass / Frosted",
+            glass_rough([0.98, 0.98, 0.98], 1.52, 0.4),
+        ),
         ("Glass / Amber", glass_clear([0.95, 0.55, 0.20], 1.55)),
         ("Glass / Blue", glass_clear([0.20, 0.50, 0.95], 1.50)),
-        ("Glass / Green Bottle", glass_clear([0.15, 0.65, 0.30], 1.51)),
+        (
+            "Glass / Green Bottle",
+            glass_clear([0.15, 0.65, 0.30], 1.51),
+        ),
         // ---- Stone -------------------------------------------------------
         ("Stone / Polished Marble", marble([0.95, 0.93, 0.88], 0.18)),
         ("Stone / Granite", stone_rough([0.55, 0.55, 0.55], 0.7)),

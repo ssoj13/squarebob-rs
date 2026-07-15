@@ -6,7 +6,7 @@
 //! denoiser automatically once `current_spp >= target_spp`). A manual
 //! "Denoise now" button forces a single pass regardless of `auto`.
 
-use super::{control_label, settings_grid, tinted_section, SettingsDirty};
+use super::{SettingsDirty, control_label, settings_grid, tinted_section};
 use crate::app::App;
 use eframe::egui;
 use render_shared::{OidnModeOption, OidnQualityOption};
@@ -172,10 +172,7 @@ impl App {
                             dirty.preset();
                         }
                         let adaptive_resp = ui
-                            .checkbox(
-                                &mut self.render_3d_opts.pt_oidn_adaptive_clamp,
-                                "Adaptive",
-                            )
+                            .checkbox(&mut self.render_3d_opts.pt_oidn_adaptive_clamp, "Adaptive")
                             .on_hover_text(
                                 "Smoothly tighten the clamp ceiling at low \
                                  sample counts (smooth-step 0..256 spp), \
@@ -194,10 +191,7 @@ impl App {
                     // `nan_to_zero` pre-step in every input kernel.
                     control_label(ui, "NaN protect:");
                     let nan_resp = ui
-                        .checkbox(
-                            &mut self.render_3d_opts.pt_oidn_nan_protect,
-                            "",
-                        )
+                        .checkbox(&mut self.render_3d_opts.pt_oidn_nan_protect, "")
                         .on_hover_text(
                             "Replace non-finite (NaN / ±Inf) samples on \
                              colour / albedo / normal inputs with 0 \
@@ -269,9 +263,7 @@ fn mode_label(m: OidnModeOption) -> &'static str {
 fn mode_hover(m: OidnModeOption) -> &'static str {
     match m {
         OidnModeOption::Off => "Show raw PT output without denoising.",
-        OidnModeOption::Color => {
-            "Color-only model (rt_hdr). No AOV requirements — fastest start."
-        }
+        OidnModeOption::Color => "Color-only model (rt_hdr). No AOV requirements — fastest start.",
         OidnModeOption::ColorAlbedo => {
             "Color + albedo model (rt_hdr_alb). Big quality jump over color-only \
              when primary surfaces have textured albedo."

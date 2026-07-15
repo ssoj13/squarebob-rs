@@ -11,3 +11,4 @@ vfx-ocio = { workspace = true }
 vfx-lut = { workspace = true }
 serde = { workspace = true }
 log = { workspace = true }
+thiserror = { workspace = true }

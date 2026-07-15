@@ -2,6 +2,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
+pub(crate) const VARIANCE_DATA_WGSL: &str = include_str!("variance_data.wgsl");
 const VARIANCE_WGSL: &str = include_str!("variance.wgsl");
 const ALLOCATE_WGSL: &str = include_str!("allocate.wgsl");
 
@@ -18,6 +19,19 @@ pub struct VarianceData {
     pub count: u32,
 }
 
+impl VarianceData {
+    pub const SIZE: u64 = std::mem::size_of::<Self>() as u64;
+}
+
+const _: () = {
+    assert!(VarianceData::SIZE == 32);
+    assert!(std::mem::align_of::<VarianceData>() == 4);
+    assert!(std::mem::offset_of!(VarianceData, mean) == 0);
+    assert!(std::mem::offset_of!(VarianceData, _pad0) == 12);
+    assert!(std::mem::offset_of!(VarianceData, m2) == 16);
+    assert!(std::mem::offset_of!(VarianceData, count) == 28);
+};
+
 /// Adaptive sampling pipeline.
 pub struct AdaptivePipeline {
     // Pipelines
@@ -28,9 +42,9 @@ pub struct AdaptivePipeline {
     variance_bgl: wgpu::BindGroupLayout,
     allocate_bgl: wgpu::BindGroupLayout,
 
-    // Buffers — always populated; `resize()` swaps them when dimensions change.
-    variance_buf: wgpu::Buffer,
-    sample_map: wgpu::Buffer, // SPP per pixel
+    // SPP target per pixel. Variance state is owned by PathTraceCompute and
+    // shared by the megakernel, wavefront estimator, and allocator.
+    sample_map: wgpu::Buffer,
 
     // Dimensions
     width: u32,
@@ -38,69 +52,81 @@ pub struct AdaptivePipeline {
 }
 
 impl AdaptivePipeline {
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, render_core::GpuLayoutError> {
+        let variance_source = format!("{VARIANCE_DATA_WGSL}\n{VARIANCE_WGSL}");
         let (variance_pipeline, variance_bgl) = create_pipeline(
             device,
-            VARIANCE_WGSL,
+            &variance_source,
             "variance",
             &[
-                bgl_storage_ro(0), // current sample
-                bgl_storage_rw(1), // variance data
-                bgl_uniform(2),    // params
+                bgl_storage_ro(0, std::mem::size_of::<[f32; 4]>() as u64), // cumulative radiance
+                bgl_storage_rw(1, VarianceData::SIZE),                     // variance data
+                bgl_uniform(2),                                            // params
             ],
         );
 
+        let allocate_source = format!("{VARIANCE_DATA_WGSL}\n{ALLOCATE_WGSL}");
         let (allocate_pipeline, allocate_bgl) = create_pipeline(
             device,
-            ALLOCATE_WGSL,
+            &allocate_source,
             "allocate",
             &[
-                bgl_storage_ro(0), // variance data
-                bgl_storage_rw(1), // sample map output
-                bgl_uniform(2),    // params
+                bgl_storage_ro(0, VarianceData::SIZE), // variance data
+                bgl_storage_rw(1, std::mem::size_of::<u32>() as u64), // sample map output
+                bgl_uniform(2),                        // params
             ],
         );
 
-        let (variance_buf, sample_map) = Self::build_buffers(device, width, height);
-        Self {
+        let sample_map = Self::build_sample_map(device, width, height)?;
+        Ok(Self {
             variance_pipeline,
             allocate_pipeline,
             variance_bgl,
             allocate_bgl,
-            variance_buf,
             sample_map,
             width,
             height,
-        }
+        })
     }
 
-    /// Builds both per-pixel buffers for `width × height`. Used by `new()` and
-    /// `resize()` so the two paths cannot drift.
-    fn build_buffers(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Buffer, wgpu::Buffer) {
-        use render_core::gpu::make_buffer;
-        use wgpu::BufferUsages;
-        let usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        let n = (width * height) as u64;
-        let var_sz = std::mem::size_of::<VarianceData>() as u64;
-        (
-            make_buffer(device, "adaptive_variance", n * var_sz, usage),
-            make_buffer(device, "adaptive_spp", n * 4, usage), // u32 per pixel
-        )
+    fn build_sample_map(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<wgpu::Buffer, render_core::GpuLayoutError> {
+        let size = render_core::checked_2d_storage_buffer_size(
+            device,
+            "adaptive sample map",
+            width,
+            height,
+            std::mem::size_of::<u32>() as u64,
+        )?;
+        Ok(render_core::gpu::make_buffer(
+            device,
+            "adaptive_spp",
+            size,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        ))
     }
 
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<(), render_core::GpuLayoutError> {
         if self.width == width && self.height == height {
-            return;
+            return Ok(());
         }
+        let sample_map = Self::build_sample_map(device, width, height)?;
         self.width = width;
         self.height = height;
-        let (variance_buf, sample_map) = Self::build_buffers(device, width, height);
-        self.variance_buf = variance_buf;
         self.sample_map = sample_map;
-    }
-
-    pub fn variance_buffer(&self) -> &wgpu::Buffer {
-        &self.variance_buf
+        Ok(())
     }
 
     pub fn sample_map(&self) -> &wgpu::Buffer {
@@ -159,27 +185,27 @@ fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn bgl_storage_ro(binding: u32) -> wgpu::BindGroupLayoutEntry {
+fn bgl_storage_ro(binding: u32, min_size: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
-            min_binding_size: None,
+            min_binding_size: std::num::NonZeroU64::new(min_size),
         },
         count: None,
     }
 }
 
-fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
+fn bgl_storage_rw(binding: u32, min_size: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: false },
             has_dynamic_offset: false,
-            min_binding_size: None,
+            min_binding_size: std::num::NonZeroU64::new(min_size),
         },
         count: None,
     }

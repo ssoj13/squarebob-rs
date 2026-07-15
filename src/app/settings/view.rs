@@ -1,9 +1,9 @@
 //! View settings: display, layout, and LoD (size band / merge).
 
-use super::{SettingsDirty, LABEL_WIDTH};
-use crate::app::filters::{count_files_in_range, count_files_outside_range};
-use crate::app::helpers::{fmt_size, multibutton_exclusive, parse_size, MultiButtonAxis};
+use super::{LABEL_WIDTH, SettingsDirty};
 use crate::app::App;
+use crate::app::filters::{count_files_in_range, count_files_outside_range};
+use crate::app::helpers::{MultiButtonAxis, fmt_size, multibutton_exclusive, parse_size};
 use eframe::egui;
 use treemap::LayoutStyle;
 

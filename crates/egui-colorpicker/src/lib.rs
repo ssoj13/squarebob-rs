@@ -71,7 +71,11 @@ impl Default for PickerConfig {
             hdr_max: 4.0,
             alpha_enabled: true,
             display_transform: Box::new(|c| {
-                [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2])]
+                [
+                    linear_to_srgb(c[0]),
+                    linear_to_srgb(c[1]),
+                    linear_to_srgb(c[2]),
+                ]
             }),
             eyedropper: None,
             eyedropper_sampling: false,
@@ -88,10 +92,7 @@ impl PickerConfig {
         self.alpha_enabled = enabled;
         self
     }
-    pub fn with_display_transform(
-        mut self,
-        f: impl Fn([f32; 3]) -> [f32; 3] + 'static,
-    ) -> Self {
+    pub fn with_display_transform(mut self, f: impl Fn([f32; 3]) -> [f32; 3] + 'static) -> Self {
         self.display_transform = Box::new(f);
         self
     }
@@ -249,13 +250,7 @@ pub fn color_button_with(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
 /// Compact circular swatch used inside an attribute row. Hover
 /// brightens the rim so the hit target reads clearly even when
 /// the colour itself is close to the background.
-fn paint_swatch_icon(
-    ui: &Ui,
-    rect: Rect,
-    color: &[f32; 4],
-    cfg: &PickerConfig,
-    hovered: bool,
-) {
+fn paint_swatch_icon(ui: &Ui, rect: Rect, color: &[f32; 4], cfg: &PickerConfig, hovered: bool) {
     let d = (cfg.display_transform)([color[0], color[1], color[2]]);
     let c32 = display_to_color32(d, color[3]);
     let painter = ui.painter();
@@ -353,8 +348,7 @@ fn picker_popup_contents(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
     // picker + V slider AND the HSV row below — all editors are
     // funneled through this `(h, s, v)` so any change updates both
     // RGB and HSV views consistently.
-    let (mut h_deg, mut s, mut v) =
-        rgb_to_hsv(color[0], color[1], color[2]);
+    let (mut h_deg, mut s, mut v) = rgb_to_hsv(color[0], color[1], color[2]);
 
     // --- Section 2: 2D Hue × Saturation gradient + vertical V slider.
     ui.horizontal(|ui| {
@@ -500,7 +494,11 @@ fn picker_popup_contents(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
     let mut history = load_history(ui.ctx());
     let mut history_dirty = false;
     ui.horizontal(|ui| {
-        if ui.small_button("save").on_hover_text("Add current color to history").clicked() {
+        if ui
+            .small_button("save")
+            .on_hover_text("Add current color to history")
+            .clicked()
+        {
             history.push(*color);
             history_dirty = true;
         }
@@ -510,7 +508,8 @@ fn picker_popup_contents(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
             let (r, resp) = ui.allocate_exact_size(cell, Sense::click());
             let d = (cfg.display_transform)([entry[0], entry[1], entry[2]]);
             paint_checker(ui.painter(), r, 3.0);
-            ui.painter().rect_filled(r, 2.0, display_to_color32(d, entry[3]));
+            ui.painter()
+                .rect_filled(r, 2.0, display_to_color32(d, entry[3]));
             ui.painter().rect_stroke(
                 r,
                 2.0,
@@ -539,9 +538,7 @@ fn picker_popup_contents(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
         ui.add_space(4.0);
         if ui
             .button("Eyedropper")
-            .on_hover_text(
-                "Sample a color from the viewport. Host app drives the actual sampling.",
-            )
+            .on_hover_text("Sample a color from the viewport. Host app drives the actual sampling.")
             .clicked()
         {
             cb();
@@ -552,8 +549,7 @@ fn picker_popup_contents(ui: &mut Ui, color: &mut [f32; 4], cfg: &mut PickerConf
 /// 2D Hue × Saturation gradient + cursor. Returns true on edit.
 /// `h` is in degrees `[0, 360)`, `s` in `[0, 1]`.
 fn hs_picker(ui: &mut Ui, size: f32, h: &mut f32, s: &mut f32) -> bool {
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::splat(size), Sense::click_and_drag());
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click_and_drag());
     let painter = ui.painter();
 
     // 32×32 mesh: enough resolution that the gradient looks smooth.
@@ -615,14 +611,7 @@ fn hs_picker(ui: &mut Ui, size: f32, h: &mut f32, s: &mut f32) -> bool {
 
 /// Vertical V slider painted as the current (H, S) at V=0..hdr_max.
 /// Returns true on edit.
-fn v_slider(
-    ui: &mut Ui,
-    size: Vec2,
-    h_deg: f32,
-    s: f32,
-    v: &mut f32,
-    hdr_max: f32,
-) -> bool {
+fn v_slider(ui: &mut Ui, size: Vec2, h_deg: f32, s: f32, v: &mut f32, hdr_max: f32) -> bool {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let painter = ui.painter();
 
@@ -655,11 +644,17 @@ fn v_slider(
     let t = 1.0 - (v.clamp(0.0, hdr_max) / hdr_max.max(1e-6));
     let y = rect.min.y + t * rect.height();
     painter.line_segment(
-        [Pos2::new(rect.min.x - 2.0, y), Pos2::new(rect.max.x + 2.0, y)],
+        [
+            Pos2::new(rect.min.x - 2.0, y),
+            Pos2::new(rect.max.x + 2.0, y),
+        ],
         Stroke::new(2.0, Color32::WHITE),
     );
     painter.line_segment(
-        [Pos2::new(rect.min.x - 2.0, y), Pos2::new(rect.max.x + 2.0, y)],
+        [
+            Pos2::new(rect.min.x - 2.0, y),
+            Pos2::new(rect.max.x + 2.0, y),
+        ],
         Stroke::new(1.0, Color32::BLACK),
     );
 

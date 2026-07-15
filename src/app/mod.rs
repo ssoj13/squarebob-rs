@@ -33,16 +33,16 @@ mod treemap_view;
 // render_callback module removed - using egui native texture display
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use eframe::egui;
 
 use crate::exclusions;
 use crate::renderer::{self, RenderBackend, RenderMode};
-use squarebob_core::DirEntry;
 use render_3d::Renderer3D;
 use render_core::gpu::GpuContext;
+use squarebob_core::DirEntry;
 use treemap::GpuRenderer2D;
 use treemap::{self, LayoutStyle};
 
@@ -75,66 +75,67 @@ impl App {
         // Restore persisted state
         if let Some(storage) = cc.storage
             && let Some(json) = storage.get_string("squarebob_state")
-                && let Ok(s) = serde_json::from_str::<PersistState>(&json) {
-                    app.scan_path = s.scan_path;
-                    app.show_settings = s.show_settings;
-                    app.show_outliner = s.show_outliner;
-                    app.show_viewport = s.show_viewport;
-                    app.show_ae = s.show_ae;
-                    app.dark_mode = s.dark_mode;
-                    app.scanner_mode = s.scanner_mode;
-                    app.filter_auto_rebuild = s.filter_auto_rebuild;
-                    app.path_history = s.path_history;
-                    app.tree_panel_width = s.tree_panel_width;
-                    app.settings_panel_width = s.settings_panel_width;
-                    app.show_free_space = s.show_free_space;
-                    app.render_backend = s.render_backend;
-                    app.render_mode = s.render_mode;
-                    app.render_3d_opts = s.render_3d_opts;
-                    app.dock_state = s.dock_state;
-                    app.dock_layout = s.dock_layout;
-                    // Migration: older persisted layouts predate
-                    // `DockTab::AttributeEditor`. `rebuild_from_layout`
-                    // can only *strip* tabs from the layout — never
-                    // insert them — so if AE is missing here, clicking
-                    // the toolbar toggle would silently no-op. Reset
-                    // the layout to its default (which includes every
-                    // known tab) when AE is absent.
-                    if !crate::app::dock::dock_contains(
-                        &app.dock_layout,
-                        &crate::app::dock::DockTab::AttributeEditor,
-                    ) {
-                        app.dock_layout = crate::app::dock::default_dock_layout();
-                    }
-                    app.font_size = s.font_size;
-                    app.settings_tab = s.settings_tab;
-                    app.ext_filter = s.ext_filter;
-                    app.ext_filter_invert = s.ext_filter_invert;
-                    app.settings_tint_mix = s.settings_tint_mix;
-                    app.settings_section_header_height = s.settings_section_header_height;
-                    app.settings_panel_font_body = s.settings_panel_font_body;
-                    app.settings_panel_font_heading = s.settings_panel_font_heading;
-                    app.settings_panel_font_subheading = s.settings_panel_font_subheading;
-                    app.settings_panel_font_small = s.settings_panel_font_small;
-                    app.settings_panel_font_button = s.settings_panel_font_button;
-                    app.settings_panel_font_monospace = s.settings_panel_font_monospace;
-                    app.preset_autosave = s.preset_autosave;
-                    app.autosave_interval_secs = s.autosave_interval_secs;
-                    app.encode_dialog =
-                        media_encoder::EncodeDialog::load_from_settings(&s.encode_dialog_settings);
-                    app.filter_merge_outside = s.filter_merge_outside;
-                    app.opts.grid = s.opts.grid;
-                    app.opts.brightness = s.opts.brightness;
-                    app.opts.height = s.opts.height;
-                    app.opts.scale_factor = s.opts.scale_factor;
-                    app.opts.ambient_light = s.opts.ambient_light;
-                    app.opts.light_x = s.opts.light_x;
-                    app.opts.light_y = s.opts.light_y;
-                    app.opts.style = match s.opts.style.as_str() {
-                        "sequoia" => LayoutStyle::SequoiaView,
-                        _ => LayoutStyle::KDirStat,
-                    };
-                }
+            && let Ok(s) = serde_json::from_str::<PersistState>(&json)
+        {
+            app.scan_path = s.scan_path;
+            app.show_settings = s.show_settings;
+            app.show_outliner = s.show_outliner;
+            app.show_viewport = s.show_viewport;
+            app.show_ae = s.show_ae;
+            app.dark_mode = s.dark_mode;
+            app.scanner_mode = s.scanner_mode;
+            app.filter_auto_rebuild = s.filter_auto_rebuild;
+            app.path_history = s.path_history;
+            app.tree_panel_width = s.tree_panel_width;
+            app.settings_panel_width = s.settings_panel_width;
+            app.show_free_space = s.show_free_space;
+            app.render_backend = s.render_backend;
+            app.render_mode = s.render_mode;
+            app.render_3d_opts = s.render_3d_opts;
+            app.dock_state = s.dock_state;
+            app.dock_layout = s.dock_layout;
+            // Migration: older persisted layouts predate
+            // `DockTab::AttributeEditor`. `rebuild_from_layout`
+            // can only *strip* tabs from the layout — never
+            // insert them — so if AE is missing here, clicking
+            // the toolbar toggle would silently no-op. Reset
+            // the layout to its default (which includes every
+            // known tab) when AE is absent.
+            if !crate::app::dock::dock_contains(
+                &app.dock_layout,
+                &crate::app::dock::DockTab::AttributeEditor,
+            ) {
+                app.dock_layout = crate::app::dock::default_dock_layout();
+            }
+            app.font_size = s.font_size;
+            app.settings_tab = s.settings_tab;
+            app.ext_filter = s.ext_filter;
+            app.ext_filter_invert = s.ext_filter_invert;
+            app.settings_tint_mix = s.settings_tint_mix;
+            app.settings_section_header_height = s.settings_section_header_height;
+            app.settings_panel_font_body = s.settings_panel_font_body;
+            app.settings_panel_font_heading = s.settings_panel_font_heading;
+            app.settings_panel_font_subheading = s.settings_panel_font_subheading;
+            app.settings_panel_font_small = s.settings_panel_font_small;
+            app.settings_panel_font_button = s.settings_panel_font_button;
+            app.settings_panel_font_monospace = s.settings_panel_font_monospace;
+            app.preset_autosave = s.preset_autosave;
+            app.autosave_interval_secs = s.autosave_interval_secs;
+            app.encode_dialog =
+                media_encoder::EncodeDialog::load_from_settings(&s.encode_dialog_settings);
+            app.filter_merge_outside = s.filter_merge_outside;
+            app.opts.grid = s.opts.grid;
+            app.opts.brightness = s.opts.brightness;
+            app.opts.height = s.opts.height;
+            app.opts.scale_factor = s.opts.scale_factor;
+            app.opts.ambient_light = s.opts.ambient_light;
+            app.opts.light_x = s.opts.light_x;
+            app.opts.light_y = s.opts.light_y;
+            app.opts.style = match s.opts.style.as_str() {
+                "sequoia" => LayoutStyle::SequoiaView,
+                _ => LayoutStyle::KDirStat,
+            };
+        }
 
         if !app.scan_path.is_empty() && !PathBuf::from(&app.scan_path).exists() {
             log::warn!(
@@ -217,12 +218,10 @@ impl App {
         }
 
         let error_flag = app.wgpu_error_flag.clone();
-        gpu_ctx
-            .device
-            .on_uncaptured_error(Arc::new(move |err| {
-                log::error!("wgpu uncaptured error: {:?}", err);
-                error_flag.store(true, Ordering::SeqCst);
-            }));
+        gpu_ctx.device.on_uncaptured_error(Arc::new(move |err| {
+            log::error!("wgpu uncaptured error: {:?}", err);
+            error_flag.store(true, Ordering::SeqCst);
+        }));
         let limits = gpu_ctx.device.limits();
         log::info!(
             "wgpu limits: max_storage_buffer_binding_size={}, max_storage_buffers_per_shader_stage={}, max_uniform_buffers_per_shader_stage={}, max_bind_groups={}, max_texture_dimension_2d={}, max_buffer_size={}, min_uniform_buffer_offset_alignment={}, min_storage_buffer_offset_alignment={}",
@@ -267,14 +266,16 @@ impl App {
     pub(super) fn zoom_step_toward(&mut self, target: &PathBuf) {
         if let Some(tree) = self.active_tree()
             && let Some(node) = find_node_by_path(tree, target)
-                && node.lod_expand.is_some() && !node.is_dir {
-                    self.lod_expanded_paths.insert(target.clone());
-                    self.rebuild_filtered_tree();
-                    self.zoom_path = Some(target.clone());
-                    self.needs_layout = true;
-                    self.select(target.clone());
-                    return;
-                }
+            && node.lod_expand.is_some()
+            && !node.is_dir
+        {
+            self.lod_expanded_paths.insert(target.clone());
+            self.rebuild_filtered_tree();
+            self.zoom_path = Some(target.clone());
+            self.needs_layout = true;
+            self.select(target.clone());
+            return;
+        }
 
         let tree = self.active_tree_cloned_path();
         let Some((_tree_path, zoom_root_path)) = tree else {
@@ -361,10 +362,12 @@ impl App {
 
     pub(super) fn display_root(&self) -> Option<&DirEntry> {
         let has_exclusions = !self.exclusions.is_empty();
-        if (self.show_free_space || has_exclusions) && self.zoom_path.is_none()
-            && let Some(ref cached) = self.display_tree_cache {
-                return Some(cached);
-            }
+        if (self.show_free_space || has_exclusions)
+            && self.zoom_path.is_none()
+            && let Some(ref cached) = self.display_tree_cache
+        {
+            return Some(cached);
+        }
 
         let base_tree = if has_exclusions || self.show_free_space {
             self.display_tree_cache.as_ref().or(self.active_tree())
@@ -470,18 +473,39 @@ impl App {
     }
 
     pub(super) fn exclude_path(&mut self, path: &std::path::Path) {
-        self.exclusions.add(path);
-        exclusions::save(&self.exclusions);
-        self.rebuild_display_tree();
-        self.treemap_tex = None;
-        self.needs_layout = true;
+        self.update_exclusions(|exclusions| {
+            exclusions.add(path);
+        });
     }
 
     pub(super) fn include_path(&mut self, path: &std::path::Path) {
-        self.exclusions.remove(path);
-        exclusions::save(&self.exclusions);
-        self.treemap_tex = None;
+        self.update_exclusions(|exclusions| {
+            exclusions.remove(path);
+        });
+    }
+
+    pub(super) fn clear_exclusions(&mut self) {
+        self.update_exclusions(Exclusions::clear);
+    }
+
+    fn update_exclusions(&mut self, update: impl FnOnce(&mut Exclusions)) {
+        let mut next = self.exclusions.clone();
+        update(&mut next);
+        let write_outcome = match exclusions::save(&next) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                log::warn!("Failed to persist exclusions: {error:#}");
+                self.progress.warning = Some(format!("Exclusions update failed: {error:#}"));
+                return;
+            }
+        };
+
+        self.exclusions = next;
+        if let Some(warning) = write_outcome.warning() {
+            self.progress.warning = Some(warning.to_owned());
+        }
         self.rebuild_display_tree();
+        self.treemap_tex = None;
         self.needs_layout = true;
     }
 
@@ -547,16 +571,18 @@ impl App {
 
         if self.render_mode == RenderMode::Mode3D {
             if self.renderer_3d.is_none()
-                && let Some(gpu_ctx) = &self.gpu_context {
-                    let mut r3d = Renderer3D::new(gpu_ctx.clone());
-                    if self.render_3d_opts.env_map_enabled
-                        && let Some(ref path) = self.render_3d_opts.env_map_path
-                            && path.exists()
-                                && let Err(e) = r3d.load_env_map(path) {
-                                    log::error!("Auto-load env map failed: {e}");
-                                }
-                    self.renderer_3d = Some(r3d);
+                && let Some(gpu_ctx) = &self.gpu_context
+            {
+                let mut r3d = Renderer3D::new(gpu_ctx.clone());
+                if self.render_3d_opts.env_map_enabled
+                    && let Some(ref path) = self.render_3d_opts.env_map_path
+                    && path.exists()
+                    && let Err(e) = r3d.load_env_map(path)
+                {
+                    log::error!("Auto-load env map failed: {e}");
                 }
+                self.renderer_3d = Some(r3d);
+            }
             if self.orbit_camera.target == glam::Vec3::ZERO {
                 let (scene_w, scene_h) = self
                     .renderer_3d
@@ -574,9 +600,10 @@ impl App {
         if self.render_mode == RenderMode::Mode2D
             && self.render_backend == RenderBackend::Gpu
             && self.renderer_2d_gpu.is_none()
-            && let Some(gpu_ctx) = &self.gpu_context {
-                self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
-            }
+            && let Some(gpu_ctx) = &self.gpu_context
+        {
+            self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
+        }
 
         // CPU-readback fallback path. The zero-copy path lives in
         // `treemap_view::render_3d_callback` (Mode3D) and
@@ -596,7 +623,13 @@ impl App {
                     let Some(root) = self.display_root() else {
                         return;
                     };
-                    renderer::cpu::render(root, &self.viewport, &self.opts)
+                    match renderer::cpu::render(root, &self.viewport, &self.opts) {
+                        Ok(pixels) => pixels,
+                        Err(error) => {
+                            log::error!("CPU treemap render rejected: {error}");
+                            return;
+                        }
+                    }
                 }
                 RenderBackend::Gpu => {
                     let mut renderer_2d = self.renderer_2d_gpu.take();
@@ -611,7 +644,14 @@ impl App {
                             self.renderer_2d_gpu = renderer_2d;
                             return;
                         };
-                        renderer::cpu::render(root, &self.viewport, &self.opts)
+                        match renderer::cpu::render(root, &self.viewport, &self.opts) {
+                            Ok(pixels) => pixels,
+                            Err(error) => {
+                                self.renderer_2d_gpu = renderer_2d;
+                                log::error!("CPU treemap render rejected: {error}");
+                                return;
+                            }
+                        }
                     };
                     self.renderer_2d_gpu = renderer_2d;
                     pixels
@@ -641,7 +681,14 @@ impl App {
                         self.renderer_3d = renderer_3d;
                         return;
                     };
-                    renderer::cpu::render(root, &self.viewport, &self.opts)
+                    match renderer::cpu::render(root, &self.viewport, &self.opts) {
+                        Ok(pixels) => pixels,
+                        Err(error) => {
+                            self.renderer_3d = renderer_3d;
+                            log::error!("CPU treemap render rejected: {error}");
+                            return;
+                        }
+                    }
                 };
                 self.renderer_3d = renderer_3d;
                 pixels

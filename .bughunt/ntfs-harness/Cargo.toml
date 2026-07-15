@@ -1,0 +1,19 @@
+[package]
+name = "squarebob-ntfs-harness"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+crossbeam-channel = "0.5"
+log = "0.4"
+squarebob-core = { path = "../../crates/squarebob-core" }
+windows = { version = "0.62", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_Foundation",
+    "Win32_Security",
+] }

@@ -29,5 +29,5 @@ pub use attrs::{
     AttrDef, AttrFlags, AttrSchema, AttrType, AttrValue, Attrs, FLAG_DAG, FLAG_DISPLAY,
     FLAG_INTERNAL, FLAG_KEYABLE, FLAG_READONLY,
 };
-pub use preset_widget::{presets_button, PresetButtonEvent, PresetButtonState};
+pub use preset_widget::{PresetButtonEvent, PresetButtonState, presets_button};
 pub use presets::{ApplyReport, PresetBank, PresetSnapshot};

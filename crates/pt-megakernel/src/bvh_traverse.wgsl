@@ -48,7 +48,8 @@ struct Camera {
     dof_enabled: u32,
     aperture: f32,
     focus_distance: f32,
-    _pad1: vec2<u32>,
+    rr_enabled: u32,
+    _pad1: u32,
     // Slice plane params
     slice_enabled: f32,
     slice_position: f32,
@@ -122,13 +123,6 @@ struct EmissiveLightSample {
     emission: vec3<f32>,
     pdf_area: f32,
     instance_idx: u32,
-};
-
-struct VarianceData {
-    mean: vec3<f32>,
-    _pad0: u32,
-    m2: vec3<f32>,
-    count: u32,
 };
 
 // Stage G.A: ReSTIR-DI types. Layout must match the host-side `Sample`,
@@ -215,23 +209,6 @@ const SUN_DIR: vec3<f32> = vec3<f32>(0.5, 0.8, 0.3);
 const SUN_COLOR: vec3<f32> = vec3<f32>(1.0, 0.98, 0.95);
 const SUN_INTENSITY: f32 = 5.0;
 const SUN_ANGULAR_RADIUS: f32 = 0.00465;
-
-// ---- RNG ----
-
-fn pcg_hash(input: u32) -> u32 {
-    var state = input * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-fn rand(state: ptr<function, u32>) -> f32 {
-    *state = pcg_hash(*state);
-    return f32(*state) / 4294967296.0;
-}
-
-fn hash01(input: u32) -> f32 {
-    return f32(pcg_hash(input)) / 4294967296.0;
-}
 
 // ---- ReSTIR-DI stubs (Stage G.A plumbing) ----
 // Bodies fill in during Stage G.B (RIS) and G.C (temporal combine).
@@ -442,11 +419,9 @@ fn trace_ray(ray: Ray) -> HitInfo {
     var stack: array<u32, MAX_STACK_DEPTH>;
     var sp: u32 = 1u;
     stack[0] = 0u;
-    var loop_safety = 0u;
+    var traversal_overflow = false;
 
     while sp > 0u {
-        loop_safety += 1u;
-        if loop_safety > 4096u { break; } // Safety break
 
         sp -= 1u;
         let node = nodes[stack[sp]];
@@ -464,11 +439,24 @@ fn trace_ray(ray: Ray) -> HitInfo {
                 }
             }
         } else {
-            if sp + 2u <= MAX_STACK_DEPTH {
-                stack[sp] = node.left_or_first + 1u;
-                sp += 1u;
-                stack[sp] = node.left_or_first;
-                sp += 1u;
+            if sp + 2u > MAX_STACK_DEPTH {
+                traversal_overflow = true;
+                break;
+            }
+            stack[sp] = node.left_or_first + 1u;
+            sp += 1u;
+            stack[sp] = node.left_or_first;
+            sp += 1u;
+        }
+    }
+
+    // A malformed or exceptionally deep BVH must never turn a hit into a
+    // silent miss. The rare overflow path trades performance for correctness.
+    if traversal_overflow {
+        for (var inst_idx = 0u; inst_idx < arrayLength(&instances); inst_idx++) {
+            let hit = intersect_instance(ray, inst_idx);
+            if hit.hit && hit.t < best.t {
+                best = hit;
             }
         }
     }
@@ -481,11 +469,9 @@ fn trace_shadow_ray(ray: Ray, max_t: f32) -> bool {
     var stack: array<u32, MAX_STACK_DEPTH>;
     var sp: u32 = 1u;
     stack[0] = 0u;
-    var loop_safety = 0u;
+    var traversal_overflow = false;
 
     while sp > 0u {
-        loop_safety += 1u;
-        if loop_safety > 4096u { break; } // Safety break
 
         sp -= 1u;
         let node = nodes[stack[sp]];
@@ -502,11 +488,22 @@ fn trace_shadow_ray(ray: Ray, max_t: f32) -> bool {
                 }
             }
         } else {
-            if sp + 2u <= MAX_STACK_DEPTH {
-                stack[sp] = node.left_or_first + 1u;
-                sp += 1u;
-                stack[sp] = node.left_or_first;
-                sp += 1u;
+            if sp + 2u > MAX_STACK_DEPTH {
+                traversal_overflow = true;
+                break;
+            }
+            stack[sp] = node.left_or_first + 1u;
+            sp += 1u;
+            stack[sp] = node.left_or_first;
+            sp += 1u;
+        }
+    }
+
+    if traversal_overflow {
+        for (var inst_idx = 0u; inst_idx < arrayLength(&instances); inst_idx++) {
+            let hit = intersect_instance(ray, inst_idx);
+            if hit.hit && hit.t < max_t && hit.t > EPSILON {
+                return true;
             }
         }
     }
@@ -787,7 +784,8 @@ fn load_emissive_light(idx: u32) -> EmissiveLight {
     light.axis_y = textureLoad(emissive_lights, vec2<i32>(x, 2), 0);
     light.axis_z = textureLoad(emissive_lights, vec2<i32>(x, 3), 0);
     light.emission_weight = textureLoad(emissive_lights, vec2<i32>(x, 4), 0);
-    light.instance_idx = u32(textureLoad(emissive_lights, vec2<i32>(x, 5), 0).x);
+    let instance_parts = textureLoad(emissive_lights, vec2<i32>(x, 5), 0).xy;
+    light.instance_idx = u32(instance_parts.x) | (u32(instance_parts.y) << 16u);
     light._pad0 = vec3<u32>(0u);
     return light;
 }
@@ -971,7 +969,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if spp_limit != 0u && current_samples >= spp_limit {
         return;
     }
-    var rng = pcg_hash(pixel_idx * 1973u + camera.frame_count * 6133u + 1u);
+    var rng = rng_seed(
+        pixel_idx,
+        camera.frame_count,
+        current_samples,
+        0u,
+        0u,
+    );
 
     let pixel_jitter = sample_pixel_jitter(pixel_idx, camera.frame_count, &rng);
     let pixel_weight = pixel_filter_weight(pixel_jitter);
@@ -1062,10 +1066,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let emission = mat.emission_color_weight.rgb * mat.emission_color_weight.a * opacity;
         let metallic = mat.params1.y;
         let roughness = max(mat.params1.z, 0.04);
-        let ior = mat.params1.w;
+        let ior = safe_ior(mat.params1.w);
         let dispersion = clamp(mat.params2.x, 0.0, 1.0);
         let coat_roughness = max(mat.params2.y, 0.04);
-        let coat_ior = mat.params2.z;
+        let coat_ior = safe_ior(mat.params2.z);
 
         let diffuse_color = (base_color * base_weight + subsurface_color * subsurface_weight) * (1.0 - metallic);
 
@@ -1086,10 +1090,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             radiance += throughput * emission * emission_mis;
         }
 
-        // Russian roulette after first bounce
-        if bounce > 0u {
-            let p_continue = max(max(throughput.x, throughput.y), throughput.z);
-            if rand(&rng) > p_continue {
+        // Russian roulette is an unbiased optimization, not a mandatory
+        // integrator step. Reject non-finite paths before probability math and
+        // bound survival probability away from both singular endpoints.
+        if camera.rr_enabled != 0u && bounce > 0u {
+            if any(isNan(throughput)) || any(isInf(throughput)) {
+                break;
+            }
+            let max_throughput = max(max(throughput.x, throughput.y), throughput.z);
+            if max_throughput <= 0.0 {
+                break;
+            }
+            let p_continue = clamp(max_throughput, 0.05, 0.95);
+            if rand(&rng) >= p_continue {
                 break;
             }
             throughput /= p_continue;
@@ -1123,7 +1136,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             if ndotl_sun > 0.0 {
                 var shadow_ray: Ray;
-                shadow_ray.origin = p + normal * 0.001;
+                shadow_ray.origin = offset_ray_origin(p, normal, sun_dir_sample);
                 shadow_ray.dir = sun_dir_sample;
 
                 if !trace_shadow_ray(shadow_ray, T_MAX) {
@@ -1153,7 +1166,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             if ndotl_env > 0.0 {
                 var shadow_ray: Ray;
-                shadow_ray.origin = p + normal * 0.001;
+                shadow_ray.origin = offset_ray_origin(p, normal, env_dir);
                 shadow_ray.dir = env_dir;
 
                 if !trace_shadow_ray(shadow_ray, T_MAX) {
@@ -1268,9 +1281,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // candidate.
                 if r_sample.valid != 0u && r_w > 0.0 {
                     var shadow_ray: Ray;
-                    shadow_ray.origin = p + normal * 0.001;
+                    shadow_ray.origin = offset_ray_origin(p, normal, r_sample.wi);
                     shadow_ray.dir = r_sample.wi;
-                    if !trace_shadow_ray(shadow_ray, max(r_sample.dist - 0.002, EPSILON)) {
+                    let shadow_t_max = shadow_ray_max_t(
+                        shadow_ray.origin,
+                        r_sample.position,
+                        r_sample.normal,
+                        r_sample.wi,
+                    );
+                    if !trace_shadow_ray(shadow_ray, shadow_t_max) {
                         let ndotl = max(dot(normal, r_sample.wi), 0.0);
                         let f_light = fresnel_schlick(ndotl, f0);
                         let diffuse_contrib = diffuse_color * (1.0 - f_light) * ndotl / PI;
@@ -1325,10 +1344,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     }
 
                     var shadow_ray: Ray;
-                    shadow_ray.origin = p + normal * 0.001;
+                    shadow_ray.origin = offset_ray_origin(p, normal, light_dir);
                     shadow_ray.dir = light_dir;
+                    let shadow_t_max = shadow_ray_max_t(
+                        shadow_ray.origin,
+                        light_sample.position,
+                        light_sample.normal,
+                        light_dir,
+                    );
 
-                    if !trace_shadow_ray(shadow_ray, max(dist - 0.002, EPSILON)) {
+                    if !trace_shadow_ray(shadow_ray, shadow_t_max) {
                         let f_light = fresnel_schlick(ndotl, f0);
                         let diffuse_contrib_light = diffuse_color * (1.0 - f_light) * ndotl / PI;
 
@@ -1378,8 +1403,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     let g = smith_g1(ndotv, coat_alpha) * smith_g1(ndotl, coat_alpha);
                     let weight = f * g * hdotv / (ndotv * ndoth + EPSILON);
                     throughput *= coat_color * weight / max(coat_reflect_prob, EPSILON);
-                    ray.origin = p + normal * 0.001;
                     ray.dir = normalize(reflect_dir);
+                    ray.origin = offset_ray_origin(p, normal, ray.dir);
                     last_bsdf_pdf = max(coat_reflect_prob, EPSILON)
                         * pdf_ggx(ndoth, hdotv, coat_alpha);
                     last_sample_was_transmission = false;
@@ -1410,8 +1435,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let weight = f * g * hdotv / (ndotv * ndoth + EPSILON);
 
             throughput *= weight / max(p_spec, EPSILON);
-            ray.origin = p + normal * 0.001;
             ray.dir = normalize(reflect_dir);
+            ray.origin = offset_ray_origin(p, normal, ray.dir);
             last_bsdf_pdf = max(p_spec, EPSILON) * pdf_ggx(ndoth, hdotv, alpha);
             last_sample_was_transmission = false;
         } else if lobe_rand < p_spec + p_trans {
@@ -1428,16 +1453,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if sin2_t > 1.0 {
                 let reflect_dir = reflect(-v_dir, h_world);
                 throughput *= transmission_color_disp / max(p_trans, EPSILON);
-                ray.origin = p + normal * 0.001;
                 ray.dir = normalize(reflect_dir);
+                ray.origin = offset_ray_origin(p, normal, ray.dir);
                 last_bsdf_pdf = 0.0;
                 last_sample_was_transmission = true;
             } else {
                 let cos_t = sqrt(1.0 - sin2_t);
                 let refr_dir = normalize(eta * -v_dir + (eta * cos_i - cos_t) * h_world);
                 throughput *= transmission_color_disp / max(p_trans, EPSILON);
-                ray.origin = p - normal * 0.001;
                 ray.dir = refr_dir;
+                ray.origin = offset_ray_origin(p, normal, ray.dir);
                 last_bsdf_pdf = 0.0;
                 last_sample_was_transmission = true;
             }
@@ -1453,8 +1478,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             let diffuse_pdf = pdf_cosine_hemisphere(max(dot(normal, normalize(world_dir)), 0.0));
             throughput *= diff_weight / p_diff;
-            ray.origin = p + normal * 0.001;
             ray.dir = normalize(world_dir);
+            ray.origin = offset_ray_origin(p, normal, ray.dir);
             last_bsdf_pdf = p_diff * diffuse_pdf;
             last_sample_was_transmission = false;
         }

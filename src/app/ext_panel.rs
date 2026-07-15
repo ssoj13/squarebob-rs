@@ -2,9 +2,9 @@
 
 use eframe::egui;
 
+use super::App;
 use super::helpers::fmt_size;
 use super::icons;
-use super::App;
 
 impl App {
     pub(super) fn ui_ext_stats(&mut self, ui: &mut egui::Ui) {
@@ -51,11 +51,7 @@ impl App {
                 2 => a.2.cmp(&b.2),
                 _ => a.1.cmp(&b.1),
             };
-            if asc {
-                cmp
-            } else {
-                cmp.reverse()
-            }
+            if asc { cmp } else { cmp.reverse() }
         });
 
         // Calculate column width and count

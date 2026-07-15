@@ -19,20 +19,20 @@ use glam::{Mat4, Vec3, Vec4};
 use log::{debug, info, trace, warn};
 use std::sync::Arc;
 
-use squarebob_core::DirEntry;
-use pt_mats::MaterializeMode;
 use pt_material::StandardSurfaceParams;
+use pt_mats::MaterializeMode;
 use render_core::gpu::{self, GpuContext};
 use render_shared::{
     CameraUniform, CubeHeightMode, EnvParamsUniform, HoverMode, HoverParamsUniform,
     LightRigUniform, OrbitCamera, Render3DOptions,
 };
+use squarebob_core::DirEntry;
 use treemap::{self, TreeMapOptions};
 
-use geometry::{CubeInstance, CUBE_INDICES, NUM_INDICES};
+use geometry::{CUBE_INDICES, CubeInstance, NUM_INDICES};
 use pipelines::{BindGroupLayouts, Pipelines};
 use renderer3d::material_cache::{
-    mat_settings_hash, MatGlobalUniform, MaterialCache, MAX_MATERIAL_SLOTS,
+    MAX_MATERIAL_SLOTS, MatGlobalUniform, MaterialCache, mat_settings_hash,
 };
 use targets::{DynamicBindGroups, RenderTargets};
 
@@ -83,6 +83,7 @@ impl Default for PtState {
 /// 3D Renderer with multi-pass PBR pipeline
 pub struct Renderer3D {
     ctx: Arc<GpuContext>,
+    pub(crate) readback: gpu::TextureReadback,
 
     // Geometry buffers (static)
     vertex_buffer: wgpu::Buffer,
@@ -190,7 +191,9 @@ impl Renderer3D {
     /// Reset render targets (call when switching modes)
     pub fn reset_render_targets(&mut self) {
         // Must wait before dropping GPU resources
-        let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
+        if let Err(error) = self.ctx.device.poll(wgpu::PollType::wait_indefinitely()) {
+            log::warn!("reset_render_targets: device poll failed: {error:?}");
+        }
         self.render_state = None;
         self.instance_buffer = None;
         self.instance_count = 0;
@@ -253,8 +256,12 @@ impl Renderer3D {
         );
 
         let light_rig = LightRigUniform::default();
-        let light_rig_buf =
-            make_buffer_init(device, "LightRig UBO", bytemuck::bytes_of(&light_rig), uniform);
+        let light_rig_buf = make_buffer_init(
+            device,
+            "LightRig UBO",
+            bytemuck::bytes_of(&light_rig),
+            uniform,
+        );
 
         // PBR materials storage. Sized to a generous cap so growing the
         // user-edited `material_library` doesn't require a buffer recreate
@@ -262,8 +269,7 @@ impl Renderer3D {
         // `opts.material_library` in `update_uniforms` — at construction
         // we only need the buffer to exist and bind correctly.
         // `MAX_MATERIAL_SLOTS` (256) × 144 B = 36 KiB.
-        let initial_materials =
-            vec![StandardSurfaceParams::default(); MAX_MATERIAL_SLOTS as usize];
+        let initial_materials = vec![StandardSurfaceParams::default(); MAX_MATERIAL_SLOTS as usize];
         let materials_buf = make_buffer_init(
             device,
             "Materials Storage",
@@ -359,6 +365,7 @@ impl Renderer3D {
 
         Self {
             ctx,
+            readback: gpu::TextureReadback::default(),
             vertex_buffer,
             index_buffer,
             instance_buffer: None,
@@ -459,7 +466,9 @@ impl Renderer3D {
 
     /// Get render texture for egui registration (zero-copy path)
     pub fn get_render_texture(&self) -> Option<&wgpu::Texture> {
-        self.render_state.as_ref().map(|s| &s.targets.render_texture)
+        self.render_state
+            .as_ref()
+            .map(|s| &s.targets.render_texture)
     }
 
     /// Render to GPU texture without CPU readback (zero-copy)
@@ -519,7 +528,7 @@ impl Renderer3D {
     // Render targets
     // ========================================================================
 
-    fn ensure_targets(&mut self, w: u32, h: u32) {
+    fn ensure_targets(&mut self, w: u32, h: u32) -> Result<(), render_core::GpuLayoutError> {
         let needs_resize = match &self.render_state {
             Some(s) => s.targets.size != (w, h),
             None => true,
@@ -528,7 +537,7 @@ impl Renderer3D {
         if needs_resize {
             let device = &self.ctx.device;
             let targets = RenderTargets::new(device, w, h);
-            self.picking.ensure_readback(device, w);
+            self.picking.ensure_readback(device, w)?;
 
             let dyn_bgs = DynamicBindGroups::new(
                 device,
@@ -547,6 +556,7 @@ impl Renderer3D {
         // rebuild here; the bundled `RenderState` now keeps targets and
         // bind groups in lock-step, with `on_env_map_changed` rebuilding
         // `dyn_bgs` in place. So no second branch needed here.
+        Ok(())
     }
 
     /// Compute cube height based on node properties and render options.
@@ -681,10 +691,8 @@ impl Renderer3D {
             );
         }
         if n > 0 {
-            let params: Vec<StandardSurfaceParams> = lib.materials[..n]
-                .iter()
-                .map(|m| m.params)
-                .collect();
+            let params: Vec<StandardSurfaceParams> =
+                lib.materials[..n].iter().map(|m| m.params).collect();
             q.write_buffer(&self.materials_buf, 0, bytemuck::cast_slice(&params));
         }
 
@@ -905,11 +913,9 @@ impl Renderer3D {
         let data: Vec<u32> = std::iter::once(self.selected_ids.len() as u32)
             .chain(self.selected_ids.iter().copied())
             .collect();
-        self.ctx.queue.write_buffer(
-            &self.selected_ids_buf,
-            0,
-            bytemuck::cast_slice(&data),
-        );
+        self.ctx
+            .queue
+            .write_buffer(&self.selected_ids_buf, 0, bytemuck::cast_slice(&data));
     }
 
     /// Total number of times the instance buffer has been rebuilt since
@@ -942,11 +948,13 @@ impl Renderer3D {
 
     /// Readback a pixel from the existing object_id texture without re-rendering.
     /// Use when only the mouse moved but the scene (camera, geometry, options) is unchanged.
-    pub fn pick_from_existing(&mut self) {
-        let Some(state) = &self.render_state else { return };
+    pub fn pick_from_existing(&mut self) -> Result<(), render_core::ReadbackError> {
+        let Some(state) = &self.render_state else {
+            return Ok(());
+        };
         let targets = &state.targets;
         if self.instance_count == 0 {
-            return;
+            return Ok(());
         }
 
         let mut encoder = self
@@ -956,9 +964,9 @@ impl Renderer3D {
                 label: Some("Pick-only readback"),
             });
         self.picking
-            .submit_readback(&mut encoder, &targets.object_id_texture, targets.size);
+            .submit_readback(&mut encoder, &targets.object_id_texture, targets.size)?;
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
-        self.picking.poll_result(&self.ctx.device);
+        self.picking.poll_result(&self.ctx.device)
     }
 
     /// Current PT samples-per-update (auto-SPP uses this).
@@ -975,11 +983,7 @@ impl Renderer3D {
     /// drives all accumulation; everything else (per-dispatch batch size,
     /// adaptive caps, OIDN trigger threshold) is derived from this.
     pub fn pt_target_spp(&self) -> u32 {
-        self.pt
-            .path_tracer
-            .as_ref()
-            .map(|p| p.samples)
-            .unwrap_or(0)
+        self.pt.path_tracer.as_ref().map(|p| p.samples).unwrap_or(0)
     }
 
     /// PT output color texture (Rgba32Float, post sample-normalization).
@@ -1034,8 +1038,12 @@ impl Renderer3D {
     /// from the previous full `render_to_view` so we don't pay for a
     /// per-instance pass here.
     pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>, opts: &Render3DOptions) {
-        let Some(state) = self.render_state.as_ref() else { return; };
-        let Some(pt) = self.pt.path_tracer.as_ref() else { return; };
+        let Some(state) = self.render_state.as_ref() else {
+            return;
+        };
+        let Some(pt) = self.pt.path_tracer.as_ref() else {
+            return;
+        };
         let mut encoder = self
             .ctx
             .device
@@ -1053,14 +1061,18 @@ impl Renderer3D {
         // are unused (will be removed in the follow-up shader pass).
         let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
         pt.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
-        pt.blit_with_source(&self.ctx.device, &mut encoder, &state.targets.render_view, source);
+        pt.blit_with_source(
+            &self.ctx.device,
+            &mut encoder,
+            &state.targets.render_view,
+            source,
+        );
         let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
         if has_active {
             self.encode_outline_pass(&mut encoder, &state.targets, &state.dyn_bgs);
         }
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
     }
-
 
     /// Run the OCIO CPU-color codepath in place on the PT output
     /// texture, then re-composite to display the result.
@@ -1071,40 +1083,38 @@ impl Renderer3D {
     /// `ColorPipelineSettings::resolved_tonemap_tag` for this mode,
     /// so `render_to_view` produces an intermediate frame that is
     /// scene-linear-but-clamped on screen; this method then mutates
-    /// `output_texture` into display-encoded values and re-blits.
+    /// `output_texture` into surface-linear transport values and re-blits.
     ///
     /// Caller is responsible for only invoking this when the
     /// CPU+OCIO combination is selected — wired in the per-frame
     /// host loop in `treemap_view.rs`.
     pub fn apply_cpu_color_pass(
-        &self,
+        &mut self,
         pipeline: &color_pipeline::ColorPipeline,
         opts: &Render3DOptions,
-    ) {
-        let Some(pt) = self.pt.path_tracer.as_ref() else {
-            return;
+    ) -> Result<(), render_core::ReadbackError> {
+        let Some(pt) = self.pt.path_tracer.as_mut() else {
+            return Ok(());
         };
         if pt.frame_count == 0 {
             // PT hasn't produced an accumulated frame yet — nothing
             // worth reading back. The first blit already painted the
             // (zero-sample) output_texture; the next frame's CPU pass
             // will pick up real data.
-            return;
+            return Ok(());
         }
         #[cfg(debug_assertions)]
         log::warn!(
             "render-3d: CPU color path active — readback every frame is slow, \
              this is a debug codepath"
         );
-        pt.apply_cpu_color_in_place(&self.ctx.device, &self.ctx.queue, |pixels| {
-            pipeline.apply_cpu(pixels);
-        });
-        // Re-blit the now-display-encoded output_texture. tag is
-        // already 0 (clamp passthrough) via resolved_tonemap_tag, so
-        // the blit shader's `case 0u` runs and skips the trailing
-        // OETF — exactly what we need because the CPU pass already
-        // folded the OETF in via the OCIO display processor.
+        pt.apply_cpu_color_in_place(&self.ctx, |pixels| {
+            pipeline.apply_cpu_to_surface_linear(pixels);
+        })?;
+        // Re-blit the surface-linear transport texture. Eframe's final
+        // output stage performs the only SDR transfer; tag 0 adds no OETF.
         self.composite_overlay(None, opts);
+        Ok(())
     }
 
     /// Push any pending baked OCIO LUT into the path tracer's blit
@@ -1115,13 +1125,24 @@ impl Renderer3D {
     /// Must be invoked AFTER `color_pipeline::ColorPipeline::ensure`
     /// — that's the call that re-bakes the LUT and arms the pending
     /// flag.
-    pub fn sync_color_lut(&self, pipeline: &mut color_pipeline::ColorPipeline) {
+    pub fn sync_color_lut(
+        &self,
+        pipeline: &mut color_pipeline::ColorPipeline,
+    ) -> Result<(), pt_megakernel::BlitLutUploadError> {
         let Some(pt) = self.pt.path_tracer.as_ref() else {
-            return;
+            return Ok(());
         };
-        if let Some(lut) = pipeline.take_pending_lut() {
-            pt.set_blit_lut_3d(&self.ctx.queue, &lut.data, lut.size as u32);
+        if let Some(lut) = pipeline.pending_lut() {
+            pt.set_blit_lut_3d(
+                &self.ctx.queue,
+                &lut.data,
+                lut.size,
+                lut.shaper.min_ev,
+                lut.shaper.max_ev,
+            )?;
+            pipeline.mark_lut_uploaded();
         }
+        Ok(())
     }
 
     fn pt_frame_count_impl(&self) -> u32 {
@@ -1132,16 +1153,14 @@ impl Renderer3D {
             .unwrap_or(0)
     }
 
-    /// Read back current render texture pixels (for screenshots)
-    pub fn readback_render_texture(&self) -> Vec<u8> {
-        let Some(state) = &self.render_state else {
-            return Vec::new();
-        };
+    /// Read back current render texture pixels (for screenshots).
+    pub fn readback_render_texture(&mut self) -> Result<Vec<u8>, render_core::ReadbackError> {
+        let state = self
+            .render_state
+            .as_ref()
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
         let targets = &state.targets;
         let (width, height) = targets.size;
-        if width == 0 || height == 0 {
-            return Vec::new();
-        }
 
         let mut encoder = self
             .ctx
@@ -1149,15 +1168,16 @@ impl Renderer3D {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Readback Encoder"),
             });
-        let output_buffer = gpu::readback_texture(
+        gpu::readback_texture(
             &self.ctx,
             &mut encoder,
             &targets.render_texture,
             width,
             height,
-        );
+            &mut self.readback,
+        )?;
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
-        gpu::map_readback(&self.ctx, &output_buffer, width, height)
+        gpu::map_readback(&self.ctx, &self.readback)
     }
 
     /// Build a world-space ray from screen coordinates
@@ -1262,10 +1282,15 @@ impl Renderer3D {
         camera: &OrbitCamera,
         opts: &Render3DOptions,
         treemap_opts: &TreeMapOptions,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, render_core::ReadbackError> {
         let render_start = std::time::Instant::now();
         if width == 0 || height == 0 {
-            return vec![];
+            return Err(render_core::GpuLayoutError::ZeroExtent {
+                context: "3D legacy render",
+                width,
+                height,
+            }
+            .into());
         }
 
         let hovered_id = self.picking.hovered_id;
@@ -1288,9 +1313,12 @@ impl Renderer3D {
         }
         let opts = &opts;
 
-        // Wait for previous GPU work before starting new frame
-        let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        self.ensure_targets(width, height);
+        // Wait for previous GPU work before starting new frame.
+        self.ctx
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(render_core::ReadbackError::PollFailed)?;
+        self.ensure_targets(width, height)?;
 
         let (layout_w, layout_h) = self.scene_layout_size();
 
@@ -1361,7 +1389,14 @@ impl Renderer3D {
         self.instance_count = instances.len() as u32;
 
         if instances.is_empty() {
-            return vec![30; (width * height * 4) as usize];
+            let len = render_core::checked_2d_buffer_size("empty 3D frame", width, height, 4)?;
+            let len =
+                usize::try_from(len).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+                    context: "empty 3D frame",
+                    value: len,
+                    target: "usize",
+                })?;
+            return Ok(vec![30; len]);
         }
 
         let buf_size = instances.len() * std::mem::size_of::<CubeInstance>();
@@ -1438,21 +1473,31 @@ impl Renderer3D {
             .as_ref()
             .expect("render_state not built — call ensure_render_targets before render");
         let passes_start = std::time::Instant::now();
-        self.encode_passes(&mut encoder, &state.targets, &state.dyn_bgs, opts, hovered_id);
+        self.encode_passes(
+            &mut encoder,
+            &state.targets,
+            &state.dyn_bgs,
+            opts,
+            hovered_id,
+        );
         let passes_ms = passes_start.elapsed().as_secs_f64() * 1000.0;
         debug!("render_passes: {:.2}ms", passes_ms);
 
         // Submit picking readback
-        self.picking
-            .submit_readback(&mut encoder, &state.targets.object_id_texture, state.targets.size);
+        self.picking.submit_readback(
+            &mut encoder,
+            &state.targets.object_id_texture,
+            state.targets.size,
+        )?;
 
-        let output_buffer = gpu::readback_texture(
+        gpu::readback_texture(
             &self.ctx,
             &mut encoder,
             &state.targets.render_texture,
             width,
             height,
-        );
+            &mut self.readback,
+        )?;
 
         let submit_start = std::time::Instant::now();
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
@@ -1463,7 +1508,7 @@ impl Renderer3D {
         self.picking.poll_result(&self.ctx.device);
 
         let readback_start = std::time::Instant::now();
-        let result = gpu::map_readback(&self.ctx, &output_buffer, width, height);
+        let result = gpu::map_readback(&self.ctx, &self.readback)?;
         let readback_ms = readback_start.elapsed().as_secs_f64() * 1000.0;
         debug!("  readback: {:.2}ms ({}x{})", readback_ms, width, height);
 
@@ -1482,7 +1527,7 @@ impl Renderer3D {
             render_mode
         );
 
-        result
+        Ok(result)
     }
 
     /// Render using path tracer compute shader.
@@ -1493,7 +1538,7 @@ impl Renderer3D {
         opts: &Render3DOptions,
         width: u32,
         height: u32,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, render_core::ReadbackError> {
         pt::megakernel::render_path_traced(self, instances, camera, opts, width, height)
     }
 }

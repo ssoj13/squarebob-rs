@@ -1,0 +1,17 @@
+[package]
+name = "squarebob-treemap-harness"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[features]
+default = ["cpu"]
+cpu = []
+wgpu = []
+cuda = []
+
+[dependencies]
+log = "0.4"
+rayon = "1"
+squarebob-core = { path = "../../crates/squarebob-core" }

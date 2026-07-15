@@ -1,0 +1,23 @@
+[package]
+name = "squarebob-cache-harness"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+bincode = "1"
+crossbeam-channel = "0.5"
+directories = "6"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
+squarebob-core = { path = "../../crates/squarebob-core" }
+windows = { version = "0.62", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_Foundation",
+    "Win32_Security",
+] }

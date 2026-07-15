@@ -1,13 +1,12 @@
 //! Encode dialog adapter for the reusable `media-encoder` crate.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
-use media_encoder::{Comp, Frame, FrameSource};
+use media_encoder::{Comp, EncodeSessionToken, Frame, FrameSource};
 
 use crate::renderer::RenderMode;
 
@@ -21,11 +20,18 @@ pub(super) struct SquarebobEncodeSource {
     fps: f32,
     request_tx: Sender<EncodeFrameRequest>,
     request_rx: Receiver<EncodeFrameRequest>,
-    cancelled: AtomicBool,
+    session_token: EncodeSessionToken,
 }
 
 impl SquarebobEncodeSource {
-    fn new(width: u32, height: u32, frame_start: i32, frame_end: i32, fps: f32) -> Self {
+    fn new(
+        width: u32,
+        height: u32,
+        frame_start: i32,
+        frame_end: i32,
+        fps: f32,
+        session_token: EncodeSessionToken,
+    ) -> Self {
         let (request_tx, request_rx) = crossbeam_channel::unbounded();
         Self {
             width: width as usize,
@@ -35,12 +41,21 @@ impl SquarebobEncodeSource {
             fps: fps.max(1.0),
             request_tx,
             request_rx,
-            cancelled: AtomicBool::new(false),
+            session_token,
         }
     }
 
-    fn matches(&self, width: u32, height: u32, frame_start: i32, frame_end: i32, fps: f32) -> bool {
-        self.width == width as usize
+    fn matches(
+        &self,
+        width: u32,
+        height: u32,
+        frame_start: i32,
+        frame_end: i32,
+        fps: f32,
+        generation: u64,
+    ) -> bool {
+        self.session_token.generation() == generation
+            && self.width == width as usize
             && self.height == height as usize
             && self.frame_start == frame_start
             && self.frame_end == frame_end.max(frame_start)
@@ -56,7 +71,7 @@ impl SquarebobEncodeSource {
     }
 
     pub(super) fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Relaxed);
+        self.session_token.cancel();
     }
 }
 
@@ -74,7 +89,7 @@ impl FrameSource for SquarebobEncodeSource {
     fn get_frame(&self, frame_idx: i32, _blocking: bool) -> Option<Frame> {
         if frame_idx < self.frame_start
             || frame_idx > self.frame_end
-            || self.cancelled.load(Ordering::Relaxed)
+            || self.session_token.is_cancelled()
         {
             return None;
         }
@@ -83,6 +98,7 @@ impl FrameSource for SquarebobEncodeSource {
         if self
             .request_tx
             .send(EncodeFrameRequest {
+                generation: self.session_token.generation(),
                 frame_idx,
                 response_tx,
             })
@@ -92,7 +108,7 @@ impl FrameSource for SquarebobEncodeSource {
         }
 
         loop {
-            if self.cancelled.load(Ordering::Relaxed) {
+            if self.session_token.is_cancelled() {
                 return None;
             }
 
@@ -106,11 +122,16 @@ impl FrameSource for SquarebobEncodeSource {
 }
 
 pub(super) struct EncodeFrameRequest {
+    generation: u64,
     frame_idx: i32,
     response_tx: Sender<Option<Frame>>,
 }
 
 impl EncodeFrameRequest {
+    fn belongs_to(&self, source: &SquarebobEncodeSource) -> bool {
+        self.generation == source.session_token.generation()
+    }
+
     fn frame_idx(&self) -> i32 {
         self.frame_idx
     }
@@ -126,11 +147,6 @@ impl App {
             return;
         }
 
-        let was_encoding = self.encode_dialog.is_encoding;
-        if !was_encoding {
-            self.refresh_encode_source();
-        }
-
         let project = media_encoder::Project;
         let active_comp = self.encode_source.clone();
         let keep_open = self
@@ -142,18 +158,22 @@ impl App {
             self.show_encode_panel = false;
             return;
         }
+    }
 
-        if was_encoding && !self.encode_dialog.is_encoding {
+    /// Own lifecycle polling at app-frame scope, independent of encoder UI visibility.
+    pub(super) fn poll_encode_lifecycle(&mut self, ctx: &egui::Context) {
+        let was_encoding = self.encode_dialog.is_encoding();
+        self.encode_dialog.poll_encoding_state(ctx);
+        if was_encoding && !self.encode_dialog.is_encoding() {
             self.cancel_encode_sequence_source();
         }
-
-        if !self.encode_dialog.is_encoding {
+        if !self.encode_dialog.is_encoding() {
             self.refresh_encode_source();
         }
     }
 
     pub(super) fn refresh_encode_source(&mut self) {
-        if self.encode_dialog.is_encoding {
+        if self.encode_dialog.is_encoding() {
             return;
         }
 
@@ -168,14 +188,24 @@ impl App {
         let frame_start = self.encode_dialog.frame_start;
         let frame_end = self.encode_dialog.frame_end.max(frame_start);
         let fps = self.encode_dialog.fps.max(1.0);
+        let session_token = self.encode_dialog.session_token();
+        let generation = session_token.generation();
 
         if let Some(source) = &self.encode_sequence_source
-            && source.matches(w, h, frame_start, frame_end, fps) {
-                self.encode_source_size = (w, h);
-                return;
-            }
+            && source.matches(w, h, frame_start, frame_end, fps, generation)
+        {
+            self.encode_source_size = (w, h);
+            return;
+        }
 
-        let source = Arc::new(SquarebobEncodeSource::new(w, h, frame_start, frame_end, fps));
+        let source = Arc::new(SquarebobEncodeSource::new(
+            w,
+            h,
+            frame_start,
+            frame_end,
+            fps,
+            session_token,
+        ));
         let comp: Comp = source.clone();
         self.encode_sequence_source = Some(source);
         self.encode_source = Some(comp);
@@ -183,7 +213,7 @@ impl App {
     }
 
     pub(super) fn handle_image_sequence(&mut self, ctx: &egui::Context) {
-        if !self.encode_dialog.is_encoding {
+        if !self.encode_dialog.is_encoding() {
             return;
         }
 
@@ -195,6 +225,10 @@ impl App {
 
         if self.encode_active_frame.is_none() {
             if let Some(request) = source.try_next_request() {
+                if !request.belongs_to(&source) {
+                    request.complete(None);
+                    return;
+                }
                 let frame_idx = request.frame_idx();
                 if self.start_encode_frame(&source, frame_idx) {
                     self.encode_active_frame = Some(request);
@@ -221,14 +255,14 @@ impl App {
         }
 
         let pixels = self.capture_viewport(width, height);
-        let expected_len = width as usize * height as usize * 4;
-        if pixels.len() != expected_len {
-            request.complete(None);
-            self.cancel_encode_sequence_source();
-            return;
+        match Frame::rgba8(width as usize, height as usize, pixels) {
+            Ok(frame) => request.complete(Some(frame)),
+            Err(error) => {
+                log::error!("Captured invalid encode frame: {}", error);
+                request.complete(None);
+                self.cancel_encode_sequence_source();
+            }
         }
-
-        request.complete(Some(Frame::rgba8(width as usize, height as usize, pixels)));
     }
 
     fn start_encode_frame(&mut self, source: &SquarebobEncodeSource, frame_idx: i32) -> bool {

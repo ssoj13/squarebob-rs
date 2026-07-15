@@ -73,7 +73,13 @@ impl App {
                         // and is not invalidated for the duration of this call —
                         // we hold &mut self but never mutate self.tree here.
                         let root = unsafe { &*root_ptr };
-                        renderer::cpu::render(root, &self.viewport, &self.opts)
+                        match renderer::cpu::render(root, &self.viewport, &self.opts) {
+                            Ok(pixels) => pixels,
+                            Err(error) => {
+                                log::error!("CPU screenshot render rejected: {error}");
+                                Vec::new()
+                            }
+                        }
                     }
                     RenderBackend::Gpu => {
                         let root_ptr = match self.display_root() {
@@ -97,9 +103,10 @@ impl App {
             RenderMode::Mode3D => {
                 // If we already rendered this frame, just read back.
                 if self.last_render_frame_3d == self.frame_count
-                    && let Some(r) = &self.renderer_3d {
-                        return r.readback_render_texture();
-                    }
+                    && let Some(r) = &self.renderer_3d
+                {
+                    return r.readback_render_texture();
+                }
 
                 // Otherwise, render once and read back.
                 let root_ptr = match self.display_root() {
@@ -132,9 +139,11 @@ impl App {
 fn save_png(path: &str, w: u32, h: u32, pixels: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
     // Create parent directory if needed
     if let Some(parent) = std::path::Path::new(path).parent()
-        && !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     let img = image::RgbaImage::from_raw(w, h, pixels).ok_or("Invalid image dimensions")?;
     img.save(path)?;
     Ok(())

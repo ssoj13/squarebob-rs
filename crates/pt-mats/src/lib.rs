@@ -20,9 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 mod palette;
-pub use palette::{
-    auto_palette_for_source, hierarchical_path_value, sample_palette, Palette,
-};
+pub use palette::{Palette, auto_palette_for_source, hierarchical_path_value, sample_palette};
 
 // ============================================================================
 // Material Source - what data determines the material
@@ -376,8 +374,7 @@ fn apply_seed(value: f32, hash: u32, seed: u32) -> f32 {
     if seed == 0 {
         return value;
     }
-    let phase =
-        hash_to_float(hash.wrapping_mul(0x9E37_79B9).wrapping_add(seed));
+    let phase = hash_to_float(hash.wrapping_mul(0x9E37_79B9).wrapping_add(seed));
     (value + phase).fract()
 }
 
@@ -385,11 +382,7 @@ fn apply_seed(value: f32, hash: u32, seed: u32) -> f32 {
 /// final picker that the weighted CDF samples. Every branch returns
 /// a value in `[0, 1)` and preserves the global weight-as-PMF
 /// invariant — see [`classify_to_index`] for the contract.
-fn reshape(
-    seeded: f32,
-    input: &MaterialInput,
-    settings: &MaterializeSettings,
-) -> f32 {
+fn reshape(seeded: f32, input: &MaterialInput, settings: &MaterializeSettings) -> f32 {
     match settings.distribution {
         MaterialDistribution::Direct => seeded,
         MaterialDistribution::Stratified => {
@@ -452,12 +445,7 @@ pub fn override_picker(
     spatial_scale: f32,
     seed: u32,
 ) -> f32 {
-    let raw = hash_to_float(
-        input
-            .path_hash
-            .wrapping_mul(0x9E37_79B9)
-            .wrapping_add(seed),
-    );
+    let raw = hash_to_float(input.path_hash.wrapping_mul(0x9E37_79B9).wrapping_add(seed));
     let settings = MaterializeSettings {
         seed,
         distribution,

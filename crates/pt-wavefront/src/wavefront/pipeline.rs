@@ -29,6 +29,8 @@ pub struct WfDims {
     pub _pad: [u32; 2],
 }
 
+const RNG_WGSL: &str = include_str!("../../../pt-core/src/rng.wgsl");
+const SHADER_CONTRACTS_WGSL: &str = include_str!("../../../pt-core/src/shader_contracts.wgsl");
 const RAYGEN_WGSL: &str = include_str!("raygen.wgsl");
 const INTERSECT_WGSL: &str = include_str!("intersect.wgsl");
 const SHADE_WGSL: &str = include_str!("shade.wgsl");
@@ -53,6 +55,7 @@ const _: () = assert!(WF_DIMS_SIZE == 32);
 const _: () = assert!(WF_DIMS_SIZE <= TILE_SLOT_STRIDE);
 const _: () = assert!(WF_COUNTS_SIZE == 16);
 const _: () = assert!(WF_COUNTS_SIZE <= TILE_SLOT_STRIDE);
+const _: () = assert!(MAX_TILE_CAPACITY as u64 * TILE_SLOT_STRIDE <= u32::MAX as u64);
 /// Default initial tile slot capacity. Grows on demand via `prepare_tiles`.
 pub const DEFAULT_TILE_CAPACITY: u32 = 64;
 /// Hard upper bound on tile count per frame. With 256-byte stride this caps
@@ -117,7 +120,11 @@ pub struct WavefrontPipeline {
 }
 
 impl WavefrontPipeline {
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, render_core::GpuLayoutError> {
         debug!("WavefrontPipeline::new {}x{}", width, height);
         let (raygen_pipeline, raygen_bgl) = create_pipeline(
             device,
@@ -184,10 +191,10 @@ impl WavefrontPipeline {
 
         // Clamp dimensions up-front so `bufs` and `(width, height)` agree
         // from the very first frame; no Option scaffolding needed.
-        let (clamped_w, clamped_h) = Self::clamp_dimensions(device, width, height);
-        let bufs = WfBuffers::build(device, clamped_w, clamped_h);
+        let (clamped_w, clamped_h) = Self::clamp_dimensions(device, width, height)?;
+        let bufs = WfBuffers::build(device, clamped_w, clamped_h)?;
 
-        Self {
+        Ok(Self {
             raygen_pipeline,
             intersect_pipeline,
             shade_pipeline,
@@ -206,16 +213,21 @@ impl WavefrontPipeline {
             width: clamped_w,
             height: clamped_h,
             cur_buf: 0,
-        }
+        })
     }
 
     /// Resize ray/hit buffers for new viewport (or wavefront tile capacity).
     /// Caller must rebuild bind groups after this.
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<(), render_core::GpuLayoutError> {
         if self.width == width && self.height == height {
-            return;
+            return Ok(());
         }
-        let (clamped_w, clamped_h) = Self::clamp_dimensions(device, width, height);
+        let (clamped_w, clamped_h) = Self::clamp_dimensions(device, width, height)?;
         if clamped_w != width || clamped_h != height {
             debug!(
                 "WavefrontPipeline::resize clamp {}x{} -> {}x{} (binding limit)",
@@ -224,10 +236,12 @@ impl WavefrontPipeline {
         } else {
             debug!("WavefrontPipeline::resize {}x{}", width, height);
         }
+        let bufs = WfBuffers::build(device, clamped_w, clamped_h)?;
         self.width = clamped_w;
         self.height = clamped_h;
-        self.bufs = WfBuffers::build(device, clamped_w, clamped_h);
+        self.bufs = bufs;
         self.cur_buf = 0;
+        Ok(())
     }
 
     /// Clamps render dimensions against two budgets:
@@ -245,8 +259,12 @@ impl WavefrontPipeline {
     ///
     /// Returns the larger of the two as the effective max pixel
     /// count. Logs `WARN` on clamp with which budget triggered it.
-    fn clamp_dimensions(device: &wgpu::Device, width: u32, height: u32) -> (u32, u32) {
-        let n = (width * height).max(1) as u64;
+    fn clamp_dimensions(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<(u32, u32), render_core::GpuLayoutError> {
+        let n = render_core::checked_2d_element_count("wavefront frame", width, height)?;
         let ray_sz = std::mem::size_of::<WfRay>() as u64;
         let hit_sz = std::mem::size_of::<WfHit>() as u64;
         // AOV buffers are vec4<f32> = 16 B per pixel each.
@@ -266,7 +284,7 @@ impl WavefrontPipeline {
         };
         let max_pixels = max_pixels_binding.min(max_pixels_vram);
         if n <= max_pixels {
-            return (width, height);
+            return Ok((width, height));
         }
         let scale = (max_pixels as f64 / n as f64).sqrt();
         let new_w = (width as f64 * scale).floor().max(1.0) as u32;
@@ -286,19 +304,14 @@ impl WavefrontPipeline {
             per_pixel_total,
             max_pixels
         );
-        (new_w.max(1), new_h.max(1))
+        Ok((new_w.max(1), new_h.max(1)))
     }
-
 
     /// Get current/next ray buffers (ping-pong).
     pub fn ray_bufs(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {
         let a = &self.bufs.ray_a;
         let b = &self.bufs.ray_b;
-        if self.cur_buf == 0 {
-            (a, b)
-        } else {
-            (b, a)
-        }
+        if self.cur_buf == 0 { (a, b) } else { (b, a) }
     }
 
     /// Get raw ray buffers (a, b) without ping-pong logic.
@@ -387,15 +400,33 @@ impl WavefrontPipeline {
 
     /// Dynamic offset (bytes) for tile `idx` into the per-tile dims/counts buffers.
     ///
-    /// Overflow analysis: at `TILE_SLOT_STRIDE = 256` u32 wraps near ~16M tiles —
-    /// far above any realistic resolution × tile-size combination. The invariant
-    /// is debug-asserted (so failures fire in tests before wgpu validation does)
-    /// and the math goes through u64 so release builds never silently wrap.
-    pub fn tile_offset(&self, idx: u32) -> u32 {
-        debug_assert!(idx < self.tile_capacity, "tile_idx out of range");
-        let off = idx as u64 * TILE_SLOT_STRIDE;
-        debug_assert!(off <= u32::MAX as u64, "tile offset {off} overflows u32");
-        off as u32
+    /// Validates the allocated slot range and the `u32` dynamic-offset ABI.
+    /// Arithmetic stays in `u64`; invalid indices and conversions are recoverable.
+    fn checked_tile_offset(&self, idx: u32) -> Result<u64, render_core::GpuLayoutError> {
+        if idx >= self.tile_capacity {
+            return Err(render_core::GpuLayoutError::LimitExceeded {
+                context: "wavefront tile index",
+                value: u64::from(idx),
+                limit: u64::from(self.tile_capacity.saturating_sub(1)),
+                limit_name: "allocated tile capacity",
+            });
+        }
+        u64::from(idx).checked_mul(TILE_SLOT_STRIDE).ok_or(
+            render_core::GpuLayoutError::ValueTooLarge {
+                context: "wavefront tile offset",
+                value: u64::from(idx),
+                target: "u64 byte offset",
+            },
+        )
+    }
+
+    pub fn tile_offset(&self, idx: u32) -> Result<u32, render_core::GpuLayoutError> {
+        let offset = self.checked_tile_offset(idx)?;
+        u32::try_from(offset).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+            context: "wavefront tile dynamic offset",
+            value: offset,
+            target: "u32",
+        })
     }
 
     /// Upload all per-tile dims and the per-tile count-init source for one frame's
@@ -409,19 +440,31 @@ impl WavefrontPipeline {
         queue: &wgpu::Queue,
         dims: &[WfDims],
         count_inits: &[[u32; 4]],
-    ) -> bool {
-        assert_eq!(dims.len(), count_inits.len(), "tile param length mismatch");
-        let n = dims.len() as u32;
-        if n == 0 {
-            return false;
+    ) -> Result<bool, render_core::GpuLayoutError> {
+        if dims.len() != count_inits.len() {
+            return Err(render_core::GpuLayoutError::LengthMismatch {
+                context: "wavefront tile parameters",
+                left: dims.len(),
+                right: count_inits.len(),
+            });
         }
-        assert!(
-            n <= MAX_TILE_CAPACITY,
-            "tile count {} exceeds MAX_TILE_CAPACITY ({}). Increase \
-             wavefront tile_size or raise MAX_TILE_CAPACITY.",
-            n,
-            MAX_TILE_CAPACITY
-        );
+        let n =
+            u32::try_from(dims.len()).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+                context: "wavefront tile count",
+                value: u64::try_from(dims.len()).unwrap_or(u64::MAX),
+                target: "u32",
+            })?;
+        if n == 0 {
+            return Ok(false);
+        }
+        if n > MAX_TILE_CAPACITY {
+            return Err(render_core::GpuLayoutError::LimitExceeded {
+                context: "wavefront tile count",
+                value: u64::from(n),
+                limit: u64::from(MAX_TILE_CAPACITY),
+                limit_name: "MAX_TILE_CAPACITY",
+            });
+        }
         let realloc = if n > self.tile_capacity {
             // Grow to next power-of-two ≥ n, capped reasonably.
             let new_cap = n.next_power_of_two().max(DEFAULT_TILE_CAPACITY);
@@ -438,21 +481,30 @@ impl WavefrontPipeline {
             false
         };
 
-        let dims_blob = pack_tile_slots(dims);
+        let dims_blob = pack_tile_slots(dims)?;
         queue.write_buffer(&self.tile_dims_buf, 0, &dims_blob);
-        let count_blob = pack_tile_slots(count_inits);
+        let count_blob = pack_tile_slots(count_inits)?;
         queue.write_buffer(&self.count_init_src, 0, &count_blob);
 
-        realloc
+        Ok(realloc)
     }
 
     /// Reset tile `idx`'s [count_in, count_out, _, _] block by copying the
     /// init slot into the live counts buffer. **This goes through the encoder
     /// and is therefore ordered with the subsequent dispatches**, fixing the
     /// race that exists when using `queue.write_buffer` per-tile.
-    pub fn reset_tile_count(&self, encoder: &mut wgpu::CommandEncoder, idx: u32) {
-        debug_assert!(idx < self.tile_capacity, "tile_idx out of range");
-        let off = u64::from(idx) * TILE_SLOT_STRIDE;
+    pub fn reset_tile_count(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        idx: u32,
+    ) -> Result<u32, render_core::GpuLayoutError> {
+        let off = self.checked_tile_offset(idx)?;
+        let dynamic_offset =
+            u32::try_from(off).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+                context: "wavefront tile dynamic offset",
+                value: off,
+                target: "u32",
+            })?;
         encoder.copy_buffer_to_buffer(
             &self.count_init_src,
             off,
@@ -460,6 +512,7 @@ impl WavefrontPipeline {
             off,
             WF_COUNTS_SIZE,
         );
+        Ok(dynamic_offset)
     }
 }
 
@@ -467,8 +520,11 @@ impl WfBuffers {
     /// Builds the full per-frame buffer set for `width × height`. Used by
     /// `WavefrontPipeline::new` and `resize` so the allocation policy
     /// (sizes, usages) lives in one place.
-    fn build(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let n = (width * height) as u64;
+    fn build(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, render_core::GpuLayoutError> {
         let ray_sz = std::mem::size_of::<WfRay>() as u64;
         let hit_sz = std::mem::size_of::<WfHit>() as u64;
         // 16 bytes per pixel for albedo / normal AOVs (vec4<f32>). Sized at
@@ -482,29 +538,80 @@ impl WfBuffers {
         // `copy_buffer_to_buffer` into a mappable staging buffer each
         // frame.
         let aov = storage | BufferUsages::COPY_SRC;
-        Self {
-            ray_a: make_buffer(device, "wf_ray_a", n * ray_sz, storage),
-            ray_b: make_buffer(device, "wf_ray_b", n * ray_sz, storage),
-            hit: make_buffer(device, "wf_hit", n * hit_sz, storage),
-            albedo: make_buffer(device, "wf_albedo_aov", n * aov_sz, aov),
-            normal: make_buffer(device, "wf_normal_aov", n * aov_sz, aov),
-        }
+        let size = |context: &'static str, bytes_per_pixel: u64| {
+            render_core::checked_2d_storage_buffer_size(
+                device,
+                context,
+                width,
+                height,
+                bytes_per_pixel,
+            )
+        };
+        Ok(Self {
+            ray_a: make_buffer(
+                device,
+                "wf_ray_a",
+                size("wavefront ray A", ray_sz)?,
+                storage,
+            ),
+            ray_b: make_buffer(
+                device,
+                "wf_ray_b",
+                size("wavefront ray B", ray_sz)?,
+                storage,
+            ),
+            hit: make_buffer(device, "wf_hit", size("wavefront hits", hit_sz)?, storage),
+            albedo: make_buffer(
+                device,
+                "wf_albedo_aov",
+                size("wavefront albedo AOV", aov_sz)?,
+                aov,
+            ),
+            normal: make_buffer(
+                device,
+                "wf_normal_aov",
+                size("wavefront normal AOV", aov_sz)?,
+                aov,
+            ),
+        })
     }
 }
 
 /// Pack a slice of `Pod` items into a `TILE_SLOT_STRIDE`-aligned byte blob
 /// suitable for upload as a per-tile dynamic-offset buffer. Each slot
 /// holds the item's bytes followed by zero padding to the next stride.
-pub fn pack_tile_slots<T: Pod>(items: &[T]) -> Vec<u8> {
-    let stride = TILE_SLOT_STRIDE as usize;
+pub fn pack_tile_slots<T: Pod>(items: &[T]) -> Result<Vec<u8>, render_core::GpuLayoutError> {
+    let stride = usize::try_from(TILE_SLOT_STRIDE).map_err(|_| {
+        render_core::GpuLayoutError::ValueTooLarge {
+            context: "wavefront tile slot stride",
+            value: TILE_SLOT_STRIDE,
+            target: "usize",
+        }
+    })?;
     let elem_size = std::mem::size_of::<T>();
-    debug_assert!(elem_size <= stride, "item too large for tile slot");
-    let mut out = vec![0u8; items.len() * stride];
+    if elem_size > stride {
+        return Err(render_core::GpuLayoutError::LimitExceeded {
+            context: "wavefront tile slot element",
+            value: u64::try_from(elem_size).unwrap_or(u64::MAX),
+            limit: TILE_SLOT_STRIDE,
+            limit_name: "TILE_SLOT_STRIDE",
+        });
+    }
+    let len =
+        items
+            .len()
+            .checked_mul(stride)
+            .ok_or(render_core::GpuLayoutError::ValueTooLarge {
+                context: "wavefront tile slot upload",
+                value: u64::try_from(items.len()).unwrap_or(u64::MAX),
+                target: "usize byte length",
+            })?;
+    let mut out = render_core::try_vec_filled("wavefront tile slot upload", len, 0u8)?;
     for (i, item) in items.iter().enumerate() {
         let off = i * stride;
         out[off..off + elem_size].copy_from_slice(bytemuck::bytes_of(item));
     }
-    out
+    Ok(out)
 }
 
 // ── pipeline / bgl helpers ──
@@ -515,9 +622,10 @@ fn create_pipeline(
     name: &str,
     entries: &[wgpu::BindGroupLayoutEntry],
 ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+    let shader_source = format!("{RNG_WGSL}\n{SHADER_CONTRACTS_WGSL}\n{wgsl}");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&format!("wf_{name}_shader")),
-        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     });
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(&format!("wf_{name}_bgl")),
@@ -553,9 +661,7 @@ fn create_tile_counts_buf(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer 
         device,
         "wf_tile_counts",
         u64::from(capacity) * TILE_SLOT_STRIDE,
-        wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
     )
 }
 
@@ -564,9 +670,7 @@ fn create_count_init_src(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
         device,
         "wf_tile_count_init_src",
         u64::from(capacity) * TILE_SLOT_STRIDE,
-        wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
     )
 }
 
@@ -736,7 +840,7 @@ mod tests {
     #[test]
     fn pack_tile_slots_layout() {
         let items: [[u32; 4]; 3] = [[10, 0, 0, 0], [20, 0, 0, 0], [30, 0, 0, 0]];
-        let blob = pack_tile_slots(&items);
+        let blob = pack_tile_slots(&items).expect("test tile slots fit");
         assert_eq!(blob.len(), 3 * TILE_SLOT_STRIDE as usize);
         // Slot 0 starts at byte 0
         assert_eq!(&blob[0..4], &10u32.to_le_bytes());
@@ -752,7 +856,11 @@ mod tests {
     #[test]
     fn pack_tile_slots_empty() {
         let items: [[u32; 4]; 0] = [];
-        assert!(pack_tile_slots(&items).is_empty());
+        assert!(
+            pack_tile_slots(&items)
+                .expect("empty tile upload is valid")
+                .is_empty()
+        );
     }
 
     /// `WfDims` round-trips through `pack_tile_slots`.
@@ -767,7 +875,7 @@ mod tests {
             tile_y: 256,
             _pad: [0, 0],
         };
-        let blob = pack_tile_slots(std::slice::from_ref(&dims));
+        let blob = pack_tile_slots(std::slice::from_ref(&dims)).expect("test tile slots fit");
         let recovered: &WfDims = bytemuck::from_bytes(&blob[0..WF_DIMS_SIZE as usize]);
         assert_eq!(recovered.full_width, 1920);
         assert_eq!(recovered.tile_x, 768);

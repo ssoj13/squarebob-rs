@@ -1,21 +1,21 @@
 //! App state definitions: App struct, PersistState, defaults.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
-use crossbeam_channel::Receiver;
 use eframe::egui;
 use egui_dock::DockState;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use super::DockTab;
 
 use super::presets::RenderPreset;
+use crate::cache::CacheService;
 use crate::events::EventBus;
 use crate::exclusions::Exclusions;
+use crate::path_key::ScanRoot;
 use crate::renderer::{OrbitCamera, Render3DOptions, RenderBackend, RenderMode};
+use crate::scanner::ScanSession;
 
 /// Snapshot of camera framing + depth-of-field parameters held by a
 /// single bookmark slot under Presets → Views. LMB save populates all
@@ -40,10 +40,10 @@ impl Default for CameraBookmark {
     }
 }
 use crate::scanner::ScanMsg;
-use squarebob_core::DirEntry;
 use render_3d::Renderer3D;
-use render_core::gpu::GpuContext;
 use render_core::Viewport;
+use render_core::gpu::GpuContext;
+use squarebob_core::DirEntry;
 use treemap::GpuRenderer2D;
 use treemap::TreeMapOptions;
 
@@ -202,11 +202,30 @@ pub(super) struct SavedOpts {
     pub light_y: f64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ScanPresentation {
+    #[default]
+    Empty,
+    CachePreview {
+        generation: u64,
+    },
+    LivePartial {
+        generation: u64,
+    },
+    LiveComplete {
+        generation: u64,
+    },
+}
+
 pub struct App {
     pub(super) events: EventBus,
     pub(super) scan_path: String,
-    pub(super) scan_rx: Option<Receiver<ScanMsg>>,
-    pub(super) scan_cancel: Option<Arc<AtomicBool>>,
+    pub(super) active_root: Option<ScanRoot>,
+    pub(super) scan_generation: u64,
+    pub(super) active_scan: Option<ScanSession>,
+    pub(super) retired_scans: Vec<ScanSession>,
+    pub(super) cache_service: Option<CacheService>,
+    pub(super) scan_presentation: ScanPresentation,
     pub(super) tree: Option<DirEntry>,
     pub(super) filtered_tree: Option<DirEntry>,
     pub(super) treemap_tex: Option<egui::TextureHandle>,
@@ -431,7 +450,8 @@ pub struct App {
     pub(super) show_encode_panel: bool,
     pub(super) encode_dialog: media_encoder::EncodeDialog,
     pub(super) encode_source: Option<media_encoder::Comp>,
-    pub(super) encode_sequence_source: Option<Arc<crate::app::image_sequence::SquarebobEncodeSource>>,
+    pub(super) encode_sequence_source:
+        Option<Arc<crate::app::image_sequence::SquarebobEncodeSource>>,
     pub(super) encode_source_size: (u32, u32),
     pub(super) encode_active_frame: Option<crate::app::image_sequence::EncodeFrameRequest>,
     pub(super) encode_render_state_active: bool,
@@ -449,6 +469,8 @@ pub struct App {
 
 #[derive(Default)]
 pub(super) struct ScanProgress {
+    pub phase: Option<crate::scanner::ScanPhase>,
+    pub items: u64,
     pub files: u64,
     pub dirs: u64,
     pub bytes: u64,
@@ -457,6 +479,7 @@ pub(super) struct ScanProgress {
     /// Which backend this run uses (shown in status bar / title).
     pub scan_engine_label: Option<String>,
     pub error: Option<String>,
+    pub warning: Option<String>,
     pub start_time: Option<std::time::Instant>,
     pub elapsed_secs: f32,
 }
@@ -471,8 +494,12 @@ impl Default for App {
         Self {
             events: EventBus::new(),
             scan_path: String::new(),
-            scan_rx: None,
-            scan_cancel: None,
+            active_root: None,
+            scan_generation: 0,
+            active_scan: None,
+            retired_scans: Vec::new(),
+            cache_service: None,
+            scan_presentation: ScanPresentation::Empty,
             tree: None,
             filtered_tree: None,
             treemap_tex: None,
@@ -491,8 +518,7 @@ impl Default for App {
             materials_last_save_path: None,
             materials_rename_buffer: None,
             materials_weight_log: false,
-            materials_preset_bank:
-                crate::app::settings::material_presets::load_preset_bank(),
+            materials_preset_bank: crate::app::settings::material_presets::load_preset_bank(),
             materials_preset_button_state: playa_ae::PresetButtonState::default(),
             color_pipeline: color_pipeline::ColorPipeline::new(
                 &color_pipeline::ColorPipelineSettings::default(),
@@ -539,7 +565,7 @@ impl Default for App {
             cache_age: None,
             show_free_space: false,
             display_tree_cache: None,
-            exclusions: Exclusions::new(""),
+            exclusions: Exclusions::default(),
             show_excluded: false,
             viewport: Viewport::default(),
             render_backend: RenderBackend::default(),

@@ -59,7 +59,9 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 let fs_ok = scanner_ntfs::is_ntfs_available(&path);
                 println!("is_ntfs_available: {}", fs_ok);
                 if !fs_ok {
-                    println!("MFT fast path: no (not NTFS or path has no drive letter). App will use jwalk here.");
+                    println!(
+                        "MFT fast path: no (not NTFS or path has no drive letter). App will use jwalk here."
+                    );
                     return Ok(());
                 }
                 scanner_ntfs::probe_raw_volume_access(&path)?;

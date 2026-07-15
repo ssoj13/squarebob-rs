@@ -357,6 +357,12 @@ pub struct ColorPipeline {
     /// Surfaced to the UI so the user can see whether the file
     /// actually loaded or fell through silently.
     custom_lut_status: CustomLutStatus,
+    /// Whether OCIO output contains code values that must be decoded into
+    /// eframe's linear composition transport before final output encoding.
+    decode_code_values_for_transport: bool,
+    /// Hard failure from the most recent settings rebuild. Kept until a
+    /// different settings hash rebuilds successfully.
+    last_error: Option<String>,
 }
 
 /// Status of the optional `Custom LUT` slot, observable by the host
@@ -382,22 +388,50 @@ pub enum CustomLutStatus {
     },
 }
 
-/// Baked 3D LUT snapshot — raw flat RGB array plus the grid size.
-/// Stored as `Vec<f32>` so the GPU upload path can `bytemuck`-cast
-/// it straight into a `Rgba32Float` (or `Rgb32Float`) texture
-/// payload without a second copy.
+/// Failure to build a processor or its shaped GPU representation.
+#[derive(Debug, thiserror::Error)]
+pub enum ColorPipelineError {
+    /// OCIO config or processor construction failed.
+    #[error(transparent)]
+    Ocio(#[from] vfx_ocio::OcioError),
+    /// LUT dimensions, allocation, or bake failed.
+    #[error("{0}")]
+    Lut(String),
+    /// Selected OCIO view requires an HDR surface that eframe does not expose.
+    #[error(
+        "OCIO view '{view}' on display '{display}' requires HDR output; current compositor is SDR"
+    )]
+    UnsupportedHdrOutput { display: String, view: String },
+}
+
+/// Logarithmic scene-linear domain used by a baked 3D LUT.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LutShaper {
+    /// Lowest non-zero exposure represented by the logarithmic section.
+    pub min_ev: f32,
+    /// Highest exposure represented without clipping.
+    pub max_ev: f32,
+}
+
+impl Default for LutShaper {
+    fn default() -> Self {
+        Self {
+            min_ev: -12.0,
+            max_ev: 15.0,
+        }
+    }
+}
+
+/// Baked 3D LUT snapshot plus its scene-linear coordinate transform.
 #[derive(Clone, Debug)]
 pub struct BakedLut3D {
     /// Grid dimensions per axis. The flat buffer length is
     /// `size * size * size * 3` floats.
     pub size: usize,
-    /// Scan order matches `vfx_ocio::BakedLut3D::as_slice()`:
-    /// `idx = r * size² + g * size + b` — **B varies fastest, R
-    /// slowest** (OCIO canonical). The renderer host transposes
-    /// this into `wgpu`'s X-fastest layout when uploading to a
-    /// `Texture3D`, so consumers never see the difference, but
-    /// authors of synthetic LUTs (e.g. [`identity_lut_data`])
-    /// must respect this order.
+    /// Scene-linear to LUT-coordinate transform used during this bake.
+    pub shaper: LutShaper,
+    /// OCIO canonical order: B fastest, then G, then R. The renderer
+    /// transposes this into wgpu's X-fastest texture layout on upload.
     pub data: Vec<f32>,
 }
 
@@ -407,29 +441,100 @@ pub struct BakedLut3D {
 /// the right compromise for an interactive viewport.
 pub const DEFAULT_LUT_SIZE: usize = 33;
 
-/// Generate an identity 3D LUT (input == output) over `[0,1]^3`
-/// in `size³` scan-order RGB triples, matching the
-/// `r + g*size + b*size²` convention `vfx_ocio::Baker` emits.
-/// Used as a safe sentinel when a real bake fails — the GPU
-/// upload then shows scene-linear samples unchanged rather than
-/// keeping the previous, possibly unrelated, OCIO bake bound.
-fn identity_lut_data(size: usize) -> Vec<f32> {
-    let denom = (size.saturating_sub(1)).max(1) as f32;
-    let mut out = Vec::with_capacity(size * size * size * 3);
-    // OCIO canonical order — `idx = r*N² + g*N + b`. Matches
-    // `vfx_ocio::Baker::bake_lut_3d`'s output layout so the
-    // renderer's upload code can use one transposition path for
-    // both real bakes and this identity sentinel.
+fn lut_element_count(size: usize) -> Result<usize, String> {
+    size.checked_pow(3)
+        .and_then(|count| count.checked_mul(3))
+        .ok_or_else(|| format!("3D LUT size {size} overflows usize"))
+}
+
+fn shaper_decode(index: usize, size: usize, shaper: LutShaper) -> f32 {
+    if index == 0 {
+        return 0.0;
+    }
+    let log_steps = size.saturating_sub(2).max(1);
+    let t = (index - 1) as f32 / log_steps as f32;
+    (shaper.min_ev + t * (shaper.max_ev - shaper.min_ev)).exp2()
+}
+
+fn shaped_lut_inputs(size: usize, shaper: LutShaper) -> Result<Vec<[f32; 3]>, String> {
+    if size < 3
+        || !shaper.min_ev.is_finite()
+        || !shaper.max_ev.is_finite()
+        || shaper.min_ev >= shaper.max_ev
+    {
+        return Err(format!(
+            "invalid LUT shaper: size={size}, min_ev={}, max_ev={}",
+            shaper.min_ev, shaper.max_ev
+        ));
+    }
+    let texel_count = lut_element_count(size)? / 3;
+    let mut inputs = Vec::new();
+    inputs
+        .try_reserve_exact(texel_count)
+        .map_err(|error| format!("cannot allocate {size}³ LUT: {error}"))?;
     for r in 0..size {
         for g in 0..size {
             for b in 0..size {
-                out.push(r as f32 / denom);
-                out.push(g as f32 / denom);
-                out.push(b as f32 / denom);
+                inputs.push([
+                    shaper_decode(r, size, shaper),
+                    shaper_decode(g, size, shaper),
+                    shaper_decode(b, size, shaper),
+                ]);
             }
         }
     }
-    out
+    Ok(inputs)
+}
+
+fn display_encoded_to_surface_linear(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn bake_shaped_lut(
+    processor: &vfx_ocio::Processor,
+    size: usize,
+    shaper: LutShaper,
+    decode_code_values_for_transport: bool,
+) -> Result<BakedLut3D, String> {
+    let mut samples = shaped_lut_inputs(size, shaper)?;
+    processor.apply_rgb(&mut samples);
+    let element_count = lut_element_count(size)?;
+    let mut data = Vec::new();
+    data.try_reserve_exact(element_count)
+        .map_err(|error| format!("cannot allocate baked {size}³ LUT: {error}"))?;
+    for sample in samples {
+        // OCIO display processors return display-encoded values. The
+        // eframe consumes a linear offscreen texture and performs the sRGB
+        // transfer in its final output stage. Decode here so the transport
+        // encode/decode pair preserves OCIO code values without double-OETF.
+        data.extend(sample.map(|value| {
+            if !value.is_finite() {
+                0.0
+            } else if decode_code_values_for_transport {
+                display_encoded_to_surface_linear(value)
+            } else {
+                value
+            }
+        }));
+    }
+    Ok(BakedLut3D { size, shaper, data })
+}
+
+fn identity_lut(size: usize, shaper: LutShaper) -> Result<BakedLut3D, String> {
+    let samples = shaped_lut_inputs(size, shaper)?;
+    let element_count = lut_element_count(size)?;
+    let mut data = Vec::new();
+    data.try_reserve_exact(element_count)
+        .map_err(|error| format!("cannot allocate identity {size}³ LUT: {error}"))?;
+    for sample in samples {
+        data.extend(sample);
+    }
+    Ok(BakedLut3D { size, shaper, data })
 }
 
 impl ColorPipeline {
@@ -455,11 +560,14 @@ impl ColorPipeline {
             last_hash: 0,
             lut_upload_pending: false,
             custom_lut_status: CustomLutStatus::NotSet,
+            decode_code_values_for_transport: false,
+            last_error: None,
         };
-        // Initial build — errors are logged and leave `processor`
-        // as `None`. Callers that try to `apply_cpu` on a `None`
-        // processor get a no-op pass-through and a log entry.
-        let _ = pipe.rebuild(settings);
+        let hash = settings.build_hash();
+        if let Err(error) = pipe.rebuild(settings) {
+            pipe.install_error_fallback(error.to_string());
+        }
+        pipe.last_hash = hash;
         pipe
     }
 
@@ -467,10 +575,7 @@ impl ColorPipeline {
     /// from the cached one. No-op otherwise. Returns `Ok(())` on
     /// success or a no-op skip; `Err` is reserved for hard
     /// build failures that the host wants to surface.
-    pub fn ensure(
-        &mut self,
-        settings: &ColorPipelineSettings,
-    ) -> Result<(), vfx_ocio::OcioError> {
+    pub fn ensure(&mut self, settings: &ColorPipelineSettings) -> Result<(), ColorPipelineError> {
         let hash = settings.build_hash();
         if hash == self.last_hash {
             return Ok(());
@@ -482,19 +587,43 @@ impl ColorPipeline {
             self.config = config;
             self.config_source = resolved_source;
         }
-        self.rebuild(settings)?;
+        let result = self.rebuild(settings);
         self.last_hash = hash;
-        Ok(())
+        match result {
+            Ok(()) => {
+                self.last_error = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.install_error_fallback(error.to_string());
+                Err(error)
+            }
+        }
     }
 
-    fn rebuild(
-        &mut self,
-        settings: &ColorPipelineSettings,
-    ) -> Result<(), vfx_ocio::OcioError> {
+    fn install_error_fallback(&mut self, mut message: String) {
+        log::error!("color-pipeline: rebuild failed: {message}");
+        self.processor = None;
+        self.decode_code_values_for_transport = false;
+        self.lut_3d = match identity_lut(DEFAULT_LUT_SIZE, LutShaper::default()) {
+            Ok(identity) => Some(identity),
+            Err(fallback_error) => {
+                log::error!("color-pipeline: error fallback LUT failed: {fallback_error}");
+                message.push_str("; error fallback LUT failed: ");
+                message.push_str(&fallback_error);
+                None
+            }
+        };
+        self.lut_upload_pending = self.lut_3d.is_some();
+        self.last_error = Some(message);
+    }
+
+    fn rebuild(&mut self, settings: &ColorPipelineSettings) -> Result<(), ColorPipelineError> {
         if settings.mode == ColorMode::BuiltIn {
             // Built-in tonemaps don't need an OCIO processor —
             // their math is in the blit shader.
             self.processor = None;
+            self.decode_code_values_for_transport = false;
             // Mark a pending upload so the host re-pushes the
             // identity LUT (or whatever the renderer's default is)
             // when the user toggles back from OCIO mode. Without
@@ -513,6 +642,18 @@ impl ColorPipeline {
             self.custom_lut_status = CustomLutStatus::NotSet;
             return Ok(());
         }
+        let output_encoding = self.output_encoding(&settings.ocio_display, &settings.ocio_view);
+        if output_encoding == vfx_ocio::Encoding::Hdr {
+            return Err(ColorPipelineError::UnsupportedHdrOutput {
+                display: settings.ocio_display.clone(),
+                view: settings.ocio_view.clone(),
+            });
+        }
+        let decode_code_values_for_transport = !matches!(
+            output_encoding,
+            vfx_ocio::Encoding::SceneLinear | vfx_ocio::Encoding::DisplayLinear
+        );
+
         // OCIO mode — build a display processor via
         // `DisplayViewTransform`. The user-picked look from the UI
         // (when present) goes into the transform's
@@ -605,29 +746,32 @@ impl ColorPipeline {
             }
         };
 
-        // Bake the processor into a 3D LUT for the GPU codepath.
-        // The CPU codepath calls `processor.apply_rgb` directly;
-        // GPU uploads `lut_3d.data` into a Texture3D and the blit
-        // shader does a trilinear sample.
-        let baker = vfx_ocio::Baker::new(&proc);
-        let baked = match baker.bake_lut_3d(DEFAULT_LUT_SIZE) {
-            Ok(b) => BakedLut3D {
-                size: DEFAULT_LUT_SIZE,
-                data: b.as_slice().to_vec(),
-            },
-            Err(e) => {
+        // Bake over a logarithmic scene-linear domain. A plain [0,1]³
+        // LUT clips every HDR highlight before the display transform.
+        let shaper = LutShaper::default();
+        let baked = match bake_shaped_lut(
+            &proc,
+            DEFAULT_LUT_SIZE,
+            shaper,
+            decode_code_values_for_transport,
+        ) {
+            Ok(baked) => baked,
+            Err(error) => {
                 log::warn!(
-                    "color-pipeline: bake_lut_3d({DEFAULT_LUT_SIZE}) failed: {e}; \
-                     pushing an identity LUT so the GPU codepath shows the raw \
-                     scene-linear sample instead of a stale prior bake"
+                    "color-pipeline: shaped {DEFAULT_LUT_SIZE}³ bake failed: {error}; \
+                     uploading a shaped identity LUT instead of retaining stale data"
                 );
-                BakedLut3D {
-                    size: DEFAULT_LUT_SIZE,
-                    data: identity_lut_data(DEFAULT_LUT_SIZE),
-                }
+                identity_lut(DEFAULT_LUT_SIZE, shaper).map_err(|fallback_error| {
+                    log::error!(
+                        "color-pipeline: identity LUT construction failed after bake error: \
+                         {fallback_error}"
+                    );
+                    ColorPipelineError::Lut(fallback_error)
+                })?
             }
         };
         self.processor = Some(proc);
+        self.decode_code_values_for_transport = decode_code_values_for_transport;
         self.lut_3d = Some(baked);
         self.lut_upload_pending = true;
         Ok(())
@@ -648,29 +792,43 @@ impl ColorPipeline {
         &self.custom_lut_status
     }
 
-    /// One-shot poll for the host's per-frame GPU upload step.
-    /// Returns `Some(&BakedLut3D)` exactly once per fresh bake;
-    /// subsequent calls return `None` until the next rebuild
-    /// sets the flag again. Caller is expected to push the
-    /// returned slice into the renderer's blit-side 3D LUT
-    /// binding.
-    pub fn take_pending_lut(&mut self) -> Option<&BakedLut3D> {
-        if !self.lut_upload_pending {
-            return None;
-        }
-        self.lut_upload_pending = false;
-        self.lut_3d.as_ref()
+    /// Poll the LUT awaiting a confirmed GPU upload. The value remains
+    /// pending until [`Self::mark_lut_uploaded`] is called, so transient
+    /// upload failures cannot silently discard a rebuild.
+    pub fn pending_lut(&self) -> Option<&BakedLut3D> {
+        self.lut_upload_pending
+            .then(|| self.lut_3d.as_ref())
+            .flatten()
     }
 
-    /// Apply the cached processor to a slice of RGB triples.
-    /// CPU codepath — slow per-frame, but deterministic and
-    /// matches the OCIO reference bit-for-bit. No-op when
-    /// `mode == BuiltIn` (the shader does the work) or when the
-    /// processor failed to build.
-    pub fn apply_cpu(&self, pixels: &mut [[f32; 3]]) {
-        if let Some(proc) = &self.processor {
-            proc.apply_rgb(pixels);
+    /// Confirm that the renderer uploaded the current pending LUT.
+    pub fn mark_lut_uploaded(&mut self) {
+        self.lut_upload_pending = false;
+    }
+
+    /// Apply the cached display processor, then convert its encoded
+    /// output to the linear values expected by eframe composition.
+    /// Eframe's final SDR transfer reconstructs the processor's code values.
+    pub fn apply_cpu_to_surface_linear(&self, pixels: &mut [[f32; 3]]) {
+        if let Some(processor) = &self.processor {
+            processor.apply_rgb(pixels);
+            for pixel in pixels {
+                *pixel = pixel.map(|value| {
+                    if !value.is_finite() {
+                        0.0
+                    } else if self.decode_code_values_for_transport {
+                        display_encoded_to_surface_linear(value)
+                    } else {
+                        value
+                    }
+                });
+            }
         }
+    }
+
+    /// Hard failure from the most recent settings rebuild.
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
     }
 
     /// Cached 3D LUT for the GPU codepath. `None` when the
@@ -741,14 +899,21 @@ impl ColorPipeline {
             .collect()
     }
 
+    /// Declared encoding of a display/view's final colorspace.
+    /// `Unknown` is returned when either selector is stale or the config omits
+    /// encoding metadata; callers must not infer HDR from display/view names.
+    pub fn output_encoding(&self, display: &str, view: &str) -> vfx_ocio::Encoding {
+        self.config
+            .find_view(display, view)
+            .and_then(|view| self.config.colorspace(view.effective_colorspace(display)))
+            .map(vfx_ocio::ColorSpace::encoding)
+            .unwrap_or(vfx_ocio::Encoding::Unknown)
+    }
+
     /// Named looks in the active config. The UI surfaces an
     /// empty "no look" entry on top of this list separately.
     pub fn available_looks(&self) -> Vec<String> {
-        self.config
-            .looks()
-            .names()
-            .map(|s| s.to_string())
-            .collect()
+        self.config.looks().names().map(|s| s.to_string()).collect()
     }
 }
 
@@ -808,10 +973,7 @@ fn load_config(
             // with vfx-ocio. With the programmatic ACES 1.3 port now
             // retired (kept in-tree as a dormant experiment), the
             // default is the latest embedded release.
-            (
-                vfx_ocio::builtin::default_config(),
-                ConfigSource::BuiltIn,
-            )
+            (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)
         }
         ConfigSource::Embedded(name) => match vfx_ocio::builtin::embedded::get(name) {
             Some(cfg) => (cfg, ConfigSource::Embedded(name.clone())),
@@ -848,5 +1010,39 @@ fn load_config(
                 (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logarithmic_shaper_has_exact_black_and_exposure_endpoints() {
+        let shaper = LutShaper::default();
+        assert_eq!(shaper_decode(0, DEFAULT_LUT_SIZE, shaper), 0.0);
+        assert_eq!(
+            shaper_decode(1, DEFAULT_LUT_SIZE, shaper),
+            shaper.min_ev.exp2()
+        );
+        assert_eq!(
+            shaper_decode(DEFAULT_LUT_SIZE - 1, DEFAULT_LUT_SIZE, shaper),
+            shaper.max_ev.exp2()
+        );
+    }
+
+    #[test]
+    fn shaped_identity_preserves_hdr_domain_and_layout() {
+        let shaper = LutShaper::default();
+        let lut = identity_lut(DEFAULT_LUT_SIZE, shaper).unwrap();
+        assert_eq!(lut.data.len(), DEFAULT_LUT_SIZE.pow(3) * 3);
+        assert!(lut.data.iter().copied().fold(0.0_f32, f32::max) > 1.0);
+    }
+
+    #[test]
+    fn srgb_transport_decode_matches_reference_points() {
+        assert_eq!(display_encoded_to_surface_linear(0.0), 0.0);
+        assert!((display_encoded_to_surface_linear(0.04045) - 0.0031308).abs() < 1.0e-6);
+        assert_eq!(display_encoded_to_surface_linear(1.0), 1.0);
     }
 }

@@ -363,8 +363,14 @@ mod tests {
         assert_eq!(opts.pt_samples, 123);
         assert!(opts.pt_gpu_bvh);
         assert!(opts.pt_path_guiding);
-        assert_eq!(opts.pt_oidn_mode, render_shared::OidnModeOption::ColorAlbedoNormal);
-        assert_eq!(opts.pt_oidn_quality, render_shared::OidnQualityOption::Large);
+        assert_eq!(
+            opts.pt_oidn_mode,
+            render_shared::OidnModeOption::ColorAlbedoNormal
+        );
+        assert_eq!(
+            opts.pt_oidn_quality,
+            render_shared::OidnQualityOption::Large
+        );
         assert!(opts.pt_oidn_auto);
         assert!(opts.pt_restir_di);
         assert!(opts.pt_restir_gi);

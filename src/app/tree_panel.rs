@@ -9,9 +9,9 @@ use eframe::egui;
 use crate::events::{NavigateIntoEvent, SelectPathEvent};
 use squarebob_core::DirEntry;
 
+use super::App;
 use super::helpers::{collect_all_dir_paths, format_tree_label};
 use super::icons;
-use super::App;
 
 /// Row content height passed to [`egui::ScrollArea::show_rows`].
 ///
@@ -198,17 +198,16 @@ impl App {
         // `row_stride = row_height_sans_spacing + item_spacing.y` (see egui scroll_area.rs).
         //
         // Use laid-out content height for clamp (matches egui:`max_offset = content_size - inner`).
-        if need_scroll
-            && let Some(idx) = selected_idx {
-                let content_h = output.content_size.y;
-                let view_h = output.inner_rect.height().max(row_h_sans);
-                let max_offset = (content_h - view_h).max(0.0);
-                let center_y = idx as f32 * row_stride + row_h_sans * 0.5;
-                let new_offset = (center_y - view_h * 0.5).clamp(0.0, max_offset);
-                output.state.offset.y = new_offset;
-                output.state.store(ui.ctx(), output.id);
-                ui.ctx().request_repaint();
-            }
+        if need_scroll && let Some(idx) = selected_idx {
+            let content_h = output.content_size.y;
+            let view_h = output.inner_rect.height().max(row_h_sans);
+            let max_offset = (content_h - view_h).max(0.0);
+            let center_y = idx as f32 * row_stride + row_h_sans * 0.5;
+            let new_offset = (center_y - view_h * 0.5).clamp(0.0, max_offset);
+            output.state.offset.y = new_offset;
+            output.state.store(ui.ctx(), output.id);
+            ui.ctx().request_repaint();
+        }
         if let Some(path) = toggle_expand {
             if self.expanded.contains(&path) {
                 self.expanded.remove(&path);
@@ -218,11 +217,10 @@ impl App {
         }
 
         // Handle expand/collapse all
-        if expand_all
-            && let Some(ptr) = root_ptr {
-                let root = unsafe { &*ptr };
-                collect_all_dir_paths(root, &mut self.expanded);
-            }
+        if expand_all && let Some(ptr) = root_ptr {
+            let root = unsafe { &*ptr };
+            collect_all_dir_paths(root, &mut self.expanded);
+        }
         if collapse_all {
             self.expanded.clear();
             if let Some(ptr) = root_ptr {
@@ -253,38 +251,34 @@ fn flatten_tree<'a>(
     filter_cache: &Option<HashSet<PathBuf>>,
     out: &mut Vec<FlatNode<'a>>,
 ) {
-    // Skip filtered nodes
-    if let Some(cache) = filter_cache
-        && !cache.contains(&node.path) {
-            return;
+    let mut pending = vec![(node, depth, parent_size)];
+    while let Some((node, depth, parent_size)) = pending.pop() {
+        if let Some(cache) = filter_cache
+            && !cache.contains(&node.path)
+        {
+            continue;
         }
 
-    let is_expanded = expanded.contains(&node.path);
-    let has_children = node.is_dir && !node.children.is_empty();
-    let force_open = filter_cache.is_some();
+        let is_expanded = expanded.contains(&node.path);
+        let has_children = node.is_dir && !node.children.is_empty();
+        let force_open = filter_cache.is_some();
 
-    out.push(FlatNode {
-        node,
-        depth,
-        parent_size,
-        is_expanded: is_expanded || force_open,
-        has_children,
-    });
+        out.push(FlatNode {
+            node,
+            depth,
+            parent_size,
+            is_expanded: is_expanded || force_open,
+            has_children,
+        });
 
-    // Recurse into expanded directories
-    if has_children && (is_expanded || force_open) {
-        // Sort children by size descending
-        let mut indices: Vec<usize> = (0..node.children.len()).collect();
-        indices.sort_by(|&a, &b| node.children[b].size.cmp(&node.children[a].size));
-
-        for &i in &indices {
-            flatten_tree(
-                &node.children[i],
-                depth + 1,
-                node.size,
-                expanded,
-                filter_cache,
-                out,
+        if has_children && (is_expanded || force_open) {
+            let mut children: Vec<_> = node.children.iter().collect();
+            children.sort_unstable_by_key(|child| std::cmp::Reverse(child.size));
+            pending.extend(
+                children
+                    .into_iter()
+                    .rev()
+                    .map(|child| (child, depth + 1, node.size)),
             );
         }
     }

@@ -4,7 +4,7 @@ pub(crate) mod megakernel;
 mod spectral;
 mod wavefront;
 
-use crate::{geometry, Renderer3D};
+use crate::{Renderer3D, geometry};
 use render_shared::{OrbitCamera, Render3DOptions, SpectralMode};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -33,23 +33,17 @@ pub fn render_path_traced_no_readback(
     opts: &Render3DOptions,
     width: u32,
     height: u32,
-) {
+) -> Result<(), render_core::ReadbackError> {
     match kind {
-        PtBackendKind::Megakernel => {
-            megakernel::render_path_traced_no_readback(
-                renderer, instances, camera, opts, width, height,
-            );
-        }
-        PtBackendKind::Wavefront => {
-            wavefront::render_path_traced_no_readback(
-                renderer, instances, camera, opts, width, height,
-            );
-        }
-        PtBackendKind::Spectral => {
-            spectral::render_path_traced_no_readback(
-                renderer, instances, camera, opts, width, height,
-            );
-        }
+        PtBackendKind::Megakernel => megakernel::render_path_traced_no_readback(
+            renderer, instances, camera, opts, width, height,
+        ),
+        PtBackendKind::Wavefront => wavefront::render_path_traced_no_readback(
+            renderer, instances, camera, opts, width, height,
+        ),
+        PtBackendKind::Spectral => spectral::render_path_traced_no_readback(
+            renderer, instances, camera, opts, width, height,
+        ),
     }
 }
 
@@ -61,7 +55,7 @@ pub fn render_path_traced(
     opts: &Render3DOptions,
     width: u32,
     height: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, render_core::ReadbackError> {
     match kind {
         PtBackendKind::Megakernel => {
             megakernel::render_path_traced(renderer, instances, camera, opts, width, height)

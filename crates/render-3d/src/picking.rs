@@ -10,8 +10,8 @@ pub fn canonical_object_id(id: u32) -> u32 {
     id & !OBJECT_ID_SELECTED_BIT
 }
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
 /// Combined pick info for a single object ID
@@ -95,18 +95,24 @@ impl PickingState {
     }
 
     /// Ensure readback buffer exists and is large enough
-    pub fn ensure_readback(&mut self, device: &wgpu::Device, width: u32) {
-        // Buffer size = aligned row (256 bytes alignment for wgpu)
-        let bytes_per_row = (width * 4 + 255) & !255;
+    pub fn ensure_readback(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+    ) -> Result<(), render_core::GpuLayoutError> {
+        let layout =
+            render_core::gpu::TextureReadbackLayout::new("object ID readback", width, 1, 4)?;
+        let bytes_per_row = layout.padded_row_bytes();
         if self.buffer.is_none() || self.buffer_size < bytes_per_row {
             self.buffer = Some(render_core::gpu::make_buffer(
                 device,
                 "ID Readback",
-                bytes_per_row as u64,
+                u64::from(bytes_per_row),
                 wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             ));
             self.buffer_size = bytes_per_row;
         }
+        Ok(())
     }
 
     /// Request hover pick at pixel coords (call on mouse move)
@@ -121,7 +127,7 @@ impl PickingState {
         encoder: &mut wgpu::CommandEncoder,
         id_texture: &wgpu::Texture,
         tex_size: (u32, u32),
-    ) {
+    ) -> Result<(), render_core::ReadbackError> {
         log::trace!(
             "picking::submit_readback pending={:?} tex_size={:?}",
             self.pending_pick,
@@ -131,21 +137,29 @@ impl PickingState {
             Some(coords) => coords,
             None => {
                 log::trace!("picking::submit_readback - no pending pick");
-                return;
+                return Ok(());
             }
         };
         if px >= tex_size.0 || py >= tex_size.1 {
             log::warn!("picking::submit_readback - coords out of bounds");
-            return;
+            return Ok(());
         }
-        let Some(buf) = &self.buffer else {
-            log::warn!("picking::submit_readback - no buffer");
-            return;
-        };
+        let layout =
+            render_core::gpu::TextureReadbackLayout::new("object ID readback", tex_size.0, 1, 4)?;
+        let bytes_per_row = layout.padded_row_bytes();
+        if self.buffer_size < bytes_per_row {
+            return Err(render_core::ReadbackError::StagingBufferTooSmall {
+                required: u64::from(bytes_per_row),
+                capacity: u64::from(self.buffer_size),
+            });
+        }
+        let buf = self
+            .buffer
+            .as_ref()
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
 
         self.texture_width = tex_size.0;
         self.pending_px = Some(px);
-        let bytes_per_row = (tex_size.0 * 4 + 255) & !255;
 
         // Copy entire row containing our pixel (must be submitted before map_async — see poll_result)
         encoder.copy_texture_to_buffer(
@@ -169,55 +183,58 @@ impl PickingState {
                 depth_or_array_layers: 1,
             },
         );
+        Ok(())
     }
 
     /// Read pick result (call AFTER `queue.submit` for the encoder that included `submit_readback`).
     /// Waits for the copy, then maps — same ordering contract as `render_core::map_readback`.
-    pub fn poll_result(&mut self, device: &wgpu::Device) {
+    pub fn poll_result(&mut self, device: &wgpu::Device) -> Result<(), render_core::ReadbackError> {
         let Some(px) = self.pending_px else {
             log::trace!("picking::poll_result - no pending_px");
-            return;
-        };
-        let Some(buf) = self.buffer.as_ref() else {
-            log::warn!("picking::poll_result - no buffer");
-            self.pending_px = None;
-            return;
+            return Ok(());
         };
 
-        // Ensure the copy command has finished before mapping (map_async before submit caused BufferStillMapped)
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let result = (|| {
+            let buf = self
+                .buffer
+                .as_ref()
+                .ok_or(render_core::ReadbackError::MissingTarget)?;
+            let offset_u64 = u64::from(px) * 4;
+            let offset = usize::try_from(offset_u64).map_err(|_| {
+                render_core::GpuLayoutError::ValueTooLarge {
+                    context: "object ID readback offset",
+                    value: offset_u64,
+                    target: "usize",
+                }
+            })?;
+            let end = offset
+                .checked_add(4)
+                .ok_or(render_core::GpuLayoutError::ValueTooLarge {
+                    context: "object ID readback end",
+                    value: offset_u64,
+                    target: "usize",
+                })?;
 
-        // Shared readback helper. On device-lost / map failure: log + clear
-        // pending_px so the next frame retries cleanly instead of panicking.
-        let offset = (px as usize) * 4;
-        let raw = match render_core::map_buffer_read(device, buf, |data| {
-            if offset + 4 <= data.len() {
-                Some(u32::from_le_bytes([
-                    data[offset],
-                    data[offset + 1],
-                    data[offset + 2],
-                    data[offset + 3],
-                ]))
-            } else {
-                None
-            }
-        }) {
-            Ok(raw) => raw,
-            Err(e) => {
-                log::warn!("picking::poll_result - {e}");
-                self.pending_px = None;
-                return;
-            }
-        };
-        if let Some(raw) = raw {
-            // Texture encodes selected instances as id | SELECTED_BIT; id_map uses canonical ids only.
-            self.hovered_id = canonical_object_id(raw);
-            log::trace!(
-                "picking::poll_result raw={raw:#x} canonical={}",
-                self.hovered_id
-            );
-        }
+            render_core::map_buffer_read(device, buf, |data| {
+                let bytes = data.get(offset..end).ok_or(
+                    render_core::ReadbackError::MappedRangeTooSmall {
+                        expected: end,
+                        actual: data.len(),
+                    },
+                )?;
+                Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            })?
+        })();
         self.pending_px = None;
+        let raw = result?;
+
+        // Texture encodes selected instances as id | SELECTED_BIT; id_map uses canonical ids only.
+        self.hovered_id = canonical_object_id(raw);
+        log::trace!(
+            "picking::poll_result raw={raw:#x} canonical={}",
+            self.hovered_id
+        );
+        Ok(())
     }
 
     /// Look up path for an object ID

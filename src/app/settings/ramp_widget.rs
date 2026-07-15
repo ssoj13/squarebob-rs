@@ -9,7 +9,7 @@ use eframe::egui;
 use pt_mats::{MaterialDistribution, Palette};
 use render_shared::{CurveParams, RampParams};
 
-use super::{control_label, section_header_text, PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH};
+use super::{PT_VALUE_WIDTH, SETTINGS_LABEL_WIDTH, control_label, section_header_text};
 
 /// Emit Scale + Scale Exponent rows for a `CurveParams`. Returns `true`
 /// when either value changed.

@@ -5,8 +5,8 @@ mod color;
 mod denoiser;
 mod dirty;
 mod exclusions;
-pub(super) mod materials;
 pub(super) mod material_presets;
+pub(super) mod materials;
 mod output;
 mod ramp_widget;
 mod renderer;
@@ -14,11 +14,11 @@ mod scanner;
 mod view;
 
 pub(super) use dirty::SettingsDirty;
-pub(super) use ramp_widget::{curve_rows, ramp_section, RampUiCtx};
+pub(super) use ramp_widget::{RampUiCtx, curve_rows, ramp_section};
 
+use super::App;
 use super::icons;
 use super::state::SettingsTab;
-use super::App;
 use crate::renderer::OrbitCamera;
 use eframe::egui;
 use treemap::TreeMapOptions;
@@ -100,8 +100,7 @@ pub(super) fn tinted_section<R>(
         // standard `CollapsingHeader`.
         ui.horizontal(|ui| {
             let icon_size = egui::Vec2::splat(ui.spacing().icon_width);
-            let (_icon_rect, icon_resp) =
-                ui.allocate_exact_size(icon_size, egui::Sense::hover());
+            let (_icon_rect, icon_resp) = ui.allocate_exact_size(icon_size, egui::Sense::hover());
             let openness = state.openness(ui.ctx());
             // `paint_default_icon` expects a `Response` for the icon
             // rect — we feed it a hover-only one so it can read hover
@@ -112,9 +111,7 @@ pub(super) fn tinted_section<R>(
             // intercept the cursor as an I-beam — the whole tinted
             // band is meant to read as one clickable strip, not a
             // text-selection target.
-            ui.add(
-                egui::Label::new(egui::RichText::new(title).heading()).selectable(false),
-            );
+            ui.add(egui::Label::new(egui::RichText::new(title).heading()).selectable(false));
         });
     });
 
@@ -232,18 +229,15 @@ impl App {
             // anchors the trash icon to the trailing edge regardless
             // of label/text-input width.
             if self.presets.contains_key(&self.preset_name) {
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        if ui
-                            .small_button(icons::TRASH)
-                            .on_hover_text("Delete preset")
-                            .clicked()
-                        {
-                            self.delete_current_preset();
-                        }
-                    },
-                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button(icons::TRASH)
+                        .on_hover_text("Delete preset")
+                        .clicked()
+                    {
+                        self.delete_current_preset();
+                    }
+                });
             }
         });
 
@@ -257,12 +251,10 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("Views:");
             for i in 0..self.camera_slots.len() {
-                let resp = ui.small_button(format!("{}", i + 1)).on_hover_text(
-                    format!(
-                        "Camera view {}\nLeft-click: save current view  Right-click: recall",
-                        i + 1
-                    ),
-                );
+                let resp = ui.small_button(format!("{}", i + 1)).on_hover_text(format!(
+                    "Camera view {}\nLeft-click: save current view  Right-click: recall",
+                    i + 1
+                ));
                 if resp.clicked() {
                     // Save: snapshot camera + DoF triple
                     self.camera_slots[i] = super::state::CameraBookmark {
@@ -437,38 +429,30 @@ impl App {
                             // (tinted band, font).
                             let header_h = self.settings_section_header_height;
                             let tint_mix = self.settings_tint_mix;
-                            let in_3d = self.render_mode
-                                == crate::renderer::RenderMode::Mode3D;
-                            tinted_section(
-                                ui,
-                                "General",
-                                false,
-                                tint_mix,
-                                header_h,
-                                |ui| {
-                                    self.ui_settings_scanner(ui);
+                            let in_3d = self.render_mode == crate::renderer::RenderMode::Mode3D;
+                            tinted_section(ui, "General", false, tint_mix, header_h, |ui| {
+                                self.ui_settings_scanner(ui);
+                                ui.separator();
+                                self.ui_settings_view(ui, &ctx, &mut dirty);
+                                ui.separator();
+                                self.ui_settings_appearance(ui, &mut dirty);
+                                ui.separator();
+                                self.ui_settings_panel_chrome(ui, &mut dirty);
+                                // Interaction lives here as a UX
+                                // preference. Only meaningful in
+                                // 3D mode — hover outline/tint is
+                                // a 3D-only feature.
+                                if in_3d {
                                     ui.separator();
-                                    self.ui_settings_view(ui, &ctx, &mut dirty);
-                                    ui.separator();
-                                    self.ui_settings_appearance(ui, &mut dirty);
-                                    ui.separator();
-                                    self.ui_settings_panel_chrome(ui, &mut dirty);
-                                    // Interaction lives here as a UX
-                                    // preference. Only meaningful in
-                                    // 3D mode — hover outline/tint is
-                                    // a 3D-only feature.
-                                    if in_3d {
-                                        ui.separator();
-                                        renderer::compact_section(
-                                            ui,
-                                            "Interaction",
-                                            false,
-                                            header_h,
-                                            |ui| self.ui_interaction_grid(ui),
-                                        );
-                                    }
-                                },
-                            );
+                                    renderer::compact_section(
+                                        ui,
+                                        "Interaction",
+                                        false,
+                                        header_h,
+                                        |ui| self.ui_interaction_grid(ui),
+                                    );
+                                }
+                            });
 
                             // Denoiser is emitted INSIDE
                             // `ui_settings_renderer`, right after the

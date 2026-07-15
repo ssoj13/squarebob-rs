@@ -2,6 +2,12 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PtOutput {
+    GpuOnly,
+    CpuReadback,
+}
+
 pub(crate) fn render_path_traced(
     renderer: &mut Renderer3D,
     instances: &[geometry::CubeInstance],
@@ -9,11 +15,32 @@ pub(crate) fn render_path_traced(
     opts: &Render3DOptions,
     width: u32,
     height: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, render_core::ReadbackError> {
+    render_path_traced_frame(
+        renderer,
+        instances,
+        camera,
+        opts,
+        width,
+        height,
+        PtOutput::CpuReadback,
+    )?
+    .ok_or(render_core::ReadbackError::MissingTarget)
+}
+
+pub(super) fn render_path_traced_frame(
+    renderer: &mut Renderer3D,
+    instances: &[geometry::CubeInstance],
+    camera: &OrbitCamera,
+    opts: &Render3DOptions,
+    width: u32,
+    height: u32,
+    output: PtOutput,
+) -> Result<Option<Vec<u8>>, render_core::ReadbackError> {
     let pt_start = std::time::Instant::now();
     use pt_core::build::build_instance_bvh;
     use pt_core::gpu_data::{
-        build_gpu_data_from_nodes, build_instance_gpu_data, GpuInstanceSceneData,
+        GpuInstanceSceneData, build_gpu_data_from_nodes, build_instance_gpu_data,
     };
     use pt_megakernel::{PathTraceCompute, PtCameraUniform};
 
@@ -26,7 +53,7 @@ pub(crate) fn render_path_traced(
             width,
             height,
             surface_format,
-        );
+        )?;
         // Forward env map to path tracer
         if opts.env_map_enabled {
             pt.set_environment_texture(
@@ -49,8 +76,12 @@ pub(crate) fn render_path_traced(
         renderer.pt.pt_env_dirty = false;
     }
 
-    let pt = renderer.pt.path_tracer.as_mut().unwrap();
-    pt.resize(&renderer.ctx.device, width, height);
+    let pt = renderer
+        .pt
+        .path_tracer
+        .as_mut()
+        .ok_or(render_core::ReadbackError::MissingTarget)?;
+    pt.resize(&renderer.ctx.device, width, height)?;
     pt.samples = opts.pt_samples;
     pt.set_emissive_sampling(
         &renderer.ctx.queue,
@@ -126,13 +157,15 @@ pub(crate) fn render_path_traced(
                 &pt_instances,
                 &data,
                 animated,
-            );
+            )
+            .map_err(render_core::ReadbackError::SceneBuild)?;
             reset_by_scene = true;
             pt.reset_accumulation();
             None
         } else if opts.pt_gpu_bvh {
-            let (nodes, sorted_indices) =
-                pt.build_bvh(&renderer.ctx.device, &renderer.ctx.queue, &pt_instances);
+            let (nodes, sorted_indices) = pt
+                .build_bvh(&renderer.ctx.device, &renderer.ctx.queue, &pt_instances)
+                .map_err(render_core::ReadbackError::SceneBuild)?;
             debug!(
                 "PT BVH done (GPU): nodes={}, sorted_indices={}",
                 nodes.len(),
@@ -173,7 +206,7 @@ pub(crate) fn render_path_traced(
                 &renderer.ctx.queue,
                 &gpu_data,
                 Some(&pt_instances),
-            );
+            )?;
             reset_by_scene = true;
             pt.reset_accumulation();
         }
@@ -226,7 +259,8 @@ pub(crate) fn render_path_traced(
         dof_enabled: if opts.pt_dof_enabled { 1 } else { 0 },
         aperture: opts.effective_aperture(),
         focus_distance: opts.effective_focus_distance(),
-        _pad1: [0; 2],
+        rr_enabled: if opts.pt_russian_roulette { 1 } else { 0 },
+        _pad1: 0,
         slice_enabled: if opts.slice_enabled { 1.0 } else { 0.0 },
         slice_position: compute_slice_position(opts),
         slice_invert: if opts.slice_invert { 1.0 } else { 0.0 },
@@ -333,27 +367,27 @@ pub(crate) fn render_path_traced(
         if renderer.pt.pt_anim_log_frame.is_multiple_of(30) {
             let dt = anim_time_used - renderer.pt.pt_last_anim_time;
             info!(
-                    "PT animate: t={:.3} dt={:.3} frame_count={} reset[scene={},cam={},slice={},anim={}] scene_dirty={} env_dirty={} auto_spp={} spp_update={} wavefront={}",
-                    anim_time_used,
-                    dt,
-                    pt.frame_count,
-                    reset_by_scene,
-                    reset_by_cam,
-                    reset_by_slice,
-                    reset_by_anim,
-                    renderer.pt.pt_scene_dirty,
-                    renderer.pt.pt_env_dirty,
-                    opts.pt_auto_spp,
-                    renderer.pt.pt_samples_per_update,
-                    opts.pt_wavefront
-                );
+                "PT animate: t={:.3} dt={:.3} frame_count={} reset[scene={},cam={},slice={},anim={}] scene_dirty={} env_dirty={} auto_spp={} spp_update={} wavefront={}",
+                anim_time_used,
+                dt,
+                pt.frame_count,
+                reset_by_scene,
+                reset_by_cam,
+                reset_by_slice,
+                reset_by_anim,
+                renderer.pt.pt_scene_dirty,
+                renderer.pt.pt_env_dirty,
+                opts.pt_auto_spp,
+                renderer.pt.pt_samples_per_update,
+                opts.pt_wavefront
+            );
         }
     }
     if allow_update {
         renderer.pt.pt_last_anim_time = anim_time_used;
     }
     pt.update_camera(&renderer.ctx.queue, &cam_uniform);
-    pt.set_restir_enabled(&renderer.ctx.device, opts.pt_restir_di, opts.pt_restir_gi);
+    pt.set_restir_enabled(&renderer.ctx.device, opts.pt_restir_di, opts.pt_restir_gi)?;
     pt.set_restir_options(
         opts.pt_restir_temporal,
         opts.pt_restir_spatial,
@@ -363,7 +397,7 @@ pub(crate) fn render_path_traced(
         &renderer.ctx.device,
         &renderer.ctx.queue,
         opts.pt_adaptive_sampling,
-    );
+    )?;
     // Adaptive per-pixel SPP range derives from the single global samples
     // knob — one slider drives all sampling budgets.
     let derived_min = (opts.pt_samples / 16).max(8);
@@ -376,6 +410,7 @@ pub(crate) fn render_path_traced(
         opts.pt_adaptive_interval,
     );
     pt.set_pathguide_enabled(&renderer.ctx.device, opts.pt_path_guiding);
+    pt.set_wavefront_tile_size(opts.pt_wavefront_tile_size);
     pt.set_wavefront_rr_enabled(opts.pt_russian_roulette);
     pt.set_spectral_options(
         opts.pt_spectral_mode as u32,
@@ -423,7 +458,7 @@ pub(crate) fn render_path_traced(
     // Use wavefront or megakernel dispatch
     let mut actual_samples_this_frame = 0u32;
     if opts.pt_wavefront {
-        pt.set_wavefront_enabled(&renderer.ctx.device, true);
+        pt.set_wavefront_enabled(&renderer.ctx.device, true)?;
         for _ in 0..samples_this_frame {
             if !pt.dispatch_wavefront(
                 &renderer.ctx.device,
@@ -469,13 +504,16 @@ pub(crate) fn render_path_traced(
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);
 
-    let output_buffer = gpu::readback_texture(
-        &renderer.ctx,
-        &mut encoder,
-        &targets.render_texture,
-        width,
-        height,
-    );
+    if output == PtOutput::CpuReadback {
+        gpu::readback_texture(
+            &renderer.ctx,
+            &mut encoder,
+            &targets.render_texture,
+            width,
+            height,
+            &mut renderer.readback,
+        )?;
+    }
 
     let submit_start = std::time::Instant::now();
     renderer.ctx.queue.submit(std::iter::once(encoder.finish()));
@@ -484,10 +522,15 @@ pub(crate) fn render_path_traced(
 
     renderer.pt.pt_last_render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
 
-    let readback_start = std::time::Instant::now();
-    let result = gpu::map_readback(&renderer.ctx, &output_buffer, width, height);
-    let readback_ms = readback_start.elapsed().as_secs_f64() * 1000.0;
-    debug!("  readback: {:.2}ms ({}x{})", readback_ms, width, height);
+    let result = if output == PtOutput::CpuReadback {
+        let readback_start = std::time::Instant::now();
+        let pixels = gpu::map_readback(&renderer.ctx, &renderer.readback)?;
+        let readback_ms = readback_start.elapsed().as_secs_f64() * 1000.0;
+        debug!("  readback: {:.2}ms ({}x{})", readback_ms, width, height);
+        Some(pixels)
+    } else {
+        None
+    };
 
     let total_ms = pt_start.elapsed().as_secs_f64() * 1000.0;
     info!(
@@ -499,9 +542,8 @@ pub(crate) fn render_path_traced(
     );
     trace!(
         "  scene_dirty: {}, env_dirty: {}",
-        renderer.pt.pt_scene_dirty,
-        renderer.pt.pt_env_dirty
+        renderer.pt.pt_scene_dirty, renderer.pt.pt_env_dirty
     );
 
-    result
+    Ok(result)
 }

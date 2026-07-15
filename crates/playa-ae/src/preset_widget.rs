@@ -66,10 +66,7 @@ pub fn presets_button(
         // inside each menu are also sorted.
         let names: Vec<String> = bank.list(schema).map(String::from).collect();
         if names.is_empty() {
-            ui.label(
-                egui::RichText::new("(no presets yet)")
-                    .color(ui.visuals().weak_text_color()),
-            );
+            ui.label(egui::RichText::new("(no presets yet)").color(ui.visuals().weak_text_color()));
         } else {
             let mut grouped: std::collections::BTreeMap<Option<String>, Vec<String>> =
                 Default::default();
@@ -113,8 +110,7 @@ pub fn presets_button(
         ui.horizontal(|ui| {
             ui.label("Save as:");
             let resp = ui.text_edit_singleline(&mut state.new_name);
-            let commit_now = (resp.lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+            let commit_now = (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 || ui.button("Save").clicked();
             if commit_now && !state.new_name.trim().is_empty() {
                 let name = state.new_name.trim().to_string();
@@ -150,8 +146,7 @@ pub fn presets_button(
                                 let old = name.clone();
                                 let new = buf.trim().to_string();
                                 if !new.is_empty() && bank.rename(schema, &old, new.clone()) {
-                                    event =
-                                        PresetButtonEvent::Renamed { old, new };
+                                    event = PresetButtonEvent::Renamed { old, new };
                                 }
                                 state.rename = None;
                             }

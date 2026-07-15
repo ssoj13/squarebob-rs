@@ -21,9 +21,9 @@
 //! the resolved struct is uploaded directly as the per-cube GPU
 //! material record — no separate `GpuMaterial` mirror needed.
 
-pub mod material;
-pub mod library;
 pub mod io;
+pub mod library;
+pub mod material;
 pub mod presets;
 
 pub use library::MaterialLibrary;

@@ -111,18 +111,6 @@ fn store_vec4(base: u32, v: vec4<f32>) {
     guide[base + 1u] = pack2x16float(v.zw);
 }
 
-// PCG hash
-fn pcg(n: u32) -> u32 {
-    var h = n * 747796405u + 2891336453u;
-    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-    return (h >> 22u) ^ h;
-}
-
-fn rand(seed: ptr<function, u32>) -> f32 {
-    *seed = pcg(*seed);
-    return f32(*seed) / 4294967295.0;
-}
-
 const PI: f32 = 3.14159265359;
 
 fn wavelength_to_rgb(lambda: f32) -> vec3<f32> {
@@ -290,7 +278,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let hit = hits[gid.x];
     let pixel_id = ray.pixel_id;
 
-    var seed = pixel_id ^ (params.frame_count * 1973u) ^ (ray.bounce * 7919u);
+    var seed = rng_seed(pixel_id, params.frame_count, params.frame_count, ray.bounce, 6u);
 
     // Skip inactive rays (e.g. pixels that reached SPP limit).
     if (ray.flags & 1u) == 0u {
@@ -360,10 +348,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Russian roulette (after first bounce)
     var continue_prob = 1.0;
     if params.rr_enabled != 0u && ray.bounce > 0u {
-        continue_prob = min(max(ray.throughput.x, max(ray.throughput.y, ray.throughput.z)), 0.95);
-        if rand(&seed) > continue_prob {
-            // Path terminated by RR - add black contribution
-            accum[pixel_id] += vec4<f32>(0.0, 0.0, 0.0, 1.0);  // +1.0 for sample count
+        if any(isNan(ray.throughput)) || any(isInf(ray.throughput)) {
+            accum[pixel_id] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
+        let max_throughput = max(ray.throughput.x, max(ray.throughput.y, ray.throughput.z));
+        if max_throughput <= 0.0 {
+            accum[pixel_id] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
+        continue_prob = clamp(max_throughput, 0.05, 0.95);
+        if rand(&seed) >= continue_prob {
+            accum[pixel_id] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
             return;
         }
     }
@@ -371,7 +367,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let go = env.global_opacity;
     let transmission_weight = mat.transmission_color_weight.a * go;
     let transmission_color = mat.transmission_color_weight.rgb;
-    let ior = mat.params1.w;
+    let ior = safe_ior(mat.params1.w);
     let dispersion = clamp(mat.params2.x, 0.0, 1.0);
     let ior_r = ior * (1.0 + dispersion * 0.15);
     let ior_g = ior;
@@ -431,7 +427,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let new_throughput = ray.throughput * transmission_color_disp / max(transmission_weight * continue_prob, 1e-5);
         let out_idx = atomicAdd(&counts[1], 1u);
         rays_out[out_idx] = Ray(
-            hit_pos - hit.normal * 0.001,
+            offset_ray_origin(hit_pos, hit.normal, new_dir),
             pixel_id,
             new_dir,
             ray.bounce + 1u,
@@ -449,7 +445,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Write new ray
     let out_idx = atomicAdd(&counts[1], 1u);
     rays_out[out_idx] = Ray(
-        hit_pos + hit.normal * 0.001,
+        offset_ray_origin(hit_pos, hit.normal, new_dir),
         pixel_id,
         new_dir,
         ray.bounce + 1u,

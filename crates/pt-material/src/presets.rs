@@ -180,4 +180,3 @@ fn soft_velvet_red() -> Material {
     };
     Material::new("Soft Velvet", p)
 }
-

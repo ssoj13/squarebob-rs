@@ -3,6 +3,10 @@
 use super::reservoir::{MotionVector, Reservoir};
 use std::num::NonZeroU64;
 
+const RNG_WGSL: &str = include_str!("../../../pt-core/src/rng.wgsl");
+const SHADER_CONTRACTS_WGSL: &str = include_str!("../../../pt-core/src/shader_contracts.wgsl");
+const RESTIR_COMMON_WGSL: &str = include_str!("common.wgsl");
+const RESTIR_VISIBILITY_WGSL: &str = include_str!("visibility.wgsl");
 const INITIAL_WGSL: &str = include_str!("initial.wgsl");
 const TEMPORAL_WGSL: &str = include_str!("temporal.wgsl");
 const SPATIAL_WGSL: &str = include_str!("spatial.wgsl");
@@ -12,7 +16,7 @@ const SHADE_WGSL: &str = include_str!("shade.wgsl");
 /// in `crate::compute` and the WGSL declarations. All are 16-byte aligned
 /// (uniform buffer rules) and per-tile slots are 256-byte strided in the
 /// dynamic-offset buffer.
-pub const RESTIR_INITIAL_PARAMS_SIZE: u64 = 32;
+pub const RESTIR_INITIAL_PARAMS_SIZE: u64 = 48;
 pub const RESTIR_TEMPORAL_PARAMS_SIZE: u64 = 48;
 pub const RESTIR_SPATIAL_PARAMS_SIZE: u64 = 48;
 pub const RESTIR_SHADE_PARAMS_SIZE: u64 = 48;
@@ -59,10 +63,14 @@ pub struct ReSTIRPipeline {
 }
 
 impl ReSTIRPipeline {
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, render_core::GpuLayoutError> {
         let (initial_pipeline, initial_bgl) = create_pipeline(
             device,
-            INITIAL_WGSL,
+            &[RESTIR_COMMON_WGSL, RESTIR_VISIBILITY_WGSL, INITIAL_WGSL],
             "initial",
             &[
                 bgl_storage_ro(0),                              // hits
@@ -78,12 +86,13 @@ impl ReSTIRPipeline {
                 bgl_storage_ro(10),                             // instances
                 bgl_texture_2d_unfilterable(11),                // emissive light texture
                 bgl_uniform(12),                                // emissive light params
+                bgl_storage_ro(13),                             // materials
             ],
         );
 
         let (temporal_pipeline, temporal_bgl) = create_pipeline(
             device,
-            TEMPORAL_WGSL,
+            &[RESTIR_COMMON_WGSL, TEMPORAL_WGSL],
             "temporal",
             &[
                 bgl_storage_ro(0),                               // prev reservoirs
@@ -97,7 +106,7 @@ impl ReSTIRPipeline {
 
         let (spatial_pipeline, spatial_bgl) = create_pipeline(
             device,
-            SPATIAL_WGSL,
+            &[RESTIR_COMMON_WGSL, SPATIAL_WGSL],
             "spatial",
             &[
                 bgl_storage_ro(0),                              // reservoirs input
@@ -110,7 +119,7 @@ impl ReSTIRPipeline {
 
         let (shade_pipeline, shade_bgl) = create_pipeline(
             device,
-            SHADE_WGSL,
+            &[RESTIR_COMMON_WGSL, RESTIR_VISIBILITY_WGSL, SHADE_WGSL],
             "shade",
             &[
                 bgl_storage_ro(0),                            // reservoirs
@@ -124,11 +133,12 @@ impl ReSTIRPipeline {
                 bgl_texture_2d(8),                            // env map
                 bgl_sampler(9),                               // env sampler
                 bgl_uniform(10),                              // env params
+                bgl_storage_ro(11),                           // bvh nodes
             ],
         );
 
-        let bufs = ReSTIRBuffers::build(device, width, height);
-        Self {
+        let bufs = ReSTIRBuffers::build(device, width, height)?;
+        Ok(Self {
             initial_pipeline,
             temporal_pipeline,
             spatial_pipeline,
@@ -141,29 +151,32 @@ impl ReSTIRPipeline {
             width,
             height,
             cur_buf: 0,
-        }
+        })
     }
 
     /// Resize buffers for new dimensions.
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<(), render_core::GpuLayoutError> {
         if self.width == width && self.height == height {
-            return;
+            return Ok(());
         }
+        let bufs = ReSTIRBuffers::build(device, width, height)?;
         self.width = width;
         self.height = height;
-        self.bufs = ReSTIRBuffers::build(device, width, height);
+        self.bufs = bufs;
         self.cur_buf = 0;
+        Ok(())
     }
 
     /// Get current/previous reservoirs (ping-pong for temporal).
     pub fn reservoirs(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {
         let a = &self.bufs.reservoir_a;
         let b = &self.bufs.reservoir_b;
-        if self.cur_buf == 0 {
-            (a, b)
-        } else {
-            (b, a)
-        }
+        if self.cur_buf == 0 { (a, b) } else { (b, a) }
     }
 
     /// Swap buffers after frame.
@@ -225,34 +238,69 @@ impl ReSTIRPipeline {
 impl ReSTIRBuffers {
     /// Allocates the full frame-buffer set for `width × height`. Used by
     /// `ReSTIRPipeline::new` and `resize` so allocation lives in one place.
-    fn build(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn build(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, render_core::GpuLayoutError> {
         use render_core::gpu::make_buffer;
         use wgpu::BufferUsages;
         let usage = BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
-        let n = (width * height) as u64;
-        let res_sz = Reservoir::SIZE as u64;
-        let mv_sz = std::mem::size_of::<MotionVector>() as u64;
-        Self {
-            reservoir_a: make_buffer(device, "restir_res_a", n * res_sz, usage),
-            reservoir_b: make_buffer(device, "restir_res_b", n * res_sz, usage),
-            motion: make_buffer(device, "restir_motion", n * mv_sz, usage),
-            gbuf_depth: make_buffer(device, "restir_depth", n * 4, usage),
-            gbuf_normal: make_buffer(device, "restir_normal", n * 16, usage),
-            gbuf_instance_id: make_buffer(device, "restir_instance_id", n * 4, usage),
-        }
+        let size = |context: &'static str, bytes_per_pixel: u64| {
+            render_core::checked_2d_storage_buffer_size(
+                device,
+                context,
+                width,
+                height,
+                bytes_per_pixel,
+            )
+        };
+        Ok(Self {
+            reservoir_a: make_buffer(
+                device,
+                "restir_res_a",
+                size("ReSTIR reservoir A", Reservoir::SIZE as u64)?,
+                usage,
+            ),
+            reservoir_b: make_buffer(
+                device,
+                "restir_res_b",
+                size("ReSTIR reservoir B", Reservoir::SIZE as u64)?,
+                usage,
+            ),
+            motion: make_buffer(
+                device,
+                "restir_motion",
+                size(
+                    "ReSTIR motion vectors",
+                    std::mem::size_of::<MotionVector>() as u64,
+                )?,
+                usage,
+            ),
+            gbuf_depth: make_buffer(device, "restir_depth", size("ReSTIR depth", 4)?, usage),
+            gbuf_normal: make_buffer(device, "restir_normal", size("ReSTIR normals", 16)?, usage),
+            gbuf_instance_id: make_buffer(
+                device,
+                "restir_instance_id",
+                size("ReSTIR instance IDs", 4)?,
+                usage,
+            ),
+        })
     }
 }
 
 // Helper: create compute pipeline
 fn create_pipeline(
     device: &wgpu::Device,
-    wgsl: &str,
+    wgsl_parts: &[&str],
     name: &str,
     entries: &[wgpu::BindGroupLayoutEntry],
 ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+    let shader_body = wgsl_parts.join("\n");
+    let shader_source = format!("{RNG_WGSL}\n{SHADER_CONTRACTS_WGSL}\n{shader_body}");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&format!("restir_{name}_shader")),
-        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     });
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(&format!("restir_{name}_bgl")),

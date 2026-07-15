@@ -124,9 +124,10 @@ fn adjacent_presets_path() -> Option<PathBuf> {
 /// otherwise we use the per-user path.
 fn resolved_presets_path() -> Option<PathBuf> {
     if let Some(adj) = adjacent_presets_path()
-        && adj.is_file() {
-            return Some(adj);
-        }
+        && adj.is_file()
+    {
+        return Some(adj);
+    }
     user_presets_path()
 }
 
@@ -166,11 +167,7 @@ pub fn load_all_presets() -> HashMap<String, RenderPreset> {
                     for preset in file.presets {
                         presets.insert(preset.name.clone(), preset);
                     }
-                    log::info!(
-                        "Loaded {} presets from {}",
-                        presets.len(),
-                        path.display()
-                    );
+                    log::info!("Loaded {} presets from {}", presets.len(), path.display());
                     break;
                 }
                 Err(e) => log::warn!("Failed to parse {}: {}", path.display(), e),
@@ -206,11 +203,7 @@ pub fn save_all_presets(presets: &HashMap<String, RenderPreset>) -> std::io::Res
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(&path, json)?;
 
-    log::info!(
-        "Saved {} presets to {}",
-        file.presets.len(),
-        path.display()
-    );
+    log::info!("Saved {} presets to {}", file.presets.len(), path.display());
     Ok(path)
 }
 

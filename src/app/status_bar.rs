@@ -2,9 +2,9 @@
 
 use eframe::egui;
 
+use super::App;
 use super::helpers::{disk_free_info, fmt_size};
 use super::icons;
-use super::App;
 use crate::cache;
 
 impl App {
@@ -25,15 +25,29 @@ impl App {
                         String::new()
                     };
                     let engine = self.progress.scan_engine_label.as_deref().unwrap_or("…");
-                    ui.label(format!(
-                        "[{}] Scanning: {} files, {} dirs, {} ({:.1}s){}",
-                        engine,
-                        self.progress.files,
-                        self.progress.dirs,
-                        fmt_size(self.progress.bytes),
-                        elapsed,
-                        err_str,
-                    ));
+                    let detail = match self.progress.phase {
+                        Some(crate::scanner::ScanPhase::IndexingVolume) => format!(
+                            "Indexing volume: {} MFT records ({} files, {} dirs)",
+                            self.progress.items, self.progress.files, self.progress.dirs
+                        ),
+                        Some(crate::scanner::ScanPhase::SelectingTree) => format!(
+                            "Reading selected tree: {} MFT records ({} files, {} dirs)",
+                            self.progress.items, self.progress.files, self.progress.dirs
+                        ),
+                        Some(crate::scanner::ScanPhase::MeasuringTree) => format!(
+                            "Measuring selected tree: {} files, {} dirs, {}",
+                            self.progress.files,
+                            self.progress.dirs,
+                            fmt_size(self.progress.bytes)
+                        ),
+                        Some(crate::scanner::ScanPhase::Walking) | None => format!(
+                            "Scanning: {} files, {} dirs, {}",
+                            self.progress.files,
+                            self.progress.dirs,
+                            fmt_size(self.progress.bytes)
+                        ),
+                    };
+                    ui.label(format!("[{engine}] {detail} ({elapsed:.1}s){err_str}"));
                     let anim = (elapsed * 2.0).sin() * 0.5 + 0.5;
                     ui.add(egui::ProgressBar::new(anim).desired_width(100.0));
                 } else if let Some(err) = &self.progress.error {
@@ -100,18 +114,13 @@ impl App {
                         // same pool.
                         let star = if self.vram_unified { "*" } else { "" };
                         if self.vram_free_mb > 0 {
-                            let used = self
-                                .vram_total_mb
-                                .saturating_sub(self.vram_free_mb);
+                            let used = self.vram_total_mb.saturating_sub(self.vram_free_mb);
                             ui.label(format!(
                                 "VRAM {used} / {total} MB{star}",
                                 total = self.vram_total_mb,
                             ));
                         } else {
-                            ui.label(format!(
-                                "VRAM {} MB{star}",
-                                self.vram_total_mb
-                            ));
+                            ui.label(format!("VRAM {} MB{star}", self.vram_total_mb));
                         }
                     }
                     if self.mem_total_mb > 0 {
@@ -147,13 +156,10 @@ impl App {
                         // PT step via `evaluate_oidn_trigger`), so it
                         // doubles as a current-spp readout without re-
                         // borrowing `renderer_3d` here.
-                        if self.render_3d_opts.path_tracing
-                            && self.render_3d_opts.pt_samples > 0
-                        {
+                        if self.render_3d_opts.path_tracing && self.render_3d_opts.pt_samples > 0 {
                             let current = self.oidn_last_frame_count;
                             let target = self.render_3d_opts.pt_samples.max(1);
-                            let fraction =
-                                (current as f32 / target as f32).clamp(0.0, 1.0);
+                            let fraction = (current as f32 / target as f32).clamp(0.0, 1.0);
                             ui.add(
                                 egui::ProgressBar::new(fraction)
                                     .desired_width(140.0)
@@ -165,19 +171,19 @@ impl App {
                     // last denoise cost without opening the Denoiser
                     // section. Only shown when OIDN is enabled and has
                     // produced at least one pass.
-                    if self.render_3d_opts.pt_oidn_mode
-                        != render_shared::OidnModeOption::Off
-                        && let Some(ms) = self.oidn_last_latency_ms {
-                            let state = if self.oidn_display_is_denoised {
-                                "shown"
-                            } else {
-                                "stale"
-                            };
-                            ui.label(format!(
-                                "OIDN: {:.0} ms @ {} spp ({})",
-                                ms, self.oidn_last_interval_spp, state
-                            ));
-                        }
+                    if self.render_3d_opts.pt_oidn_mode != render_shared::OidnModeOption::Off
+                        && let Some(ms) = self.oidn_last_latency_ms
+                    {
+                        let state = if self.oidn_display_is_denoised {
+                            "shown"
+                        } else {
+                            "stale"
+                        };
+                        ui.label(format!(
+                            "OIDN: {:.0} ms @ {} spp ({})",
+                            ms, self.oidn_last_interval_spp, state
+                        ));
+                    }
                     if let Some(hover) = &self.hovered {
                         ui.label(format!("{} ({})", hover.path, fmt_size(hover.size)));
                     }
@@ -200,14 +206,16 @@ impl App {
         let (tx, rx) = crossbeam_channel::bounded::<gpu_mem::GpuMemInfo>(2);
         let handle = std::thread::Builder::new()
             .name("squarebob-gpu-mem-poller".to_string())
-            .spawn(move || loop {
-                if let Some(info) = gpu_mem::query() {
-                    if tx.send(info).is_err() {
-                        // Receiver dropped — app shutting down.
-                        break;
+            .spawn(move || {
+                loop {
+                    if let Some(info) = gpu_mem::query() {
+                        if tx.send(info).is_err() {
+                            // Receiver dropped — app shutting down.
+                            break;
+                        }
                     }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
                 }
-                std::thread::sleep(std::time::Duration::from_secs(2));
             })
             .ok();
         self.gpu_info_rx = Some(rx);

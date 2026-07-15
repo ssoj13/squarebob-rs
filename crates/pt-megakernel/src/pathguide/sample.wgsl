@@ -19,18 +19,6 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> guide: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 
-// PCG hash
-fn pcg(n: u32) -> u32 {
-    var h = n * 747796405u + 2891336453u;
-    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-    return (h >> 22u) ^ h;
-}
-
-fn rand(seed: ptr<function, u32>) -> f32 {
-    *seed = pcg(*seed);
-    return f32(*seed) / 4294967295.0;
-}
-
 // Map world position to voxel index
 fn world_to_voxel(pos: vec3<f32>) -> vec3<u32> {
     let scene_min = params.scene_min.xyz;
@@ -138,7 +126,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gx >= params.tile_pos.z || gy >= params.tile_pos.w { return; }
     let pixel_idx = gy * params.tile_pos.z + gx;
 
-    var seed = pixel_idx ^ (params.params0.y * 1973u);
+    var seed = rng_seed(pixel_idx, params.params0.y, params.params0.y, 0u, 4u);
 
     let base = guide_base(pixel_idx);
     let guided = load_vec4(base);

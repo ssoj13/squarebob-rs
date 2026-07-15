@@ -41,7 +41,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.96"
 license = "MIT"
 
 [workspace.dependencies]
@@ -109,20 +109,19 @@ libc = "0.2"
 
 # External git deps
 playa-ffmpeg = { git = "https://github.com/ssoj13/playa-ffmpeg", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling", "nvenc", "static"] }
-vfx-core = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main" }
-vfx-exr = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", features = ["htj2k"] }
-vfx-io = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main", default-features = false, features = ["exr", "htj2k", "png", "jpeg", "tiff", "dpx", "hdr"] }
+vfx-core = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main" }
+vfx-io = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main", default-features = false, features = ["exr", "htj2k", "png", "jpeg", "tiff", "dpx", "hdr"] }
 # Full OCIO-compatible colour management. Replaces the hand-rolled
 # ACES Idt/Lmt/Rrt/Odt enums + matrix bake on the CPU side with a
 # proper `Config` / `Processor` / `Look` model, plus LUT loading
 # (`.cube` / `.3dl` / `.spi1d` / `.spi3d` / `.csp`) and GPU shader
 # generation. Bundles a built-in ACES 1.3 config so the app works
 # without any external `.ocio` file.
-vfx-ocio = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main" }
+vfx-ocio = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main" }
 # LUT baker / loader counterpart — same crate family, separate
 # split so callers can pull just LUT IO without dragging the whole
 # OCIO config machinery.
-vfx-lut = { git = "https://github.com/ssoj13/vfx-rs.git", branch = "main" }
+vfx-lut = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main" }
 
 # Internal crate paths
 squarebob-core = { path = "crates/squarebob-core" }
@@ -231,13 +230,3 @@ minimum-system-version = "13.0"
 
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
-
-# Local development override for vfx-rs while the OCIO display-views
-# merging + LooksOverride changes land upstream. Remove (or comment
-# out) once those land on `ssoj13/vfx-rs` `main`.
-[patch."https://github.com/ssoj13/vfx-rs.git"]
-vfx-core = { path = "../vfx-rs/crates/foundation/vfx-core" }
-vfx-exr  = { path = "../vfx-rs/crates/exr/vfx-exr" }
-vfx-io   = { path = "../vfx-rs/crates/oiio/vfx-io" }
-vfx-ocio = { path = "../vfx-rs/crates/ocio/vfx-ocio" }
-vfx-lut  = { path = "../vfx-rs/crates/ocio/vfx-lut" }

@@ -1,8 +1,8 @@
+use log::trace;
+use rayon::prelude::*;
 /// Squarified treemap layout + cushion shading renderer.
 /// Ported from WinDirStat's TreeMap.cpp with parallel rendering.
 use squarebob_core::DirEntry;
-use log::trace;
-use rayon::prelude::*;
 
 #[cfg(feature = "wgpu")]
 pub mod wgpu;
@@ -247,11 +247,7 @@ fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
 
             let child_w = child_frac as f32 * (if horizontal { pw } else { ph });
             let right = if i == end - 1 {
-                if horizontal {
-                    px + pw
-                } else {
-                    py + ph
-                }
+                if horizontal { px + pw } else { py + ph }
             } else {
                 left + child_w
             };
@@ -385,11 +381,7 @@ fn layout_sequoia(parent: &DirEntry, opts: &TreeMapOptions) {
             let frac = cs / sum;
             let child_len = frac as f32 * row_len;
             let end = if i == row_end - 1 {
-                if horizontal {
-                    ry + rh
-                } else {
-                    rx + rw
-                }
+                if horizontal { ry + rh } else { rx + rw }
             } else {
                 pos + child_len
             };
@@ -457,11 +449,18 @@ fn rects_disjoint(rects: &[RenderRect]) -> bool {
     true
 }
 
-/// Render the treemap into an RGBA pixel buffer (parallel version)
-pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -> Vec<u8> {
+/// Render the treemap into an RGBA pixel buffer using safe row partitions.
+pub fn render(
+    root: &DirEntry,
+    width: u32,
+    height: u32,
+    opts: &TreeMapOptions,
+) -> Result<Vec<u8>, render_core::GpuLayoutError> {
     let w = width as usize;
     let h = height as usize;
-    let mut buf = vec![0u8; w * h * 4]; // RGBA
+    let byte_len = render_core::checked_2d_byte_len("CPU treemap", width, height, 4)?;
+    let row_bytes = byte_len / h;
+    let mut buf = vec![0u8; byte_len]; // RGBA
 
     // Fill background with grid color (parallel)
     let bg = [
@@ -495,12 +494,26 @@ pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -
         0,
     );
 
-    // Layout invariant: rects must not overlap. The solid-mode parallel
-    // path writes through a raw pointer relying on this; the cushion-mode
-    // row-parallel path also assumes per-rect ranges are independent.
+    // Validate the layout once at the raster boundary. Clipping keeps any
+    // malformed layout result inside the owned image; overlaps remain
+    // deterministic because each row processes rectangles in source order.
+    let original_count = rects.len();
+    rects.retain_mut(|rect| {
+        rect.lx = rect.lx.min(w);
+        rect.rx = rect.rx.min(w);
+        rect.ly = rect.ly.min(h);
+        rect.ry = rect.ry.min(h);
+        rect.lx < rect.rx && rect.ly < rect.ry
+    });
+    if rects.len() != original_count {
+        log::warn!(
+            "treemap layout emitted {} empty or out-of-bounds rectangles",
+            original_count - rects.len()
+        );
+    }
     debug_assert!(
         rects_disjoint(&rects),
-        "treemap layout produced overlapping rects — layout regression?"
+        "treemap layout produced overlapping rects — deterministic but invalid layout"
     );
 
     // Render based on mode
@@ -509,7 +522,7 @@ pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -
         let brightness = opts.brightness;
         let ambient = opts.ambient_light;
 
-        buf.par_chunks_exact_mut(w * 4)
+        buf.par_chunks_exact_mut(row_bytes)
             .enumerate()
             .for_each(|(y, row)| {
                 for rect in &rects {
@@ -519,34 +532,30 @@ pub fn render(root: &DirEntry, width: u32, height: u32, opts: &TreeMapOptions) -
                 }
             });
     } else {
-        // For solid: simple parallel fill per rect
-        // Since rects don't overlap, we can safely write in parallel
+        // Safe parallelism boundary: Rayon owns disjoint mutable rows. Rectangles
+        // within a row are processed sequentially, so overlap cannot create UB.
         let brightness = opts.brightness;
-        rects.par_iter().for_each(|rect| {
-            let factor = brightness / PALETTE_BRIGHTNESS;
-            let (r, g, b) = normalize_color(
-                (rect.color[0] as f64 * factor) as i32,
-                (rect.color[1] as f64 * factor) as i32,
-                (rect.color[2] as f64 * factor) as i32,
-            );
-            // Note: We need unsafe for parallel writes to non-overlapping regions
-            // This is safe because rects don't overlap
-            unsafe {
-                let buf_ptr = buf.as_ptr() as *mut u8;
-                for iy in rect.ly..rect.ry {
-                    for ix in rect.lx..rect.rx {
-                        let idx = (iy * w + ix) * 4;
-                        *buf_ptr.add(idx) = r;
-                        *buf_ptr.add(idx + 1) = g;
-                        *buf_ptr.add(idx + 2) = b;
-                        *buf_ptr.add(idx + 3) = 255;
+        buf.par_chunks_exact_mut(row_bytes)
+            .enumerate()
+            .for_each(|(y, row)| {
+                for rect in &rects {
+                    if y < rect.ly || y >= rect.ry {
+                        continue;
+                    }
+                    let factor = brightness / PALETTE_BRIGHTNESS;
+                    let (r, g, b) = normalize_color(
+                        (rect.color[0] as f64 * factor) as i32,
+                        (rect.color[1] as f64 * factor) as i32,
+                        (rect.color[2] as f64 * factor) as i32,
+                    );
+                    for pixel in row[rect.lx * 4..rect.rx * 4].chunks_exact_mut(4) {
+                        pixel.copy_from_slice(&[r, g, b, 255]);
                     }
                 }
-            }
-        });
+            });
     }
 
-    buf
+    Ok(buf)
 }
 
 /// Render one row of a cushion-shaded rectangle
@@ -602,47 +611,47 @@ fn collect_rects(
     is_root: bool,
     dir_hash: u32,
 ) {
-    let [x, y, w, h_px] = node.rect.get();
-    if w <= 0.0 || h_px <= 0.0 {
-        return;
-    }
-
-    let cushion = is_cushion(opts);
-
-    // Add ridge for cushion (not for root)
-    let surface = if cushion && !is_root {
-        add_ridge(x, y, w, h_px, surface, h)
-    } else {
-        surface
-    };
-
-    if !node.is_dir || node.children.is_empty() {
-        // Leaf: add to render list
-        let color = dir_tinted_color(&node.ext, dir_hash);
-        let lx = (x + grid_w).max(x) as usize;
-        let ly = (y + grid_w).max(y) as usize;
-        let rx = ((x + w) as usize).min(bw);
-        let ry = ((y + h_px) as usize).min(bh);
-
-        if lx < rx && ly < ry {
-            rects.push(RenderRect {
-                lx,
-                ly,
-                rx,
-                ry,
-                color,
-                surface,
-            });
+    let mut pending = vec![(node, surface, h, is_root, dir_hash)];
+    while let Some((node, surface, h, is_root, dir_hash)) = pending.pop() {
+        let [x, y, w, h_px] = node.rect.get();
+        if w <= 0.0 || h_px <= 0.0 {
+            continue;
         }
-    } else {
-        // Directory: recurse
-        let my_hash = path_hash(&node.name, dir_hash);
-        let next_h = h * opts.scale_factor;
-        for child in &node.children {
-            collect_rects(
-                child, rects, bw, bh, opts, grid_w, surface, next_h, false, my_hash,
-            );
+
+        let surface = if is_cushion(opts) && !is_root {
+            add_ridge(x, y, w, h_px, surface, h)
+        } else {
+            surface
+        };
+
+        if !node.is_dir || node.children.is_empty() {
+            let color = dir_tinted_color(&node.ext, dir_hash);
+            let lx = (x + grid_w).max(x) as usize;
+            let ly = (y + grid_w).max(y) as usize;
+            let rx = ((x + w) as usize).min(bw);
+            let ry = ((y + h_px) as usize).min(bh);
+
+            if lx < rx && ly < ry {
+                rects.push(RenderRect {
+                    lx,
+                    ly,
+                    rx,
+                    ry,
+                    color,
+                    surface,
+                });
+            }
+            continue;
         }
+
+        let child_hash = path_hash(&node.name, dir_hash);
+        let child_height = h * opts.scale_factor;
+        pending.extend(
+            node.children
+                .iter()
+                .rev()
+                .map(|child| (child, surface, child_height, false, child_hash)),
+        );
     }
 }
 
@@ -788,14 +797,23 @@ pub fn compute_avg_color(node: &DirEntry, dir_hash: u32) -> [u8; 3] {
     let mut r_sum: u64 = 0;
     let mut g_sum: u64 = 0;
     let mut b_sum: u64 = 0;
-    accumulate_colors(
-        node,
-        dir_hash,
-        &mut total_size,
-        &mut r_sum,
-        &mut g_sum,
-        &mut b_sum,
-    );
+    let mut pending = vec![(node, dir_hash)];
+
+    while let Some((node, dir_hash)) = pending.pop() {
+        if !node.is_dir || node.children.is_empty() {
+            let color = dir_tinted_color(&node.ext, dir_hash);
+            let size = node.size.max(1);
+            total_size += size;
+            r_sum += color[0] as u64 * size;
+            g_sum += color[1] as u64 * size;
+            b_sum += color[2] as u64 * size;
+            continue;
+        }
+
+        let child_hash = path_hash(&node.name, dir_hash);
+        pending.extend(node.children.iter().rev().map(|child| (child, child_hash)));
+    }
+
     if total_size == 0 {
         return [128, 128, 128];
     }
@@ -806,47 +824,32 @@ pub fn compute_avg_color(node: &DirEntry, dir_hash: u32) -> [u8; 3] {
     ]
 }
 
-fn accumulate_colors(
-    node: &DirEntry,
-    dir_hash: u32,
-    total_size: &mut u64,
-    r_sum: &mut u64,
-    g_sum: &mut u64,
-    b_sum: &mut u64,
-) {
-    if !node.is_dir || node.children.is_empty() {
-        let color = dir_tinted_color(&node.ext, dir_hash);
-        let size = node.size.max(1);
-        *total_size += size;
-        *r_sum += color[0] as u64 * size;
-        *g_sum += color[1] as u64 * size;
-        *b_sum += color[2] as u64 * size;
-    } else {
-        let my_hash = path_hash(&node.name, dir_hash);
-        for child in &node.children {
-            accumulate_colors(child, my_hash, total_size, r_sum, g_sum, b_sum);
-        }
-    }
-}
-
 /// Find the leaf node at pixel position (x, y)
 pub fn hit_test(node: &DirEntry, x: f32, y: f32) -> Option<&DirEntry> {
-    let [nx, ny, nw, nh] = node.rect.get();
-    if x < nx || y < ny || x >= nx + nw || y >= ny + nh {
-        return None;
+    enum Action<'a> {
+        Visit(&'a DirEntry),
+        Fallback(&'a DirEntry),
     }
 
-    if !node.is_dir || node.children.is_empty() {
-        return Some(node);
-    }
+    let mut pending = vec![Action::Visit(node)];
+    while let Some(action) = pending.pop() {
+        let node = match action {
+            Action::Visit(node) => node,
+            Action::Fallback(node) => return Some(node),
+        };
 
-    for child in &node.children {
-        if let Some(hit) = hit_test(child, x, y) {
-            return Some(hit);
+        let [nx, ny, nw, nh] = node.rect.get();
+        if x < nx || y < ny || x >= nx + nw || y >= ny + nh {
+            continue;
         }
-    }
+        if !node.is_dir || node.children.is_empty() {
+            return Some(node);
+        }
 
-    Some(node)
+        pending.push(Action::Fallback(node));
+        pending.extend(node.children.iter().rev().map(Action::Visit));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -965,6 +968,38 @@ mod tests {
         assert!(
             (area_sum - parent_area).abs() < 2.0,
             "sequoia: child area sum {area_sum} != parent area {parent_area}"
+        );
+    }
+
+    #[test]
+    fn deep_tree_queries_do_not_use_call_stack() {
+        const DEPTH: usize = 4_096;
+
+        let mut node = file("leaf", 1);
+        node.rect.set([0.0, 0.0, 10.0, 10.0]);
+
+        for index in (0..DEPTH).rev() {
+            let name = format!("d{index}");
+            let mut parent = DirEntry::new_dir(name.clone(), PathBuf::from(name));
+            parent.size = node.size;
+            parent.file_count = node.file_count;
+            parent.rect.set([0.0, 0.0, 10.0, 10.0]);
+            parent.children.push(node);
+            node = parent;
+        }
+
+        assert_eq!(
+            hit_test(&node, 5.0, 5.0).map(|entry| entry.name.as_str()),
+            Some("leaf")
+        );
+
+        let mut expected_hash = 0;
+        for index in 0..DEPTH {
+            expected_hash = path_hash(&format!("d{index}"), expected_hash);
+        }
+        assert_eq!(
+            compute_avg_color(&node, 0),
+            dir_tinted_color("txt", expected_hash)
         );
     }
 

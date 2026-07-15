@@ -1,25 +1,6 @@
 // ReSTIR Temporal Resampling pass.
 // Combine current frame with reprojected previous frame.
 
-struct Sample {
-    position: vec3<f32>,
-    valid: u32,
-    wi: vec3<f32>,
-    light_type: u32,
-    radiance: vec3<f32>,
-    dist: f32,
-    normal: vec3<f32>,
-    _pad: u32,
-}
-
-struct Reservoir {
-    sample: Sample,
-    w_sum: f32,
-    m: u32,
-    w: f32,
-    _pad: u32,
-}
-
 struct MotionVector {
     motion: vec2<f32>,
     depth: f32,
@@ -58,35 +39,6 @@ struct Params {
 @group(0) @binding(4) var<storage, read> curr_depth: array<f32>;
 @group(0) @binding(5) var<uniform> params: Params;
 
-fn pcg(n: u32) -> u32 {
-    var h = n * 747796405u + 2891336453u;
-    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-    return (h >> 22u) ^ h;
-}
-
-fn rand(seed: ptr<function, u32>) -> f32 {
-    *seed = pcg(*seed);
-    return f32(*seed) / 4294967295.0;
-}
-
-// Combine reservoir r2 into r1
-fn combine_reservoirs(
-    r1: ptr<function, Reservoir>,
-    r2: Reservoir,
-    target_at_r1: f32,
-    seed: ptr<function, u32>
-) {
-    // Compute weight for r2's sample at r1's shading point
-    let w2 = target_at_r1 * r2.w * f32(r2.m);
-
-    (*r1).w_sum += w2;
-    (*r1).m += r2.m;
-
-    if rand(seed) * (*r1).w_sum < w2 {
-        (*r1).sample = r2.sample;
-    }
-}
-
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Dispatch is tile-sized; remap gid.xy to full-image coords.
@@ -96,10 +48,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gx >= params.width || gy >= params.height { return; }
     let pixel_id = gy * params.width + gx;
     var reservoir = curr_reservoirs[pixel_id];
-    var seed = pixel_id ^ (params.frame_count * 7919u);
+    var seed = rng_seed(pixel_id, params.frame_count, params.frame_count, 0u, 2u);
 
-    // Check if we have a valid current sample
-    if reservoir.sample.valid == 0u {
+    // Initial sampling always records the receiving surface, even when it
+    // found no candidate. That allows temporal reuse to fill an empty reservoir.
+    if reservoir.surface.valid == 0u {
         return;
     }
 
@@ -125,12 +78,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Depth check for disocclusion
     let curr_z = curr_depth[pixel_id];
     let prev_z = prev_depth[prev_pixel];
-    if abs(curr_z - prev_z) > params.depth_threshold * curr_z {
+    if abs(curr_z - prev_z) > params.depth_threshold * max(abs(curr_z), 1e-6) {
         return;
     }
 
     // Get previous reservoir
     var prev_reservoir = prev_reservoirs[prev_pixel];
+
+    if !restir_surfaces_compatible(reservoir.surface, prev_reservoir.surface) {
+        return;
+    }
 
     // Clamp history length to avoid bias
     if prev_reservoir.m > params.m_max {
@@ -139,20 +96,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         prev_reservoir.m = params.m_max;
     }
 
-    // Compute target at current shading point
-    // Simplified: assume same geometry, just use the sample
-    let target_val = length(prev_reservoir.sample.radiance);
-
-    // Combine reservoirs
-    combine_reservoirs(&reservoir, prev_reservoir, target_val, &seed);
-
-    // Update final weight
-    if reservoir.m > 0u && reservoir.w_sum > 0.0 {
-        let final_target = length(reservoir.sample.radiance);
-        if final_target > 0.0 {
-            reservoir.w = reservoir.w_sum / (f32(reservoir.m) * final_target);
-        }
-    }
+    let target_at_receiver = restir_target_at(prev_reservoir.sample, reservoir.surface);
+    restir_combine_reservoirs(
+        &reservoir,
+        prev_reservoir,
+        target_at_receiver,
+        &seed,
+    );
+    restir_finalize_reservoir(&reservoir);
 
     curr_reservoirs[pixel_id] = reservoir;
 }

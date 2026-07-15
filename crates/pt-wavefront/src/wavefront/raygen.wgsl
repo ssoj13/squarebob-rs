@@ -53,18 +53,6 @@ struct Ray {
 @group(0) @binding(4) var<storage, read> sample_map: array<u32>;
 @group(0) @binding(5) var<storage, read> accum: array<vec4<f32>>;
 
-// PCG hash for random
-fn pcg(n: u32) -> u32 {
-    var h = n * 747796405u + 2891336453u;
-    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-    return (h >> 22u) ^ h;
-}
-
-fn rand(seed: ptr<function, u32>) -> f32 {
-    *seed = pcg(*seed);
-    return f32(*seed) / 4294967295.0;
-}
-
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let width = dims.tile_width;
@@ -103,7 +91,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
         return;
     }
-    var seed = pixel_id ^ (camera.frame_count * 1973u);
+    var seed = rng_seed(pixel_id, camera.frame_count, camera.frame_count, 0u, 5u);
 
     // Jitter for anti-aliasing
     let jx = rand(&seed);

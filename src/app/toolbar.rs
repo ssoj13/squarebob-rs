@@ -2,9 +2,9 @@
 
 use eframe::egui;
 
+use super::App;
 use super::helpers::rfd_pick_folder;
 use super::icons;
-use super::App;
 use crate::events::{NavigateUpEvent, ZoomResetEvent};
 use crate::renderer::{RenderBackend, RenderMode};
 
@@ -44,10 +44,11 @@ impl App {
                     .button("...")
                     .on_hover_text("Browse for folder")
                     .clicked()
-                    && let Some(path) = rfd_pick_folder() {
-                        self.scan_path = path;
-                        start_scan = true;
-                    }
+                    && let Some(path) = rfd_pick_folder()
+                {
+                    self.scan_path = path;
+                    start_scan = true;
+                }
 
                 ui.separator();
 

@@ -125,11 +125,9 @@ fn trace_ray(ray: Ray) -> HitInfo {
     var stack: array<u32, MAX_STACK_DEPTH>;
     var sp: u32 = 1u;
     stack[0] = 0u;
-    var loop_safety = 0u;
+    var traversal_overflow = false;
 
     while sp > 0u {
-        loop_safety += 1u;
-        if loop_safety > 4096u { break; } // Safety break
 
         sp -= 1u;
         let node = nodes[stack[sp]];
@@ -146,11 +144,22 @@ fn trace_ray(ray: Ray) -> HitInfo {
                 }
             }
         } else {
-            if sp + 2u <= MAX_STACK_DEPTH {
-                stack[sp] = node.left_or_first + 1u;
-                sp += 1u;
-                stack[sp] = node.left_or_first;
-                sp += 1u;
+            if sp + 2u > MAX_STACK_DEPTH {
+                traversal_overflow = true;
+                break;
+            }
+            stack[sp] = node.left_or_first + 1u;
+            sp += 1u;
+            stack[sp] = node.left_or_first;
+            sp += 1u;
+        }
+    }
+
+    if traversal_overflow {
+        for (var inst_idx = 0u; inst_idx < arrayLength(&instances); inst_idx++) {
+            let hit = intersect_instance(ray, inst_idx);
+            if hit.hit == 1u && hit.t < best.t {
+                best = hit;
             }
         }
     }

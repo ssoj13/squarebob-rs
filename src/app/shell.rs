@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 
 use super::App;
+use super::helpers::path_to_dir;
 
 /// Wrapper around `open::that` that logs failures instead of silently
 /// dropping them. Centralises the `let _ = open::that(...)` pattern that
@@ -238,16 +239,5 @@ impl App {
         if close {
             self.pending_trash_path = None;
         }
-    }
-}
-
-// ── Helper functions ──
-
-/// Convert file path to its directory path
-fn path_to_dir(path: &Path) -> &Path {
-    if path.is_file() {
-        path.parent().unwrap_or(path)
-    } else {
-        path
     }
 }

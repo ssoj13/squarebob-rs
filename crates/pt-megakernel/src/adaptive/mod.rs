@@ -10,5 +10,6 @@ mod pipeline;
 
 #[allow(unused_imports)]
 pub use config::AdaptiveConfig;
+pub(crate) use pipeline::VARIANCE_DATA_WGSL;
 #[allow(unused_imports)]
-pub use pipeline::AdaptivePipeline;
+pub use pipeline::{AdaptivePipeline, VarianceData};

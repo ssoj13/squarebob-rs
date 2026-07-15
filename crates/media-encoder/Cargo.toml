@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["ffmpeg", "exr"]
 ffmpeg = ["dep:playa-ffmpeg"]
-exr = ["dep:vfx-core", "dep:vfx-exr", "dep:vfx-io"]
+exr = ["dep:vfx-core", "dep:vfx-io"]
 
 [dependencies]
 bytemuck = { workspace = true }
@@ -24,5 +24,4 @@ rfd = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 vfx-core = { workspace = true, optional = true }
-vfx-exr = { workspace = true, optional = true }
 vfx-io = { workspace = true, optional = true }

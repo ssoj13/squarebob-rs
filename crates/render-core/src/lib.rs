@@ -68,6 +68,291 @@ impl Viewport {
     }
 }
 
+/// Checked-size failure shared by GPU buffers, textures, and CPU staging layouts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpuLayoutError {
+    ZeroExtent {
+        context: &'static str,
+        width: u32,
+        height: u32,
+    },
+    ZeroBytesPerElement {
+        context: &'static str,
+    },
+    Overflow {
+        context: &'static str,
+        width: u32,
+        height: u32,
+        bytes_per_element: u64,
+    },
+    ValueTooLarge {
+        context: &'static str,
+        value: u64,
+        target: &'static str,
+    },
+    InvalidAlignment {
+        context: &'static str,
+        alignment: u32,
+    },
+    LimitExceeded {
+        context: &'static str,
+        value: u64,
+        limit: u64,
+        limit_name: &'static str,
+    },
+    HostAllocation {
+        context: &'static str,
+        elements: usize,
+    },
+    LengthMismatch {
+        context: &'static str,
+        left: usize,
+        right: usize,
+    },
+}
+
+impl std::fmt::Display for GpuLayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroExtent {
+                context,
+                width,
+                height,
+            } => write!(f, "{context}: zero extent {width}x{height}"),
+            Self::ZeroBytesPerElement { context } => {
+                write!(f, "{context}: bytes per element must be non-zero")
+            }
+            Self::Overflow {
+                context,
+                width,
+                height,
+                bytes_per_element,
+            } => write!(
+                f,
+                "{context}: {width}x{height} at {bytes_per_element} bytes per element overflows"
+            ),
+            Self::ValueTooLarge {
+                context,
+                value,
+                target,
+            } => write!(f, "{context}: {value} does not fit {target}"),
+            Self::InvalidAlignment { context, alignment } => {
+                write!(
+                    f,
+                    "{context}: alignment {alignment} is not a non-zero power of two"
+                )
+            }
+            Self::LimitExceeded {
+                context,
+                value,
+                limit,
+                limit_name,
+            } => write!(
+                f,
+                "{context}: {value} exceeds device {limit_name} limit {limit}"
+            ),
+            Self::HostAllocation { context, elements } => {
+                write!(f, "{context}: failed to allocate {elements} host elements")
+            }
+            Self::LengthMismatch {
+                context,
+                left,
+                right,
+            } => write!(f, "{context}: length mismatch ({left} != {right})"),
+        }
+    }
+}
+
+impl std::error::Error for GpuLayoutError {}
+
+/// Checked element count for a non-empty two-dimensional allocation.
+pub fn checked_2d_element_count(
+    context: &'static str,
+    width: u32,
+    height: u32,
+) -> Result<u64, GpuLayoutError> {
+    if width == 0 || height == 0 {
+        return Err(GpuLayoutError::ZeroExtent {
+            context,
+            width,
+            height,
+        });
+    }
+    u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or(GpuLayoutError::Overflow {
+            context,
+            width,
+            height,
+            bytes_per_element: 1,
+        })
+}
+
+/// Checked byte size for a non-empty two-dimensional allocation.
+pub fn checked_2d_buffer_size(
+    context: &'static str,
+    width: u32,
+    height: u32,
+    bytes_per_element: u64,
+) -> Result<u64, GpuLayoutError> {
+    if bytes_per_element == 0 {
+        return Err(GpuLayoutError::ZeroBytesPerElement { context });
+    }
+    checked_2d_element_count(context, width, height)?
+        .checked_mul(bytes_per_element)
+        .ok_or(GpuLayoutError::Overflow {
+            context,
+            width,
+            height,
+            bytes_per_element,
+        })
+}
+
+/// Check a storage-buffer byte size against device limits.
+pub fn checked_storage_buffer_size(
+    device: &wgpu::Device,
+    context: &'static str,
+    size: u64,
+) -> Result<u64, GpuLayoutError> {
+    let limits = device.limits();
+    let max_buffer_size = limits.max_buffer_size;
+    if size > max_buffer_size {
+        return Err(GpuLayoutError::LimitExceeded {
+            context,
+            value: size,
+            limit: max_buffer_size,
+            limit_name: "max_buffer_size",
+        });
+    }
+    let max_binding_size = u64::from(limits.max_storage_buffer_binding_size);
+    if size > max_binding_size {
+        return Err(GpuLayoutError::LimitExceeded {
+            context,
+            value: size,
+            limit: max_binding_size,
+            limit_name: "max_storage_buffer_binding_size",
+        });
+    }
+    Ok(size)
+}
+
+/// Checked storage-buffer byte size against arithmetic and device limits.
+pub fn checked_2d_storage_buffer_size(
+    device: &wgpu::Device,
+    context: &'static str,
+    width: u32,
+    height: u32,
+    bytes_per_element: u64,
+) -> Result<u64, GpuLayoutError> {
+    let size = checked_2d_buffer_size(context, width, height, bytes_per_element)?;
+    checked_storage_buffer_size(device, context, size)
+}
+
+/// Validate a non-empty 2D texture extent against the device limit.
+pub fn checked_texture_extent_2d(
+    device: &wgpu::Device,
+    context: &'static str,
+    width: u32,
+    height: u32,
+) -> Result<(), GpuLayoutError> {
+    checked_2d_element_count(context, width, height)?;
+    let limit = u64::from(device.limits().max_texture_dimension_2d);
+    let largest = u64::from(width.max(height));
+    if largest > limit {
+        return Err(GpuLayoutError::LimitExceeded {
+            context,
+            value: largest,
+            limit,
+            limit_name: "max_texture_dimension_2d",
+        });
+    }
+    Ok(())
+}
+
+/// Checked host-vector length in elements for a non-empty 2D allocation.
+pub fn checked_2d_buffer_len(
+    context: &'static str,
+    width: u32,
+    height: u32,
+) -> Result<usize, GpuLayoutError> {
+    let count = checked_2d_element_count(context, width, height)?;
+    usize::try_from(count).map_err(|_| GpuLayoutError::ValueTooLarge {
+        context,
+        value: count,
+        target: "usize",
+    })
+}
+
+/// Checked host-vector byte length for a non-empty 2D allocation.
+pub fn checked_2d_byte_len(
+    context: &'static str,
+    width: u32,
+    height: u32,
+    bytes_per_element: u64,
+) -> Result<usize, GpuLayoutError> {
+    let bytes = checked_2d_buffer_size(context, width, height, bytes_per_element)?;
+    usize::try_from(bytes).map_err(|_| GpuLayoutError::ValueTooLarge {
+        context,
+        value: bytes,
+        target: "usize",
+    })
+}
+
+/// Allocate and initialize a host vector without aborting on capacity failure.
+pub fn try_vec_filled<T: Clone>(
+    context: &'static str,
+    len: usize,
+    value: T,
+) -> Result<Vec<T>, GpuLayoutError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| GpuLayoutError::HostAllocation {
+            context,
+            elements: len,
+        })?;
+    values.resize(len, value);
+    Ok(values)
+}
+
+/// Checked aligned row pitch. Alignment must be a non-zero power of two.
+pub fn checked_aligned_bytes_per_row(
+    context: &'static str,
+    width: u32,
+    bytes_per_pixel: u32,
+    alignment: u32,
+) -> Result<u32, GpuLayoutError> {
+    if !alignment.is_power_of_two() {
+        return Err(GpuLayoutError::InvalidAlignment { context, alignment });
+    }
+    if bytes_per_pixel == 0 {
+        return Err(GpuLayoutError::ZeroBytesPerElement { context });
+    }
+    let unaligned = u64::from(width)
+        .checked_mul(u64::from(bytes_per_pixel))
+        .ok_or(GpuLayoutError::Overflow {
+            context,
+            width,
+            height: 1,
+            bytes_per_element: u64::from(bytes_per_pixel),
+        })?;
+    let mask = u64::from(alignment - 1);
+    let aligned = unaligned
+        .checked_add(mask)
+        .map(|value| value & !mask)
+        .ok_or(GpuLayoutError::Overflow {
+            context,
+            width,
+            height: 1,
+            bytes_per_element: u64::from(bytes_per_pixel),
+        })?;
+    u32::try_from(aligned).map_err(|_| GpuLayoutError::ValueTooLarge {
+        context,
+        value: aligned,
+        target: "u32",
+    })
+}
+
 /// Shared GPU context for wgpu-based rendering.
 ///
 /// Owns the full wgpu setup quartet (`Instance` / `Adapter` / `Device` / `Queue`)
@@ -149,13 +434,14 @@ pub mod gpu {
                     required_limits,
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                     trace: Default::default(),
-                    // SAFETY: enables SPIR-V passthrough shaders used by
-                    // cubecl-wgpu's compute path on Vulkan. Without this
-                    // toggle Burn's compiled kernels do nothing and write
-                    // zeros to the output tensor.
-                    experimental_features: unsafe {
-                        wgpu::ExperimentalFeatures::enabled()
-                    },
+                    // SAFETY: `required_features` mirrors cubecl-wgpu and may
+                    // include adapter-reported experimental features. Wgpu's
+                    // contract explicitly warns those APIs may contain UB even
+                    // when reached through safe calls. This process accepts that
+                    // upstream implementation risk so cubecl kernels can use the
+                    // feature set they compile against; the opt-in remains here,
+                    // at the single device-creation boundary.
+                    experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
                 })) {
                     Ok(pair) => pair,
                     Err(e) => {
@@ -251,24 +537,133 @@ pub mod gpu {
         })
     }
 
-    /// Copy a GPU texture to encoder and submit, then read back pixels as Vec<u8>.
-    /// Handles row alignment (256-byte), buffer mapping, and padding removal.
-    pub fn readback_texture(
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TextureReadbackLayout {
+        width: u32,
+        height: u32,
+        row_bytes: u32,
+        padded_row_bytes: u32,
+        buffer_size: u64,
+        output_size: usize,
+    }
+
+    impl TextureReadbackLayout {
+        pub fn new(
+            context: &'static str,
+            width: u32,
+            height: u32,
+            bytes_per_pixel: u32,
+        ) -> Result<Self, GpuLayoutError> {
+            let row_bytes_u64 = u64::from(width)
+                .checked_mul(u64::from(bytes_per_pixel))
+                .ok_or(GpuLayoutError::Overflow {
+                    context,
+                    width,
+                    height: 1,
+                    bytes_per_element: u64::from(bytes_per_pixel),
+                })?;
+            let row_bytes =
+                u32::try_from(row_bytes_u64).map_err(|_| GpuLayoutError::ValueTooLarge {
+                    context,
+                    value: row_bytes_u64,
+                    target: "u32",
+                })?;
+            let padded_row_bytes = checked_aligned_bytes_per_row(
+                context,
+                width,
+                bytes_per_pixel,
+                wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+            )?;
+            let buffer_size = u64::from(padded_row_bytes)
+                .checked_mul(u64::from(height))
+                .ok_or(GpuLayoutError::Overflow {
+                    context,
+                    width,
+                    height,
+                    bytes_per_element: u64::from(padded_row_bytes),
+                })?;
+            let output_size_u64 =
+                checked_2d_buffer_size(context, width, height, u64::from(bytes_per_pixel))?;
+            let output_size =
+                usize::try_from(output_size_u64).map_err(|_| GpuLayoutError::ValueTooLarge {
+                    context,
+                    value: output_size_u64,
+                    target: "usize",
+                })?;
+
+            Ok(Self {
+                width,
+                height,
+                row_bytes,
+                padded_row_bytes,
+                buffer_size,
+                output_size,
+            })
+        }
+
+        pub fn rgba8(width: u32, height: u32) -> Result<Self, GpuLayoutError> {
+            Self::new("RGBA8 texture readback", width, height, 4)
+        }
+
+        pub fn row_bytes(&self) -> u32 {
+            self.row_bytes
+        }
+
+        pub fn padded_row_bytes(&self) -> u32 {
+            self.padded_row_bytes
+        }
+
+        pub fn buffer_size(&self) -> u64 {
+            self.buffer_size
+        }
+
+        pub fn output_size(&self) -> usize {
+            self.output_size
+        }
+    }
+
+    /// Grow-only staging allocation plus layout for the most recent texture copy.
+    ///
+    /// Recurrent render paths keep one instance. A larger frame reallocates once;
+    /// smaller frames reuse the existing mapped-read buffer.
+    #[derive(Default)]
+    pub struct TextureReadback {
+        buffer: Option<wgpu::Buffer>,
+        capacity: u64,
+        layout: Option<TextureReadbackLayout>,
+    }
+
+    impl TextureReadback {
+        pub fn capacity(&self) -> u64 {
+            self.capacity
+        }
+    }
+
+    /// Encode a tightly packed pixel texture into reusable staging storage.
+    pub fn readback_texture_bytes(
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
         texture: &wgpu::Texture,
         width: u32,
         height: u32,
-    ) -> wgpu::Buffer {
-        let bytes_per_row = 4 * width;
-        let padded_bytes_per_row = (bytes_per_row + 255) & !255;
-
-        let output_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Readback Buffer"),
-            size: (padded_bytes_per_row * height) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        bytes_per_pixel: u32,
+        label: &'static str,
+        staging: &mut TextureReadback,
+    ) -> Result<(), ReadbackError> {
+        let layout = TextureReadbackLayout::new(label, width, height, bytes_per_pixel)?;
+        if staging.buffer.is_none() || staging.capacity < layout.buffer_size {
+            staging.buffer = Some(make_buffer(
+                &ctx.device,
+                label,
+                layout.buffer_size,
+                wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            ));
+            staging.capacity = layout.buffer_size;
+        }
+        let buffer = staging
+            .buffer
+            .as_ref()
+            .ok_or(ReadbackError::MissingTarget)?;
 
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -278,108 +673,190 @@ pub mod gpu {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &output_buffer,
+                buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(height),
+                    bytes_per_row: Some(layout.padded_row_bytes),
+                    rows_per_image: Some(layout.height),
                 },
             },
             wgpu::Extent3d {
-                width,
-                height,
+                width: layout.width,
+                height: layout.height,
                 depth_or_array_layers: 1,
             },
         );
-
-        output_buffer
+        staging.layout = Some(layout);
+        Ok(())
     }
 
-    /// Map a readback buffer and extract pixels, removing row padding.
-    /// Returns an empty `Vec` on map failure / device-lost (logged) — keeps
-    /// callers (screenshots, picking) on the graceful-skip path the old code
-    /// also expected, but without the `.unwrap().unwrap()` panic.
-    pub fn map_readback(
+    /// Encode an RGBA8 texture copy into reusable staging storage.
+    pub fn readback_texture(
         ctx: &GpuContext,
-        buffer: &wgpu::Buffer,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
         width: u32,
         height: u32,
-    ) -> Vec<u8> {
-        let bytes_per_row = 4 * width;
-        let padded_bytes_per_row = (bytes_per_row + 255) & !255;
-        let row_len = (width * 4) as usize;
-        let total = (width * height * 4) as usize;
+        staging: &mut TextureReadback,
+    ) -> Result<(), ReadbackError> {
+        readback_texture_bytes(
+            ctx,
+            encoder,
+            texture,
+            width,
+            height,
+            4,
+            "RGBA8 Readback",
+            staging,
+        )
+    }
 
-        match map_buffer_read(&ctx.device, buffer, |data| {
-            let mut pixels = Vec::with_capacity(total);
-            for row in 0..height {
-                let start = (row * padded_bytes_per_row) as usize;
-                pixels.extend_from_slice(&data[start..start + row_len]);
+    /// Map the most recently encoded copy and strip row padding.
+    pub fn map_readback(
+        ctx: &GpuContext,
+        staging: &TextureReadback,
+    ) -> Result<Vec<u8>, ReadbackError> {
+        let layout = staging.layout.ok_or(ReadbackError::MissingTarget)?;
+        let buffer = staging
+            .buffer
+            .as_ref()
+            .ok_or(ReadbackError::MissingTarget)?;
+        map_buffer_read(&ctx.device, buffer, |data| {
+            let actual = data.len();
+            let expected = usize::try_from(layout.buffer_size).map_err(|_| {
+                ReadbackError::Layout(GpuLayoutError::ValueTooLarge {
+                    context: "RGBA8 mapped range",
+                    value: layout.buffer_size,
+                    target: "usize",
+                })
+            })?;
+            if actual < expected {
+                return Err(ReadbackError::MappedRangeTooSmall { expected, actual });
             }
-            pixels
-        }) {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("map_readback: {e}");
-                Vec::new()
+
+            let row_bytes = layout.row_bytes as usize;
+            let padded_row_bytes = layout.padded_row_bytes as usize;
+            let mut pixels = Vec::with_capacity(layout.output_size);
+            for row in 0..layout.height as usize {
+                let start = row * padded_row_bytes;
+                pixels.extend_from_slice(&data[start..start + row_bytes]);
             }
-        }
+            Ok(pixels)
+        })?
     }
 }
 
-/// Error from a buffer readback. `DeviceLost` fires when the map_async
-/// callback was dropped (e.g. wgpu device hot-unplug); `MapFailed` carries
-/// the inner `Result` the callback emits.
+/// Recoverable error from GPU rendering or buffer/texture readback.
 #[derive(Debug)]
-pub enum BufferReadError {
-    /// `rx.recv()` failed — the map_async callback was dropped without sending.
-    DeviceLost(std::sync::mpsc::RecvError),
-    /// `map_async` reported a failure (e.g. buffer still mapped, OOM).
+pub enum ReadbackError {
+    Layout(GpuLayoutError),
+    PollFailed(wgpu::PollError),
+    CallbackDropped(std::sync::mpsc::RecvError),
     MapFailed(wgpu::BufferAsyncError),
+    MissingTarget,
+    StagingBufferTooSmall { required: u64, capacity: u64 },
+    MappedRangeTooSmall { expected: usize, actual: usize },
+    HostAllocation(std::collections::TryReserveError),
+    SceneBuild(String),
 }
 
-impl std::fmt::Display for BufferReadError {
+impl From<std::collections::TryReserveError> for ReadbackError {
+    fn from(value: std::collections::TryReserveError) -> Self {
+        Self::HostAllocation(value)
+    }
+}
+
+impl From<GpuLayoutError> for ReadbackError {
+    fn from(value: GpuLayoutError) -> Self {
+        Self::Layout(value)
+    }
+}
+
+impl std::fmt::Display for ReadbackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DeviceLost(e) => write!(f, "map callback dropped (device lost?): {e}"),
+            Self::Layout(e) => write!(f, "invalid readback layout: {e}"),
+            Self::PollFailed(e) => write!(f, "device poll failed: {e:?}"),
+            Self::CallbackDropped(e) => {
+                write!(f, "map callback dropped before completion: {e}")
+            }
             Self::MapFailed(e) => write!(f, "map_async failed: {e:?}"),
+            Self::MissingTarget => write!(f, "readback has no encoded target"),
+            Self::StagingBufferTooSmall { required, capacity } => write!(
+                f,
+                "readback staging buffer too small: requires {required} bytes, capacity {capacity}"
+            ),
+            Self::MappedRangeTooSmall { expected, actual } => write!(
+                f,
+                "mapped range too small: expected at least {expected} bytes, got {actual}"
+            ),
+            Self::HostAllocation(error) => {
+                write!(f, "cannot allocate host readback storage: {error}")
+            }
+            Self::SceneBuild(error) => write!(f, "scene build failed: {error}"),
         }
     }
 }
 
-impl std::error::Error for BufferReadError {}
+impl std::error::Error for ReadbackError {}
 
-/// Maps `buffer` for `Read` on `device` (blocking poll), runs `f` on the
-/// mapped byte slice, unmaps, and returns `f`'s result. Encapsulates the
-/// `map_async + poll + recv + get_mapped_range + drop + unmap` ritual so
-/// every readback site shares one error-handling code path — instead of
-/// each one re-doing the `.unwrap().unwrap()` panic dance (or the
-/// per-site match arm that replaced it).
+/// Map a buffer exactly once, run `f`, drop the mapped view, then unmap.
 ///
-/// The caller must have already submitted any encoder work that fills
-/// `buffer` before calling this.
+/// The caller must submit every command that writes `buffer` before calling.
 pub fn map_buffer_read<R, F>(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
     f: F,
-) -> Result<R, BufferReadError>
+) -> Result<R, ReadbackError>
 where
     F: FnOnce(&[u8]) -> R,
 {
     let slice = buffer.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
     });
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(ReadbackError::PollFailed)?;
     match rx.recv() {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(BufferReadError::MapFailed(e)),
-        Err(e) => return Err(BufferReadError::DeviceLost(e)),
+        Ok(Err(e)) => return Err(ReadbackError::MapFailed(e)),
+        Err(e) => return Err(ReadbackError::CallbackDropped(e)),
     }
     let data = slice.get_mapped_range();
     let result = f(&data);
     drop(data);
     buffer.unmap();
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_layout_rejects_zero_extent() {
+        assert!(matches!(
+            checked_2d_buffer_size("test", 0, 1, 4),
+            Err(GpuLayoutError::ZeroExtent { .. })
+        ));
+    }
+
+    #[test]
+    fn checked_layout_rejects_byte_overflow() {
+        assert!(matches!(
+            checked_2d_buffer_size("test", u32::MAX, u32::MAX, 32),
+            Err(GpuLayoutError::Overflow { .. })
+        ));
+    }
+
+    #[test]
+    fn rgba8_readback_layout_accounts_for_padding() {
+        let layout = gpu::TextureReadbackLayout::rgba8(65, 3).unwrap();
+        assert_eq!(layout.row_bytes(), 260);
+        assert_eq!(layout.padded_row_bytes(), 512);
+        assert_eq!(layout.buffer_size(), 1536);
+        assert_eq!(layout.output_size(), 780);
+    }
 }

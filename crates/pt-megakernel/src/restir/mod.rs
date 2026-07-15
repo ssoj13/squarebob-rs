@@ -17,8 +17,8 @@ mod reservoir;
 pub use config::ReSTIRConfig;
 #[allow(unused_imports)]
 pub use pipeline::{
-    ReSTIRPipeline, RESTIR_INITIAL_PARAMS_SIZE, RESTIR_SHADE_PARAMS_SIZE,
-    RESTIR_SPATIAL_PARAMS_SIZE, RESTIR_TEMPORAL_PARAMS_SIZE,
+    RESTIR_INITIAL_PARAMS_SIZE, RESTIR_SHADE_PARAMS_SIZE, RESTIR_SPATIAL_PARAMS_SIZE,
+    RESTIR_TEMPORAL_PARAMS_SIZE, ReSTIRPipeline,
 };
 #[allow(unused_imports)]
 pub use reservoir::{Reservoir, Sample};

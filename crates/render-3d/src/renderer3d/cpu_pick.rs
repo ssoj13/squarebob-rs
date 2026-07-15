@@ -1,16 +1,16 @@
 //! CPU ray-AABB picking against the cube tree.
 //!
 //! Extracted from `lib.rs` in the post-sprint-3 modularization
-//! pass. `cpu_pick` and its helper `pick_recursive` is still a method of `Renderer3D` —
+//! pass. `cpu_pick` and its `pick_tree` helper remain methods of `Renderer3D` —
 //! `impl Renderer3D` is re-opened here.
 
 use glam::{Vec3, Vec4};
 
+use render_shared::{OrbitCamera, Render3DOptions, hash_transform_offset};
 use squarebob_core::DirEntry;
-use render_shared::{hash_transform_offset, OrbitCamera, Render3DOptions};
 use treemap::TreeMapOptions;
 
-use crate::{ray_aabb_intersect, CpuPickHit, Renderer3D};
+use crate::{CpuPickHit, Renderer3D, ray_aabb_intersect};
 
 impl Renderer3D {
     #[allow(clippy::too_many_arguments)]
@@ -68,7 +68,7 @@ impl Renderer3D {
 
         let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
         let mut hit: Option<CpuPickHit> = None;
-        self.pick_recursive(
+        self.pick_tree(
             root,
             0,
             0,
@@ -83,7 +83,7 @@ impl Renderer3D {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn pick_recursive(
+    fn pick_tree(
         &self,
         node: &DirEntry,
         depth: u32,
@@ -95,56 +95,53 @@ impl Renderer3D {
         ray_dir: Vec3,
         hit: &mut Option<CpuPickHit>,
     ) {
-        let [x, y, w, h] = node.rect.get();
-        if w < 1.0 || h < 1.0 || node.size == 0 {
-            return;
-        }
-
-        let too_small = w < treemap::MIN_RECT_SIZE || h < treemap::MIN_RECT_SIZE;
-
-        if !node.is_dir || node.children.is_empty() || too_small {
-            let base_height = Self::compute_cube_height(node, depth, opts);
-
-            // Mirror instance_collect: cube centred on the treemap plane.
-            let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
-            let offset = hash_transform_offset(
-                &node.name,
-                pos,
-                world_center,
-                opts.hash_effect,
-                opts.active_hash_strength(),
-                opts.active_hash_time(),
-            );
-            let center = pos + offset;
-            let scale = Vec3::new(w.max(0.5), h.max(0.5), base_height.max(0.5));
-            let half = scale * 0.5;
-            let min = center - half;
-            let max = center + half;
-
-            if let Some(t) = ray_aabb_intersect(ray_origin, ray_dir, min, max) {
-                let closer = hit.as_ref().is_none_or(|h| t < h.t);
-                if closer {
-                    *hit = Some(CpuPickHit {
-                        path: node.path.clone(),
-                        t,
-                    });
-                }
+        let mut pending = vec![(node, depth, dir_hash)];
+        while let Some((node, depth, dir_hash)) = pending.pop() {
+            let [x, y, w, h] = node.rect.get();
+            if w < 1.0 || h < 1.0 || node.size == 0 {
+                continue;
             }
-        } else {
-            let my_hash = treemap::path_hash(&node.name, dir_hash);
-            for child in &node.children {
-                self.pick_recursive(
-                    child,
-                    depth + 1,
-                    my_hash,
-                    opts,
-                    _treemap_opts,
+
+            let too_small = w < treemap::MIN_RECT_SIZE || h < treemap::MIN_RECT_SIZE;
+            if !node.is_dir || node.children.is_empty() || too_small {
+                let base_height = Self::compute_cube_height(node, depth, opts);
+
+                // Mirror instance_collect: cube centred on the treemap plane.
+                let pos = Vec3::new(x + w / 2.0, -(y + h / 2.0), 0.0);
+                let offset = hash_transform_offset(
+                    &node.name,
+                    pos,
                     world_center,
-                    ray_origin,
-                    ray_dir,
-                    hit,
+                    opts.hash_effect,
+                    opts.active_hash_strength(),
+                    opts.active_hash_time(),
                 );
+                let center = pos + offset;
+                let scale = Vec3::new(w.max(0.5), h.max(0.5), base_height.max(0.5));
+                let half = scale * 0.5;
+                let min = center - half;
+                let max = center + half;
+
+                if let Some(t) = ray_aabb_intersect(ray_origin, ray_dir, min, max) {
+                    let closer = hit.as_ref().is_none_or(|hit| t < hit.t);
+                    if closer {
+                        *hit = Some(CpuPickHit {
+                            path: node.path.clone(),
+                            t,
+                        });
+                    }
+                }
+                continue;
             }
+
+            let child_hash = treemap::path_hash(&node.name, dir_hash);
+            let child_depth = depth.saturating_add(1);
+            pending.extend(
+                node.children
+                    .iter()
+                    .rev()
+                    .map(|child| (child, child_depth, child_hash)),
+            );
         }
     }
 

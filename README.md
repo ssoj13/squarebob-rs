@@ -255,7 +255,7 @@ Image sequence formats:
 - TIFF
 - TGA
 
-EXR support is provided through `vfx-rs` (`vfx-core`, `vfx-exr`, `vfx-io`) and supports common OpenEXR compression modes including ZIP, PIZ, PXR24, B44/B44A, DWA, and HTJ2K variants. FFmpeg integration is provided by the git dependency `playa-ffmpeg`.
+EXR support is provided through `oiio-rs` (`vfx-core`, `vfx-io`, backed by `exr-core`) and supports common OpenEXR compression modes including ZIP, PIZ, PXR24, B44/B44A, DWA, and HTJ2K variants. FFmpeg integration is provided by the git dependency `playa-ffmpeg`.
 
 The encoder captures the current Squarebob viewport frame-by-frame. For 3D path tracing, it waits for the configured sample target before handing a frame to the encoder.
 
@@ -306,7 +306,7 @@ The active triplets used by CI/local bootstrap are:
 
 ## Requirements
 
-- Rust 1.95.0, pinned by `rust-toolchain.toml`.
+- Rust 1.96.0, pinned by `rust-toolchain.toml`.
 - Python 3 for `bootstrap.py`.
 - vcpkg for FFmpeg/native media dependencies.
 - A GPU/backend supported by `wgpu`:
@@ -414,7 +414,7 @@ Required GitHub secrets for signed macOS release builds:
 
 | Area | Main crates/tools | Version / source |
 | --- | --- | --- |
-| Rust toolchain | `rustc`, `cargo`, `clippy` | `1.95.0` via `rust-toolchain.toml` |
+| Rust toolchain | `rustc`, `cargo`, `clippy` | `1.96.0` via `rust-toolchain.toml` |
 | UI shell | `egui`, `egui-wgpu`, `eframe` | `0.34` |
 | Docking | `egui_dock` | `0.19` with `serde` |
 | Icons | `egui-phosphor` | `0.12.0` |
@@ -429,7 +429,7 @@ Required GitHub secrets for signed macOS release builds:
 | Images | `image` | `0.25` with PNG/JPEG/TIFF/TGA/HDR features in `media-encoder` |
 | Media export | local `media-encoder` crate | workspace `0.1.0`, Rust edition 2024 |
 | FFmpeg binding | `playa-ffmpeg` | git: `https://github.com/ssoj13/playa-ffmpeg` |
-| EXR/VFX IO | `vfx-core`, `vfx-exr`, `vfx-io` | git: `https://github.com/ssoj13/vfx-rs.git`, `main` |
+| EXR/VFX IO | `vfx-core`, `vfx-io` (`exr-core` backend) | git: `ssh://git@github.com/ssoj13/oiio-rs.git`, `main` |
 | Native deps | FFmpeg via vcpkg | baseline pinned in `vcpkg-configuration.json` |
 | Packaging | `cargo-packager` | `0.11.7` in `bootstrap.py`, GitHub Actions installs with `cargo install cargo-packager --locked` |
 

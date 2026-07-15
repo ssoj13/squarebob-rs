@@ -201,7 +201,12 @@ fn sys_mem_platform() -> Option<SysMemInfo> {
     // `wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /format:list`
     // Returns values in KB.
     let output = Command::new("wmic")
-        .args(["OS", "get", "TotalVisibleMemorySize,FreePhysicalMemory", "/format:list"])
+        .args([
+            "OS",
+            "get",
+            "TotalVisibleMemorySize,FreePhysicalMemory",
+            "/format:list",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -251,11 +256,7 @@ fn sys_mem_platform() -> Option<SysMemInfo> {
 #[cfg(target_os = "linux")]
 fn parse_meminfo_kb(s: &str) -> u64 {
     // Format: "  12345678 kB"
-    s.trim()
-        .trim_end_matches("kB")
-        .trim()
-        .parse()
-        .unwrap_or(0)
+    s.trim().trim_end_matches("kB").trim().parse().unwrap_or(0)
 }
 
 #[cfg(target_os = "macos")]
@@ -361,11 +362,11 @@ fn windows_query() -> Option<GpuMemInfo> {
 /// the call sites stay clean and the `unsafe` surface is reviewable.
 #[cfg(target_os = "windows")]
 fn dxgi_query() -> Option<GpuMemInfo> {
-    use windows::core::Interface;
     use windows::Win32::Graphics::Dxgi::{
         CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
         IDXGIAdapter3, IDXGIFactory1,
     };
+    use windows::core::Interface;
 
     // SAFETY: every COM call is checked for HRESULT failure via
     // `.ok()?`; we never deref a null pointer. `Description` is a

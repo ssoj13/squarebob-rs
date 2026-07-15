@@ -9,6 +9,8 @@ use std::num::NonZeroU64;
 /// PathGuideSampleParams`.
 pub const PG_SAMPLE_PARAMS_SIZE: u64 = 80;
 
+const RNG_WGSL: &str = include_str!("../../../pt-core/src/rng.wgsl");
+const SHADER_CONTRACTS_WGSL: &str = include_str!("../../../pt-core/src/shader_contracts.wgsl");
 const UPDATE_WGSL: &str = include_str!("update.wgsl");
 const SAMPLE_WGSL: &str = include_str!("sample.wgsl");
 
@@ -116,9 +118,10 @@ fn create_pipeline(
     name: &str,
     entries: &[wgpu::BindGroupLayoutEntry],
 ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+    let shader_source = format!("{RNG_WGSL}\n{SHADER_CONTRACTS_WGSL}\n{wgsl}");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&format!("pathguide_{name}_shader")),
-        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     });
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(&format!("pathguide_{name}_bgl")),

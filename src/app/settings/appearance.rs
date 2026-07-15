@@ -1,6 +1,6 @@
 //! Appearance settings: font size, brightness, cushion, ambient.
 
-use super::{SettingsDirty, LABEL_WIDTH};
+use super::{LABEL_WIDTH, SettingsDirty};
 use crate::app::App;
 use eframe::egui;
 
@@ -110,7 +110,11 @@ impl App {
     /// Every knob in this section is visual-only (font sizes, header row
     /// height) — none of them feed the treemap layout, so they are all
     /// marked `preset`.
-    pub(super) fn ui_settings_panel_chrome(&mut self, ui: &mut egui::Ui, dirty: &mut SettingsDirty) {
+    pub(super) fn ui_settings_panel_chrome(
+        &mut self,
+        ui: &mut egui::Ui,
+        dirty: &mut SettingsDirty,
+    ) {
         egui::CollapsingHeader::new(egui::RichText::new("Settings").heading())
             .default_open(false)
             .show(ui, |ui| {

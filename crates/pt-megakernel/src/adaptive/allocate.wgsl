@@ -1,13 +1,6 @@
 // Adaptive Sampling - SPP Allocation pass.
 // Allocate samples based on variance.
 
-struct VarianceData {
-    mean: vec3<f32>,
-    _pad0: u32,
-    m2: vec3<f32>,
-    count: u32,
-}
-
 struct Params {
     width: u32,
     height: u32,

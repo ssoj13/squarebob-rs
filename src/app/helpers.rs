@@ -3,8 +3,8 @@
 //! This module contains standalone utility functions extracted from the main app module
 //! for better organization and maintainability.
 
-use squarebob_core::DirEntry;
 use eframe::egui;
+use squarebob_core::DirEntry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -108,12 +108,13 @@ pub(super) fn rfd_env_map_pick_start_dir(
     current: Option<&std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
     if let Some(p) = current
-        && p.is_file() {
-            let path_for_parent = p.canonicalize().unwrap_or_else(|_| p.clone());
-            if let Some(parent) = path_for_parent.parent() {
-                return Some(parent.to_path_buf());
-            }
+        && p.is_file()
+    {
+        let path_for_parent = p.canonicalize().unwrap_or_else(|_| p.clone());
+        if let Some(parent) = path_for_parent.parent() {
+            return Some(parent.to_path_buf());
         }
+    }
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
@@ -125,7 +126,16 @@ pub(super) fn rfd_env_map_pick_start_dir(
 /// Files without extensions are grouped under "<none>".
 pub(super) fn compute_ext_stats(root: &DirEntry) -> Vec<(String, u64, u64)> {
     let mut map: HashMap<String, (u64, u64)> = HashMap::new();
-    collect_ext(root, &mut map);
+    for node in root.iter().filter(|node| !node.is_dir) {
+        let ext = if node.ext.is_empty() {
+            "<none>".to_string()
+        } else {
+            node.ext.clone()
+        };
+        let entry = map.entry(ext).or_insert((0, 0));
+        entry.0 += node.size;
+        entry.1 += 1;
+    }
     let mut stats: Vec<(String, u64, u64)> = map
         .into_iter()
         .map(|(ext, (size, count))| (ext, size, count))
@@ -134,36 +144,11 @@ pub(super) fn compute_ext_stats(root: &DirEntry) -> Vec<(String, u64, u64)> {
     stats
 }
 
-/// Helper for compute_ext_stats - recursively collect extension data
-fn collect_ext(node: &DirEntry, map: &mut HashMap<String, (u64, u64)>) {
-    if !node.is_dir {
-        let ext = if node.ext.is_empty() {
-            "<none>".to_string()
-        } else {
-            node.ext.clone()
-        };
-        let e = map.entry(ext).or_insert((0, 0));
-        e.0 += node.size;
-        e.1 += 1;
-    }
-    for child in &node.children {
-        collect_ext(child, map);
-    }
-}
-
 /// Find a node by path in the directory tree
 ///
 /// Returns reference to the node if found, None otherwise.
 pub(super) fn find_node_by_path<'a>(node: &'a DirEntry, target: &PathBuf) -> Option<&'a DirEntry> {
-    if &node.path == target {
-        return Some(node);
-    }
-    for child in &node.children {
-        if let Some(found) = find_node_by_path(child, target) {
-            return Some(found);
-        }
-    }
-    None
+    node.iter().find(|entry| &entry.path == target)
 }
 
 /// Find minimum and maximum file sizes in the tree
@@ -173,22 +158,14 @@ pub(super) fn find_node_by_path<'a>(node: &'a DirEntry, target: &PathBuf) -> Opt
 pub(super) fn compute_size_range(root: &DirEntry) -> (u64, u64) {
     let mut min = u64::MAX;
     let mut max = 0u64;
-    collect_size_range(root, &mut min, &mut max);
+    for node in root.iter().filter(|node| !node.is_dir && node.size > 0) {
+        min = min.min(node.size);
+        max = max.max(node.size);
+    }
     if min == u64::MAX {
         min = 0;
     }
     (min, max)
-}
-
-/// Helper for compute_size_range - recursively collect min/max sizes
-fn collect_size_range(node: &DirEntry, min: &mut u64, max: &mut u64) {
-    if !node.is_dir && node.size > 0 {
-        *min = (*min).min(node.size);
-        *max = (*max).max(node.size);
-    }
-    for child in &node.children {
-        collect_size_range(child, min, max);
-    }
 }
 
 /// Format a tree label with name, size, and percentage
@@ -242,11 +219,7 @@ pub(super) fn disk_free_total(path: &str) -> Option<(u64, u64)> {
                 Some(&mut free as *mut u64 as *mut _),
             );
         }
-        if total > 0 {
-            Some((free, total))
-        } else {
-            None
-        }
+        if total > 0 { Some((free, total)) } else { None }
     }
     #[cfg(unix)]
     {
@@ -309,10 +282,9 @@ pub(super) fn disk_free_info(path: &str) -> String {
 ///
 /// Only includes directories, not files.
 pub(super) fn collect_all_dir_paths(node: &DirEntry, result: &mut HashSet<PathBuf>) {
-    if node.is_dir {
-        result.insert(node.path.clone());
-        for child in &node.children {
-            collect_all_dir_paths(child, result);
-        }
-    }
+    result.extend(
+        node.iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| entry.path.clone()),
+    );
 }

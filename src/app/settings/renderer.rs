@@ -2,8 +2,8 @@
 
 use super::section_header_text;
 use super::tinted_section;
-use crate::app::helpers::{multibutton_exclusive, rfd_env_map_pick_start_dir, MultiButtonAxis};
 use crate::app::App;
+use crate::app::helpers::{MultiButtonAxis, multibutton_exclusive, rfd_env_map_pick_start_dir};
 use crate::renderer::{
     AdaptivePreset, ColorMode, CubeHeightMode, FolderColorMode, HashTransformEffect, HoverMode,
     PtSamplerMode, RenderMode, SpectralMode,
@@ -11,9 +11,7 @@ use crate::renderer::{
 use eframe::egui;
 use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
 
-use super::{
-    curve_rows, ramp_section, settings_grid, RampUiCtx, SETTINGS_LABEL_WIDTH,
-};
+use super::{RampUiCtx, SETTINGS_LABEL_WIDTH, curve_rows, ramp_section, settings_grid};
 
 fn control_label(ui: &mut egui::Ui, label: &'static str) {
     ui.label(label)
@@ -519,9 +517,7 @@ impl App {
                                     )
                                     .text("lerp"),
                                 )
-                                .on_hover_text(
-                                    "0 = rectangular (no warp), 1 = fully polar.",
-                                )
+                                .on_hover_text("0 = rectangular (no warp), 1 = fully polar.")
                                 .changed()
                             {
                                 self.needs_layout = true;
@@ -1112,10 +1108,9 @@ impl App {
             |ui| self.ui_pt_advanced(ui, &mut pt_changed),
         );
 
-        if pt_changed
-            && let Some(r) = &mut self.renderer_3d {
-                r.reset_pt_accumulation();
-            }
+        if pt_changed && let Some(r) = &mut self.renderer_3d {
+            r.reset_pt_accumulation();
+        }
     }
 
     fn mark_pt_scene_dirty(&mut self) {
@@ -1156,164 +1151,163 @@ impl App {
         let mut changed = false;
         let over = &mut self.render_3d_opts.material_overrides[idx];
         ui.push_id(idx, |ui| {
-        settings_grid(ui, "material_override_grid", |ui| {
-            control_label(ui, "Enabled:");
-            changed |= ui.checkbox(&mut over.enabled, "").changed();
-            ui.end_row();
+            settings_grid(ui, "material_override_grid", |ui| {
+                control_label(ui, "Enabled:");
+                changed |= ui.checkbox(&mut over.enabled, "").changed();
+                ui.end_row();
 
-            // Target material — UUID-based picker. UUIDs survive
-            // reorder/rename of slots.
-            control_label(ui, "Material:");
-            let current_label = match over.material_uuid {
-                Some(u) => library_slots
-                    .iter()
-                    .find(|(id, _)| *id == u)
-                    .map(|(_, name)| name.clone())
-                    .unwrap_or_else(|| format!("(missing) {}", u)),
-                None => "(none)".to_string(),
-            };
-            egui::ComboBox::from_id_salt(format!("material_override_pick_{idx}"))
-                .selected_text(current_label)
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(over.material_uuid.is_none(), "(none)")
-                        .clicked()
-                    {
-                        over.material_uuid = None;
-                        changed = true;
-                    }
-                    for (uuid, name) in &library_slots {
+                // Target material — UUID-based picker. UUIDs survive
+                // reorder/rename of slots.
+                control_label(ui, "Material:");
+                let current_label = match over.material_uuid {
+                    Some(u) => library_slots
+                        .iter()
+                        .find(|(id, _)| *id == u)
+                        .map(|(_, name)| name.clone())
+                        .unwrap_or_else(|| format!("(missing) {}", u)),
+                    None => "(none)".to_string(),
+                };
+                egui::ComboBox::from_id_salt(format!("material_override_pick_{idx}"))
+                    .selected_text(current_label)
+                    .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(over.material_uuid == Some(*uuid), name)
+                            .selectable_label(over.material_uuid.is_none(), "(none)")
                             .clicked()
                         {
-                            over.material_uuid = Some(*uuid);
+                            over.material_uuid = None;
+                            changed = true;
+                        }
+                        for (uuid, name) in &library_slots {
+                            if ui
+                                .selectable_label(over.material_uuid == Some(*uuid), name)
+                                .clicked()
+                            {
+                                over.material_uuid = Some(*uuid);
+                                changed = true;
+                            }
+                        }
+                    });
+                ui.end_row();
+
+                // Probability ↔ Count mirror.
+                //
+                // Single source of truth: `over.probability` on the
+                // options struct. `count` is recomputed every frame as
+                // `round(probability * total_cubes)` and lives only on
+                // the stack — there is nothing for a probability→count
+                // path to *persist* between frames. The only writes
+                // back into `over.probability` come from user-driven
+                // `.changed()` responses on either the slider or the
+                // DragValue, so no autonomous loop can fire.
+                //
+                // Belt-and-braces: the Count→probability write is
+                // gated on `!prob_changed_this_frame` so that even a
+                // hypothetical egui event ordering where both
+                // widgets report `changed()` in the same frame cannot
+                // produce a fight. The slider always wins on ties
+                // (user moved it last by definition).
+                control_label(ui, "Probability:");
+                let prob_changed = ui
+                    .add(egui::Slider::new(&mut over.probability, 0.0..=1.0))
+                    .on_hover_text(
+                        "Fraction of cubes this override claims. Edit the \
+                     Count row below to specify it as an absolute cube \
+                     count instead — the two stay in lockstep.",
+                    )
+                    .changed();
+                if prob_changed {
+                    changed = true;
+                }
+                ui.end_row();
+
+                control_label(ui, "Count:");
+                ui.horizontal(|ui| {
+                    if total_cubes == 0 {
+                        // No scan yet → count has no meaningful range.
+                        // Show a hint instead of a DragValue clamped to
+                        // 0..=0, which would silently eat any typed
+                        // value.
+                        ui.add_enabled(
+                            false,
+                            egui::Label::new(
+                                egui::RichText::new("-- (scan first)")
+                                    .color(ui.visuals().weak_text_color()),
+                            ),
+                        );
+                        return;
+                    }
+                    let mut count = (over.probability * total_cubes as f32).round() as u32;
+                    let count_changed = ui
+                        .add(
+                            egui::DragValue::new(&mut count)
+                                .speed(1.0)
+                                .range(0..=total_cubes),
+                        )
+                        .on_hover_text("Absolute cube count this override should claim.")
+                        .changed();
+                    if count_changed && !prob_changed {
+                        over.probability = (count as f32 / total_cubes as f32).clamp(0.0, 1.0);
+                        changed = true;
+                    }
+                    ui.small(format!("/ {total_cubes}"));
+                });
+                ui.end_row();
+
+                control_label(ui, "Distribute:");
+                ui.horizontal(|ui| {
+                    for (variant, label) in [
+                        (MaterialDistribution::Direct, "Direct"),
+                        (MaterialDistribution::Stratified, "Bands"),
+                        (MaterialDistribution::Spatial, "Cells"),
+                        (MaterialDistribution::Perlin, "Perlin"),
+                        (MaterialDistribution::Gradient, "Grad"),
+                    ] {
+                        if ui
+                            .selectable_value(&mut over.distribution, variant, label)
+                            .changed()
+                        {
                             changed = true;
                         }
                     }
                 });
-            ui.end_row();
+                ui.end_row();
 
-            // Probability ↔ Count mirror.
-            //
-            // Single source of truth: `over.probability` on the
-            // options struct. `count` is recomputed every frame as
-            // `round(probability * total_cubes)` and lives only on
-            // the stack — there is nothing for a probability→count
-            // path to *persist* between frames. The only writes
-            // back into `over.probability` come from user-driven
-            // `.changed()` responses on either the slider or the
-            // DragValue, so no autonomous loop can fire.
-            //
-            // Belt-and-braces: the Count→probability write is
-            // gated on `!prob_changed_this_frame` so that even a
-            // hypothetical egui event ordering where both
-            // widgets report `changed()` in the same frame cannot
-            // produce a fight. The slider always wins on ties
-            // (user moved it last by definition).
-            control_label(ui, "Probability:");
-            let prob_changed = ui
-                .add(egui::Slider::new(&mut over.probability, 0.0..=1.0))
-                .on_hover_text(
-                    "Fraction of cubes this override claims. Edit the \
-                     Count row below to specify it as an absolute cube \
-                     count instead — the two stay in lockstep.",
-                )
-                .changed();
-            if prob_changed {
-                changed = true;
-            }
-            ui.end_row();
-
-            control_label(ui, "Count:");
-            ui.horizontal(|ui| {
-                if total_cubes == 0 {
-                    // No scan yet → count has no meaningful range.
-                    // Show a hint instead of a DragValue clamped to
-                    // 0..=0, which would silently eat any typed
-                    // value.
-                    ui.add_enabled(
-                        false,
-                        egui::Label::new(
-                            egui::RichText::new("-- (scan first)")
-                                .color(ui.visuals().weak_text_color()),
-                        ),
-                    );
-                    return;
-                }
-                let mut count = (over.probability * total_cubes as f32).round() as u32;
-                let count_changed = ui
-                    .add(
-                        egui::DragValue::new(&mut count)
-                            .speed(1.0)
-                            .range(0..=total_cubes),
-                    )
-                    .on_hover_text("Absolute cube count this override should claim.")
-                    .changed();
-                if count_changed && !prob_changed {
-                    over.probability =
-                        (count as f32 / total_cubes as f32).clamp(0.0, 1.0);
-                    changed = true;
-                }
-                ui.small(format!("/ {total_cubes}"));
-            });
-            ui.end_row();
-
-            control_label(ui, "Distribute:");
-            ui.horizontal(|ui| {
-                for (variant, label) in [
-                    (MaterialDistribution::Direct, "Direct"),
-                    (MaterialDistribution::Stratified, "Bands"),
-                    (MaterialDistribution::Spatial, "Cells"),
-                    (MaterialDistribution::Perlin, "Perlin"),
-                    (MaterialDistribution::Gradient, "Grad"),
-                ] {
-                    if ui
-                        .selectable_value(&mut over.distribution, variant, label)
-                        .changed()
-                    {
-                        changed = true;
+                match over.distribution {
+                    MaterialDistribution::Stratified => {
+                        control_label(ui, "Bands:");
+                        changed |= ui
+                            .add(egui::Slider::new(&mut over.band_count, 2..=20))
+                            .changed();
+                        ui.end_row();
                     }
+                    MaterialDistribution::Spatial | MaterialDistribution::Perlin => {
+                        control_label(ui, "Scale:");
+                        changed |= ui
+                            .add(
+                                egui::Slider::new(&mut over.spatial_scale, 0.001..=0.1)
+                                    .logarithmic(true),
+                            )
+                            .changed();
+                        ui.end_row();
+                    }
+                    _ => {}
                 }
+
+                control_label(ui, "Seed:");
+                changed |= ui
+                    .add(egui::Slider::new(&mut over.seed, 1..=u32::MAX).logarithmic(true))
+                    .changed();
+                ui.end_row();
+
+                control_label(ui, "Applied:");
+                let pct = if total_cubes > 0 {
+                    100.0 * (applied as f32) / (total_cubes as f32)
+                } else {
+                    0.0
+                };
+                ui.label(format!("{applied} / {total_cubes} cubes ({pct:.1}%)"));
+                ui.end_row();
             });
-            ui.end_row();
-
-            match over.distribution {
-                MaterialDistribution::Stratified => {
-                    control_label(ui, "Bands:");
-                    changed |= ui
-                        .add(egui::Slider::new(&mut over.band_count, 2..=20))
-                        .changed();
-                    ui.end_row();
-                }
-                MaterialDistribution::Spatial | MaterialDistribution::Perlin => {
-                    control_label(ui, "Scale:");
-                    changed |= ui
-                        .add(
-                            egui::Slider::new(&mut over.spatial_scale, 0.001..=0.1)
-                                .logarithmic(true),
-                        )
-                        .changed();
-                    ui.end_row();
-                }
-                _ => {}
-            }
-
-            control_label(ui, "Seed:");
-            changed |= ui
-                .add(egui::Slider::new(&mut over.seed, 1..=u32::MAX).logarithmic(true))
-                .changed();
-            ui.end_row();
-
-            control_label(ui, "Applied:");
-            let pct = if total_cubes > 0 {
-                100.0 * (applied as f32) / (total_cubes as f32)
-            } else {
-                0.0
-            };
-            ui.label(format!("{applied} / {total_cubes} cubes ({pct:.1}%)"));
-            ui.end_row();
-        });
         });
         if changed {
             self.mark_pt_scene_dirty();
@@ -1332,10 +1326,9 @@ impl App {
             |ui| {
                 let mut pt_changed = false;
                 self.ui_pt_sampling(ui, &mut pt_changed);
-                if pt_changed
-                    && let Some(r) = &mut self.renderer_3d {
-                        r.reset_pt_accumulation();
-                    }
+                if pt_changed && let Some(r) = &mut self.renderer_3d {
+                    r.reset_pt_accumulation();
+                }
             },
         );
     }
@@ -1408,7 +1401,8 @@ impl App {
                 // tightens proportionally. Round to 1e-4 for readable
                 // numbers in the tooltip.
                 for samples in [16_u32, 64, 128, 256, 512, 1024, 2048, 4096, 8192] {
-                    let variance = (0.04 * (16.0 / samples as f32).sqrt() * 10000.0).round() / 10000.0;
+                    let variance =
+                        (0.04 * (16.0 / samples as f32).sqrt() * 10000.0).round() / 10000.0;
                     let selected = self.render_3d_opts.pt_samples == samples
                         && (self.render_3d_opts.pt_adaptive_variance - variance).abs() < 1e-5;
                     if ui
@@ -1838,10 +1832,11 @@ impl App {
                                 if let Some(r) = &mut self.renderer_3d {
                                     if self.render_3d_opts.env_map_enabled
                                         && let Some(ref path) = self.render_3d_opts.env_map_path
-                                            && path.exists()
-                                                && let Err(e) = r.load_env_map(path) {
-                                                    log::error!("Env map: {e}");
-                                                }
+                                        && path.exists()
+                                        && let Err(e) = r.load_env_map(path)
+                                    {
+                                        log::error!("Env map: {e}");
+                                    }
                                     r.mark_pt_env_dirty();
                                     r.reset_pt_accumulation();
                                 }
@@ -1860,13 +1855,14 @@ impl App {
                                     dlg = dlg.set_directory(dir);
                                 }
                                 if let Some(path) = dlg.pick_file()
-                                    && let Some(r) = &mut self.renderer_3d {
-                                        if let Err(e) = r.load_env_map(&path) {
-                                            log::error!("Env map: {e}");
-                                        } else {
-                                            self.render_3d_opts.env_map_path = Some(path);
-                                        }
+                                    && let Some(r) = &mut self.renderer_3d
+                                {
+                                    if let Err(e) = r.load_env_map(&path) {
+                                        log::error!("Env map: {e}");
+                                    } else {
+                                        self.render_3d_opts.env_map_path = Some(path);
                                     }
+                                }
                             }
                         });
                         ui.end_row();
@@ -2002,9 +1998,7 @@ impl App {
                         CameraType::Manual,
                         "Manual",
                     )
-                    .on_hover_text(
-                        "Raw aperture radius + orbit FOV. Legacy controls.",
-                    );
+                    .on_hover_text("Raw aperture radius + orbit FOV. Legacy controls.");
                     ui.selectable_value(
                         &mut self.render_3d_opts.pt_camera_type,
                         CameraType::Physical,
@@ -2019,8 +2013,7 @@ impl App {
             if prev_mode != self.render_3d_opts.pt_camera_type {
                 *pt_changed = true;
                 if self.render_3d_opts.pt_camera_type == CameraType::Physical {
-                    self.orbit_camera.fov =
-                        self.render_3d_opts.pt_physical_camera.fov_radians();
+                    self.orbit_camera.fov = self.render_3d_opts.pt_physical_camera.fov_radians();
                 }
             }
         });
@@ -2097,9 +2090,7 @@ impl App {
 
     /// Physical-mode Lens subsection: F-stop / focal length / sensor.
     fn ui_camera_physical_lens(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
-        use render_shared::{
-            FOCAL_LENGTH_PRESETS_MM, F_NUMBER_PRESETS, SENSOR_WIDTH_PRESETS_MM,
-        };
+        use render_shared::{F_NUMBER_PRESETS, FOCAL_LENGTH_PRESETS_MM, SENSOR_WIDTH_PRESETS_MM};
         let pc = &mut self.render_3d_opts.pt_physical_camera;
         let mut lens_changed = false;
 
@@ -2108,10 +2099,7 @@ impl App {
             // the row below so they don't push past the panel width
             // on narrow sidebars.
             control_label(ui, "F-stop:");
-            let resp = ui.add(
-                egui::Slider::new(&mut pc.f_number, 0.7..=64.0)
-                    .logarithmic(true),
-            );
+            let resp = ui.add(egui::Slider::new(&mut pc.f_number, 0.7..=64.0).logarithmic(true));
             if resp.changed() {
                 *pt_changed = true;
             }
@@ -2185,25 +2173,17 @@ impl App {
 
         // Drop the &mut borrow before touching orbit_camera.
         if lens_changed {
-            self.orbit_camera.fov =
-                self.render_3d_opts.pt_physical_camera.fov_radians();
+            self.orbit_camera.fov = self.render_3d_opts.pt_physical_camera.fov_radians();
         }
     }
 
     /// Physical-mode Exposure subsection: ISO / Shutter / EC.
-    fn ui_camera_physical_exposure(
-        &mut self,
-        ui: &mut egui::Ui,
-        pt_changed: &mut bool,
-    ) {
+    fn ui_camera_physical_exposure(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         let pc = &mut self.render_3d_opts.pt_physical_camera;
         settings_grid(ui, "camera_phys_exposure_grid", |ui| {
             control_label(ui, "ISO:");
             if ui
-                .add(
-                    egui::Slider::new(&mut pc.iso, 25.0..=25600.0)
-                        .logarithmic(true),
-                )
+                .add(egui::Slider::new(&mut pc.iso, 25.0..=25600.0).logarithmic(true))
                 .changed()
             {
                 *pt_changed = true;
@@ -2213,12 +2193,9 @@ impl App {
             control_label(ui, "Shutter:");
             if ui
                 .add(
-                    egui::Slider::new(
-                        &mut pc.shutter_seconds,
-                        1.0 / 8000.0..=60.0,
-                    )
-                    .logarithmic(true)
-                    .suffix(" s"),
+                    egui::Slider::new(&mut pc.shutter_seconds, 1.0 / 8000.0..=60.0)
+                        .logarithmic(true)
+                        .suffix(" s"),
                 )
                 .changed()
             {
@@ -2228,10 +2205,7 @@ impl App {
 
             control_label(ui, "EC:");
             if ui
-                .add(
-                    egui::Slider::new(&mut pc.exposure_compensation_ev, -8.0..=8.0)
-                        .suffix(" EV"),
-                )
+                .add(egui::Slider::new(&mut pc.exposure_compensation_ev, -8.0..=8.0).suffix(" EV"))
                 .changed()
             {
                 *pt_changed = true;
@@ -2343,7 +2317,6 @@ impl App {
                             .on_hover_text("Stop inertia when speed drops below this threshold");
                             ui.end_row();
                         }
-
                     });
                 // Lens / Exposure / DoF / Derived live OUTSIDE the
                 // inertia grid so each one can be its own
@@ -2364,9 +2337,8 @@ impl App {
             },
         );
 
-        if pt_changed
-            && let Some(r) = &mut self.renderer_3d {
-                r.reset_pt_accumulation();
-            }
+        if pt_changed && let Some(r) = &mut self.renderer_3d {
+            r.reset_pt_accumulation();
+        }
     }
 }

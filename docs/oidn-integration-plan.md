@@ -448,7 +448,7 @@ Single entry: "Replaced color-only à-trous filter with full GPU OIDN denoiser (
 ### IX.5 — CI
 - `cargo test --workspace` must remain green. New crate's tests can be `#[ignore]` if they require weights.
 - `cargo clippy --workspace --all-targets -- -D warnings` zero warnings.
-- `rust-toolchain.toml` stays at 1.95 (Burn 0.21 supports it).
+- `rust-toolchain.toml` stays aligned with the workspace MSRV (currently 1.96; Burn 0.21 supports it).
 
 ---
 

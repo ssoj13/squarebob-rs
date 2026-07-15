@@ -9,13 +9,13 @@ use std::sync::Arc;
 use glam::Vec3;
 use log::trace;
 
-use squarebob_core::DirEntry;
 use render_shared::{HoverMode, OrbitCamera, Render3DOptions};
+use squarebob_core::DirEntry;
 use treemap::TreeMapOptions;
 
 use crate::geometry::{self, CubeInstance, NUM_INDICES};
 use crate::targets::{DynamicBindGroups, RenderTargets};
-use crate::{pt, Renderer3D};
+use crate::{Renderer3D, pt};
 
 impl Renderer3D {
     pub fn render_to_view(
@@ -200,7 +200,7 @@ impl Renderer3D {
             // Arc clone to break borrow conflict (cheap - only refcount bump)
             let instances_pt = Arc::clone(&instances_arc);
             let num_cubes = instances_pt.len();
-            pt::render_path_traced_no_readback(
+            if let Err(error) = pt::render_path_traced_no_readback(
                 self.pt.pt_backend_kind,
                 self,
                 &instances_pt,
@@ -208,7 +208,10 @@ impl Renderer3D {
                 opts,
                 width,
                 height,
-            );
+            ) {
+                log::error!("PT frame failed: {error}");
+                return;
+            }
 
             // Outline overlay in PT mode. Picking is handled separately on
             // the UI thread via `pt_pick` (CPU ray cast on the BVH), so
@@ -257,12 +260,21 @@ impl Renderer3D {
             "render_to_view: calling encode_passes, targets {:?}",
             state.targets.size
         );
-        self.encode_passes(&mut encoder, &state.targets, &state.dyn_bgs, opts, hovered_id);
+        self.encode_passes(
+            &mut encoder,
+            &state.targets,
+            &state.dyn_bgs,
+            opts,
+            hovered_id,
+        );
         info!("render_to_view: encode_passes done, submitting");
 
         // Submit picking readback (uses pending_pick set by set_mouse_pos)
-        self.picking
-            .submit_readback(&mut encoder, &state.targets.object_id_texture, state.targets.size);
+        self.picking.submit_readback(
+            &mut encoder,
+            &state.targets.object_id_texture,
+            state.targets.size,
+        );
 
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
 
@@ -295,10 +307,8 @@ impl Renderer3D {
         opts: &Render3DOptions,
         width: u32,
         height: u32,
-    ) {
-        pt::megakernel::render_path_traced_no_readback(
-            self, instances, camera, opts, width, height,
-        );
+    ) -> Result<(), render_core::ReadbackError> {
+        pt::megakernel::render_path_traced_no_readback(self, instances, camera, opts, width, height)
     }
 
     // ========================================================================

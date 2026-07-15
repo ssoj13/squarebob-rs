@@ -73,10 +73,7 @@ impl PresetBank {
     /// the same name. Returns the number of attributes captured.
     pub fn save(&mut self, schema: &str, name: impl Into<String>, attrs: &Attrs) -> usize {
         let snap = PresetSnapshot {
-            entries: attrs
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            entries: attrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         };
         let count = snap.entries.len();
         self.schemas
@@ -104,9 +101,7 @@ impl PresetBank {
                     // so we compare discriminants directly — that
                     // catches every kind that exists today and stays
                     // correct if AttrValue grows new variants.
-                    if std::mem::discriminant(existing)
-                        == std::mem::discriminant(value)
-                    {
+                    if std::mem::discriminant(existing) == std::mem::discriminant(value) {
                         attrs.set(key.clone(), value.clone());
                         report.applied += 1;
                     } else {

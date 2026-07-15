@@ -6,9 +6,9 @@
 //! on `Render3DOptions.color_pipeline` as a single
 //! `ColorPipelineSettings` struct and round-trips through presets.
 
-use super::{settings_grid, tinted_section, SettingsDirty};
-use color_pipeline::{BuiltInTonemap, ColorCodepath, ColorMode, ConfigSource};
+use super::{SettingsDirty, settings_grid, tinted_section};
 use crate::app::App;
+use color_pipeline::{BuiltInTonemap, ColorCodepath, ColorMode, ConfigSource, vfx_ocio::Encoding};
 use eframe::egui;
 
 impl App {
@@ -21,7 +21,12 @@ impl App {
         // Keep the live `ColorPipeline` in sync with the settings
         // BEFORE we sample any dropdown lists from it. `ensure` is
         // a hash-compare noop when nothing changed.
-        let _ = self.color_pipeline.ensure(&self.render_3d_opts.color_pipeline);
+        if let Err(error) = self
+            .color_pipeline
+            .ensure(&self.render_3d_opts.color_pipeline)
+        {
+            log::error!("color settings rebuild rejected: {error}");
+        }
 
         // Snapshot the dropdown contents up front. This is the
         // only spot we can read `&self.color_pipeline` because the
@@ -29,13 +34,24 @@ impl App {
         // `cp` and that re-borrow would block live config access.
         let input_spaces = self.color_pipeline.available_input_spaces();
         let displays = self.color_pipeline.available_displays();
-        let views_for_current =
-            self.color_pipeline.available_views(&self.render_3d_opts.color_pipeline.ocio_display);
+        let views_for_current = self
+            .color_pipeline
+            .available_views(&self.render_3d_opts.color_pipeline.ocio_display);
+        let view_options: Vec<(String, Encoding)> = views_for_current
+            .into_iter()
+            .map(|view| {
+                let encoding = self
+                    .color_pipeline
+                    .output_encoding(&self.render_3d_opts.color_pipeline.ocio_display, &view);
+                (view, encoding)
+            })
+            .collect();
         let looks = self.color_pipeline.available_looks();
         // Captured up-front for the same borrow-checker reason as
         // the dropdown lists above — the closure cannot re-borrow
         // `self.color_pipeline` while `cp` is alive.
         let custom_lut_status = self.color_pipeline.custom_lut_status().clone();
+        let pipeline_error = self.color_pipeline.last_error().map(str::to_owned);
 
         tinted_section(
             ui,
@@ -100,6 +116,13 @@ impl App {
                     ui.end_row();
                 });
 
+                if let Some(error) = &pipeline_error {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 110, 110),
+                        format!("Color pipeline disabled: {error}"),
+                    );
+                }
+
                 ui.add_space(4.0);
                 ui.separator();
 
@@ -120,10 +143,7 @@ impl App {
                                     (BuiltInTonemap::Reinhard, "Reinhard"),
                                     (BuiltInTonemap::AgX, "AgX"),
                                 ] {
-                                    if ui
-                                        .selectable_label(cp.builtin == variant, label)
-                                        .clicked()
-                                    {
+                                    if ui.selectable_label(cp.builtin == variant, label).clicked() {
                                         cp.builtin = variant;
                                         dirty.preset();
                                     }
@@ -159,8 +179,7 @@ impl App {
                                 .selected_text(current_label)
                                 .show_ui(ui, |ui| {
                                     // ACES 1.3 programmatic baseline.
-                                    let is_b =
-                                        matches!(cp.ocio_config, ConfigSource::BuiltIn);
+                                    let is_b = matches!(cp.ocio_config, ConfigSource::BuiltIn);
                                     if ui
                                         .selectable_label(is_b, "Default (latest embedded)")
                                         .clicked()
@@ -181,9 +200,7 @@ impl App {
                                             ConfigSource::Embedded(n) if n == entry.name
                                         );
                                         let label = format!("{} (embedded)", entry.ui_name);
-                                        if ui.selectable_label(is_sel, label).clicked()
-                                            && !is_sel
-                                        {
+                                        if ui.selectable_label(is_sel, label).clicked() && !is_sel {
                                             cp.external_ocio = cp.snapshot_active_ocio();
                                             let restore = cp.builtin_ocio.clone();
                                             cp.ocio_config =
@@ -193,18 +210,11 @@ impl App {
                                         }
                                     }
                                     // External file picker.
-                                    let is_e = matches!(
-                                        cp.ocio_config,
-                                        ConfigSource::External(_)
-                                    );
-                                    if ui.selectable_label(is_e, "External…").clicked()
-                                        && !is_e
-                                    {
+                                    let is_e = matches!(cp.ocio_config, ConfigSource::External(_));
+                                    if ui.selectable_label(is_e, "External…").clicked() && !is_e {
                                         cp.builtin_ocio = cp.snapshot_active_ocio();
                                         let restore = cp.external_ocio.clone();
-                                        cp.ocio_config = ConfigSource::External(
-                                            Default::default(),
-                                        );
+                                        cp.ocio_config = ConfigSource::External(Default::default());
                                         cp.restore_ocio(&restore);
                                         dirty.preset();
                                     }
@@ -219,8 +229,7 @@ impl App {
                                     // coerce to External so the user sees a
                                     // file picker instead of the removed
                                     // Bundled lane.
-                                    cp.ocio_config =
-                                        ConfigSource::External(Default::default());
+                                    cp.ocio_config = ConfigSource::External(Default::default());
                                     dirty.preset();
                                 }
                                 ConfigSource::External(path) => {
@@ -300,12 +309,11 @@ impl App {
                                  Common: 'ACES 1.0 SDR-video', 'Raw', \
                                  'Un-tone-mapped'.",
                             );
-                            ocio_dropdown(
+                            ocio_view_dropdown(
                                 ui,
                                 "color_view_cb",
                                 &mut cp.ocio_view,
-                                &views_for_current,
-                                false,
+                                &view_options,
                                 dirty,
                             );
                             ui.end_row();
@@ -477,6 +485,51 @@ fn rfd_pick_lut_file() -> Option<std::path::PathBuf> {
 /// after the preset was saved) still displays the chosen name,
 /// flagged with a `?` prefix, instead of silently dropping back
 /// to the first available entry.
+fn ocio_view_dropdown(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    current: &mut String,
+    options: &[(String, Encoding)],
+    dirty: &mut SettingsDirty,
+) -> bool {
+    let current_encoding = options
+        .iter()
+        .find_map(|(name, encoding)| (name == current).then_some(*encoding));
+    let display = if current_encoding == Some(Encoding::Hdr) {
+        format!("⛔ {current}")
+    } else if options.iter().any(|(name, _)| name == current) {
+        current.clone()
+    } else if current.trim().is_empty() {
+        "(empty)".to_string()
+    } else {
+        format!("? {current}")
+    };
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id_salt)
+        .width(288.0)
+        .selected_text(display)
+        .show_ui(ui, |ui| {
+            for (option, encoding) in options {
+                let selected = option == current;
+                let supported = *encoding != Encoding::Hdr;
+                let mut response = ui
+                    .add_enabled_ui(supported, |ui| ui.selectable_label(selected, option))
+                    .inner;
+                if !supported {
+                    response = response.on_hover_text(
+                        "HDR OCIO output requires HDR surface negotiation. Current eframe compositor is SDR.",
+                    );
+                }
+                if response.clicked() && !selected {
+                    *current = option.clone();
+                    dirty.preset();
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
 fn ocio_dropdown(
     ui: &mut egui::Ui,
     id_salt: &str,

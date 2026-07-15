@@ -15,6 +15,98 @@ use crate::app::helpers::fmt_size;
 use crate::exclusions::Exclusions;
 use squarebob_core::{DirEntry, LodExpandInfo, LodKind};
 
+fn copy_file_with_size(src: &DirEntry, size: u64) -> DirEntry {
+    DirEntry::new_file(
+        src.name.clone(),
+        src.path.clone(),
+        size,
+        src.ext.clone(),
+        src.modified_time,
+    )
+}
+
+fn append_child(parent: &mut DirEntry, child: DirEntry) {
+    parent.size += child.size;
+    parent.file_count += child.file_count;
+    parent.dir_count += if child.is_dir { child.dir_count + 1 } else { 0 };
+    parent.children.push(child);
+}
+
+fn build_filtered_dir(src: &DirEntry, children: Vec<DirEntry>, keep_empty: bool) -> DirEntry {
+    let mut node = DirEntry::new_dir(src.name.clone(), src.path.clone());
+    for child in children {
+        if !keep_empty && child.size == 0 && child.children.is_empty() {
+            continue;
+        }
+        append_child(&mut node, child);
+    }
+    node.sort_children_by_size_desc();
+    node
+}
+
+fn rebuild_tree(
+    root: &DirEntry,
+    terminal: &mut impl FnMut(&DirEntry) -> Option<DirEntry>,
+    finish_dir: &mut impl FnMut(&DirEntry, Vec<DirEntry>) -> DirEntry,
+) -> DirEntry {
+    struct Frame<'a> {
+        source: &'a DirEntry,
+        next_child: usize,
+        children: Vec<DirEntry>,
+    }
+
+    if let Some(result) = terminal(root) {
+        return result;
+    }
+
+    let mut frames = vec![Frame {
+        source: root,
+        next_child: 0,
+        children: Vec::with_capacity(root.children.len()),
+    }];
+
+    loop {
+        let next_child = {
+            let frame = frames.last_mut().expect("tree rebuild always has a root");
+            if frame.next_child < frame.source.children.len() {
+                let child = &frame.source.children[frame.next_child];
+                frame.next_child += 1;
+                Some(child)
+            } else {
+                None
+            }
+        };
+
+        if let Some(child) = next_child {
+            if let Some(result) = terminal(child) {
+                frames
+                    .last_mut()
+                    .expect("child result always has a parent")
+                    .children
+                    .push(result);
+            } else {
+                debug_assert!(child.is_dir);
+                frames.push(Frame {
+                    source: child,
+                    next_child: 0,
+                    children: Vec::with_capacity(child.children.len()),
+                });
+            }
+            continue;
+        }
+
+        let frame = frames
+            .pop()
+            .expect("tree rebuild always completes an existing frame");
+        let completed = finish_dir(frame.source, frame.children);
+        if let Some(parent) = frames.last_mut() {
+            parent.children.push(completed);
+        } else {
+            return completed;
+        }
+    }
+}
+
 /// Collect all paths that match the search/mask filter (and their ancestors)
 pub(super) fn collect_matching_paths(
     node: &DirEntry,
@@ -22,30 +114,27 @@ pub(super) fn collect_matching_paths(
     masks: &[String],
     result: &mut HashSet<PathBuf>,
 ) -> bool {
-    if !node.is_dir {
-        // File: check if it matches
-        let matches_search = search.is_empty() || node.name.to_lowercase().contains(search);
-        let matches_mask = masks.is_empty() || matches_any_mask(&node.name, masks);
-        if matches_search && matches_mask {
-            result.insert(node.path.clone());
-            return true;
-        }
-        return false;
-    }
+    let mut subtree_matches = Vec::new();
+    for entry in node.iter_post_order() {
+        let has_match = if entry.is_dir {
+            let child_start = subtree_matches.len() - entry.children.len();
+            let has_match = subtree_matches[child_start..]
+                .iter()
+                .any(|matched| *matched);
+            subtree_matches.truncate(child_start);
+            has_match
+        } else {
+            let matches_search = search.is_empty() || entry.name.to_lowercase().contains(search);
+            let matches_mask = masks.is_empty() || matches_any_mask(&entry.name, masks);
+            matches_search && matches_mask
+        };
 
-    // Directory: check children recursively
-    let mut has_match = false;
-    for child in &node.children {
-        if collect_matching_paths(child, search, masks, result) {
-            has_match = true;
+        if has_match {
+            result.insert(entry.path.clone());
         }
+        subtree_matches.push(has_match);
     }
-
-    // If any child matched, include this directory
-    if has_match {
-        result.insert(node.path.clone());
-    }
-    has_match
+    subtree_matches.pop().unwrap_or(false)
 }
 
 /// Check if filename matches any of the glob patterns
@@ -98,25 +187,123 @@ pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
     pi == pat.len()
 }
 
-/// Count files strictly below `min` or strictly above `max` (recursive).
+/// Count files strictly below `min` or strictly above `max`.
 pub(super) fn count_files_outside_range(node: &DirEntry, min: u64, max: u64) -> (u64, u64) {
-    if !node.is_dir {
-        if node.size < min {
-            return (1, 0);
-        }
-        if node.size > max {
-            return (0, 1);
-        }
-        return (0, 0);
+    node.iter()
+        .filter(|entry| !entry.is_dir)
+        .fold((0, 0), |(below, above), entry| {
+            (
+                below + u64::from(entry.size < min),
+                above + u64::from(entry.size > max),
+            )
+        })
+}
+
+fn push_lod_bucket(
+    children: &mut Vec<DirEntry>,
+    src: &DirEntry,
+    min: u64,
+    max: u64,
+    expanded: &HashSet<PathBuf>,
+    kind: LodKind,
+    total_size: u64,
+    file_count: u64,
+) {
+    if file_count == 0 {
+        return;
     }
-    let mut below = 0u64;
-    let mut above = 0u64;
-    for child in &node.children {
-        let (b, a) = count_files_outside_range(child, min, max);
-        below += b;
-        above += a;
+
+    let (suffix, relation, threshold, extension) = match kind {
+        LodKind::BelowMin => ("small", "below", min, "lod_small"),
+        LodKind::AboveMax => ("large", "above", max, "lod_large"),
+    };
+    let bucket_path = src.path.join(format!("__squarebob_lod_{suffix}"));
+    let name = format!(
+        "{} file{} {} {}",
+        file_count,
+        if file_count == 1 { "" } else { "s" },
+        relation,
+        fmt_size(threshold)
+    );
+
+    if expanded.contains(&bucket_path) {
+        let mut directory = DirEntry::new_dir(name, bucket_path);
+        for child in src.children.iter().filter(|child| {
+            !child.is_dir
+                && match kind {
+                    LodKind::BelowMin => child.size < min,
+                    LodKind::AboveMax => child.size > max,
+                }
+        }) {
+            append_child(&mut directory, copy_file_with_size(child, child.size));
+        }
+        directory.sort_children_by_size_desc();
+        children.push(directory);
+        return;
     }
-    (below, above)
+
+    let mut synthetic =
+        DirEntry::new_file(name, bucket_path, total_size, extension.to_string(), None);
+    synthetic.file_count = file_count;
+    synthetic.lod_expand = Some(LodExpandInfo {
+        parent_dir: src.path.clone(),
+        kind,
+        min_threshold: min,
+        max_threshold: max,
+    });
+    children.push(synthetic);
+}
+
+fn build_merged_dir(
+    src: &DirEntry,
+    rebuilt_children: Vec<DirEntry>,
+    min: u64,
+    max: u64,
+    expanded: &HashSet<PathBuf>,
+) -> DirEntry {
+    let mut children = Vec::with_capacity(rebuilt_children.len() + 2);
+    let mut small_sum = 0u64;
+    let mut small_count = 0u64;
+    let mut large_sum = 0u64;
+    let mut large_count = 0u64;
+
+    for (source, rebuilt) in src.children.iter().zip(rebuilt_children) {
+        if source.is_dir {
+            if rebuilt.size > 0 || !rebuilt.children.is_empty() {
+                children.push(rebuilt);
+            }
+        } else if source.size < min {
+            small_sum += source.size;
+            small_count += 1;
+        } else if source.size > max {
+            large_sum += source.size;
+            large_count += 1;
+        } else {
+            children.push(rebuilt);
+        }
+    }
+
+    push_lod_bucket(
+        &mut children,
+        src,
+        min,
+        max,
+        expanded,
+        LodKind::BelowMin,
+        small_sum,
+        small_count,
+    );
+    push_lod_bucket(
+        &mut children,
+        src,
+        min,
+        max,
+        expanded,
+        LodKind::AboveMax,
+        large_sum,
+        large_count,
+    );
+    build_filtered_dir(src, children, true)
 }
 
 /// Build a tree like [`filter_tree`] for the middle band, but instead of dropping
@@ -131,204 +318,31 @@ pub(super) fn merge_tree_by_size_range(
     max: u64,
     expanded: &HashSet<PathBuf>,
 ) -> DirEntry {
-    if !src.is_dir {
-        return DirEntry::new_file(
-            src.name.clone(),
-            src.path.clone(),
-            src.size,
-            src.ext.clone(),
-            src.modified_time,
-        );
-    }
-
-    let mut node = DirEntry::new_dir(src.name.clone(), src.path.clone());
-    let mut children: Vec<DirEntry> = Vec::new();
-
-    let mut small_sum = 0u64;
-    let mut small_n = 0u64;
-    let mut large_sum = 0u64;
-    let mut large_n = 0u64;
-
-    for child in &src.children {
-        if child.is_dir {
-            let merged = merge_tree_by_size_range(child, min, max, expanded);
-            if merged.size > 0 || !merged.children.is_empty() {
-                children.push(merged);
-            }
-        } else if child.size < min {
-            small_sum += child.size;
-            small_n += 1;
-        } else if child.size > max {
-            large_sum += child.size;
-            large_n += 1;
-        } else {
-            children.push(DirEntry::new_file(
-                child.name.clone(),
-                child.path.clone(),
-                child.size,
-                child.ext.clone(),
-                child.modified_time,
-            ));
-        }
-    }
-
-    let lod_small_path = src.path.join("__squarebob_lod_small");
-    if small_n > 0 {
-        let name = format!(
-            "{} file{} below {}",
-            small_n,
-            if small_n == 1 { "" } else { "s" },
-            fmt_size(min)
-        );
-        if expanded.contains(&lod_small_path) {
-            let mut dir = DirEntry::new_dir(name, lod_small_path.clone());
-            for child in &src.children {
-                if !child.is_dir && child.size < min {
-                    dir.children.push(DirEntry::new_file(
-                        child.name.clone(),
-                        child.path.clone(),
-                        child.size,
-                        child.ext.clone(),
-                        child.modified_time,
-                    ));
-                }
-            }
-            dir.sort_children_by_size_desc();
-            for c in &dir.children {
-                dir.size += c.size;
-                dir.file_count += c.file_count;
-                dir.dir_count += if c.is_dir { c.dir_count + 1 } else { 0 };
-            }
-            children.push(dir);
-        } else {
-            let mut syn = DirEntry::new_file(
-                name,
-                lod_small_path.clone(),
-                small_sum,
-                "lod_small".to_string(),
-                None,
-            );
-            syn.file_count = small_n;
-            syn.lod_expand = Some(LodExpandInfo {
-                parent_dir: src.path.clone(),
-                kind: LodKind::BelowMin,
-                min_threshold: min,
-                max_threshold: max,
-            });
-            children.push(syn);
-        }
-    }
-    let lod_large_path = src.path.join("__squarebob_lod_large");
-    if large_n > 0 {
-        let name = format!(
-            "{} file{} above {}",
-            large_n,
-            if large_n == 1 { "" } else { "s" },
-            fmt_size(max)
-        );
-        if expanded.contains(&lod_large_path) {
-            let mut dir = DirEntry::new_dir(name, lod_large_path.clone());
-            for child in &src.children {
-                if !child.is_dir && child.size > max {
-                    dir.children.push(DirEntry::new_file(
-                        child.name.clone(),
-                        child.path.clone(),
-                        child.size,
-                        child.ext.clone(),
-                        child.modified_time,
-                    ));
-                }
-            }
-            dir.sort_children_by_size_desc();
-            for c in &dir.children {
-                dir.size += c.size;
-                dir.file_count += c.file_count;
-                dir.dir_count += if c.is_dir { c.dir_count + 1 } else { 0 };
-            }
-            children.push(dir);
-        } else {
-            let mut syn = DirEntry::new_file(
-                name,
-                lod_large_path.clone(),
-                large_sum,
-                "lod_large".to_string(),
-                None,
-            );
-            syn.file_count = large_n;
-            syn.lod_expand = Some(LodExpandInfo {
-                parent_dir: src.path.clone(),
-                kind: LodKind::AboveMax,
-                min_threshold: min,
-                max_threshold: max,
-            });
-            children.push(syn);
-        }
-    }
-
-    for c in &children {
-        node.size += c.size;
-        node.file_count += c.file_count;
-        node.dir_count += if c.is_dir { c.dir_count + 1 } else { 0 };
-    }
-
-    node.children = children;
-    node.sort_children_by_size_desc();
-    node
+    rebuild_tree(
+        src,
+        &mut |entry| (!entry.is_dir).then(|| copy_file_with_size(entry, entry.size)),
+        &mut |entry, children| build_merged_dir(entry, children, min, max, expanded),
+    )
 }
 
 /// Create a filtered copy of the tree, excluding files outside size range.
 /// BUG-1 fix: also filters leaf files at root level.
 pub(super) fn filter_tree(src: &DirEntry, min: u64, max: u64, invert: bool) -> DirEntry {
-    if !src.is_dir {
-        let in_range = src.size >= min && src.size <= max;
-        let include = if invert { !in_range } else { in_range };
-        if include {
-            return DirEntry::new_file(
-                src.name.clone(),
-                src.path.clone(),
-                src.size,
-                src.ext.clone(),
-                src.modified_time,
-            );
-        } else {
-            // Excluded file: return zero-size placeholder
-            return DirEntry::new_file(
-                src.name.clone(),
-                src.path.clone(),
-                0,
-                src.ext.clone(),
-                src.modified_time,
-            );
-        }
-    }
-    let mut node = DirEntry::new_dir(src.name.clone(), src.path.clone());
-    for child in &src.children {
-        if child.is_dir {
-            let filtered_child = filter_tree(child, min, max, invert);
-            if filtered_child.size > 0 || !filtered_child.children.is_empty() {
-                node.size += filtered_child.size;
-                node.file_count += filtered_child.file_count;
-                node.dir_count += filtered_child.dir_count + 1;
-                node.children.push(filtered_child);
+    rebuild_tree(
+        src,
+        &mut |entry| {
+            if entry.is_dir {
+                return None;
             }
-        } else {
-            let in_range = child.size >= min && child.size <= max;
+            let in_range = entry.size >= min && entry.size <= max;
             let include = if invert { !in_range } else { in_range };
-            if include {
-                node.size += child.size;
-                node.file_count += 1;
-                node.children.push(DirEntry::new_file(
-                    child.name.clone(),
-                    child.path.clone(),
-                    child.size,
-                    child.ext.clone(),
-                    child.modified_time,
-                ));
-            }
-        }
-    }
-    node.sort_children_by_size_desc();
-    node
+            Some(copy_file_with_size(
+                entry,
+                if include { entry.size } else { 0 },
+            ))
+        },
+        &mut |entry, children| build_filtered_dir(entry, children, false),
+    )
 }
 
 /// Filter out excluded paths from tree. If show_excluded is true, keeps them with __excluded__ marker.
@@ -337,126 +351,54 @@ pub(super) fn filter_excluded(
     exclusions: &Exclusions,
     show_excluded: bool,
 ) -> DirEntry {
-    filter_excluded_recursive(src, exclusions, show_excluded)
-}
-
-pub(super) fn filter_excluded_recursive(
-    src: &DirEntry,
-    exclusions: &Exclusions,
-    show_excluded: bool,
-) -> DirEntry {
-    let is_excluded = exclusions.contains(&src.path);
-
-    // For excluded items
-    if is_excluded {
-        if show_excluded {
-            // Show as grayed out (use __excluded__ marker)
-            let node = if src.is_dir {
-                let mut d = DirEntry::new_dir(src.name.clone(), src.path.clone());
-                d.ext = "__excluded__".to_string();
-                d.size = src.size;
-                d.file_count = src.file_count;
-                d.dir_count = src.dir_count;
-                d
-            } else {
-                DirEntry::new_file(
-                    src.name.clone(),
-                    src.path.clone(),
-                    src.size,
-                    "__excluded__".to_string(),
-                    src.modified_time,
-                )
-            };
-            // Don't recurse into excluded directories
-            return node;
-        } else {
-            // Return zero-size node (effectively hidden)
-            return DirEntry::new_dir(src.name.clone(), src.path.clone());
-        }
-    }
-
-    // Not excluded - process normally
-    if !src.is_dir {
-        return DirEntry::new_file(
-            src.name.clone(),
-            src.path.clone(),
-            src.size,
-            src.ext.clone(),
-            src.modified_time,
-        );
-    }
-
-    let mut node = DirEntry::new_dir(src.name.clone(), src.path.clone());
-
-    for child in &src.children {
-        let filtered = filter_excluded_recursive(child, exclusions, show_excluded);
-
-        // Skip empty nodes (hidden exclusions)
-        if filtered.size == 0 && filtered.children.is_empty() && !show_excluded {
-            continue;
-        }
-
-        node.size += filtered.size;
-        node.file_count += filtered.file_count;
-        node.dir_count += if filtered.is_dir {
-            filtered.dir_count + 1
-        } else {
-            0
-        };
-        node.children.push(filtered);
-    }
-
-    node.sort_children_by_size_desc();
-    node
+    rebuild_tree(
+        src,
+        &mut |entry| {
+            if exclusions.contains(&entry.path) {
+                return Some(if show_excluded {
+                    if entry.is_dir {
+                        let mut excluded =
+                            DirEntry::new_dir(entry.name.clone(), entry.path.clone());
+                        excluded.ext = "__excluded__".to_string();
+                        excluded.size = entry.size;
+                        excluded.file_count = entry.file_count;
+                        excluded.dir_count = entry.dir_count;
+                        excluded
+                    } else {
+                        DirEntry::new_file(
+                            entry.name.clone(),
+                            entry.path.clone(),
+                            entry.size,
+                            "__excluded__".to_string(),
+                            entry.modified_time,
+                        )
+                    }
+                } else {
+                    DirEntry::new_dir(entry.name.clone(), entry.path.clone())
+                });
+            }
+            (!entry.is_dir).then(|| copy_file_with_size(entry, entry.size))
+        },
+        &mut |entry, children| build_filtered_dir(entry, children, show_excluded),
+    )
 }
 
 /// Filter tree to only include files matching the glob masks
 pub(super) fn filter_by_mask(src: &DirEntry, masks: &[String]) -> DirEntry {
-    if !src.is_dir {
-        // File: include only if it matches any mask
-        if matches_any_mask(&src.name, masks) {
-            return DirEntry::new_file(
-                src.name.clone(),
-                src.path.clone(),
-                src.size,
-                src.ext.clone(),
-                src.modified_time,
-            );
-        } else {
-            // Return zero-size placeholder (will be filtered out)
-            return DirEntry::new_file(
-                src.name.clone(),
-                src.path.clone(),
-                0,
-                src.ext.clone(),
-                src.modified_time,
-            );
-        }
-    }
-
-    // Directory: recurse and only keep children that have content
-    let mut node = DirEntry::new_dir(src.name.clone(), src.path.clone());
-
-    for child in &src.children {
-        let filtered = filter_by_mask(child, masks);
-
-        // Skip empty nodes
-        if filtered.size == 0 && filtered.children.is_empty() {
-            continue;
-        }
-
-        node.size += filtered.size;
-        node.file_count += filtered.file_count;
-        node.dir_count += if filtered.is_dir {
-            filtered.dir_count + 1
-        } else {
-            0
-        };
-        node.children.push(filtered);
-    }
-
-    node.sort_children_by_size_desc();
-    node
+    rebuild_tree(
+        src,
+        &mut |entry| {
+            (!entry.is_dir).then(|| {
+                let size = if matches_any_mask(&entry.name, masks) {
+                    entry.size
+                } else {
+                    0
+                };
+                copy_file_with_size(entry, size)
+            })
+        },
+        &mut |entry, children| build_filtered_dir(entry, children, false),
+    )
 }
 
 /// Filter tree to only include files matching selected extensions.
@@ -466,65 +408,38 @@ pub(super) fn filter_by_extension(
     exts: &HashSet<String>,
     invert: bool,
 ) -> DirEntry {
-    if !src.is_dir {
-        let ext_key = if src.ext.is_empty() {
-            "<none>"
-        } else {
-            src.ext.as_str()
-        }
-        .to_lowercase();
-        let in_set = exts.contains(&ext_key);
-        let include = if invert { !in_set } else { in_set };
-        if include {
-            return DirEntry::new_file(
-                src.name.clone(),
-                src.path.clone(),
-                src.size,
-                src.ext.clone(),
-                src.modified_time,
-            );
-        } else {
-            return DirEntry::new_file(
-                src.name.clone(),
-                src.path.clone(),
-                0,
-                src.ext.clone(),
-                src.modified_time,
-            );
-        }
-    }
-
-    let mut node = DirEntry::new_dir(src.name.clone(), src.path.clone());
-    for child in &src.children {
-        let filtered = filter_by_extension(child, exts, invert);
-        if filtered.size == 0 && filtered.children.is_empty() {
-            continue;
-        }
-        node.size += filtered.size;
-        node.file_count += filtered.file_count;
-        node.dir_count += if filtered.is_dir {
-            filtered.dir_count + 1
-        } else {
-            0
-        };
-        node.children.push(filtered);
-    }
-    node.sort_children_by_size_desc();
-    node
+    rebuild_tree(
+        src,
+        &mut |entry| {
+            if entry.is_dir {
+                return None;
+            }
+            let ext_key = if entry.ext.is_empty() {
+                "<none>"
+            } else {
+                entry.ext.as_str()
+            }
+            .to_lowercase();
+            let in_set = exts.contains(&ext_key);
+            let include = if invert { !in_set } else { in_set };
+            Some(copy_file_with_size(
+                entry,
+                if include { entry.size } else { 0 },
+            ))
+        },
+        &mut |entry, children| build_filtered_dir(entry, children, false),
+    )
 }
 
 /// Count files that match size range (min/max) with optional invert.
 pub(super) fn count_files_in_range(node: &DirEntry, min: u64, max: u64, invert: bool) -> u64 {
-    if !node.is_dir {
-        let in_range = node.size >= min && node.size <= max;
-        let include = if invert { !in_range } else { in_range };
-        return if include { 1 } else { 0 };
-    }
-    let mut count = 0u64;
-    for child in &node.children {
-        count += count_files_in_range(child, min, max, invert);
-    }
-    count
+    node.iter()
+        .filter(|entry| !entry.is_dir)
+        .filter(|entry| {
+            let in_range = entry.size >= min && entry.size <= max;
+            if invert { !in_range } else { in_range }
+        })
+        .count() as u64
 }
 
 #[cfg(test)]

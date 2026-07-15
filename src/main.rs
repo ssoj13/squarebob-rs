@@ -1,4 +1,5 @@
 mod app;
+mod atomic_file;
 mod cache;
 mod cli;
 mod cli_test;

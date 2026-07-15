@@ -1,6 +1,6 @@
 //! Megakernel PT backend implementation.
 
-use crate::{compute_slice_normal, compute_slice_position, geometry, Renderer3D};
+use crate::{Renderer3D, compute_slice_normal, compute_slice_position, geometry};
 use log::{debug, info, trace};
 use render_core::gpu;
 use render_shared::{HashTransformEffect, OrbitCamera, Render3DOptions};

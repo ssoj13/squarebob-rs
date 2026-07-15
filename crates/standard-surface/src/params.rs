@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Maps directly to the WGSL uniform buffer layout.
 /// All color values are linear (not sRGB).
-/// 
+///
 /// Uses vec4 packing for proper GPU alignment:
 /// - Colors use rgb, weight uses alpha
 /// - Scalar params packed into vec4
@@ -57,6 +57,28 @@ impl Default for StandardSurfaceParams {
 }
 
 impl StandardSurfaceParams {
+    pub const DEFAULT_IOR: f32 = 1.5;
+    pub const MIN_IOR: f32 = 1.0;
+    pub const MAX_IOR: f32 = 4.0;
+
+    fn valid_ior(ior: f32) -> f32 {
+        if ior.is_finite() {
+            ior.clamp(Self::MIN_IOR, Self::MAX_IOR)
+        } else {
+            Self::DEFAULT_IOR
+        }
+    }
+
+    /// Return parameters with optical domains safe for CPU and GPU BRDF math.
+    ///
+    /// Call at material input and GPU-upload boundaries because fields remain
+    /// public for the packed ABI and deserializers can bypass constructors.
+    pub fn sanitized_for_gpu(mut self) -> Self {
+        self.params1.w = Self::valid_ior(self.params1.w);
+        self.params2.z = Self::valid_ior(self.params2.z);
+        self
+    }
+
     /// Create a simple diffuse material
     pub fn diffuse(color: Vec3) -> Self {
         Self {
@@ -92,7 +114,7 @@ impl StandardSurfaceParams {
         let mut p = Self::default();
         p.base_color_weight.w = 0.0; // disable base
         p.transmission_color_weight = color.extend(1.0);
-        p.params1.w = ior; // specular_IOR
+        p.params1.w = Self::valid_ior(ior); // specular_IOR
         p.params1.z = 0.0; // specular_roughness
         p
     }
@@ -118,31 +140,31 @@ impl StandardSurfaceParams {
         self.opacity = Vec4::splat(opacity);
         self
     }
-    
+
     // Convenience setters
-    
+
     /// Set base color
     pub fn set_base_color(&mut self, color: Vec3) {
         self.base_color_weight.x = color.x;
         self.base_color_weight.y = color.y;
         self.base_color_weight.z = color.z;
     }
-    
+
     /// Set base weight
     pub fn set_base(&mut self, weight: f32) {
         self.base_color_weight.w = weight;
     }
-    
+
     /// Set metalness
     pub fn set_metalness(&mut self, metalness: f32) {
         self.params1.y = metalness;
     }
-    
+
     /// Set specular roughness
     pub fn set_roughness(&mut self, roughness: f32) {
         self.params1.z = roughness;
     }
-    
+
     /// Set specular weight
     pub fn set_specular(&mut self, weight: f32) {
         self.specular_color_weight.w = weight;
@@ -194,12 +216,12 @@ impl Light {
             intensity,
         }
     }
-    
+
     /// Create a light pointing in direction
     pub fn directional(dir: Vec3, intensity: f32) -> Self {
         Self::new(dir, Vec3::ONE, intensity)
     }
-    
+
     /// Disabled light
     pub fn off() -> Self {
         Self {
@@ -255,64 +277,40 @@ impl LightRig {
                 0.4,
             ),
             // Rim: from behind, above
-            rim: Light::new(
-                Vec3::new(0.0, -0.5, 0.8),
-                Vec3::new(1.0, 1.0, 1.0),
-                0.6,
-            ),
+            rim: Light::new(Vec3::new(0.0, -0.5, 0.8), Vec3::new(1.0, 1.0, 1.0), 0.6),
             ambient: Vec3::splat(0.08),
             _pad: 0.0,
         }
     }
-    
+
     /// Simple single key light
     pub fn single_key() -> Self {
         Self {
-            key: Light::new(
-                Vec3::new(-0.5, -0.8, -0.3),
-                Vec3::ONE,
-                1.0,
-            ),
+            key: Light::new(Vec3::new(-0.5, -0.8, -0.3), Vec3::ONE, 1.0),
             fill: Light::off(),
             rim: Light::off(),
             ambient: Vec3::splat(0.15),
             _pad: 0.0,
         }
     }
-    
+
     /// Studio lighting (flat, even)
     pub fn studio() -> Self {
         Self {
-            key: Light::new(
-                Vec3::new(0.0, -1.0, 0.0),
-                Vec3::ONE,
-                0.8,
-            ),
-            fill: Light::new(
-                Vec3::new(0.0, 0.0, -1.0),
-                Vec3::ONE,
-                0.5,
-            ),
+            key: Light::new(Vec3::new(0.0, -1.0, 0.0), Vec3::ONE, 0.8),
+            fill: Light::new(Vec3::new(0.0, 0.0, -1.0), Vec3::ONE, 0.5),
             rim: Light::off(),
             ambient: Vec3::splat(0.2),
             _pad: 0.0,
         }
     }
-    
+
     /// Dramatic lighting (high contrast)
     pub fn dramatic() -> Self {
         Self {
-            key: Light::new(
-                Vec3::new(-0.8, -0.5, -0.2),
-                Vec3::new(1.0, 0.9, 0.8),
-                1.5,
-            ),
+            key: Light::new(Vec3::new(-0.8, -0.5, -0.2), Vec3::new(1.0, 0.9, 0.8), 1.5),
             fill: Light::off(),
-            rim: Light::new(
-                Vec3::new(0.3, -0.2, 0.9),
-                Vec3::new(0.8, 0.9, 1.0),
-                0.8,
-            ),
+            rim: Light::new(Vec3::new(0.3, -0.2, 0.9), Vec3::new(0.8, 0.9, 1.0), 0.8),
             ambient: Vec3::splat(0.03),
             _pad: 0.0,
         }

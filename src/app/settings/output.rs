@@ -9,7 +9,7 @@
 use eframe::egui;
 use media_encoder::Project;
 
-use super::{tinted_section, SettingsDirty};
+use super::{SettingsDirty, tinted_section};
 use crate::app::App;
 
 /// Inner content width for the inline encoder, in logical egui points.
@@ -37,14 +37,6 @@ impl App {
             self.settings_tint_mix,
             self.settings_section_header_height,
             |ui| {
-                // Drain progress + refresh the lazy frame source before
-                // painting — matches the window path in
-                // `ui_encode_dialog_window`.
-                self.encode_dialog.poll_encoding_state(ui.ctx());
-                if !self.encode_dialog.is_encoding {
-                    self.refresh_encode_source();
-                }
-
                 // Cap the encoder content width so it matches the
                 // visual rhythm of peer sections (Denoiser, Camera,
                 // etc.) — the standalone window UI was designed for
@@ -60,12 +52,9 @@ impl App {
                     // `with_close_button = false`: inline mode suppresses
                     // Close (section is collapsible via header chevron)
                     // and stretches Encode/Stop full-width.
-                    let _close_requested = self.encode_dialog.render_inline(
-                        ui,
-                        &project,
-                        active_comp.as_ref(),
-                        false,
-                    );
+                    let _close_requested =
+                        self.encode_dialog
+                            .render_inline(ui, &project, active_comp.as_ref(), false);
                 });
             },
         );

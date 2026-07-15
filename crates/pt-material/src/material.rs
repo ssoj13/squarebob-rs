@@ -53,7 +53,7 @@ impl Material {
             uuid: Uuid::new_v4(),
             name: name.into(),
             weight: default_weight(),
-            params,
+            params: params.sanitized_for_gpu(),
             variance: zero_params(),
         }
     }
@@ -70,8 +70,7 @@ impl Material {
         // `StandardSurfaceParams` are automatically variance-aware.
         let base: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&self.params));
         let var: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&self.variance));
-        let out_lanes: &mut [f32] =
-            bytemuck::cast_slice_mut(std::slice::from_mut(&mut out));
+        let out_lanes: &mut [f32] = bytemuck::cast_slice_mut(std::slice::from_mut(&mut out));
         for (i, ((b, v), o)) in base
             .iter()
             .zip(var.iter())
@@ -80,7 +79,7 @@ impl Material {
         {
             *o = apply_variance(*b, *v, channel_seed(cube_hash, i));
         }
-        out
+        out.sanitized_for_gpu()
     }
 }
 
@@ -124,8 +123,7 @@ mod tests {
         let mat = Material::new("test", StandardSurfaceParams::default());
         let resolved = mat.resolve_for_cube(0xDEAD_BEEF);
         let lhs: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&mat.params));
-        let rhs: &[f32] =
-            bytemuck::cast_slice(std::slice::from_ref(&resolved));
+        let rhs: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&resolved));
         for (a, b) in lhs.iter().zip(rhs.iter()) {
             assert_eq!(a.to_bits(), b.to_bits(), "zero-variance must be identity");
         }
@@ -164,6 +162,9 @@ mod tests {
         let la: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&a));
         let lb: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&b));
         let any_diff = la.iter().zip(lb.iter()).any(|(x, y)| x != y);
-        assert!(any_diff, "different cube_hash should perturb at least one lane");
+        assert!(
+            any_diff,
+            "different cube_hash should perturb at least one lane"
+        );
     }
 }

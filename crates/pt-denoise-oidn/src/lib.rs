@@ -333,7 +333,9 @@ impl OidnDenoiser {
                 let dev = make_burn_device(ctx)?;
                 let leaked: &'static burn_wgpu::WgpuDevice = Box::leak(Box::new(dev));
                 self.burn_device_ref = Some(leaked);
-                log::info!("OIDN: Burn-wgpu device initialised on shared wgpu setup (leaked to 'static for committed filter caching)");
+                log::info!(
+                    "OIDN: Burn-wgpu device initialised on shared wgpu setup (leaked to 'static for committed filter caching)"
+                );
                 leaked
             }
         };
@@ -472,7 +474,10 @@ impl OidnDenoiser {
         };
         log::trace!(
             "OIDN pass#{pass_id}: clamp user={} adaptive={} spp={} effective={:.3}",
-            self.input_clamp, self.adaptive_clamp, current_spp, effective_clamp
+            self.input_clamp,
+            self.adaptive_clamp,
+            current_spp,
+            effective_clamp
         );
 
         // Convert HWC RGBA → CHW RGB on the same wgpu device via Burn ops.
@@ -566,7 +571,10 @@ impl OidnDenoiser {
         if self.cached_filter_key != Some(filter_key) {
             log::debug!(
                 "OIDN pass#{pass_id}: building committed RtFilter hdr={} quality={:?} input_scale_override={:?} cached_weights={}",
-                hdr, self.quality, user_scale, cached_bytes.is_some()
+                hdr,
+                self.quality,
+                user_scale,
+                cached_bytes.is_some()
             );
             // weights_dir is only consulted by RtFilter::commit when the
             // builder wasn't given pre-loaded bytes via `.weights(...)`.
@@ -620,7 +628,10 @@ impl OidnDenoiser {
             .execute_tensors(Some(color_chw3_t), albedo_chw3_t, normal_chw3_t, None)
             .map_err(|e| anyhow::anyhow!("OIDN execute_tensors: {e:?}"))?;
         log::trace!("OIDN pass#{pass_id}: committed filter execute_tensors() done");
-        log::debug!("OIDN pass#{pass_id}: output tensor shape={:?}", out_chw3.dims());
+        log::debug!(
+            "OIDN pass#{pass_id}: output tensor shape={:?}",
+            out_chw3.dims()
+        );
 
         // Bridge: convert the tensor-native CHW RGB output into a
         // contiguous HWC RGBA buffer (alpha=1) on-device, then copy
@@ -896,9 +907,7 @@ fn hwc4_normalize_by_w_to_chw3(
     let w = dims[2];
     // Pull RGB (running sum) and W (sample count) as separate views.
     let rgb = hwc4.clone().slice([0..1, 0..h, 0..w, 0..3]);
-    let count = hwc4
-        .slice([0..1, 0..h, 0..w, 3..4])
-        .clamp_min(1.0_f32);
+    let count = hwc4.slice([0..1, 0..h, 0..w, 3..4]).clamp_min(1.0_f32);
     // Broadcast divide [1,H,W,3] / [1,H,W,1] → [1,H,W,3], then to CHW.
     let avg_hwc3 = rgb.div(count);
     avg_hwc3.permute([0, 3, 1, 2])
@@ -1004,7 +1013,12 @@ fn tensor_diagnostics_enabled() -> bool {
         return true;
     }
     std::env::var("OIDN_TRACE_TENSORS")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"))
+        .map(|v| {
+            matches!(
+                v.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
         .unwrap_or(false)
 }
 

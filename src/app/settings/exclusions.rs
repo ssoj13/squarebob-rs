@@ -1,8 +1,7 @@
 //! Exclusions settings.
 
-use super::{SettingsDirty, LABEL_WIDTH};
+use super::{LABEL_WIDTH, SettingsDirty};
 use crate::app::App;
-use crate::exclusions;
 use eframe::egui;
 use std::path::PathBuf;
 
@@ -29,10 +28,7 @@ impl App {
                             }
                             if !self.exclusions.is_empty() && ui.small_button("Clear all").clicked()
                             {
-                                self.exclusions.clear();
-                                exclusions::save(&self.exclusions);
-                                self.rebuild_display_tree();
-                                self.needs_layout = true;
+                                self.clear_exclusions();
                             }
                         });
                         ui.end_row();

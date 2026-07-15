@@ -1,4 +1,4 @@
-﻿//! Encoding dialog UI
+//! Encoding dialog UI
 //!
 //! Provides dialog for configuring and running video encoding.
 
@@ -15,10 +15,70 @@ use log::info;
 use crate::dialogs::encode::{
     ChannelMode, CodecSettings, Container, EncodeError, EncodeProgress, EncodeStage,
     EncoderSettings, ExportMode, ExrCompression, OutputBitDepth, ProResProfile, SequenceFormat,
-    SequenceSettings, TiffCompression, VideoCodec,
+    SequenceSettings, TiffCompression, VideoCodec, encode_comp, encode_image_sequence,
 };
 use crate::progress::ProgressBar;
 use crate::source::{Comp, Project};
+
+/// Cancellation identity shared by one encoder worker and its frame source.
+#[derive(Clone)]
+pub struct EncodeSessionToken {
+    generation: u64,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl EncodeSessionToken {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
+    }
+}
+
+struct EncodeSession {
+    token: EncodeSessionToken,
+    progress_rx: Receiver<EncodeProgress>,
+    worker: JoinHandle<Result<(), EncodeError>>,
+}
+
+enum EncodeLifecycle {
+    Idle(EncodeSessionToken),
+    Running(EncodeSession),
+    Cancelling(EncodeSession),
+    Finishing(EncodeSession),
+}
+
+impl EncodeLifecycle {
+    fn session(&self) -> Option<&EncodeSession> {
+        match self {
+            Self::Idle(_) => None,
+            Self::Running(session) | Self::Cancelling(session) | Self::Finishing(session) => {
+                Some(session)
+            }
+        }
+    }
+
+    fn is_cancelling(&self) -> bool {
+        matches!(self, Self::Cancelling(_))
+    }
+}
 
 /// Encoding dialog state
 pub struct EncodeDialog {
@@ -35,23 +95,11 @@ pub struct EncodeDialog {
     /// Per-codec settings
     pub codec_settings: CodecSettings,
 
-    /// Whether encoding is currently in progress
-    pub is_encoding: bool,
-
-    /// Current encoding progress (if encoding)
+    /// Current encoding progress.
     pub progress: Option<EncodeProgress>,
 
-    /// Cancel flag shared with encoder thread
-    pub cancel_flag: Arc<AtomicBool>,
-
-    /// Channel receiver for progress updates
-    progress_rx: Option<Receiver<EncodeProgress>>,
-
-    /// Encoder thread handle
-    encode_thread: Option<JoinHandle<Result<(), EncodeError>>>,
-
-    /// Orphaned thread handles (timed out but not joined)
-    orphan_handles: Vec<JoinHandle<Result<(), EncodeError>>>,
+    /// Single owner for the worker, progress receiver, generation, and cancellation token.
+    lifecycle: EncodeLifecycle,
 
     /// Progress bar widget
     progress_bar: ProgressBar,
@@ -198,12 +246,8 @@ impl EncodeDialog {
             frame_end: settings.frame_end.max(settings.frame_start),
             selected_codec: settings.selected_codec,
             codec_settings: settings.codec_settings.clone(),
-            is_encoding: false,
             progress: None,
-            cancel_flag: Arc::new(AtomicBool::new(false)),
-            progress_rx: None,
-            encode_thread: None,
-            orphan_handles: Vec::new(),
+            lifecycle: EncodeLifecycle::Idle(EncodeSessionToken::new(1)),
             progress_bar: ProgressBar::new(400.0, 20.0),
             tonemap_mode: settings.tonemap_mode,
             export_mode: settings.export_mode,
@@ -322,12 +366,22 @@ impl EncodeDialog {
         }
     }
 
-    /// Check if encoding is currently in progress
+    /// True until the active generation has terminated and been joined.
     pub fn is_encoding(&self) -> bool {
-        self.is_encoding
+        !matches!(self.lifecycle, EncodeLifecycle::Idle(_))
     }
 
-    /// Stop encoding (public interface for ESC key handling)
+    /// Token for the next/active generation. Frame sources must share it.
+    pub fn session_token(&self) -> EncodeSessionToken {
+        match &self.lifecycle {
+            EncodeLifecycle::Idle(token) => token.clone(),
+            EncodeLifecycle::Running(session)
+            | EncodeLifecycle::Cancelling(session)
+            | EncodeLifecycle::Finishing(session) => session.token.clone(),
+        }
+    }
+
+    /// Stop encoding (public interface for ESC key handling).
     pub fn stop_encoding(&mut self) {
         self.stop_encoding_keep_window();
     }
@@ -341,8 +395,6 @@ impl EncodeDialog {
         project: &Project,
         active_comp: Option<&Comp>,
     ) -> bool {
-        self.poll_encoding_state(ctx);
-
         let window_title = match self.export_mode {
             ExportMode::Video => "Video Encoder",
             ExportMode::Sequence => "Image Sequence Export",
@@ -363,36 +415,97 @@ impl EncodeDialog {
         !should_close
     }
 
-    /// Drain any pending progress updates and request repaints while
-    /// encoding is active. Shared by both [`Self::render`] (window
-    /// presentation) and any inline embedding so the caller doesn't
-    /// have to remember to drain progress before drawing the UI.
+    /// Drain progress and reap a finished worker without blocking the UI.
     pub fn poll_encoding_state(&mut self, ctx: &egui::Context) {
-        if let Some(rx) = &self.progress_rx {
-            while let Ok(progress) = rx.try_recv() {
-                self.progress = Some(progress);
-            }
+        let updates: Vec<_> = self
+            .lifecycle
+            .session()
+            .map(|session| session.progress_rx.try_iter().collect())
+            .unwrap_or_default();
+        for progress in updates {
+            self.progress = Some(progress);
         }
 
-        if self.is_encoding {
+        let terminal_progress = matches!(
+            self.progress.as_ref().map(|progress| &progress.stage),
+            Some(EncodeStage::Complete | EncodeStage::Error(_))
+        );
+        if terminal_progress {
+            let state = self.take_lifecycle();
+            self.lifecycle = match state {
+                EncodeLifecycle::Running(session) => EncodeLifecycle::Finishing(session),
+                other => other,
+            };
+        }
+
+        let worker_finished = self
+            .lifecycle
+            .session()
+            .is_some_and(|session| session.worker.is_finished());
+        if worker_finished {
+            self.reap_finished_session();
+        }
+
+        if self.is_encoding() {
             ctx.request_repaint();
         }
+    }
 
-        if self.is_encoding
-            && let Some(ref progress) = self.progress
-        {
-            match &progress.stage {
-                EncodeStage::Complete => {
-                    info!("Encoding completed successfully");
-                    self.reset_encoding_state();
+    fn take_lifecycle(&mut self) -> EncodeLifecycle {
+        let token = self.session_token();
+        std::mem::replace(&mut self.lifecycle, EncodeLifecycle::Idle(token))
+    }
+
+    fn reap_finished_session(&mut self) {
+        let state = self.take_lifecycle();
+        let (session, was_cancelling) = match state {
+            EncodeLifecycle::Running(session) | EncodeLifecycle::Finishing(session) => {
+                (session, false)
+            }
+            EncodeLifecycle::Cancelling(session) => (session, true),
+            idle @ EncodeLifecycle::Idle(_) => {
+                self.lifecycle = idle;
+                return;
+            }
+        };
+
+        let generation = session.token.generation();
+        let result = session.worker.join();
+        let next_generation = generation.saturating_add(1);
+        self.lifecycle = EncodeLifecycle::Idle(EncodeSessionToken::new(next_generation));
+
+        match result {
+            Ok(Ok(())) => {
+                if !was_cancelling {
+                    info!("Encoding generation {} completed successfully", generation);
                 }
-                EncodeStage::Error(msg) => {
-                    info!("Encoding failed: {}", msg);
-                    self.reset_encoding_state();
-                }
-                _ => {}
+            }
+            Ok(Err(EncodeError::Cancelled)) if was_cancelling => {
+                info!("Encoding generation {} cancelled", generation);
+            }
+            Ok(Err(error)) => {
+                info!("Encoding generation {} failed: {}", generation, error);
+                self.set_terminal_error(error.to_string());
+            }
+            Err(payload) => {
+                let message = format!("Encoder generation {} panicked: {:?}", generation, payload);
+                info!("{}", message);
+                self.set_terminal_error(message);
             }
         }
+    }
+
+    fn set_terminal_error(&mut self, message: String) {
+        let (current_frame, total_frames) = self
+            .progress
+            .as_ref()
+            .map(|progress| (progress.current_frame, progress.total_frames))
+            .unwrap_or((0, 0));
+        self.progress = Some(EncodeProgress {
+            current_frame,
+            total_frames,
+            stage: EncodeStage::Error(message),
+        });
     }
 
     /// Render the encoder UI body directly into `ui`. Use this when
@@ -421,150 +534,144 @@ impl EncodeDialog {
         let mut should_close = false;
         {
             // === Output Path ===
-                ui.horizontal(|ui| {
-                    ui.label("Output:");
-                    ui.add_enabled_ui(!self.is_encoding, |ui| {
-                        let path_str = self.output_path.display().to_string();
-                        let mut edit_path = path_str.clone();
-                        if ui.text_edit_singleline(&mut edit_path).changed() {
-                            self.output_path = PathBuf::from(edit_path);
-                        }
-
-                        // Increment filename button
-                        if ui
-                            .button("+")
-                            .on_hover_text(
-                                "Increment number in filename (e.g., file001.mp4 -> file002.mp4)",
-                            )
-                            .clicked()
-                        {
-                            self.increment_filename();
-                        }
-
-                        if ui.button("Browse").clicked()
-                            && let Some(path) = rfd::FileDialog::new()
-                                .set_file_name("output.mp4")
-                                .save_file()
-                        {
-                            self.output_path = path;
-                        }
-                    });
-                });
-
-                // === Framerate ===
-                ui.horizontal(|ui| {
-                    ui.label("Framerate:");
-                    ui.add_enabled_ui(!self.is_encoding, |ui| {
-                        ui.add(egui::Slider::new(&mut self.fps, 1.0..=960.0).text("fps"));
-                    });
-                });
-
-                ui.separator();
-
-                // === Export Mode Tabs (Video / Sequence) ===
-                //
-                // Smart-rename rules — keep the user from manually
-                // adding / removing the `####` frame token every
-                // time they flip the mode:
-                //   Video → strip any padding token from the stem
-                //           (`####`, `%04d`, `@@@@`, with or without
-                //           a leading `.`), then set the container
-                //           extension.
-                //   Sequence → append `.####` to the stem (skipped
-                //              if any padding token is already
-                //              there), then set the image-format
-                //              extension.
-                ui.horizontal(|ui| {
-                    ui.add_enabled_ui(!self.is_encoding, |ui| {
-                        let video_btn = egui::Button::new("Video")
-                            .selected(self.export_mode == ExportMode::Video)
-                            .min_size(egui::vec2(80.0, 0.0));
-                        if ui.add(video_btn).clicked() {
-                            self.export_mode = ExportMode::Video;
-                            let stem = self
-                                .output_path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("output");
-                            let clean = strip_frame_token(stem);
-                            let ext = self.container.extension();
-                            self.output_path = rebuild_path(
-                                self.output_path.parent(),
-                                &clean,
-                                ext,
-                            );
-                        }
-
-                        let seq_btn = egui::Button::new("Sequence")
-                            .selected(self.export_mode == ExportMode::Sequence)
-                            .min_size(egui::vec2(80.0, 0.0));
-                        if ui.add(seq_btn).clicked() {
-                            self.export_mode = ExportMode::Sequence;
-                            let stem = self
-                                .output_path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("frame");
-                            let with_token = ensure_frame_token(stem);
-                            let ext = self.sequence_settings.format.extension();
-                            self.output_path = rebuild_path(
-                                self.output_path.parent(),
-                                &with_token,
-                                ext,
-                            );
-                        }
-                    });
-                });
-
-                ui.add_space(4.0);
-
-                // === Codec/Format Tabs based on mode ===
-                match self.export_mode {
-                    ExportMode::Video => {
-                        // Video codec tabs
-                        ui.horizontal(|ui| {
-                            ui.add_enabled_ui(!self.is_encoding, |ui| {
-                                for codec in VideoCodec::all() {
-                                    let is_available = codec.is_available();
-                                    let is_selected = self.selected_codec == *codec;
-
-                                    ui.add_enabled_ui(is_available, |ui| {
-                                        let button = egui::Button::new(codec.to_string())
-                                            .selected(is_selected)
-                                            .min_size(egui::vec2(90.0, 0.0));
-
-                                        if ui.add(button).clicked() {
-                                            self.selected_codec = *codec;
-                                            let preferred_container = codec.preferred_container();
-                                            self.container = preferred_container;
-                                            self.output_path.set_extension(preferred_container.extension());
-                                        }
-                                    });
-
-                                    if !is_available {
-                                        ui.label(icons::X)
-                                            .on_hover_text(format!("{} encoder not available", codec));
-                                    }
-                                }
-                            });
-                        });
-
-                        ui.separator();
-                        ui.add_space(8.0);
-
-                        // Per-Codec Settings
-                        ui.add_enabled_ui(!self.is_encoding, |ui| match self.selected_codec {
-                            VideoCodec::H264 => self.render_h264_settings(ui),
-                            VideoCodec::H265 => self.render_h265_settings(ui),
-                            VideoCodec::AV1 => self.render_av1_settings(ui),
-                            VideoCodec::ProRes => self.render_prores_settings(ui),
-                        });
+            ui.horizontal(|ui| {
+                ui.label("Output:");
+                ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                    let path_str = self.output_path.display().to_string();
+                    let mut edit_path = path_str.clone();
+                    if ui.text_edit_singleline(&mut edit_path).changed() {
+                        self.output_path = PathBuf::from(edit_path);
                     }
-                    ExportMode::Sequence => {
-                        let caps = self.sequence_settings.format.capabilities();
 
-                        // === Common settings (above format buttons) ===
-                        ui.add_enabled_ui(!self.is_encoding, |ui| {
+                    // Increment filename button
+                    if ui
+                        .button("+")
+                        .on_hover_text(
+                            "Increment number in filename (e.g., file001.mp4 -> file002.mp4)",
+                        )
+                        .clicked()
+                    {
+                        self.increment_filename();
+                    }
+
+                    if ui.button("Browse").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("output.mp4")
+                            .save_file()
+                    {
+                        self.output_path = path;
+                    }
+                });
+            });
+
+            // === Framerate ===
+            ui.horizontal(|ui| {
+                ui.label("Framerate:");
+                ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                    ui.add(egui::Slider::new(&mut self.fps, 1.0..=960.0).text("fps"));
+                });
+            });
+
+            ui.separator();
+
+            // === Export Mode Tabs (Video / Sequence) ===
+            //
+            // Smart-rename rules — keep the user from manually
+            // adding / removing the `####` frame token every
+            // time they flip the mode:
+            //   Video → strip any padding token from the stem
+            //           (`####`, `%04d`, `@@@@`, with or without
+            //           a leading `.`), then set the container
+            //           extension.
+            //   Sequence → append `.####` to the stem (skipped
+            //              if any padding token is already
+            //              there), then set the image-format
+            //              extension.
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                    let video_btn = egui::Button::new("Video")
+                        .selected(self.export_mode == ExportMode::Video)
+                        .min_size(egui::vec2(80.0, 0.0));
+                    if ui.add(video_btn).clicked() {
+                        self.export_mode = ExportMode::Video;
+                        let stem = self
+                            .output_path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("output");
+                        let clean = strip_frame_token(stem);
+                        let ext = self.container.extension();
+                        self.output_path = rebuild_path(self.output_path.parent(), &clean, ext);
+                    }
+
+                    let seq_btn = egui::Button::new("Sequence")
+                        .selected(self.export_mode == ExportMode::Sequence)
+                        .min_size(egui::vec2(80.0, 0.0));
+                    if ui.add(seq_btn).clicked() {
+                        self.export_mode = ExportMode::Sequence;
+                        let stem = self
+                            .output_path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("frame");
+                        let with_token = ensure_frame_token(stem);
+                        let ext = self.sequence_settings.format.extension();
+                        self.output_path =
+                            rebuild_path(self.output_path.parent(), &with_token, ext);
+                    }
+                });
+            });
+
+            ui.add_space(4.0);
+
+            // === Codec/Format Tabs based on mode ===
+            match self.export_mode {
+                ExportMode::Video => {
+                    // Video codec tabs
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                            for codec in VideoCodec::all() {
+                                let is_available = codec.is_available();
+                                let is_selected = self.selected_codec == *codec;
+
+                                ui.add_enabled_ui(is_available, |ui| {
+                                    let button = egui::Button::new(codec.to_string())
+                                        .selected(is_selected)
+                                        .min_size(egui::vec2(90.0, 0.0));
+
+                                    if ui.add(button).clicked() {
+                                        self.selected_codec = *codec;
+                                        let preferred_container = codec.preferred_container();
+                                        self.container = preferred_container;
+                                        self.output_path
+                                            .set_extension(preferred_container.extension());
+                                    }
+                                });
+
+                                if !is_available {
+                                    ui.label(icons::X)
+                                        .on_hover_text(format!("{} encoder not available", codec));
+                                }
+                            }
+                        });
+                    });
+
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    // Per-Codec Settings
+                    ui.add_enabled_ui(!self.is_encoding(), |ui| match self.selected_codec {
+                        VideoCodec::H264 => self.render_h264_settings(ui),
+                        VideoCodec::H265 => self.render_h265_settings(ui),
+                        VideoCodec::AV1 => self.render_av1_settings(ui),
+                        VideoCodec::ProRes => self.render_prores_settings(ui),
+                    });
+                }
+                ExportMode::Sequence => {
+                    let caps = self.sequence_settings.format.capabilities();
+
+                    // === Common settings (above format buttons) ===
+                    ui.add_enabled_ui(!self.is_encoding(), |ui| {
                             // Channels (RGB/RGBA)
                             ui.horizontal(|ui| {
                                 ui.label("Channels:");
@@ -635,304 +742,261 @@ impl EncodeDialog {
                             });
                         });
 
-                        ui.add_space(8.0);
+                    ui.add_space(8.0);
 
-                        // === Format buttons ===
-                        ui.horizontal(|ui| {
-                            ui.add_enabled_ui(!self.is_encoding, |ui| {
-                                for format in SequenceFormat::all() {
-                                    let is_selected = self.sequence_settings.format == *format;
-                                    let button = egui::Button::new(format.to_string())
-                                        .selected(is_selected)
-                                        .min_size(egui::vec2(70.0, 0.0));
+                    // === Format buttons ===
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                            for format in SequenceFormat::all() {
+                                let is_selected = self.sequence_settings.format == *format;
+                                let button = egui::Button::new(format.to_string())
+                                    .selected(is_selected)
+                                    .min_size(egui::vec2(70.0, 0.0));
 
-                                    if ui.add(button).clicked() {
-                                        self.sequence_settings.format = *format;
-                                        // Update file extension
-                                        self.output_path.set_extension(format.extension());
-                                        // Validate settings for new format
-                                        self.sequence_settings.validate();
-                                    }
+                                if ui.add(button).clicked() {
+                                    self.sequence_settings.format = *format;
+                                    // Update file extension
+                                    self.output_path.set_extension(format.extension());
+                                    // Validate settings for new format
+                                    self.sequence_settings.validate();
                                 }
-                            });
+                            }
                         });
-
-                        ui.separator();
-                        ui.add_space(4.0);
-
-                        // === Format-specific settings ===
-                        ui.add_enabled_ui(!self.is_encoding, |ui| {
-                            self.render_sequence_format_settings(ui, active_comp);
-                        });
-                    }
-                }
-
-                // === Frame Range ===
-                // Per-field labels (`Start`, `End`) sit OUTSIDE the
-                // DragValue widgets instead of being baked into the
-                // numeric prefix — matches the rest of the settings
-                // panel's label conventions and avoids the "Start 0"
-                // typed-into-the-field look.
-                ui.horizontal(|ui| {
-                    ui.label("Frame Range:");
-                    ui.add_enabled_ui(!self.is_encoding, |ui| {
-                        ui.label("Start");
-                        ui.add(egui::DragValue::new(&mut self.frame_start).speed(1.0));
-                        ui.label("End");
-                        ui.add(egui::DragValue::new(&mut self.frame_end).speed(1.0));
                     });
-                });
-                if self.frame_end < self.frame_start {
-                    self.frame_end = self.frame_start;
+
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    // === Format-specific settings ===
+                    ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                        self.render_sequence_format_settings(ui, active_comp);
+                    });
                 }
+            }
 
-                ui.separator();
+            // === Frame Range ===
+            // Per-field labels (`Start`, `End`) sit OUTSIDE the
+            // DragValue widgets instead of being baked into the
+            // numeric prefix — matches the rest of the settings
+            // panel's label conventions and avoids the "Start 0"
+            // typed-into-the-field look.
+            ui.horizontal(|ui| {
+                ui.label("Frame Range:");
+                ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                    ui.label("Start");
+                    ui.add(egui::DragValue::new(&mut self.frame_start).speed(1.0));
+                    ui.label("End");
+                    ui.add(egui::DragValue::new(&mut self.frame_end).speed(1.0));
+                });
+            });
+            if self.frame_end < self.frame_start {
+                self.frame_end = self.frame_start;
+            }
 
-                // === Progress (always visible to prevent dialog size jumping) ===
-                if self.is_encoding {
-                    if let Some(ref progress) = self.progress {
-                        let stage_text = match &progress.stage {
-                            EncodeStage::Validating => "Validating frame sizes...",
-                            EncodeStage::Opening => "Opening encoder...",
-                            EncodeStage::Encoding => "Encoding frames...",
-                            EncodeStage::Flushing => "Flushing encoder...",
-                            EncodeStage::Complete => "Complete!",
-                            EncodeStage::Error(msg) => msg.as_str(),
-                        };
-                        ui.label(stage_text);
-                        self.progress_bar.set_progress(
-                            progress.current_frame.max(0) as usize,
-                            progress.total_frames.max(0) as usize,
-                        );
-                        self.progress_bar.render(ui);
-                    }
-                } else {
-                    // Idle: keep the slot occupied (label + bar) so the
-                    // section height doesn't jump when encoding starts.
-                    ui.label("Ready to encode");
-                    let planned_total = active_comp
-                        .map(|c| {
-                            let (s, e) = c.play_range(true);
-                            (e - s + 1).max(0) as usize
-                        })
-                        .unwrap_or(0);
-                    self.progress_bar.set_progress(0, planned_total);
+            ui.separator();
+
+            // === Progress (always visible to prevent dialog size jumping) ===
+            if self.is_encoding() {
+                if let Some(ref progress) = self.progress {
+                    let stage_text = match &progress.stage {
+                        EncodeStage::Validating => "Validating frame sizes...",
+                        EncodeStage::Opening => "Opening encoder...",
+                        EncodeStage::Encoding => "Encoding frames...",
+                        EncodeStage::Flushing => "Flushing encoder...",
+                        EncodeStage::Complete => "Complete!",
+                        EncodeStage::Error(msg) => msg.as_str(),
+                    };
+                    ui.label(stage_text);
+                    self.progress_bar.set_progress(
+                        progress.current_frame.max(0) as usize,
+                        progress.total_frames.max(0) as usize,
+                    );
                     self.progress_bar.render(ui);
                 }
+            } else {
+                // Idle: keep the slot occupied (label + bar) so the
+                // section height doesn't jump when encoding starts.
+                ui.label("Ready to encode");
+                let planned_total = active_comp
+                    .map(|c| {
+                        let (s, e) = c.play_range(true);
+                        (e - s + 1).max(0) as usize
+                    })
+                    .unwrap_or(0);
+                self.progress_bar.set_progress(0, planned_total);
+                self.progress_bar.render(ui);
+            }
 
-                ui.separator();
+            ui.separator();
 
-                // === Readiness check ===
-                let ready_to_encode = active_comp.is_some();
+            // === Readiness check ===
+            let ready_to_encode = active_comp.is_some();
 
-                if !ready_to_encode {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(200, 150, 0),
-                        "No active comp to encode",
-                    );
-                }
+            if !ready_to_encode {
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 150, 0),
+                    "No active comp to encode",
+                );
+            }
 
-                // === Buttons ===
-                // Window mode (`with_close_button`): [Close] [Encode/Stop]
-                // side-by-side. Inline mode: single full-width Encode/Stop
-                // toggle — the host panel owns visibility, Close is moot.
-                if with_close_button {
-                    ui.horizontal(|ui| {
-                        if ui.button("Close").clicked() {
-                            if self.is_encoding {
-                                self.stop_encoding_and_close();
-                            }
-                            should_close = true;
+            // === Buttons ===
+            // Window mode (`with_close_button`): [Close] [Encode/Stop]
+            // side-by-side. Inline mode: single full-width Encode/Stop
+            // toggle — the host panel owns visibility, Close is moot.
+            if with_close_button {
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        if self.is_encoding() {
+                            self.stop_encoding_and_close();
                         }
+                        should_close = true;
+                    }
 
-                        if self.is_encoding {
-                            if ui.button("Stop").clicked() {
-                                self.stop_encoding_keep_window();
-                            }
-                        } else {
-                            ui.add_enabled_ui(ready_to_encode, |ui| {
-                                let mut button = ui.button("Encode");
-                                if !ready_to_encode {
-                                    button = button.on_disabled_hover_text("No active comp");
-                                }
-                                if button.clicked()
-                                    && let Some(comp) = active_comp
-                                {
-                                    self.start_encoding(comp, project);
-                                }
-                            });
-                        }
-                    });
-                } else {
-                    // Inline: full-width action button. `min_size` with
-                    // `ui.available_width()` stretches it across the
-                    // section without forcing a layout dance.
-                    let row_w = ui.available_width();
-                    if self.is_encoding {
-                        let stop_btn = egui::Button::new("Stop")
-                            .min_size(egui::vec2(row_w, 0.0));
-                        if ui.add(stop_btn).clicked() {
+                    if self.is_encoding() {
+                        if self.lifecycle.is_cancelling() {
+                            ui.add_enabled(false, egui::Button::new("Stopping..."));
+                        } else if ui.button("Stop").clicked() {
                             self.stop_encoding_keep_window();
                         }
                     } else {
                         ui.add_enabled_ui(ready_to_encode, |ui| {
-                            let encode_btn = egui::Button::new("Encode")
-                                .min_size(egui::vec2(row_w, 0.0));
-                            let mut resp = ui.add(encode_btn);
+                            let mut button = ui.button("Encode");
                             if !ready_to_encode {
-                                resp = resp.on_disabled_hover_text("No active comp");
+                                button = button.on_disabled_hover_text("No active comp");
                             }
-                            if resp.clicked()
+                            if button.clicked()
                                 && let Some(comp) = active_comp
                             {
                                 self.start_encoding(comp, project);
                             }
                         });
                     }
+                });
+            } else {
+                // Inline: full-width action button. `min_size` with
+                // `ui.available_width()` stretches it across the
+                // section without forcing a layout dance.
+                let row_w = ui.available_width();
+                if self.is_encoding() {
+                    let label = if self.lifecycle.is_cancelling() {
+                        "Stopping..."
+                    } else {
+                        "Stop"
+                    };
+                    let stop_btn = egui::Button::new(label).min_size(egui::vec2(row_w, 0.0));
+                    if ui
+                        .add_enabled(!self.lifecycle.is_cancelling(), stop_btn)
+                        .clicked()
+                    {
+                        self.stop_encoding_keep_window();
+                    }
+                } else {
+                    ui.add_enabled_ui(ready_to_encode, |ui| {
+                        let encode_btn =
+                            egui::Button::new("Encode").min_size(egui::vec2(row_w, 0.0));
+                        let mut resp = ui.add(encode_btn);
+                        if !ready_to_encode {
+                            resp = resp.on_disabled_hover_text("No active comp");
+                        }
+                        if resp.clicked()
+                            && let Some(comp) = active_comp
+                        {
+                            self.start_encoding(comp, project);
+                        }
+                    });
                 }
+            }
         }
         should_close
     }
 
-    /// Start encoding process
+    /// Start one generation. A second generation cannot start until this worker is joined.
     fn start_encoding(&mut self, comp: &Comp, project: &Project) {
-        info!("========== STARTING ENCODING ==========");
-        info!("Export mode: {:?}", self.export_mode);
+        let token = match &self.lifecycle {
+            EncodeLifecycle::Idle(token) if token.generation() < u64::MAX => token.clone(),
+            EncodeLifecycle::Idle(_) => {
+                self.set_terminal_error("Encoder generation counter exhausted".into());
+                return;
+            }
+            _ => return,
+        };
 
-        // Reset state for new encoding
-        self.cancel_flag.store(false, Ordering::Relaxed);
-        self.progress = None; // Clear old progress
+        info!(
+            "Starting encoding generation {} ({:?})",
+            token.generation(),
+            self.export_mode
+        );
+        self.progress = None;
 
-        // Create progress channel
-        let (tx, rx) = channel();
-        self.progress_rx = Some(rx);
+        let (progress_tx, progress_rx) = channel();
+        let cancel_flag = token.flag();
+        let comp = comp.clone();
+        let project = project.clone();
 
-        let cancel_flag_clone = Arc::clone(&self.cancel_flag);
-        let comp_clone = comp.clone();
-        let project_clone = project.clone();
-
-        use std::thread;
-
-        let handle = match self.export_mode {
+        let worker = match self.export_mode {
             ExportMode::Video => {
-                // Video encoding
                 let settings = self.build_encoder_settings();
-                info!(
-                    "Codec: {:?}, Container: {:?}",
-                    settings.codec, settings.container
-                );
-                info!("Settings: {:?}", settings);
-
-                use crate::dialogs::encode::encode_comp;
-                let settings_clone = settings;
-
-                thread::spawn(move || {
-                    info!("Video encoder thread started");
-                    encode_comp(
-                        &comp_clone,
-                        &project_clone,
-                        &settings_clone,
-                        tx,
-                        cancel_flag_clone,
-                    )
-                })
+                std::thread::Builder::new()
+                    .name(format!("encode-video-{}", token.generation()))
+                    .spawn(move || {
+                        encode_comp(&comp, &project, &settings, progress_tx, cancel_flag)
+                    })
             }
             ExportMode::Sequence => {
-                // Image sequence export
                 let settings = self.sequence_settings.clone();
                 let output_path = self.output_path.clone();
-                info!(
-                    "Format: {:?}, Channels: {:?}",
-                    settings.format, settings.channels
-                );
-                info!("Output: {}", output_path.display());
-
-                use crate::dialogs::encode::encode_image_sequence;
-
-                thread::spawn(move || {
-                    info!("Image sequence export thread started");
-                    encode_image_sequence(
-                        &comp_clone,
-                        &project_clone,
-                        &output_path,
-                        &settings,
-                        tx,
-                        cancel_flag_clone,
-                    )
-                })
+                std::thread::Builder::new()
+                    .name(format!("encode-sequence-{}", token.generation()))
+                    .spawn(move || {
+                        encode_image_sequence(
+                            &comp,
+                            &project,
+                            &output_path,
+                            &settings,
+                            progress_tx,
+                            cancel_flag,
+                        )
+                    })
             }
         };
 
-        self.encode_thread = Some(handle);
-        self.is_encoding = true;
+        match worker {
+            Ok(worker) => {
+                self.lifecycle = EncodeLifecycle::Running(EncodeSession {
+                    token,
+                    progress_rx,
+                    worker,
+                });
+            }
+            Err(error) => {
+                self.set_terminal_error(format!("Failed to start encoder worker: {}", error));
+            }
+        }
     }
 
-    /// Stop encoding and close window
+    /// Stop encoding and close window.
     fn stop_encoding_and_close(&mut self) {
         info!("Stopping encoding (closing window)");
         self.stop_encoding_internal();
     }
 
-    /// Stop encoding but keep window open
+    /// Stop encoding but keep window open.
     fn stop_encoding_keep_window(&mut self) {
         info!("Stopping encoding (keeping window open)");
         self.stop_encoding_internal();
     }
 
-    /// Internal: Stop encoding â€” non-blocking, no UI freeze.
+    /// Request cancellation. Worker ownership stays in the lifecycle until a later poll joins it.
     fn stop_encoding_internal(&mut self) {
-        self.cancel_flag.store(true, Ordering::Relaxed);
-
-        // Clean up any previously orphaned threads that have finished
-        self.cleanup_orphan_handles();
-
-        // Don't block the UI thread waiting for the encode thread to stop.
-        // The cancel_flag is already set; push the handle to orphans so
-        // cleanup_orphan_handles() will reap it on the next UI tick.
-        if let Some(handle) = self.encode_thread.take() {
-            self.orphan_handles.push(handle);
-        }
-
-        // Force reset to clean state
-        self.reset_encoding_state();
-        self.progress = None;
-        self.cancel_flag = Arc::new(AtomicBool::new(false));
-    }
-
-    /// Clean up finished orphan thread handles
-    fn cleanup_orphan_handles(&mut self) {
-        // Retain only handles that are still running
-        let mut finished_count = 0;
-        self.orphan_handles.retain(|handle| {
-            if handle.is_finished() {
-                finished_count += 1;
-                false // Remove from vec, will be dropped and joined
-            } else {
-                true // Keep in vec
+        let state = self.take_lifecycle();
+        self.lifecycle = match state {
+            EncodeLifecycle::Running(session) | EncodeLifecycle::Finishing(session) => {
+                session.token.cancel();
+                EncodeLifecycle::Cancelling(session)
             }
-        });
-        if finished_count > 0 {
-            info!("Cleaned up {} orphaned encode thread(s)", finished_count);
-        }
-    }
-
-    /// Stop encoding (cleanup after completion or error)
-    fn reset_encoding_state(&mut self) {
-        self.is_encoding = false;
-        self.progress_rx = None;
-
-        // CRITICAL: Wait for encoder thread to actually finish
-        if let Some(handle) = self.encode_thread.take() {
-            // Thread should already be finished (we're here because of Complete/Error)
-            // But we still need to join() to clean up properly
-            if handle.is_finished() {
-                let _ = handle.join(); // Ignore result, we already know it completed
-            } else {
-                // Thread still running (shouldn't happen) - log warning
-                info!("Warning: encoder thread still running during reset_encoding_state");
-                let _ = handle.join(); // Wait for it anyway
-            }
-        }
+            EncodeLifecycle::Cancelling(session) => EncodeLifecycle::Cancelling(session),
+            idle @ EncodeLifecycle::Idle(_) => idle,
+        };
     }
 
     fn render_h264_settings(&mut self, ui: &mut egui::Ui) {
@@ -1299,17 +1363,20 @@ impl EncodeDialog {
 }
 impl Drop for EncodeDialog {
     fn drop(&mut self) {
-        // Join any orphaned encode threads on dialog close
-        for handle in self.orphan_handles.drain(..) {
-            if let Err(e) = handle.join() {
-                info!("Orphaned encode thread panicked during cleanup: {:?}", e);
+        let state = self.take_lifecycle();
+        let session = match state {
+            EncodeLifecycle::Running(session)
+            | EncodeLifecycle::Cancelling(session)
+            | EncodeLifecycle::Finishing(session) => session,
+            EncodeLifecycle::Idle(token) => {
+                self.lifecycle = EncodeLifecycle::Idle(token);
+                return;
             }
-        }
-        // Also join the active thread if any
-        if let Some(handle) = self.encode_thread.take()
-            && let Err(e) = handle.join()
-        {
-            info!("Encode thread panicked during dialog close: {:?}", e);
+        };
+
+        session.token.cancel();
+        if let Err(payload) = session.worker.join() {
+            info!("Encoder worker panicked during shutdown: {:?}", payload);
         }
     }
 }

@@ -5,11 +5,15 @@
 pub use render_shared::*;
 
 pub mod cpu {
-    use squarebob_core::DirEntry;
     use render_core::Viewport;
+    use squarebob_core::DirEntry;
     use treemap::TreeMapOptions;
 
-    pub fn render(root: &DirEntry, viewport: &Viewport, opts: &TreeMapOptions) -> Vec<u8> {
+    pub fn render(
+        root: &DirEntry,
+        viewport: &Viewport,
+        opts: &TreeMapOptions,
+    ) -> Result<Vec<u8>, render_core::GpuLayoutError> {
         let w = viewport.width;
         let h = viewport.height;
 

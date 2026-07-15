@@ -20,10 +20,9 @@ use glam::Mat4;
 use pt_core::{GpuMaterial, Instance};
 use pt_material::{MaterialLibrary, StandardSurfaceParams};
 use pt_mats::{
-    classify_to_index, hierarchical_path_value, MaterialInput, MaterializeMode,
-    MaterializeSettings,
+    MaterialInput, MaterializeMode, MaterializeSettings, classify_to_index, hierarchical_path_value,
 };
-use render_shared::{name_hash, Render3DOptions};
+use render_shared::{Render3DOptions, name_hash};
 
 use crate::geometry::CubeInstance;
 use crate::picking::PickingState;
@@ -168,10 +167,7 @@ impl MaterialCache {
         // Extension and Path behave identically. Now `name_hash` is
         // a hash of just the extension; `path_hash` keeps the full
         // path.
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext_key = name_hash(ext);
         let mut settings = settings_from_opts(opts, is_pt);
         // Sync legacy `materialize_mode` → `source` so classify_to_index
@@ -183,8 +179,7 @@ impl MaterialCache {
         // every call instead — `classify_to_index` is cheap.
         let position_dependent = matches!(
             settings.distribution,
-            pt_mats::MaterialDistribution::Spatial
-                | pt_mats::MaterialDistribution::Perlin
+            pt_mats::MaterialDistribution::Spatial | pt_mats::MaterialDistribution::Perlin
         );
         let input = MaterialInput {
             name_hash: ext_key,
@@ -252,8 +247,9 @@ impl MaterialCache {
                 over.seed,
             );
             if picker < p
-                && let Some(slot) =
-                    raw_lib.materials[..lib_len].iter().position(|m| m.uuid == uuid)
+                && let Some(slot) = raw_lib.materials[..lib_len]
+                    .iter()
+                    .position(|m| m.uuid == uuid)
             {
                 id = slot as u32;
                 if !is_pt && i < self.overlay_applied.len() {
@@ -343,7 +339,7 @@ pub(crate) struct PtExpandCacheEntry {
 fn pt_expand_opts_hash(opts: &Render3DOptions) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-// Library contents: UUID identifies each slot, params + variance
+    // Library contents: UUID identifies each slot, params + variance
     // drive resolution. Hash 40 lanes (10 vec4s × 4 channels) per slot.
     for m in &opts.material_library.materials {
         m.uuid.hash(&mut h);

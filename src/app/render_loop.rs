@@ -8,15 +8,15 @@ use eframe::egui;
 use egui_dock::DockArea;
 
 use crate::events::{
-    downcast, LayoutDirtyEvent, NavigateIntoEvent, NavigateUpEvent, RenderTick3DEvent,
-    MaterialsChangedEvent, SelectPathEvent, ZoomResetEvent,
+    LayoutDirtyEvent, MaterialsChangedEvent, NavigateIntoEvent, NavigateUpEvent, RenderTick3DEvent,
+    SelectPathEvent, ZoomResetEvent, downcast,
 };
 use crate::renderer::{HashTransformEffect, RenderMode};
 
+use super::App;
 use super::dock::{self, DockTabs};
 use super::helpers::fmt_size;
 use super::shell;
-use super::App;
 
 impl App {
     /// Process queued events
@@ -101,11 +101,7 @@ impl App {
     /// drag-rearrangements without losing the remembered positions of
     /// currently-hidden tabs.
     fn snapshot_dock_layout(&mut self) {
-        if self.show_outliner
-            && self.show_viewport
-            && self.show_settings
-            && self.show_ae
-        {
+        if self.show_outliner && self.show_viewport && self.show_settings && self.show_ae {
             self.dock_layout = self.dock_state.clone();
         }
     }
@@ -177,23 +173,31 @@ impl App {
         if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Backspace)) {
             self.events.emit(NavigateUpEvent);
         }
-        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Delete))
-            && let Some(sel) = self.selected_path.clone() {
-                self.request_trash_confirmation(sel);
-            }
-        if kb_ok && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C))
-            && let Some(sel) = &self.selected_path {
-                ctx.copy_text(sel.to_string_lossy().to_string());
-            }
-        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.alt)
-            && let Some(sel) = &self.selected_path {
-                shell::shell_open(sel);
-            }
+        if kb_ok
+            && ctx.input(|i| i.key_pressed(egui::Key::Delete))
+            && let Some(sel) = self.selected_path.clone()
+        {
+            self.request_trash_confirmation(sel);
+        }
+        if kb_ok
+            && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C))
+            && let Some(sel) = &self.selected_path
+        {
+            ctx.copy_text(sel.to_string_lossy().to_string());
+        }
+        if kb_ok
+            && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.alt)
+            && let Some(sel) = &self.selected_path
+        {
+            shell::shell_open(sel);
+        }
         #[cfg(any(target_os = "windows", target_os = "macos"))]
-        if kb_ok && ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.alt)
-            && let Some(sel) = &self.selected_path.clone() {
-                shell::shell_properties(sel);
-            }
+        if kb_ok
+            && ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.alt)
+            && let Some(sel) = &self.selected_path.clone()
+        {
+            shell::shell_properties(sel);
+        }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.show_search = !self.show_search;
         }
@@ -354,6 +358,7 @@ impl App {
         // method docs.
         self.snapshot_dock_layout();
 
+        self.poll_encode_lifecycle(&ctx);
         self.ui_encode_dialog_window(&ctx);
         self.ui_trash_confirmation(&ctx);
 

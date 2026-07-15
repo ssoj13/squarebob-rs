@@ -71,10 +71,8 @@ fn render_triangle(
     } else {
         ui.visuals().weak_text_color()
     };
-    let resp = ui.add(
-        egui::Label::new(egui::RichText::new(arrow).color(color))
-            .sense(egui::Sense::click()),
-    );
+    let resp = ui
+        .add(egui::Label::new(egui::RichText::new(arrow).color(color)).sense(egui::Sense::click()));
     if resp.clicked() {
         state.toggle(id.to_string());
     }
@@ -177,9 +175,7 @@ impl Widget for VariableF32<'_> {
             let (resp, show_variance_row) = value_resp;
 
             // Expanded variance row (rendered below, indented).
-            if show_variance_row
-                && let Some(v) = variance
-            {
+            if show_variance_row && let Some(v) = variance {
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
                     ui.label(format!("± {}", label));
@@ -278,9 +274,7 @@ impl Widget for VariableVec3<'_> {
                 .inner;
             let (resp, show_variance_row) = value_resp;
 
-            if show_variance_row
-                && let Some(v) = variance
-            {
+            if show_variance_row && let Some(v) = variance {
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
                     ui.label(format!("± {}", label));
@@ -389,27 +383,13 @@ impl Widget for VariableColor<'_> {
                 .inner;
             let (resp, show_variance_row) = value_resp;
 
-            if show_variance_row
-                && let Some(v) = variance
-            {
+            if show_variance_row && let Some(v) = variance {
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
                     ui.label(format!("± {}", label));
-                    ui.add(
-                        egui::DragValue::new(&mut v[0])
-                            .speed(0.01)
-                            .range(0.0..=1.0),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut v[1])
-                            .speed(0.01)
-                            .range(0.0..=1.0),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut v[2])
-                            .speed(0.01)
-                            .range(0.0..=1.0),
-                    );
+                    ui.add(egui::DragValue::new(&mut v[0]).speed(0.01).range(0.0..=1.0));
+                    ui.add(egui::DragValue::new(&mut v[1]).speed(0.01).range(0.0..=1.0));
+                    ui.add(egui::DragValue::new(&mut v[2]).speed(0.01).range(0.0..=1.0));
                 });
             }
             resp

@@ -76,9 +76,7 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
 /// clamped to `[0, 1]` and rounded to 8 bits — round-trip is lossy
 /// past LDR by design (hex strings can't carry > 1.0).
 pub fn linear_to_hex(r: f32, g: f32, b: f32) -> String {
-    let q = |x: f32| {
-        (linear_to_srgb(x).clamp(0.0, 1.0) * 255.0).round() as u8
-    };
+    let q = |x: f32| (linear_to_srgb(x).clamp(0.0, 1.0) * 255.0).round() as u8;
     format!("#{:02X}{:02X}{:02X}", q(r), q(g), q(b))
 }
 

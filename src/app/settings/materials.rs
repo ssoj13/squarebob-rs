@@ -45,20 +45,8 @@ fn material_schema() -> &'static AttrSchema {
         AttrSchema::new(
             "StandardSurfaceParams",
             &[
-                AttrDef::with_ui_order(
-                    "Base Color",
-                    AttrType::Vec4,
-                    COLOR_FLAGS,
-                    COLOR_HINT,
-                    1.0,
-                ),
-                AttrDef::with_ui_order(
-                    "Specular",
-                    AttrType::Vec4,
-                    COLOR_FLAGS,
-                    COLOR_HINT,
-                    2.0,
-                ),
+                AttrDef::with_ui_order("Base Color", AttrType::Vec4, COLOR_FLAGS, COLOR_HINT, 1.0),
+                AttrDef::with_ui_order("Specular", AttrType::Vec4, COLOR_FLAGS, COLOR_HINT, 2.0),
                 AttrDef::with_ui_order(
                     "Transmission",
                     AttrType::Vec4,
@@ -66,34 +54,10 @@ fn material_schema() -> &'static AttrSchema {
                     COLOR_HINT,
                     3.0,
                 ),
-                AttrDef::with_ui_order(
-                    "Subsurface",
-                    AttrType::Vec4,
-                    COLOR_FLAGS,
-                    COLOR_HINT,
-                    4.0,
-                ),
-                AttrDef::with_ui_order(
-                    "Coat",
-                    AttrType::Vec4,
-                    COLOR_FLAGS,
-                    COLOR_HINT,
-                    5.0,
-                ),
-                AttrDef::with_ui_order(
-                    "Emission",
-                    AttrType::Vec4,
-                    COLOR_FLAGS,
-                    COLOR_HINT,
-                    6.0,
-                ),
-                AttrDef::with_ui_order(
-                    "Opacity",
-                    AttrType::Vec4,
-                    COLOR_FLAGS,
-                    COLOR_HINT,
-                    7.0,
-                ),
+                AttrDef::with_ui_order("Subsurface", AttrType::Vec4, COLOR_FLAGS, COLOR_HINT, 4.0),
+                AttrDef::with_ui_order("Coat", AttrType::Vec4, COLOR_FLAGS, COLOR_HINT, 5.0),
+                AttrDef::with_ui_order("Emission", AttrType::Vec4, COLOR_FLAGS, COLOR_HINT, 6.0),
+                AttrDef::with_ui_order("Opacity", AttrType::Vec4, COLOR_FLAGS, COLOR_HINT, 7.0),
                 AttrDef::with_ui_order(
                     "Diffuse Roughness",
                     AttrType::Float,
@@ -274,9 +238,7 @@ fn materials_footer(ui: &mut egui::Ui, app: &mut App) {
             ui.add_enabled_ui(!lib.is_empty(), |ui| {
                 if ui
                     .button("All on")
-                    .on_hover_text(
-                        "Set every material weight to 1.0 (include all in distribution)",
-                    )
+                    .on_hover_text("Set every material weight to 1.0 (include all in distribution)")
                     .clicked()
                 {
                     for mat in &mut lib.materials {
@@ -325,11 +287,12 @@ fn materials_footer(ui: &mut egui::Ui, app: &mut App) {
             });
         }
         ui.separator();
-        ui.checkbox(&mut app.materials_weight_log, "Log").on_hover_text(
-            "Switch the weight column to a logarithmic slider. Useful when most \
+        ui.checkbox(&mut app.materials_weight_log, "Log")
+            .on_hover_text(
+                "Switch the weight column to a logarithmic slider. Useful when most \
              weights cluster near zero — linear sliders flatten them into one \
              indistinguishable group.",
-        );
+            );
     });
     if library_dirty {
         app.events.emit(MaterialsChangedEvent);
@@ -352,8 +315,7 @@ impl App {
         // needs `&mut self`) can run without overlapping reborrows.
         let snapshot = {
             let lib = &self.render_3d_opts.material_library;
-            let Some(active_idx) = (lib.active < lib.materials.len()).then_some(lib.active)
-            else {
+            let Some(active_idx) = (lib.active < lib.materials.len()).then_some(lib.active) else {
                 ui.label(
                     "No active material — open Settings → Materials and add or select a slot.",
                 );
@@ -380,19 +342,20 @@ impl App {
             &mut attrs,
             material_schema_name(),
         );
-        let preset_applied =
-            matches!(preset_event, playa_ae::PresetButtonEvent::Applied { .. });
+        let preset_applied = matches!(preset_event, playa_ae::PresetButtonEvent::Applied { .. });
         let bank_dirty = !matches!(preset_event, playa_ae::PresetButtonEvent::None);
         if bank_dirty {
-            crate::app::settings::material_presets::save_preset_bank(
-                &self.materials_preset_bank,
-            );
+            crate::app::settings::material_presets::save_preset_bank(&self.materials_preset_bank);
         }
 
         ui.separator();
 
-        let ae_changed =
-            playa_ae::render(ui, &mut attrs, &mut self.materials_ae_state, material_schema_name());
+        let ae_changed = playa_ae::render(
+            ui,
+            &mut attrs,
+            &mut self.materials_ae_state,
+            material_schema_name(),
+        );
         if preset_applied || ae_changed {
             let lib = &mut self.render_3d_opts.material_library;
             if let Some(mat) = lib.materials.get_mut(active_idx) {

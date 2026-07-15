@@ -7,14 +7,13 @@ use uuid::Uuid;
 
 pub mod viz;
 pub use viz::{
-    AnimationState, CurveParams, EffectsState, HashEffectParams, Mapping, RampParams,
-    N_COLOR_MODES, N_FOLDER_COLOR_MODES, N_HASH_EFFECTS, N_HEIGHT_MODES,
+    AnimationState, CurveParams, EffectsState, HashEffectParams, Mapping, N_COLOR_MODES,
+    N_FOLDER_COLOR_MODES, N_HASH_EFFECTS, N_HEIGHT_MODES, RampParams,
 };
 
 pub mod physical_camera;
 pub use physical_camera::{
-    CameraType, PhysicalCamera, FOCAL_LENGTH_PRESETS_MM, F_NUMBER_PRESETS,
-    SENSOR_WIDTH_PRESETS_MM,
+    CameraType, F_NUMBER_PRESETS, FOCAL_LENGTH_PRESETS_MM, PhysicalCamera, SENSOR_WIDTH_PRESETS_MM,
 };
 
 /// Available rendering backends
@@ -840,12 +839,7 @@ impl Render3DOptions {
         // shader's color.{y, z, w} channels are passed through as
         // identity defaults (EV = 0, WB norm = 1.0, gc = 0.0) so
         // the existing uniform layout stays binary-compatible.
-        (
-            self.color_pipeline.resolved_tonemap_tag(),
-            0.0,
-            1.0,
-            0.0,
-        )
+        (self.color_pipeline.resolved_tonemap_tag(), 0.0, 1.0, 0.0)
     }
 
     /// Scene-linear exposure multiplier applied at display + as the
@@ -1380,8 +1374,7 @@ impl OrbitCamera {
         // feels uniform across the whole zoom range (see `zoom_inertia`).
         // `distance_velocity` is the log-rate; multiplying by `exp(v*dt)`
         // each frame is the proper time-stepped solution.
-        self.distance = (self.distance * (self.distance_velocity * dt).exp())
-            .clamp(10.0, 5000.0);
+        self.distance = (self.distance * (self.distance_velocity * dt).exp()).clamp(10.0, 5000.0);
         self.target += self.target_velocity * dt;
 
         // Apply friction

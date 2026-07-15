@@ -17,8 +17,8 @@
 // mirrors `BlitParamsGpu` on the Rust side (compute.rs).
 //
 // exposure.x = physical-camera exposure multiplier (1.0 = passthrough)
-// exposure.y = ACES ODT tag (`AcesOdt::gpu_tag`). 2 = Rec2020 1000nits
-//              → PQ OETF; everything else → sRGB 1/2.2 OETF.
+// exposure.y = legacy ACES ODT tag. Retained in ABI for preset parity;
+//              SDR composition never applies transfer encoding here.
 // exposure.z = ACES RRT tag (`AcesRrt::gpu_tag`).
 //              0 = Standard (Narkowicz ACES 1.0 fit).
 //              1 = A1.1     (tighter highlight rolloff).
@@ -43,6 +43,8 @@ struct BlitParams {
     color:     vec4<f32>,
     aces_pre:  mat3x3<f32>,
     aces_post: mat3x3<f32>,
+    // x = LUT side, y = minimum EV, z = maximum EV.
+    lut_shaper: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> blit_params: BlitParams;
 
@@ -151,11 +153,9 @@ fn agx_filmic(color: vec3<f32>) -> vec3<f32> {
 // Constants are the canonical PQ parameters (m1, m2, c1, c2, c3 from
 // SMPTE ST 2084:2014, also called Rec.2100 PQ).
 //
-// Note: at C-6 first-cut, the eframe surface is always Rgba8UnormSrgb,
-// which means PQ output is wasted on an SDR framebuffer. The function
-// ships now so the math is in place when a future eframe / wgpu surface
-// negotiation lands; until then it's a no-op behind the `kind == 4 &&
-// odt == Rec2020` runtime check.
+// Reserved for a future direct HDR-surface path. It is deliberately not
+// called by the SDR eframe composition path: emitting PQ into its SDR output
+// stage would be a false HDR mode and would apply the wrong transfer function.
 fn pq_inverse_eotf(nits_normalised: vec3<f32>) -> vec3<f32> {
     let m1 = 0.1593017578125;       // 1305 / 8192
     let m2 = 78.84375;              // 2523 / 32 (× 32 = 78.84375)
@@ -237,6 +237,26 @@ fn white_balance(color: vec3<f32>, wb_norm: f32) -> vec3<f32> {
     return vec3<f32>(color.r * r_gain, color.g, color.b * b_gain);
 }
 
+// Map non-negative scene-linear radiance to the LUT grid. Index zero is
+// exact black; the remaining cells cover [min_ev, max_ev] logarithmically.
+fn lut_shaper_encode(value: f32) -> f32 {
+    let size = max(blit_params.lut_shaper.x, 3.0);
+    if value <= 0.0 {
+        return 0.0;
+    }
+    let min_ev = blit_params.lut_shaper.y;
+    let max_ev = blit_params.lut_shaper.z;
+    let min_linear = exp2(min_ev);
+    if value < min_linear {
+        // Preserve shadow gradation between exact black (cell 0) and the
+        // first logarithmic sample (cell 1).
+        return (value / min_linear) / (size - 1.0);
+    }
+    let t = clamp((log2(value) - min_ev) / (max_ev - min_ev), 0.0, 1.0);
+    let grid_index = 1.0 + t * (size - 2.0);
+    return grid_index / (size - 1.0);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let dims = textureDimensions(pt_texture);
@@ -293,60 +313,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             mapped = saturate(agx_filmic(scene));
         }
         case 6u: {
-            // OCIO 3D-LUT sampler. The LUT was baked from the active
-            // `vfx_ocio::Processor` over `[0,1]^3` in scene-linear input
-            // space and stored RGB in scan order `r + g*N + b*N²`,
-            // which maps cleanly to WGPU's texel order (X fastest).
-            //
-            // Clamp scene to [0,1] — HDR values above 1.0 saturate to
-            // the LUT's top corner. A proper HDR shaper LUT would
-            // require an extra log encode pre-step; that lives behind
-            // a future shaper-aware bake.
-            //
-            // Half-texel correction: a trilinear sample over an N³ LUT
-            // centred on cell midpoints needs `(c*(N-1) + 0.5) / N`,
-            // otherwise the edges interpolate against the implicit
-            // out-of-bounds clamp value and the result drifts.
-            //
-            // Output is already display-encoded (the OCIO display
-            // processor folds the OETF in) — Stage 5 skips the
-            // trailing gamma pow for tag 6.
-            let lut_size: f32 = 33.0;
-            let lut_uvw = (saturate(scene) * (lut_size - 1.0) + 0.5) / lut_size;
+            // Shaper-aware OCIO LUT. The CPU bakes the full display
+            // processor over a logarithmic scene-linear domain, then decodes
+            // its display-encoded output to the linear values required by the
+            // eframe compositor. Eframe's final SDR output encoding restores
+            // the processor's code values exactly once.
+            let lut_size = blit_params.lut_shaper.x;
+            let shaped = vec3<f32>(
+                lut_shaper_encode(scene.r),
+                lut_shaper_encode(scene.g),
+                lut_shaper_encode(scene.b),
+            );
+            let lut_uvw = (shaped * (lut_size - 1.0) + 0.5) / lut_size;
             mapped = textureSample(lut_3d, lut_samp, lut_uvw).rgb;
         }
         default: { mapped = aces_filmic(scene); }               // AcesFilmic (default)
     }
 
-    // Stage 5 — OETF (display-linear → display-encoded). Three paths:
-    //
-    //  * `kind == 0u` (None): clamp-only debug mode, skip OETF entirely.
-    //  * ODT tag == 2 (Rec.2020 1000nits HDR): apply PQ (SMPTE ST 2084)
-    //    inverse-EOTF. PT mapped value is treated as nits / 10_000,
-    //    so an Rec.2020 1000-nit signal peaks at 0.1 before encoding.
-    //  * Otherwise: keep the legacy 1/2.2 sRGB approximation.
-    //
-    // CAVEAT: today's eframe-managed surface is always Rgba8UnormSrgb.
-    // The PQ branch produces mathematically correct HDR10 codewords,
-    // but the 8-bit framebuffer destroys them — proper HDR output needs
-    // a Rgba16Float / Rgb10a2Unorm surface plus colour-space negotiation
-    // through wgpu. That surface plumbing is the remaining open work on
-    // this pipeline (TaskList #8).
-    if kind == 0u {
-        return vec4<f32>(mapped, 1.0);
-    }
-    // Tag 6 (OCIO LUT): the OCIO display processor's view transform
-    // already includes the output-side EOTF^-1 (display encoding), so
-    // re-applying the legacy 1/2.2 here would double-encode and crush
-    // midtones. Return the LUT sample as-is.
-    if kind == 6u {
-        return vec4<f32>(mapped, 1.0);
-    }
-    let odt_tag = u32(blit_params.exposure.y);
-    if odt_tag == 2u {
-        let pq = pq_inverse_eotf(mapped);
-        return vec4<f32>(pq, 1.0);
-    }
-    let display = pow(mapped, vec3<f32>(1.0 / 2.2));
-    return vec4<f32>(display, 1.0);
+    // Offscreen contract is display-linear. Eframe composites this
+    // Rgba8Unorm texture and owns the sole final SDR transfer stage (shader
+    // OETF on gamma framebuffers, hardware OETF on sRGB targets). OCIO samples
+    // were already transport-decoded during
+    // LUT baking; built-in curves are naturally display-linear here.
+    return vec4<f32>(mapped, 1.0);
 }

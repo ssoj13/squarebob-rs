@@ -6,19 +6,19 @@
 use bytemuck::{Pod, Zeroable};
 use half::f16;
 
-use crate::adaptive::{AdaptiveConfig, AdaptivePipeline};
-use crate::pathguide::{PathGuideConfig, PathGuidePipeline, PG_SAMPLE_PARAMS_SIZE};
+use crate::adaptive::{AdaptiveConfig, AdaptivePipeline, VARIANCE_DATA_WGSL, VarianceData};
+use crate::pathguide::{PG_SAMPLE_PARAMS_SIZE, PathGuideConfig, PathGuidePipeline};
 use crate::restir::{
-    ReSTIRConfig, ReSTIRPipeline, Reservoir, RESTIR_INITIAL_PARAMS_SIZE, RESTIR_SHADE_PARAMS_SIZE,
-    RESTIR_SPATIAL_PARAMS_SIZE, RESTIR_TEMPORAL_PARAMS_SIZE,
+    RESTIR_INITIAL_PARAMS_SIZE, RESTIR_SHADE_PARAMS_SIZE, RESTIR_SPATIAL_PARAMS_SIZE,
+    RESTIR_TEMPORAL_PARAMS_SIZE, ReSTIRConfig, ReSTIRPipeline, Reservoir,
 };
 use bvh_gpu::{GpuBvhBuilder, GpuBvhConfig};
 use glam::{Mat4, Vec3};
 use pt_core::bvh::Instance;
 use pt_core::gpu_data::GpuInstanceSceneData;
 use pt_wavefront::{
-    pack_tile_slots, WavefrontConfig, WavefrontPipeline, WfDims, MAX_TILE_CAPACITY,
-    TILE_SLOT_STRIDE, WF_COUNTS_SIZE, WF_DIMS_SIZE,
+    MAX_TILE_CAPACITY, TILE_SLOT_STRIDE, WF_COUNTS_SIZE, WF_DIMS_SIZE, WavefrontConfig,
+    WavefrontPipeline, WfDims, pack_tile_slots,
 };
 use std::num::NonZeroU64;
 
@@ -27,9 +27,38 @@ const GBUFFER_PARAMS_SIZE: u64 = 160;
 
 /// Padded byte size for PT scene STORAGE buffers (256-byte aligned, min one block).
 #[inline]
-fn pt_scene_storage_capacity(logical_len: usize) -> u64 {
-    let len = logical_len.max(1) as u64;
-    len.div_ceil(256) * 256
+fn pt_scene_storage_capacity(
+    device: &wgpu::Device,
+    context: &'static str,
+    logical_len: usize,
+) -> Result<u64, render_core::GpuLayoutError> {
+    const ALIGNMENT: u64 = 256;
+    let len = u64::try_from(logical_len.max(1)).map_err(|_| {
+        render_core::GpuLayoutError::ValueTooLarge {
+            context,
+            value: u64::MAX,
+            target: "u64",
+        }
+    })?;
+    let capacity = len
+        .checked_add(ALIGNMENT - 1)
+        .map(|value| value & !(ALIGNMENT - 1))
+        .ok_or(render_core::GpuLayoutError::ValueTooLarge {
+            context,
+            value: len,
+            target: "256-byte aligned u64",
+        })?;
+    render_core::checked_storage_buffer_size(device, context, capacity)
+}
+
+fn pack_wavefront_slots<T: Pod>(context: &'static str, items: &[T]) -> Option<Vec<u8>> {
+    match pack_tile_slots(items) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            log::error!("{context}: {error}");
+            None
+        }
+    }
 }
 
 fn bgl_uniform_dyn(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
@@ -88,19 +117,46 @@ struct AliasEntry {
 /// bias check selects an index proportional to its weight. O(N)
 /// construction, O(1) sampling. Returns at least one entry so the GPU
 /// buffer always has size ≥ 8 bytes.
-fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
+fn build_alias_table(weights: &[f32]) -> Result<Vec<AliasEntry>, render_core::GpuLayoutError> {
     let n = weights.len();
     if n == 0 {
-        return vec![AliasEntry::default()];
+        return render_core::try_vec_filled("emissive alias table", 1, AliasEntry::default());
     }
+    u32::try_from(n).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+        context: "emissive alias table",
+        value: u64::try_from(n).unwrap_or(u64::MAX),
+        target: "u32",
+    })?;
     let total: f64 = weights.iter().map(|&w| w.max(0.0) as f64).sum();
     if !total.is_finite() || total <= 0.0 {
-        return vec![AliasEntry { prob: 1.0, alt: 0 }; n];
+        return render_core::try_vec_filled(
+            "emissive alias table",
+            n,
+            AliasEntry { prob: 1.0, alt: 0 },
+        );
     }
     let avg = total / n as f64;
-    let mut p: Vec<f64> = weights.iter().map(|&w| (w.max(0.0) as f64) / avg).collect();
-    let mut small: Vec<usize> = Vec::with_capacity(n);
-    let mut large: Vec<usize> = Vec::with_capacity(n);
+    let mut p = Vec::new();
+    p.try_reserve_exact(n)
+        .map_err(|_| render_core::GpuLayoutError::HostAllocation {
+            context: "emissive alias probabilities",
+            elements: n,
+        })?;
+    p.extend(weights.iter().map(|&w| (w.max(0.0) as f64) / avg));
+    let mut small: Vec<usize> = Vec::new();
+    small
+        .try_reserve_exact(n)
+        .map_err(|_| render_core::GpuLayoutError::HostAllocation {
+            context: "emissive alias small stack",
+            elements: n,
+        })?;
+    let mut large: Vec<usize> = Vec::new();
+    large
+        .try_reserve_exact(n)
+        .map_err(|_| render_core::GpuLayoutError::HostAllocation {
+            context: "emissive alias large stack",
+            elements: n,
+        })?;
     for (i, &pi) in p.iter().enumerate() {
         if pi < 1.0 {
             small.push(i);
@@ -108,11 +164,15 @@ fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
             large.push(i);
         }
     }
-    let mut table = vec![AliasEntry::default(); n];
+    let mut table = render_core::try_vec_filled("emissive alias table", n, AliasEntry::default())?;
     while let (Some(s), Some(&l)) = (small.pop(), large.last()) {
         table[s] = AliasEntry {
             prob: p[s] as f32,
-            alt: l as u32,
+            alt: u32::try_from(l).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+                context: "emissive alias index",
+                value: u64::try_from(l).unwrap_or(u64::MAX),
+                target: "u32",
+            })?,
         };
         let new_pl = p[l] + p[s] - 1.0;
         p[l] = new_pl;
@@ -124,16 +184,24 @@ fn build_alias_table(weights: &[f32]) -> Vec<AliasEntry> {
     while let Some(l) = large.pop() {
         table[l] = AliasEntry {
             prob: 1.0,
-            alt: l as u32,
+            alt: u32::try_from(l).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+                context: "emissive alias index",
+                value: u64::try_from(l).unwrap_or(u64::MAX),
+                target: "u32",
+            })?,
         };
     }
     while let Some(s) = small.pop() {
         table[s] = AliasEntry {
             prob: 1.0,
-            alt: s as u32,
+            alt: u32::try_from(s).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+                context: "emissive alias index",
+                value: u64::try_from(s).unwrap_or(u64::MAX),
+                target: "u32",
+            })?,
         };
     }
-    table
+    Ok(table)
 }
 
 /// Stage G.A: dummy storage buffers for megakernel ReSTIR bindings 15/16/17
@@ -153,6 +221,8 @@ fn create_restir_fallbacks(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer
 }
 
 /// WGSL source embedded at compile time.
+const RNG_WGSL: &str = include_str!("../../pt-core/src/rng.wgsl");
+const SHADER_CONTRACTS_WGSL: &str = include_str!("../../pt-core/src/shader_contracts.wgsl");
 const BVH_TRAVERSE_WGSL: &str = include_str!("bvh_traverse.wgsl");
 const BLIT_WGSL: &str = include_str!("blit.wgsl");
 const PICK_WGSL: &str = include_str!("pick.wgsl");
@@ -172,7 +242,8 @@ pub struct PtCameraUniform {
     pub dof_enabled: u32,            //  4B
     pub aperture: f32,               //  4B
     pub focus_distance: f32,         //  4B
-    pub _pad1: [u32; 2],             //  8B
+    pub rr_enabled: u32,             //  4B
+    pub _pad1: u32,                  //  4B
     // Slice plane params
     pub slice_enabled: f32,     //  4B
     pub slice_position: f32,    //  4B
@@ -189,7 +260,7 @@ pub struct PtCameraUniform {
     /// blends `instance_color` (per-cube tint from `color_mode`)
     /// with `material.base_color_weight` for the diffuse lobe.
     /// `0.0` → pure instance tint, `1.0` → pure library material.
-    pub materialize_mix: f32,     //  4B
+    pub materialize_mix: f32, //  4B
     pub _pad4: [f32; 3],          // 12B (align to 16B)
 }
 
@@ -197,23 +268,66 @@ const WG_SIZE: u32 = 8;
 
 /// Side length of the baked OCIO display LUT bound to the blit shader.
 /// Matches `color_pipeline::DEFAULT_LUT_SIZE` and the .cube standard.
-/// Hard-coded in both Rust and `blit.wgsl` — if either side ever moves
-/// off 33 the WGSL `lut_size` literal must move with it.
+/// The shader reads this value from `BlitParams::lut_shaper.x`; no duplicate
+/// WGSL literal exists.
 pub const BLIT_LUT_SIZE: u32 = 33;
+/// Lowest non-zero exposure represented by the default logarithmic LUT shaper.
+pub const BLIT_LUT_MIN_EV: f32 = -12.0;
+/// Highest exposure represented by the default logarithmic LUT shaper.
+pub const BLIT_LUT_MAX_EV: f32 = 15.0;
 
-/// Build the default identity LUT `r=R/(N-1)` over `[0,1]^3` as
-/// `Rgba16Float`. Used at PT init so the blit's binding @3 is always
-/// valid even before the host has baked a real OCIO LUT.
-fn identity_blit_lut_rgba16f(size: u32) -> Vec<[u16; 4]> {
-    let n = size as usize;
-    let denom = (size.saturating_sub(1)).max(1) as f32;
-    let mut out = Vec::with_capacity(n * n * n);
-    for b in 0..n {
-        for g in 0..n {
-            for r in 0..n {
-                let rf = r as f32 / denom;
-                let gf = g as f32 / denom;
-                let bf = b as f32 / denom;
+#[derive(Debug, thiserror::Error)]
+pub enum BlitLutUploadError {
+    #[error("LUT side mismatch: got {actual}, expected {expected}")]
+    SideMismatch { actual: usize, expected: usize },
+    #[error("LUT data length mismatch: got {actual}, expected {expected}")]
+    DataLength { actual: usize, expected: usize },
+    #[error("invalid LUT shaper [{min_ev}, {max_ev}]")]
+    InvalidShaper { min_ev: f32, max_ev: f32 },
+    #[error("LUT layout arithmetic overflow for side {size}")]
+    LayoutOverflow { size: usize },
+    #[error("cannot allocate LUT upload: {0}")]
+    Allocation(#[from] std::collections::TryReserveError),
+}
+
+fn default_lut_shaper_decode(index: u32, size: u32) -> f32 {
+    if index == 0 {
+        return 0.0;
+    }
+    let log_steps = size.saturating_sub(2).max(1);
+    let t = (index - 1) as f32 / log_steps as f32;
+    (BLIT_LUT_MIN_EV + t * (BLIT_LUT_MAX_EV - BLIT_LUT_MIN_EV)).exp2()
+}
+
+/// Build the default shaped identity LUT as `Rgba16Float`. Used at PT init
+/// so binding @3 has the same scene-linear domain as later OCIO uploads.
+fn identity_blit_lut_rgba16f(size: u32) -> Result<Vec<[u16; 4]>, render_core::GpuLayoutError> {
+    let n = usize::try_from(size).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+        context: "identity blit LUT side",
+        value: u64::from(size),
+        target: "usize",
+    })?;
+    let texel_count = n
+        .checked_mul(n)
+        .and_then(|value| value.checked_mul(n))
+        .ok_or(render_core::GpuLayoutError::ValueTooLarge {
+            context: "identity blit LUT",
+            value: u64::from(size),
+            target: "usize texel count",
+        })?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(texel_count).map_err(|_| {
+        render_core::GpuLayoutError::HostAllocation {
+            context: "identity blit LUT",
+            elements: texel_count,
+        }
+    })?;
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let rf = default_lut_shaper_decode(r, size);
+                let gf = default_lut_shaper_decode(g, size);
+                let bf = default_lut_shaper_decode(b, size);
                 out.push([
                     f16::from_f32(rf).to_bits(),
                     f16::from_f32(gf).to_bits(),
@@ -223,7 +337,7 @@ fn identity_blit_lut_rgba16f(size: u32) -> Vec<[u16; 4]> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Environment uniform for path tracer.
@@ -318,6 +432,8 @@ struct RestirInitialParams {
     tile_y: u32,
     tile_w: u32,
     tile_h: u32,
+    /// x = materialize_mix; remaining lanes reserved for receiver-domain controls.
+    material: [f32; 4],
 }
 
 #[repr(C)]
@@ -371,6 +487,14 @@ struct RestirShadeParams {
     tile_h: u32,
 }
 
+const _: () = {
+    assert!(std::mem::size_of::<RestirInitialParams>() as u64 == RESTIR_INITIAL_PARAMS_SIZE);
+    assert!(std::mem::offset_of!(RestirInitialParams, material) == 32);
+    assert!(std::mem::size_of::<RestirTemporalParams>() as u64 == RESTIR_TEMPORAL_PARAMS_SIZE);
+    assert!(std::mem::size_of::<RestirSpatialParams>() as u64 == RESTIR_SPATIAL_PARAMS_SIZE);
+    assert!(std::mem::size_of::<RestirShadeParams>() as u64 == RESTIR_SHADE_PARAMS_SIZE);
+};
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct PathGuideUpdateParams {
@@ -392,6 +516,70 @@ struct PathGuideSampleParams {
     params0: [u32; 4],  // x=resolution, y=frame_count, z=tile_w, w=tile_h
     params1: [f32; 4],  // x=guide_weight
     tile_pos: [u32; 4], // x=tile_x, y=tile_y, z=full_w, w=full_h
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PathTraceFrameLayout {
+    width: u32,
+    height: u32,
+    pixel_len: usize,
+    pixel_count_u32: u32,
+    rgba_bytes: u64,
+    variance_bytes: u64,
+    guide_bytes: u64,
+    sample_map_bytes: u64,
+    reservoir_bytes: u64,
+    depth_bytes: u64,
+}
+
+impl PathTraceFrameLayout {
+    fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, render_core::GpuLayoutError> {
+        render_core::checked_texture_extent_2d(
+            device,
+            "path-tracing output texture",
+            width,
+            height,
+        )?;
+        let size = |context: &'static str, bytes_per_pixel: u64| {
+            render_core::checked_2d_storage_buffer_size(
+                device,
+                context,
+                width,
+                height,
+                bytes_per_pixel,
+            )
+        };
+        let pixel_count =
+            render_core::checked_2d_element_count("path-tracing pixel count", width, height)?;
+        Ok(Self {
+            width,
+            height,
+            pixel_len: usize::try_from(pixel_count).map_err(|_| {
+                render_core::GpuLayoutError::ValueTooLarge {
+                    context: "path-tracing host pixel map",
+                    value: pixel_count,
+                    target: "usize",
+                }
+            })?,
+            pixel_count_u32: u32::try_from(pixel_count).map_err(|_| {
+                render_core::GpuLayoutError::ValueTooLarge {
+                    context: "path-tracing shader pixel count",
+                    value: pixel_count,
+                    target: "u32",
+                }
+            })?,
+            rgba_bytes: size("path-tracing RGBA state", 16)?,
+            variance_bytes: size("path-tracing variance state", VarianceData::SIZE)?,
+            guide_bytes: size("path-guiding state", std::mem::size_of::<[u32; 6]>() as u64)?,
+            sample_map_bytes: size("path-tracing sample map", std::mem::size_of::<u32>() as u64)?,
+            reservoir_bytes: size("path-tracing ReSTIR reservoirs", Reservoir::SIZE as u64)?,
+            depth_bytes: size("path-tracing depth history", 4)?,
+        })
+    }
 }
 
 /// Path trace compute pipeline state.
@@ -431,7 +619,7 @@ pub struct PathTraceCompute {
 
     // Accumulation buffer (vec4<f32> per pixel)
     accum_buffer: wgpu::Buffer,
-    // Variance buffer (M2 for Welford's algorithm, vec4<f32> per pixel)
+    // Shared 32-byte VarianceData state per pixel (mean, M2, sample count).
     variance_buffer: wgpu::Buffer,
     // Primary-hit albedo / normal AOVs (vec4<f32> per pixel, full-image
     // sized). Written from the megakernel at bounce == 0. Consumed by the
@@ -472,9 +660,10 @@ pub struct PathTraceCompute {
     emissive_light_count: u32,
     emissive_total_weight: f32,
 
-    // Dimensions
+    // Dimensions and their validated allocation sizes.
     width: u32,
     height: u32,
+    frame_layout: PathTraceFrameLayout,
 
     // Progressive frame counter
     pub frame_count: u32,
@@ -523,6 +712,7 @@ pub struct PathTraceCompute {
     color_lut_texture: wgpu::Texture,
     color_lut_view: wgpu::TextureView,
     color_lut_sampler: wgpu::Sampler,
+    cpu_color_readback: render_core::gpu::TextureReadback,
 
     // GPU BVH builder with refit support for animation
     bvh_builder: GpuBvhBuilder,
@@ -554,6 +744,7 @@ pub struct PathTraceCompute {
     adaptive_config: AdaptiveConfig,
     adaptive_bind_groups: Option<AdaptiveBindGroups>,
     sample_map_fallback: wgpu::Buffer,
+    sample_map_upload: Vec<u32>,
 
     /// Stage G.A: dummy buffers bound to megakernel @binding(15/16/17)
     /// when ReSTIR is disabled, so the bind group is always valid even
@@ -657,10 +848,14 @@ impl PathTraceCompute {
         width: u32,
         height: u32,
         surface_format: wgpu::TextureFormat,
-    ) -> Self {
+    ) -> Result<Self, render_core::GpuLayoutError> {
+        let frame_layout = PathTraceFrameLayout::new(device, width, height)?;
+        let bvh_shader_source = format!(
+            "{RNG_WGSL}\n{SHADER_CONTRACTS_WGSL}\n{VARIANCE_DATA_WGSL}\n{BVH_TRAVERSE_WGSL}"
+        );
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bvh_traverse_shader"),
-            source: wgpu::ShaderSource::Wgsl(BVH_TRAVERSE_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(bvh_shader_source.into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -801,7 +996,7 @@ impl PathTraceCompute {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        min_binding_size: NonZeroU64::new(VarianceData::SIZE),
                     },
                     count: None,
                 },
@@ -1009,13 +1204,11 @@ impl PathTraceCompute {
             wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         );
 
-        let (output_texture, output_view) = Self::create_output(device, width, height);
-        let accum_buffer = Self::create_accum_buffer(device, width, height);
-        let variance_buffer = Self::create_variance_buffer(device, width, height);
-        let albedo_aov_buffer =
-            Self::create_aov_buffer(device, "pt_albedo_aov", width, height);
-        let normal_aov_buffer =
-            Self::create_aov_buffer(device, "pt_normal_aov", width, height);
+        let (output_texture, output_view) = Self::create_output(device, &frame_layout);
+        let accum_buffer = Self::create_accum_buffer(device, &frame_layout);
+        let variance_buffer = Self::create_variance_buffer(device, &frame_layout);
+        let albedo_aov_buffer = Self::create_aov_buffer(device, "pt_albedo_aov", &frame_layout);
+        let normal_aov_buffer = Self::create_aov_buffer(device, "pt_normal_aov", &frame_layout);
 
         // Blit pipeline
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1029,12 +1222,13 @@ impl PathTraceCompute {
         //                        .z = WB norm, .w = gamut compress)
         //   32..80  ACES pre-matrix (3× vec4 std140 columns, IDT∘LMT)
         //   80..128 ACES post-matrix (3× vec4 std140 columns, ODT)
-        // Total 128 bytes. The pre/post matrices only matter when
-        // `tonemap_tag == 4` (AcesFull); other branches ignore them.
+        //   128..144 LUT shaper (side, min EV, max EV, reserved)
+        // Total 144 bytes. The pre/post matrices only matter when
+        // `tonemap_tag == 4`; the shaper only matters for OCIO tag 6.
         let blit_uniform_buffer = make_buffer(
             device,
             "pt_blit_uniforms",
-            128, // 2× vec4 + 2× mat3 (std140-padded)
+            144, // 3× vec4 + 2× mat3 (std140-padded)
             uniform,
         );
         // Initialise to identity:
@@ -1051,16 +1245,45 @@ impl PathTraceCompute {
             0,
             bytemuck::cast_slice(&[
                 // base lanes
-                1.0_f32, 0.0, 0.0, 0.0, // exposure
-                3.0_f32, 0.0, 1.0, 0.0, // colour (AcesFilmic default)
+                1.0_f32,
+                0.0,
+                0.0,
+                0.0, // exposure
+                3.0_f32,
+                0.0,
+                1.0,
+                0.0, // colour (AcesFilmic default)
                 // pre matrix (identity, column-major std140)
-                1.0_f32, 0.0, 0.0, 0.0,
-                0.0,     1.0, 0.0, 0.0,
-                0.0,     0.0, 1.0, 0.0,
+                1.0_f32,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
                 // post matrix (identity)
-                1.0_f32, 0.0, 0.0, 0.0,
-                0.0,     1.0, 0.0, 0.0,
-                0.0,     0.0, 1.0, 0.0,
+                1.0_f32,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                // LUT shaper: side, minimum EV, maximum EV, reserved
+                BLIT_LUT_SIZE as f32,
+                BLIT_LUT_MIN_EV,
+                BLIT_LUT_MAX_EV,
+                0.0,
             ]),
         );
 
@@ -1192,7 +1415,7 @@ impl PathTraceCompute {
             ..Default::default()
         });
         {
-            let identity = identity_blit_lut_rgba16f(BLIT_LUT_SIZE);
+            let identity = identity_blit_lut_rgba16f(BLIT_LUT_SIZE)?;
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &color_lut_texture,
@@ -1215,18 +1438,13 @@ impl PathTraceCompute {
             );
         }
 
-        let fallback_samples = vec![u32::MAX; (width * height).max(1) as usize];
-        let sample_map_fallback = render_core::gpu::make_buffer_init(
-            device,
-            "pt_sample_map_fallback",
-            bytemuck::cast_slice(&fallback_samples),
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        );
+        let (sample_map_fallback, sample_map_upload) =
+            Self::create_sample_map_fallback(device, &frame_layout)?;
 
         let (restir_fb_reservoir_cur, restir_fb_reservoir_prev, restir_fb_motion) =
             create_restir_fallbacks(device);
 
-        let guide_buffer = Self::create_guide_buffer(device, width, height);
+        let guide_buffer = Self::create_guide_buffer(device, &frame_layout);
 
         let blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pt_blit_bg"),
@@ -1288,7 +1506,7 @@ impl PathTraceCompute {
             wgpu::BufferUsages::STORAGE,
         );
         let (emissive_light_texture, emissive_light_view) =
-            Self::create_emissive_light_texture(device, queue, &[[0.0; 4]; 6], 1);
+            Self::create_emissive_light_texture(device, queue, &[[0.0; 4]; 6], 1)?;
         let emissive_light_uniform_buffer = make_buffer_init(
             device,
             "pt_emissive_light_uniform",
@@ -1302,7 +1520,7 @@ impl PathTraceCompute {
             storage_rw,
         );
 
-        Self {
+        Ok(Self {
             pipeline,
             bind_group_layout,
             bind_group: None,
@@ -1351,6 +1569,7 @@ impl PathTraceCompute {
             emissive_total_weight: 0.0,
             width,
             height,
+            frame_layout,
             frame_count: 0,
             scene_ready: false,
             blit_pipeline,
@@ -1361,6 +1580,7 @@ impl PathTraceCompute {
             color_lut_texture,
             color_lut_view,
             color_lut_sampler,
+            cpu_color_readback: render_core::gpu::TextureReadback::default(),
             bvh_builder: GpuBvhBuilder::new(device),
             bvh_config: GpuBvhConfig::default(),
             bvh_refit_preferred: true,
@@ -1377,6 +1597,7 @@ impl PathTraceCompute {
             adaptive_config: AdaptiveConfig::default(),
             adaptive_bind_groups: None,
             sample_map_fallback,
+            sample_map_upload,
             restir_fb_reservoir_cur,
             restir_fb_reservoir_prev,
             restir_fb_motion,
@@ -1391,7 +1612,7 @@ impl PathTraceCompute {
             spectral_samples: 1,
             spectral_dispersion: 0,
             history_dirty: false,
-        }
+        })
     }
 
     /// Enable/disable ReSTIR. Stage G.B: when `di` is true, the megakernel
@@ -1399,7 +1620,12 @@ impl PathTraceCompute {
     /// (refreshed in `dispatch()`) and switches the bounce-0 NEE block to
     /// the RIS resampling path.
     #[allow(dead_code)]
-    pub fn set_restir_enabled(&mut self, device: &wgpu::Device, di: bool, gi: bool) {
+    pub fn set_restir_enabled(
+        &mut self,
+        device: &wgpu::Device,
+        di: bool,
+        gi: bool,
+    ) -> Result<(), render_core::GpuLayoutError> {
         let prev_di = self.restir_config.di_enabled;
         let prev_gi = self.restir_config.gi_enabled;
         let mut needs_rebuild = prev_di != di || prev_gi != gi;
@@ -1415,7 +1641,7 @@ impl PathTraceCompute {
         let mut megakernel_needs_rebind = false;
         if (di || gi) && self.restir.is_none() {
             log::info!("ReSTIR: create pipeline (di={}, gi={})", di, gi);
-            self.restir = Some(ReSTIRPipeline::new(device, self.width, self.height));
+            self.restir = Some(ReSTIRPipeline::new(device, self.width, self.height)?);
             needs_rebuild = true;
             megakernel_needs_rebind = true;
         }
@@ -1428,6 +1654,7 @@ impl PathTraceCompute {
         if megakernel_needs_rebind {
             self.rebuild_bind_group(device);
         }
+        Ok(())
     }
 
     /// Update ReSTIR temporal/spatial settings.
@@ -1475,14 +1702,14 @@ impl PathTraceCompute {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         enabled: bool,
-    ) {
+    ) -> Result<(), render_core::GpuLayoutError> {
         // Callers (render loop) invoke this every frame — only react to real
         // transitions. Previously we rebuilt the megakernel bind group and
         // re-uploaded the full sample map every frame (~expensive no-op).
         if enabled {
             if self.adaptive.is_none() {
                 log::info!("Adaptive: create pipeline");
-                self.adaptive = Some(AdaptivePipeline::new(device, self.width, self.height));
+                self.adaptive = Some(AdaptivePipeline::new(device, self.width, self.height)?);
                 self.adaptive_config.enabled = true;
                 self.rebuild_adaptive_bind_groups(device);
                 self.rebuild_wavefront_bind_groups(device);
@@ -1503,6 +1730,7 @@ impl PathTraceCompute {
             self.rebuild_bind_group(device);
         }
         log::debug!("Adaptive: enabled={}", enabled);
+        Ok(())
     }
 
     /// Update adaptive sampling configuration.
@@ -1539,14 +1767,13 @@ impl PathTraceCompute {
         } else {
             &self.sample_map_fallback
         };
-        let n = (self.width * self.height).max(1) as usize;
         let fill_value = if self.adaptive_config.enabled {
             self.adaptive_config.max_spp.max(1)
         } else {
             u32::MAX
         };
-        let data = vec![fill_value; n];
-        queue.write_buffer(sample_map, 0, bytemuck::cast_slice(&data));
+        self.sample_map_upload.fill(fill_value);
+        queue.write_buffer(sample_map, 0, bytemuck::cast_slice(&self.sample_map_upload));
     }
 
     fn effective_max_samples(&self) -> u32 {
@@ -1609,11 +1836,15 @@ impl PathTraceCompute {
     }
 
     /// Enable/disable wavefront path tracing.
-    pub fn set_wavefront_enabled(&mut self, device: &wgpu::Device, enabled: bool) {
+    pub fn set_wavefront_enabled(
+        &mut self,
+        device: &wgpu::Device,
+        enabled: bool,
+    ) -> Result<(), render_core::GpuLayoutError> {
         let prev_enabled = self.wavefront_config.enabled;
         if enabled && self.wavefront.is_none() {
             log::info!("Wavefront PT enabled");
-            self.wavefront = Some(WavefrontPipeline::new(device, self.width, self.height));
+            self.wavefront = Some(WavefrontPipeline::new(device, self.width, self.height)?);
             self.wavefront_config.enabled = true;
             self.rebuild_wavefront_bind_groups(device);
         } else if !enabled {
@@ -1624,6 +1855,7 @@ impl PathTraceCompute {
             self.history_dirty = true;
         }
         log::debug!("Wavefront: enabled={}", enabled);
+        Ok(())
     }
 
     /// Configure wavefront tile size. `0` disables tiling (one full-frame
@@ -1763,7 +1995,7 @@ impl PathTraceCompute {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         data: &GpuInstanceSceneData,
-    ) -> bool {
+    ) -> Result<bool, render_core::GpuLayoutError> {
         let mut rows = Vec::<[f32; 4]>::new();
         let mut weights = Vec::<f32>::new();
         let mut total_weight = 0.0f32;
@@ -1799,12 +2031,35 @@ impl PathTraceCompute {
                 continue;
             }
 
+            rows.try_reserve(6)
+                .map_err(|_| render_core::GpuLayoutError::HostAllocation {
+                    context: "emissive light rows",
+                    elements: rows.len().saturating_add(6),
+                })?;
+            weights
+                .try_reserve(1)
+                .map_err(|_| render_core::GpuLayoutError::HostAllocation {
+                    context: "emissive light weights",
+                    elements: weights.len().saturating_add(1),
+                })?;
             rows.push([center.x, center.y, center.z, area]);
             rows.push([axis_x.x, axis_x.y, axis_x.z, 0.0]);
             rows.push([axis_y.x, axis_y.y, axis_y.z, 0.0]);
             rows.push([axis_z.x, axis_z.y, axis_z.z, 0.0]);
             rows.push([emission.x, emission.y, emission.z, weight]);
-            rows.push([inst_idx as f32, 0.0, 0.0, 0.0]);
+            let instance_idx = u32::try_from(inst_idx).map_err(|_| {
+                render_core::GpuLayoutError::ValueTooLarge {
+                    context: "emissive light instance index",
+                    value: u64::try_from(inst_idx).unwrap_or(u64::MAX),
+                    target: "u32",
+                }
+            })?;
+            rows.push([
+                (instance_idx & 0xFFFF) as f32,
+                (instance_idx >> 16) as f32,
+                0.0,
+                0.0,
+            ]);
             weights.push(weight);
             total_weight += weight;
         }
@@ -1814,7 +2069,13 @@ impl PathTraceCompute {
             self.emissive_light_count = 0;
             self.emissive_total_weight = 0.0;
         } else {
-            self.emissive_light_count = (rows.len() / 6) as u32;
+            self.emissive_light_count = u32::try_from(weights.len()).map_err(|_| {
+                render_core::GpuLayoutError::ValueTooLarge {
+                    context: "emissive light count",
+                    value: u64::try_from(weights.len()).unwrap_or(u64::MAX),
+                    target: "u32",
+                }
+            })?;
             self.emissive_total_weight = total_weight;
         }
 
@@ -1828,10 +2089,10 @@ impl PathTraceCompute {
                 &self.emissive_light_texture,
                 &rows,
                 self.emissive_light_count,
-            );
+            )?;
         } else {
             let (texture, view) =
-                Self::create_emissive_light_texture(device, queue, &rows, need_width);
+                Self::create_emissive_light_texture(device, queue, &rows, need_width)?;
             self.emissive_light_texture = texture;
             self.emissive_light_view = view;
             resources_changed = true;
@@ -1841,9 +2102,17 @@ impl PathTraceCompute {
         // lights we still upload a single dummy entry to keep the GPU
         // binding valid (the WGSL guard on `light_count == 0` skips
         // sampling before any read).
-        let alias_table = build_alias_table(&weights);
+        let alias_table = build_alias_table(&weights)?;
         let alias_contents = bytemuck::cast_slice(&alias_table);
-        let alias_need = alias_contents.len() as u64;
+        let alias_need = u64::try_from(alias_contents.len()).map_err(|_| {
+            render_core::GpuLayoutError::ValueTooLarge {
+                context: "emissive alias buffer",
+                value: u64::MAX,
+                target: "u64",
+            }
+        })?;
+        let alias_need =
+            render_core::checked_storage_buffer_size(device, "emissive alias buffer", alias_need)?;
         if self.emissive_alias_buf.size() < alias_need {
             self.emissive_alias_buf = render_core::gpu::make_buffer_init(
                 device,
@@ -1857,7 +2126,7 @@ impl PathTraceCompute {
         }
 
         self.write_emissive_light_uniform(queue);
-        resources_changed
+        Ok(resources_changed)
     }
 
     /// Check if wavefront PT is enabled.
@@ -2222,7 +2491,7 @@ impl PathTraceCompute {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: ad.variance_buffer().as_entire_binding(),
+                    resource: self.variance_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -2237,7 +2506,7 @@ impl PathTraceCompute {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: ad.variance_buffer().as_entire_binding(),
+                    resource: self.variance_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -2431,14 +2700,13 @@ impl PathTraceCompute {
             make_buffer(device, "restir_temporal_params", tile_buf_size, uniform);
         let spatial_params_buf =
             make_buffer(device, "restir_spatial_params", tile_buf_size, uniform);
-        let shade_params_buf =
-            make_buffer(device, "restir_shade_params", tile_buf_size, uniform);
+        let shade_params_buf = make_buffer(device, "restir_shade_params", tile_buf_size, uniform);
 
         let (cur_res, prev_res) = rs.reservoirs();
         let prev_depth_buf = make_buffer(
             device,
             "restir_prev_depth",
-            (self.width * self.height).max(1) as u64 * 4,
+            self.frame_layout.depth_bytes,
             wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -2505,6 +2773,10 @@ impl PathTraceCompute {
                     wgpu::BindGroupEntry {
                         binding: 12,
                         resource: self.emissive_light_uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: self.material_buffer.as_entire_binding(),
                     },
                 ],
             })
@@ -2632,6 +2904,10 @@ impl PathTraceCompute {
                         binding: 10,
                         resource: self.env_uniform_buffer.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: nodes_buf.as_entire_binding(),
+                    },
                 ],
             })
         };
@@ -2692,7 +2968,7 @@ impl PathTraceCompute {
             },
             params0: [
                 self.pathguide_config.svo_resolution,
-                (self.width * self.height).max(1),
+                self.frame_layout.pixel_count_u32,
                 0,
                 0,
             ],
@@ -2801,18 +3077,14 @@ impl PathTraceCompute {
             // averaged AOVs into the next denoise pass.
             encoder.clear_buffer(self.albedo_buffer(), 0, None);
             encoder.clear_buffer(self.normal_buffer(), 0, None);
-            if let Some(ad) = &self.adaptive {
-                encoder.clear_buffer(ad.variance_buffer(), 0, None);
-            }
             if self.history_dirty {
                 // Clear ReSTIR history on jump to avoid stale temporal reuse
                 if let (Some(rs), Some(restir_bgs)) = (&self.restir, &self.restir_bind_groups) {
-                    let res_size =
-                        (self.width * self.height).max(1) as u64 * Reservoir::SIZE as u64;
+                    let res_size = self.frame_layout.reservoir_bytes;
                     let (cur_res, prev_res) = rs.reservoirs();
                     encoder.clear_buffer(cur_res, 0, Some(res_size));
                     encoder.clear_buffer(prev_res, 0, Some(res_size));
-                    let depth_size = (self.width * self.height).max(1) as u64 * 4;
+                    let depth_size = self.frame_layout.depth_bytes;
                     encoder.clear_buffer(&restir_bgs.prev_depth_buf, 0, Some(depth_size));
                 }
                 // Clear path guiding state on jump
@@ -2826,8 +3098,8 @@ impl PathTraceCompute {
 
         self.frame_count += 1;
 
-        let full_w = self.width.max(1);
-        let full_h = self.height.max(1);
+        let full_w = self.width;
+        let full_h = self.height;
         let tile_size = self.wavefront_config.tile_size;
         let mut use_tiling = tile_size > 0 && (full_w > tile_size || full_h > tile_size);
         let tile_capacity_w = if use_tiling {
@@ -2928,7 +3200,13 @@ impl PathTraceCompute {
         // check proved wavefront Some; let-Some pattern converts any drift
         // into a graceful exit rather than a per-frame panic.
         let realloc = match self.wavefront.as_mut() {
-            Some(wf) => wf.prepare_tiles(device, queue, &tiles_meta, &tile_count_inits),
+            Some(wf) => match wf.prepare_tiles(device, queue, &tiles_meta, &tile_count_inits) {
+                Ok(reallocated) => reallocated,
+                Err(error) => {
+                    log::error!("dispatch_wavefront: tile preparation failed: {error}");
+                    return false;
+                }
+            },
             None => {
                 log::error!("dispatch_wavefront: wavefront cleared before prepare_tiles");
                 return false;
@@ -2961,7 +3239,11 @@ impl PathTraceCompute {
                         tile_pos: [d.tile_x, d.tile_y, d.full_width, d.full_height],
                     })
                     .collect();
-                let blob = pack_tile_slots(&pg_params);
+                let Some(blob) =
+                    pack_wavefront_slots("path-guide tile parameter upload", &pg_params)
+                else {
+                    return false;
+                };
                 queue.write_buffer(&pg_bgs.sample_params_buf, 0, &blob);
             }
         }
@@ -3004,12 +3286,19 @@ impl PathTraceCompute {
                         tile_y: d.tile_y,
                         tile_w: d.tile_width,
                         tile_h: d.tile_height,
+                        material: [self.materialize_mix, 0.0, 0.0, 0.0],
                     })
                     .collect();
                 queue.write_buffer(
                     &restir_bgs.initial_params_buf,
                     0,
-                    &pack_tile_slots(&initial_params),
+                    &match pack_wavefront_slots(
+                        "ReSTIR initial tile parameter upload",
+                        &initial_params,
+                    ) {
+                        Some(bytes) => bytes,
+                        None => return false,
+                    },
                 );
 
                 let temporal_params: Vec<RestirTemporalParams> = tiles_meta
@@ -3030,7 +3319,13 @@ impl PathTraceCompute {
                 queue.write_buffer(
                     &restir_bgs.temporal_params_buf,
                     0,
-                    &pack_tile_slots(&temporal_params),
+                    &match pack_wavefront_slots(
+                        "ReSTIR temporal tile parameter upload",
+                        &temporal_params,
+                    ) {
+                        Some(bytes) => bytes,
+                        None => return false,
+                    },
                 );
 
                 // Spatial pass is dispatched ONCE on the full image (not per
@@ -3054,7 +3349,13 @@ impl PathTraceCompute {
                 queue.write_buffer(
                     &restir_bgs.spatial_params_buf,
                     0,
-                    &pack_tile_slots(&[spatial_full_params]),
+                    &match pack_wavefront_slots(
+                        "ReSTIR spatial tile parameter upload",
+                        &[spatial_full_params],
+                    ) {
+                        Some(bytes) => bytes,
+                        None => return false,
+                    },
                 );
 
                 let mix = self.materialize_mix;
@@ -3076,7 +3377,11 @@ impl PathTraceCompute {
                 queue.write_buffer(
                     &restir_bgs.shade_params_buf,
                     0,
-                    &pack_tile_slots(&shade_params),
+                    &match pack_wavefront_slots("ReSTIR shade tile parameter upload", &shade_params)
+                    {
+                        Some(bytes) => bytes,
+                        None => return false,
+                    },
                 );
 
                 let gbuffer_params: Vec<GBufferParams> = tiles_meta
@@ -3096,7 +3401,13 @@ impl PathTraceCompute {
                 queue.write_buffer(
                     &restir_bgs.gbuffer_params_buf,
                     0,
-                    &pack_tile_slots(&gbuffer_params),
+                    &match pack_wavefront_slots(
+                        "ReSTIR gbuffer tile parameter upload",
+                        &gbuffer_params,
+                    ) {
+                        Some(bytes) => bytes,
+                        None => return false,
+                    },
                 );
             }
         }
@@ -3218,12 +3529,24 @@ impl PathTraceCompute {
             let tile_h = (full_h - tile_y).min(wf_h);
             while tile_x < full_w {
                 let tile_w = (full_w - tile_x).min(wf_w);
-                let tile_pixels = tile_w * tile_h;
-                let tile_off = wf.tile_offset(tile_idx);
-
+                let Some(tile_pixels) = tile_w.checked_mul(tile_h) else {
+                    log::error!(
+                        "dispatch_wavefront: tile pixel count overflow for {}x{}",
+                        tile_w,
+                        tile_h
+                    );
+                    return false;
+                };
                 // Reset count_in/count_out for this tile via encoder copy —
                 // ordered with subsequent dispatches (unlike queue.write_buffer).
-                wf.reset_tile_count(encoder, tile_idx);
+                // The returned validated dynamic offset addresses the same slot.
+                let tile_off = match wf.reset_tile_count(encoder, tile_idx) {
+                    Ok(offset) => offset,
+                    Err(error) => {
+                        log::error!("dispatch_wavefront: tile reset failed: {error}");
+                        return false;
+                    }
+                };
 
                 // Path guiding: sample guided directions from previous SVO.
                 // Per-tile params were pre-packed before the tile loop; the
@@ -3518,10 +3841,23 @@ impl PathTraceCompute {
                     let tile_h = (full_h - tile_y2).min(wf_h);
                     while tile_x < full_w {
                         let tile_w = (full_w - tile_x).min(wf_w);
-                        let tile_pixels = tile_w * tile_h;
-                        let tile_off = wf.tile_offset(tile_idx);
-
-                        wf.reset_tile_count(encoder, tile_idx);
+                        let Some(tile_pixels) = tile_w.checked_mul(tile_h) else {
+                            log::error!(
+                                "dispatch_wavefront: adaptive tile pixel count overflow for {}x{}",
+                                tile_w,
+                                tile_h
+                            );
+                            return false;
+                        };
+                        let tile_off = match wf.reset_tile_count(encoder, tile_idx) {
+                            Ok(offset) => offset,
+                            Err(error) => {
+                                log::error!(
+                                    "dispatch_wavefront: adaptive tile reset failed: {error}"
+                                );
+                                return false;
+                            }
+                        };
 
                         // Redo raygen for this tile.
                         {
@@ -3687,10 +4023,10 @@ impl PathTraceCompute {
                 // in tiled mode (last tile's slice wrote to offset 0).
                 if self.restir_config.temporal && !self.restir_config.spatial {
                     let (cur_res, prev_res) = rs.reservoirs();
-                    let res_size = (full_w * full_h).max(1) as u64 * Reservoir::SIZE as u64;
+                    let res_size = self.frame_layout.reservoir_bytes;
                     encoder.copy_buffer_to_buffer(cur_res, 0, prev_res, 0, res_size);
                 }
-                let depth_size = (full_w * full_h).max(1) as u64 * 4;
+                let depth_size = self.frame_layout.depth_bytes;
                 encoder.copy_buffer_to_buffer(
                     rs.depth_buffer(),
                     0,
@@ -3727,7 +4063,8 @@ impl PathTraceCompute {
             log::trace!("WF finalize: wg=({}, {})", wg_x, wg_y);
         }
 
-        // Adaptive sampling update (variance + allocation)
+        // Wavefront paths write cumulative radiance, so update the shared
+        // Welford state after every dispatch. Allocation may run less often.
         if adaptive_enabled {
             if let (Some(ad), Some(ad_bgs)) = (&self.adaptive, &self.adaptive_bind_groups) {
                 #[repr(C)]
@@ -3748,6 +4085,7 @@ impl PathTraceCompute {
                     _pad: [f32; 3],
                     _pad2: [f32; 4],
                 }
+
                 let variance_params = VarianceParams {
                     width: full_w,
                     height: full_h,
@@ -3758,49 +4096,46 @@ impl PathTraceCompute {
                     0,
                     bytemuck::bytes_of(&variance_params),
                 );
-                let allocate_params = AllocateParams {
-                    width: full_w,
-                    height: full_h,
-                    min_spp: self.adaptive_config.min_spp,
-                    max_spp: self.adaptive_config.max_spp,
-                    variance_threshold: self.adaptive_config.variance_threshold,
-                    _pad: [0.0; 3],
-                    _pad2: [0.0; 4],
-                };
-                queue.write_buffer(
-                    &ad_bgs.allocate_params_buf,
-                    0,
-                    bytemuck::bytes_of(&allocate_params),
-                );
+
+                let (variance_pl, allocate_pl) = ad.pipelines();
+                let wg_x = full_w.div_ceil(8);
+                let wg_y = full_h.div_ceil(8);
+                {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("adaptive_variance_pass"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(variance_pl);
+                    pass.set_bind_group(0, &ad_bgs.variance_bg, &[]);
+                    pass.dispatch_workgroups(wg_x, wg_y, 1);
+                }
 
                 if self
                     .frame_count
-                    .is_multiple_of(self.adaptive_config.update_interval)
+                    .is_multiple_of(self.adaptive_config.update_interval.max(1))
                 {
-                    let (variance_pl, allocate_pl) = ad.pipelines();
-                    {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("adaptive_variance_pass"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(variance_pl);
-                        pass.set_bind_group(0, &ad_bgs.variance_bg, &[]);
-                        let wg_x = full_w.div_ceil(8);
-                        let wg_y = full_h.div_ceil(8);
-                        pass.dispatch_workgroups(wg_x, wg_y, 1);
-                    }
-                    {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("adaptive_allocate_pass"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(allocate_pl);
-                        pass.set_bind_group(0, &ad_bgs.allocate_bg, &[]);
-                        let wg_x = full_w.div_ceil(8);
-                        let wg_y = full_h.div_ceil(8);
-                        pass.dispatch_workgroups(wg_x, wg_y, 1);
-                    }
-                    log::trace!("Adaptive: variance+allocate");
+                    let allocate_params = AllocateParams {
+                        width: full_w,
+                        height: full_h,
+                        min_spp: self.adaptive_config.min_spp,
+                        max_spp: self.adaptive_config.max_spp,
+                        variance_threshold: self.adaptive_config.variance_threshold,
+                        _pad: [0.0; 3],
+                        _pad2: [0.0; 4],
+                    };
+                    queue.write_buffer(
+                        &ad_bgs.allocate_params_buf,
+                        0,
+                        bytemuck::bytes_of(&allocate_params),
+                    );
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("adaptive_allocate_pass"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(allocate_pl);
+                    pass.set_bind_group(0, &ad_bgs.allocate_bg, &[]);
+                    pass.dispatch_workgroups(wg_x, wg_y, 1);
+                    log::trace!("Adaptive: variance updated; sample map allocated");
                 }
             }
         }
@@ -3812,7 +4147,12 @@ impl PathTraceCompute {
         if wf_ms > 16.0 {
             log::info!(
                 "WF dispatch: {:.1}ms (tiles={}, restir={}, pathguide={}, adaptive={}, tile_size={})",
-                wf_ms, tiles_meta.len(), restir_enabled, pathguide_enabled, adaptive_enabled, tile_size
+                wf_ms,
+                tiles_meta.len(),
+                restir_enabled,
+                pathguide_enabled,
+                adaptive_enabled,
+                tile_size
             );
         } else {
             log::trace!("WF dispatch: done ({:.2}ms)", wf_ms);
@@ -3821,9 +4161,14 @@ impl PathTraceCompute {
         true
     }
 
-    fn create_accum_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
-        let size = (width * height) as u64 * 16;
-        log::debug!("PT accum buffer: {}x{} -> {} bytes", width, height, size);
+    fn create_accum_buffer(device: &wgpu::Device, layout: &PathTraceFrameLayout) -> wgpu::Buffer {
+        let size = layout.rgba_bytes;
+        log::debug!(
+            "PT accum buffer: {}x{} -> {} bytes",
+            layout.width,
+            layout.height,
+            size
+        );
         render_core::gpu::make_buffer(
             device,
             "pt_accum",
@@ -3832,8 +4177,12 @@ impl PathTraceCompute {
         )
     }
 
-    fn create_aov_buffer(device: &wgpu::Device, label: &str, width: u32, height: u32) -> wgpu::Buffer {
-        let size = (width * height) as u64 * 16;
+    fn create_aov_buffer(
+        device: &wgpu::Device,
+        label: &str,
+        layout: &PathTraceFrameLayout,
+    ) -> wgpu::Buffer {
+        let size = layout.rgba_bytes;
         render_core::gpu::make_buffer(
             device,
             label,
@@ -3844,9 +4193,17 @@ impl PathTraceCompute {
         )
     }
 
-    fn create_variance_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
-        let size = (width * height) as u64 * 16; // M2 (vec4) for Welford's algorithm
-        log::debug!("PT variance buffer: {}x{} -> {} bytes", width, height, size);
+    fn create_variance_buffer(
+        device: &wgpu::Device,
+        layout: &PathTraceFrameLayout,
+    ) -> wgpu::Buffer {
+        let size = layout.variance_bytes;
+        log::debug!(
+            "PT variance buffer: {}x{} -> {} bytes",
+            layout.width,
+            layout.height,
+            size
+        );
         render_core::gpu::make_buffer(
             device,
             "pt_variance",
@@ -3855,9 +4212,37 @@ impl PathTraceCompute {
         )
     }
 
-    fn create_guide_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
-        let size = (width * height).max(1) as u64 * 24; // packed guide: 6x u32 per pixel
-        log::debug!("PT guide buffer: {}x{} -> {} bytes", width, height, size);
+    fn create_sample_map_fallback(
+        device: &wgpu::Device,
+        layout: &PathTraceFrameLayout,
+    ) -> Result<(wgpu::Buffer, Vec<u32>), render_core::GpuLayoutError> {
+        let fallback_samples = render_core::try_vec_filled(
+            "path-tracing fallback sample map",
+            layout.pixel_len,
+            u32::MAX,
+        )?;
+        debug_assert_eq!(fallback_samples.len(), layout.pixel_len);
+        debug_assert_eq!(
+            layout.sample_map_bytes,
+            u64::from(layout.pixel_count_u32) * std::mem::size_of::<u32>() as u64
+        );
+        let buffer = render_core::gpu::make_buffer_init(
+            device,
+            "pt_sample_map_fallback",
+            bytemuck::cast_slice(&fallback_samples),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        Ok((buffer, fallback_samples))
+    }
+
+    fn create_guide_buffer(device: &wgpu::Device, layout: &PathTraceFrameLayout) -> wgpu::Buffer {
+        let size = layout.guide_bytes;
+        log::debug!(
+            "PT guide buffer: {}x{} -> {} bytes",
+            layout.width,
+            layout.height,
+            size
+        );
         render_core::gpu::make_buffer(
             device,
             "pt_guide_buffer",
@@ -3872,14 +4257,13 @@ impl PathTraceCompute {
 
     fn create_output(
         device: &wgpu::Device,
-        width: u32,
-        height: u32,
+        layout: &PathTraceFrameLayout,
     ) -> (wgpu::Texture, wgpu::TextureView) {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pt_output"),
             size: wgpu::Extent3d {
-                width,
-                height,
+                width: layout.width,
+                height: layout.height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -3907,17 +4291,49 @@ impl PathTraceCompute {
         texture: &wgpu::Texture,
         rows: &[[f32; 4]],
         light_count: u32,
-    ) {
+    ) -> Result<(), render_core::GpuLayoutError> {
         let width = texture.width();
         let height = texture.height();
         debug_assert_eq!(height, 6);
-        let mut pixels = vec![[0.0f32; 4]; (width * height) as usize];
-        let active_cols = light_count.max(1).min(width);
-        for light_idx in 0..active_cols as usize {
-            for row in 0..height as usize {
-                let src_idx = light_idx * height as usize + row;
-                if let Some(value) = rows.get(src_idx) {
-                    pixels[row * width as usize + light_idx] = *value;
+        let pixel_count =
+            render_core::checked_2d_buffer_len("emissive light texture staging", width, height)?;
+        let mut pixels = render_core::try_vec_filled(
+            "emissive light texture staging",
+            pixel_count,
+            [0.0f32; 4],
+        )?;
+        let bytes_per_row =
+            render_core::checked_aligned_bytes_per_row("emissive light texture row", width, 16, 1)?;
+        let width_usize =
+            usize::try_from(width).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+                context: "emissive light texture width",
+                value: u64::from(width),
+                target: "usize",
+            })?;
+        let height_usize =
+            usize::try_from(height).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
+                context: "emissive light texture height",
+                value: u64::from(height),
+                target: "usize",
+            })?;
+        let active_cols = usize::try_from(light_count.max(1).min(width)).map_err(|_| {
+            render_core::GpuLayoutError::ValueTooLarge {
+                context: "emissive light active columns",
+                value: u64::from(light_count.max(1).min(width)),
+                target: "usize",
+            }
+        })?;
+        for light_idx in 0..active_cols {
+            let src_base = light_idx.checked_mul(height_usize).ok_or(
+                render_core::GpuLayoutError::ValueTooLarge {
+                    context: "emissive light source row",
+                    value: u64::try_from(light_idx).unwrap_or(u64::MAX),
+                    target: "usize row offset",
+                },
+            )?;
+            for (row, pixel_row) in pixels.chunks_exact_mut(width_usize).enumerate() {
+                if let Some(value) = rows.get(src_base + row) {
+                    pixel_row[light_idx] = *value;
                 }
             }
         }
@@ -3932,7 +4348,7 @@ impl PathTraceCompute {
             bytemuck::cast_slice(&pixels),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(width * 16),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(height),
             },
             wgpu::Extent3d {
@@ -3941,6 +4357,7 @@ impl PathTraceCompute {
                 depth_or_array_layers: 1,
             },
         );
+        Ok(())
     }
 
     fn create_emissive_light_texture(
@@ -3948,9 +4365,10 @@ impl PathTraceCompute {
         queue: &wgpu::Queue,
         rows: &[[f32; 4]],
         light_count: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
+    ) -> Result<(wgpu::Texture, wgpu::TextureView), render_core::GpuLayoutError> {
         let width = light_count.max(1);
         let height = 6;
+        render_core::checked_texture_extent_2d(device, "emissive light texture", width, height)?;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pt_emissive_lights"),
             size: wgpu::Extent3d {
@@ -3965,9 +4383,9 @@ impl PathTraceCompute {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        Self::write_emissive_light_texture_data(queue, &texture, rows, light_count);
+        Self::write_emissive_light_texture_data(queue, &texture, rows, light_count)?;
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
+        Ok((texture, view))
     }
 
     fn update_scene_bounds(&mut self, instances: &[Instance]) {
@@ -4029,9 +4447,14 @@ impl PathTraceCompute {
     }
 
     /// Resize output texture if dimensions changed.
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<(), render_core::GpuLayoutError> {
         if self.width == width && self.height == height {
-            return;
+            return Ok(());
         }
         log::debug!(
             "PT resize: {}x{} -> {}x{}",
@@ -4040,40 +4463,45 @@ impl PathTraceCompute {
             width,
             height
         );
-        self.width = width;
-        self.height = height;
-        let (tex, view) = Self::create_output(device, width, height);
-        self.output_texture = tex;
-        self.output_view = view;
-        self.accum_buffer = Self::create_accum_buffer(device, width, height);
-        self.variance_buffer = Self::create_variance_buffer(device, width, height);
-        self.albedo_aov_buffer =
-            Self::create_aov_buffer(device, "pt_albedo_aov", width, height);
-        self.normal_aov_buffer =
-            Self::create_aov_buffer(device, "pt_normal_aov", width, height);
-        self.guide_buffer = Self::create_guide_buffer(device, width, height);
-        self.frame_count = 0;
+        let frame_layout = PathTraceFrameLayout::new(device, width, height)?;
+        let (output_texture, output_view) = Self::create_output(device, &frame_layout);
+        let accum_buffer = Self::create_accum_buffer(device, &frame_layout);
+        let variance_buffer = Self::create_variance_buffer(device, &frame_layout);
+        let albedo_aov_buffer = Self::create_aov_buffer(device, "pt_albedo_aov", &frame_layout);
+        let normal_aov_buffer = Self::create_aov_buffer(device, "pt_normal_aov", &frame_layout);
+        let guide_buffer = Self::create_guide_buffer(device, &frame_layout);
+        let (sample_map_fallback, sample_map_upload) =
+            Self::create_sample_map_fallback(device, &frame_layout)?;
+
         if let Some(wf) = &mut self.wavefront {
-            wf.resize(device, width, height);
+            wf.resize(device, width, height)?;
         }
         if let Some(rs) = &mut self.restir {
-            rs.resize(device, width, height);
+            rs.resize(device, width, height)?;
         }
         if let Some(ad) = &mut self.adaptive {
-            ad.resize(device, width, height);
+            ad.resize(device, width, height)?;
         }
-        let fallback_samples = vec![u32::MAX; (width * height).max(1) as usize];
-        self.sample_map_fallback = render_core::gpu::make_buffer_init(
-            device,
-            "pt_sample_map_fallback",
-            bytemuck::cast_slice(&fallback_samples),
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        );
+
+        self.width = width;
+        self.height = height;
+        self.frame_layout = frame_layout;
+        self.output_texture = output_texture;
+        self.output_view = output_view;
+        self.accum_buffer = accum_buffer;
+        self.variance_buffer = variance_buffer;
+        self.albedo_aov_buffer = albedo_aov_buffer;
+        self.normal_aov_buffer = normal_aov_buffer;
+        self.guide_buffer = guide_buffer;
+        self.sample_map_fallback = sample_map_fallback;
+        self.sample_map_upload = sample_map_upload;
+        self.frame_count = 0;
         self.rebuild_bind_group(device);
         self.rebuild_adaptive_bind_groups(device);
         self.rebuild_wavefront_bind_groups(device);
         self.rebuild_restir_bind_groups(device);
         self.rebuild_pathguide_bind_groups(device);
+        Ok(())
     }
 
     /// Grow-only scene STORAGE buffer: [`wgpu::Queue::write_buffer`] on each upload; recreate only
@@ -4085,9 +4513,9 @@ impl PathTraceCompute {
         label: &'static str,
         bytes: &[u8],
         empty_min: usize,
-    ) -> bool {
+    ) -> Result<bool, render_core::GpuLayoutError> {
         let logical_len = bytes.len().max(empty_min);
-        let cap = pt_scene_storage_capacity(logical_len);
+        let cap = pt_scene_storage_capacity(device, label, logical_len)?;
         let too_small = match slot {
             None => true,
             Some(b) => b.size() < cap,
@@ -4107,7 +4535,7 @@ impl PathTraceCompute {
             None => unreachable!("slot populated by ensure path above"),
         };
         queue.write_buffer(buf, 0, bytes);
-        too_small
+        Ok(too_small)
     }
 
     /// Upload instance scene data to GPU.
@@ -4117,7 +4545,7 @@ impl PathTraceCompute {
         queue: &wgpu::Queue,
         data: &GpuInstanceSceneData,
         instances: Option<&[Instance]>,
-    ) {
+    ) -> Result<(), render_core::GpuLayoutError> {
         let scene_start = std::time::Instant::now();
         let nodes_bytes = data.nodes_bytes();
         let inst_bytes = data.instances_bytes();
@@ -4147,7 +4575,7 @@ impl PathTraceCompute {
             "pt_nodes",
             nodes_slice,
             32,
-        );
+        )?;
         scene_buffers_changed |= Self::ensure_pt_scene_storage(
             device,
             queue,
@@ -4155,7 +4583,7 @@ impl PathTraceCompute {
             "pt_instances",
             inst_slice,
             96,
-        );
+        )?;
         scene_buffers_changed |= Self::ensure_pt_scene_storage(
             device,
             queue,
@@ -4163,9 +4591,9 @@ impl PathTraceCompute {
             "pt_materials",
             mat_slice,
             144,
-        );
+        )?;
 
-        let emissive_changed = self.rebuild_emissive_lights(device, queue, data);
+        let emissive_changed = self.rebuild_emissive_lights(device, queue, data)?;
         self.scene_ready = true;
         self.frame_count = 0;
         if let Some(instances) = instances {
@@ -4188,6 +4616,7 @@ impl PathTraceCompute {
             mat_bytes.len(),
             bind_dirty,
         );
+        Ok(())
     }
 
     /// Update BVH configuration from UI options.
@@ -4205,7 +4634,7 @@ impl PathTraceCompute {
         instances: &[Instance],
         data: &GpuInstanceSceneData,
         is_animating: bool,
-    ) {
+    ) -> Result<(), String> {
         self.update_scene_bounds(instances);
         let can_try_refit = is_animating
             && self.bvh_refit_preferred
@@ -4225,8 +4654,9 @@ impl PathTraceCompute {
                     instances,
                     &data.materials,
                 );
-                self.upload_scene(device, queue, &gpu_data, Some(instances));
-                return;
+                self.upload_scene(device, queue, &gpu_data, Some(instances))
+                    .map_err(|error| error.to_string())?;
+                return Ok(());
             }
             log::debug!("PT BVH: refit fast path failed validation, full GPU rebuild");
         }
@@ -4234,7 +4664,7 @@ impl PathTraceCompute {
         // Full rebuild path
         let (nodes, sorted_indices) =
             self.bvh_builder
-                .build(device, queue, instances, &self.bvh_config);
+                .build(device, queue, instances, &self.bvh_config)?;
 
         let gpu_data = pt_core::gpu_data::build_gpu_data_from_nodes(
             nodes,
@@ -4246,7 +4676,9 @@ impl PathTraceCompute {
         // Store sorted_indices after use (avoids clone)
         self.sorted_indices = sorted_indices;
 
-        self.upload_scene(device, queue, &gpu_data, None);
+        self.upload_scene(device, queue, &gpu_data, None)
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     /// Invalidate BVH structure (forces full rebuild on next upload).
@@ -4262,7 +4694,7 @@ impl PathTraceCompute {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         instances: &[Instance],
-    ) -> (Vec<pt_core::bvh::BvhNode>, Vec<u32>) {
+    ) -> Result<(Vec<pt_core::bvh::BvhNode>, Vec<u32>), String> {
         self.bvh_builder
             .build(device, queue, instances, &self.bvh_config)
     }
@@ -4707,9 +5139,6 @@ impl PathTraceCompute {
             // averaged AOVs into the next denoise pass.
             encoder.clear_buffer(self.albedo_buffer(), 0, None);
             encoder.clear_buffer(self.normal_buffer(), 0, None);
-            if let Some(ad) = &self.adaptive {
-                encoder.clear_buffer(ad.variance_buffer(), 0, None);
-            }
         }
         let Some(bg) = &self.bind_group else {
             log::warn!("PT dispatch: bind_group is None!");
@@ -4829,31 +5258,46 @@ impl PathTraceCompute {
     /// `rgb` is a flat array of RGB triples in scan order
     /// `r + g * size + b * size²` (the layout
     /// `color_pipeline::BakedLut3D` already produces). `size` is
-    /// validated against [`BLIT_LUT_SIZE`]; mismatches are logged
-    /// and the call is dropped so the previous identity / valid LUT
-    /// stays bound.
+    /// validated against [`BLIT_LUT_SIZE`]; any mismatch or layout failure
+    /// is returned to the host. The previous valid LUT stays bound.
     ///
     /// The texture is `Rgba16Float`, so each RGB triple is converted
     /// to half-float on upload (deterministic — no rounding mode
     /// surprises across backends) and the alpha lane is filled with
     /// 1.0. 33³ × 8 B = 287 KB per call; cheap enough to invoke on
     /// every `ColorPipeline::ensure` rebuild without batching.
-    pub fn set_blit_lut_3d(&self, queue: &wgpu::Queue, rgb: &[f32], size: u32) {
-        if size != BLIT_LUT_SIZE {
-            log::warn!(
-                "pt-megakernel: set_blit_lut_3d size mismatch (got {size}, want \
-                 {BLIT_LUT_SIZE}); skipping upload"
-            );
-            return;
+    pub fn set_blit_lut_3d(
+        &self,
+        queue: &wgpu::Queue,
+        rgb: &[f32],
+        size: usize,
+        min_ev: f32,
+        max_ev: f32,
+    ) -> Result<(), BlitLutUploadError> {
+        let expected_size = BLIT_LUT_SIZE as usize;
+        if size != expected_size {
+            return Err(BlitLutUploadError::SideMismatch {
+                actual: size,
+                expected: expected_size,
+            });
         }
-        let expected = (size as usize).pow(3) * 3;
+        let size_u32 =
+            u32::try_from(size).map_err(|_| BlitLutUploadError::LayoutOverflow { size })?;
+        if !min_ev.is_finite() || !max_ev.is_finite() || min_ev >= max_ev {
+            return Err(BlitLutUploadError::InvalidShaper { min_ev, max_ev });
+        }
+        let n = size;
+        let texel_count = n
+            .checked_pow(3)
+            .ok_or(BlitLutUploadError::LayoutOverflow { size })?;
+        let expected = texel_count
+            .checked_mul(3)
+            .ok_or(BlitLutUploadError::LayoutOverflow { size })?;
         if rgb.len() != expected {
-            log::warn!(
-                "pt-megakernel: set_blit_lut_3d data length mismatch (got {}, \
-                 want {expected}); skipping upload",
-                rgb.len()
-            );
-            return;
+            return Err(BlitLutUploadError::DataLength {
+                actual: rgb.len(),
+                expected,
+            });
         }
         // vfx_ocio's `BakedLut3D::as_slice` stores triples in the
         // OCIO canonical order `idx = r*N² + g*N + b` — **B varies
@@ -4868,9 +5312,9 @@ impl PathTraceCompute {
         //
         // Transpose on upload so the texture layout matches the
         // shader's sampling convention.
-        let n = size as usize;
         let one = f16::from_f32(1.0).to_bits();
-        let mut texels: Vec<[u16; 4]> = Vec::with_capacity(n * n * n);
+        let mut texels: Vec<[u16; 4]> = Vec::new();
+        texels.try_reserve_exact(texel_count)?;
         for bi in 0..n {
             for gi in 0..n {
                 for ri in 0..n {
@@ -4894,128 +5338,91 @@ impl PathTraceCompute {
             bytemuck::cast_slice(&texels),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(size * 8),
-                rows_per_image: Some(size),
+                bytes_per_row: Some(
+                    size_u32
+                        .checked_mul(8)
+                        .ok_or(BlitLutUploadError::LayoutOverflow { size })?,
+                ),
+                rows_per_image: Some(size_u32),
             },
             wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: size,
+                width: size_u32,
+                height: size_u32,
+                depth_or_array_layers: size_u32,
             },
         );
+        queue.write_buffer(
+            &self.blit_uniform_buffer,
+            128,
+            bytemuck::cast_slice(&[size_u32 as f32, min_ev, max_ev, 0.0_f32]),
+        );
+        Ok(())
     }
 
-    /// Read the PT accumulator's display-side `output_texture` back to
-    /// CPU, hand the unpacked RGB triples to `apply`, then re-upload
-    /// the mutated buffer in place. Intended for the OCIO CPU
-    /// codepath (`ColorCodepath::Cpu` with `ColorMode::Ocio`) — the
-    /// host runs `ColorPipeline::apply_cpu` inside the callback so
-    /// the next blit pass picks up a display-encoded image.
+    /// Read the PT accumulator's display-side `output_texture` back to CPU,
+    /// apply a colour transform to RGB, preserve alpha, and re-upload.
     ///
-    /// Synchronous: submits a `copy_texture_to_buffer` + polls until
-    /// the readback maps. Fine for an interactive viewport at modest
-    /// resolutions but slow at 4K — that's by design, this is the
-    /// debug-only codepath.
-    ///
-    /// The texture is `Rgba32Float`; alpha is replaced with `1.0` on
-    /// re-upload (vfx-ocio's `apply_rgb` doesn't touch alpha, and the
-    /// blit shader's `case 0u` ignores it).
+    /// Uses the shared checked, reusable readback path. Layout, device polling,
+    /// callback delivery, mapping, and host allocation failures stay recoverable.
     pub fn apply_cpu_color_in_place(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        &mut self,
+        ctx: &render_core::gpu::GpuContext,
         apply: impl FnOnce(&mut [[f32; 3]]),
-    ) {
-        // Zero-size viewport (hidden / collapsed panel) — a 0-byte
-        // buffer trips wgpu validation. Cheap guard.
-        if self.width == 0 || self.height == 0 {
-            return;
-        }
-        const BPP: u32 = 16; // Rgba32Float = 4 channels × 4 B
-        let row_unaligned = BPP * self.width;
-        // 256-byte alignment is required for `copy_texture_to_buffer`
-        // and matches `render-core::gpu::readback_texture`.
-        let row_padded = (row_unaligned + 255) & !255;
-        let buf_size = (row_padded * self.height) as u64;
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pt_cpu_color_readback"),
-            size: buf_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("pt_cpu_color_copy"),
-        });
-        enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.output_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row_padded),
-                    rows_per_image: Some(self.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit(std::iter::once(enc.finish()));
+    ) -> Result<(), render_core::ReadbackError> {
+        const BYTES_PER_PIXEL: u32 = 16;
+        const LABEL: &str = "PT CPU color readback";
 
-        // Map readback. mpsc channel + `PollType::Wait` is the
-        // standard sync pattern (`render-core::gpu::map_buffer_read`
-        // does the same).
-        let slice = readback.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        match rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                log::warn!("pt-megakernel: cpu-color map_async error: {e:?}");
-                return;
-            }
-            Err(e) => {
-                log::warn!("pt-megakernel: cpu-color recv error: {e}");
-                return;
-            }
+        let layout = render_core::gpu::TextureReadbackLayout::new(
+            LABEL,
+            self.width,
+            self.height,
+            BYTES_PER_PIXEL,
+        )?;
+        let texel_count = render_core::checked_2d_buffer_len(LABEL, self.width, self.height)?;
+
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("pt_cpu_color_copy"),
+            });
+        render_core::gpu::readback_texture_bytes(
+            ctx,
+            &mut encoder,
+            &self.output_texture,
+            self.width,
+            self.height,
+            BYTES_PER_PIXEL,
+            LABEL,
+            &mut self.cpu_color_readback,
+        )?;
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+
+        let raw = render_core::gpu::map_readback(ctx, &self.cpu_color_readback)?;
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(texel_count)?;
+        let mut alphas = Vec::new();
+        alphas.try_reserve_exact(texel_count)?;
+        for texel in raw.chunks_exact(BYTES_PER_PIXEL as usize) {
+            let channel = |offset: usize| {
+                f32::from_ne_bytes([
+                    texel[offset],
+                    texel[offset + 1],
+                    texel[offset + 2],
+                    texel[offset + 3],
+                ])
+            };
+            pixels.push([channel(0), channel(4), channel(8)]);
+            alphas.push(channel(12));
         }
-        let mapped = slice.get_mapped_range();
-        let row_len = row_unaligned as usize;
-        let texel_count = (self.width * self.height) as usize;
-        let mut pixels: Vec<[f32; 3]> = Vec::with_capacity(texel_count);
-        // Preserve the original alpha so the writeback doesn't
-        // clobber it with 1.0 — denoiser / screenshot consumers
-        // share `output_texture` and may read alpha later.
-        let mut alphas: Vec<f32> = Vec::with_capacity(texel_count);
-        for y in 0..self.height {
-            let row_start = (y * row_padded) as usize;
-            let row = &mapped[row_start..row_start + row_len];
-            let row_floats: &[f32] = bytemuck::cast_slice(row);
-            for px in row_floats.chunks_exact(4) {
-                pixels.push([px[0], px[1], px[2]]);
-                alphas.push(px[3]);
-            }
-        }
-        drop(mapped);
-        readback.unmap();
 
         apply(&mut pixels);
 
-        let mut packed: Vec<[f32; 4]> = Vec::with_capacity(pixels.len());
-        for (p, &a) in pixels.iter().zip(alphas.iter()) {
-            packed.push([p[0], p[1], p[2], a]);
+        let mut packed = Vec::new();
+        packed.try_reserve_exact(texel_count)?;
+        for (pixel, alpha) in pixels.into_iter().zip(alphas) {
+            packed.push([pixel[0], pixel[1], pixel[2], alpha]);
         }
-        queue.write_texture(
+        ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.output_texture,
                 mip_level: 0,
@@ -5025,7 +5432,7 @@ impl PathTraceCompute {
             bytemuck::cast_slice(&packed),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(BPP * self.width),
+                bytes_per_row: Some(layout.row_bytes()),
                 rows_per_image: Some(self.height),
             },
             wgpu::Extent3d {
@@ -5034,6 +5441,7 @@ impl PathTraceCompute {
                 depth_or_array_layers: 1,
             },
         );
+        Ok(())
     }
 
     pub fn blit(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
@@ -5103,7 +5511,6 @@ impl PathTraceCompute {
         target: &wgpu::TextureView,
         bg: &wgpu::BindGroup,
     ) {
-
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pt_blit_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
