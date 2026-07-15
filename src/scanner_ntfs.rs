@@ -14,7 +14,7 @@ use crate::scanner::{
 #[cfg(windows)]
 use crossbeam_channel::Sender;
 #[cfg(windows)]
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 #[cfg(windows)]
 use squarebob_core::DirEntry;
 #[cfg(windows)]
@@ -91,6 +91,16 @@ impl OwnedFileHandle {
     }
 
     fn open_metadata(path: &Path) -> windows::core::Result<Self> {
+        Self::open_path(path, 0)
+    }
+
+    fn open_directory(path: &Path) -> windows::core::Result<Self> {
+        use windows::Win32::Storage::FileSystem::FILE_LIST_DIRECTORY;
+
+        Self::open_path(path, FILE_LIST_DIRECTORY.0)
+    }
+
+    fn open_path(path: &Path, desired_access: u32) -> windows::core::Result<Self> {
         use windows::Win32::Storage::FileSystem::{
             FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
         };
@@ -98,7 +108,7 @@ impl OwnedFileHandle {
 
         Self::open(
             &HSTRING::from(path.as_os_str()),
-            0,
+            desired_access,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_BACKUP_SEMANTICS,
         )
@@ -168,14 +178,18 @@ fn query_ntfs_record_number(path: &Path) -> anyhow::Result<u64> {
     }
     .map_err(|error| anyhow::anyhow!("cannot query NTFS file ID for {:?}: {error}", path))?;
 
-    let identifier = info.FileId.Identifier;
+    ntfs_ref_from_file_id(info.FileId.Identifier)
+}
+
+#[cfg(windows)]
+fn ntfs_ref_from_file_id(identifier: [u8; 16]) -> anyhow::Result<u64> {
     let high = u64::from_le_bytes(
         identifier[8..16]
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid FILE_ID_128 layout"))?,
     );
     if high != 0 {
-        anyhow::bail!("scan root uses a 128-bit file ID unsupported by NTFS MFT enumeration");
+        anyhow::bail!("128-bit file ID cannot be matched to an NTFS MFT reference");
     }
     let low = u64::from_le_bytes(
         identifier[..8]
@@ -421,6 +435,561 @@ struct MftRecord {
     parent_ref: u64,
     name: String,
     is_dir: bool,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NtfsFileMeasurement {
+    size: u64,
+    modified_time: Option<u64>,
+    is_dir: bool,
+    is_reparse: bool,
+}
+
+#[cfg(windows)]
+struct NtfsDirectoryEntry {
+    file_ref: Option<u64>,
+    name: std::ffi::OsString,
+    measurement: NtfsFileMeasurement,
+}
+
+#[cfg(windows)]
+enum DirectoryMeasurements {
+    Batch(std::collections::HashMap<u64, NtfsFileMeasurement>),
+    Individual,
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+enum DirectoryBatchError {
+    Cancelled,
+    Unavailable(anyhow::Error),
+    Incompatible(anyhow::Error),
+    Failed(anyhow::Error),
+}
+
+#[cfg(windows)]
+fn unix_time_from_filetime(filetime: i64) -> Option<u64> {
+    const WINDOWS_TO_UNIX_EPOCH_100NS: i64 = 116_444_736_000_000_000;
+    const TICKS_PER_SECOND: i64 = 10_000_000;
+
+    let ticks = filetime.checked_sub(WINDOWS_TO_UNIX_EPOCH_100NS)?;
+    if ticks < 0 {
+        return None;
+    }
+    u64::try_from(ticks / TICKS_PER_SECOND).ok()
+}
+
+#[cfg(windows)]
+fn visit_directory_information(
+    buffer: &[u8],
+    visitor: &mut impl FnMut(u64, NtfsFileMeasurement, &[u8]) -> Result<(), DirectoryBatchError>,
+) -> Result<(), DirectoryBatchError> {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO,
+    };
+
+    let header_len = std::mem::offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+    let struct_len = std::mem::size_of::<FILE_ID_EXTD_DIR_INFO>();
+    let mut offset = 0usize;
+    loop {
+        let remaining = buffer.len().checked_sub(offset).ok_or_else(|| {
+            DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata offset {offset} exceeds {}-byte buffer",
+                buffer.len()
+            ))
+        })?;
+        if remaining < struct_len {
+            return Err(DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata entry has only {remaining} bytes; need {struct_len}"
+            )));
+        }
+
+        // SAFETY: the bounds check above covers the complete fixed struct. The
+        // Windows output buffer has no Rust alignment guarantee, so read_unaligned
+        // copies the header before any field is inspected.
+        let header = unsafe {
+            buffer
+                .as_ptr()
+                .add(offset)
+                .cast::<FILE_ID_EXTD_DIR_INFO>()
+                .read_unaligned()
+        };
+        let name_len = usize::try_from(header.FileNameLength).map_err(|_| {
+            DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata filename length exceeds usize"
+            ))
+        })?;
+        if name_len % std::mem::size_of::<u16>() != 0 {
+            return Err(DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata filename has odd byte length {name_len}"
+            )));
+        }
+        let name_start = offset.checked_add(header_len).ok_or_else(|| {
+            DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata filename offset overflow"
+            ))
+        })?;
+        let name_end = name_start.checked_add(name_len).ok_or_else(|| {
+            DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata filename range overflow"
+            ))
+        })?;
+        let minimum_entry_len = header_len
+            .checked_add(name_len)
+            .map(|length| length.max(struct_len))
+            .ok_or_else(|| {
+                DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                    "directory metadata entry length overflow"
+                ))
+            })?;
+        if name_end > buffer.len() || minimum_entry_len > remaining {
+            return Err(DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata filename needs {minimum_entry_len} bytes; only {remaining} remain"
+            )));
+        }
+
+        let file_ref = ntfs_ref_from_file_id(header.FileId.Identifier)
+            .map_err(DirectoryBatchError::Incompatible)?;
+        let size = u64::try_from(header.EndOfFile).map_err(|_| {
+            DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata contains negative file size {}",
+                header.EndOfFile
+            ))
+        })?;
+        visitor(
+            file_ref,
+            NtfsFileMeasurement {
+                size,
+                modified_time: unix_time_from_filetime(header.LastWriteTime),
+                is_dir: header.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
+                is_reparse: header.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0,
+            },
+            &buffer[name_start..name_end],
+        )?;
+
+        if header.NextEntryOffset == 0 {
+            return Ok(());
+        }
+        let next = usize::try_from(header.NextEntryOffset).map_err(|_| {
+            DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "directory metadata next-entry offset exceeds usize"
+            ))
+        })?;
+        if next < minimum_entry_len || next > remaining || next % 8 != 0 {
+            return Err(DirectoryBatchError::Incompatible(anyhow::anyhow!(
+                "invalid directory metadata next-entry offset {next}; entry needs {minimum_entry_len}, buffer has {remaining}"
+            )));
+        }
+        offset = offset.checked_add(next).ok_or_else(|| {
+            DirectoryBatchError::Incompatible(anyhow::anyhow!("directory metadata offset overflow"))
+        })?;
+    }
+}
+
+#[cfg(windows)]
+fn query_directory_information(
+    path: &Path,
+    cancel: &AtomicBool,
+    visitor: &mut impl FnMut(u64, NtfsFileMeasurement, &[u8]) -> Result<(), DirectoryBatchError>,
+) -> Result<(), DirectoryBatchError> {
+    use windows::Win32::Foundation::ERROR_NO_MORE_FILES;
+    use windows::Win32::Storage::FileSystem::{
+        FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, GetFileInformationByHandleEx,
+    };
+    use windows::core::{HRESULT, Result as WindowsResult};
+
+    const BUFFER_SIZE: usize = 256 * 1024;
+
+    let handle = OwnedFileHandle::open_directory(path).map_err(|error| {
+        DirectoryBatchError::Unavailable(anyhow::anyhow!(
+            "cannot open directory {:?} for batch metadata: {error}",
+            path
+        ))
+    })?;
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(BUFFER_SIZE).map_err(|error| {
+        DirectoryBatchError::Failed(anyhow::anyhow!(
+            "directory metadata buffer allocation failed: {error}"
+        ))
+    })?;
+    buffer.resize(BUFFER_SIZE, 0u8);
+    let buffer_size = u32::try_from(buffer.len()).map_err(|_| {
+        DirectoryBatchError::Failed(anyhow::anyhow!("directory metadata buffer exceeds u32"))
+    })?;
+    let mut restart = true;
+
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err(DirectoryBatchError::Cancelled);
+        }
+        let class = if restart {
+            FileIdExtdDirectoryRestartInfo
+        } else {
+            FileIdExtdDirectoryInfo
+        };
+        // SAFETY: buffer is live, initialized, and writable for exactly
+        // buffer_size bytes. The directory handle remains valid during the call.
+        let result: WindowsResult<()> = unsafe {
+            GetFileInformationByHandleEx(
+                handle.raw(),
+                class,
+                buffer.as_mut_ptr().cast(),
+                buffer_size,
+            )
+        };
+        match result {
+            Ok(()) => visit_directory_information(&buffer, visitor)?,
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_NO_MORE_FILES.0) => {
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(DirectoryBatchError::Unavailable(anyhow::anyhow!(
+                    "batch metadata query failed for {:?}: {error}",
+                    path
+                )));
+            }
+        }
+        restart = false;
+    }
+}
+
+#[cfg(windows)]
+fn query_directory_measurements(
+    path: &Path,
+    cancel: &AtomicBool,
+) -> Result<std::collections::HashMap<u64, NtfsFileMeasurement>, DirectoryBatchError> {
+    let mut measurements = std::collections::HashMap::new();
+    query_directory_information(path, cancel, &mut |file_ref, measurement, _| {
+        if measurements.len() == measurements.capacity() {
+            measurements.try_reserve(1).map_err(|error| {
+                DirectoryBatchError::Failed(anyhow::anyhow!(
+                    "directory metadata index allocation failed: {error}"
+                ))
+            })?;
+        }
+        measurements.insert(file_ref, measurement);
+        Ok(())
+    })?;
+    Ok(measurements)
+}
+
+#[cfg(windows)]
+fn query_directory_entries(
+    path: &Path,
+    cancel: &AtomicBool,
+) -> Result<Vec<NtfsDirectoryEntry>, DirectoryBatchError> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut entries = Vec::new();
+    query_directory_information(path, cancel, &mut |file_ref, measurement, name_bytes| {
+        let mut name = Vec::new();
+        name.try_reserve_exact(name_bytes.len() / 2)
+            .map_err(|error| {
+                DirectoryBatchError::Failed(anyhow::anyhow!(
+                    "directory filename allocation failed: {error}"
+                ))
+            })?;
+        for pair in name_bytes.chunks_exact(2) {
+            name.push(u16::from_le_bytes([pair[0], pair[1]]));
+        }
+        entries.try_reserve(1).map_err(|error| {
+            DirectoryBatchError::Failed(anyhow::anyhow!(
+                "directory entry allocation failed: {error}"
+            ))
+        })?;
+        entries.push(NtfsDirectoryEntry {
+            file_ref: Some(file_ref),
+            name: std::ffi::OsString::from_wide(&name),
+            measurement,
+        });
+        Ok(())
+    })?;
+    Ok(entries)
+}
+
+#[cfg(windows)]
+struct DirectoryListing {
+    entries: Vec<NtfsDirectoryEntry>,
+    errors: u64,
+}
+
+#[cfg(windows)]
+fn fallback_directory_entries(path: &Path) -> Result<DirectoryListing, DirectoryBatchError> {
+    use std::os::windows::fs::MetadataExt;
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    let reader = std::fs::read_dir(path).map_err(|error| {
+        DirectoryBatchError::Unavailable(anyhow::anyhow!(
+            "cannot enumerate directory {:?}: {error}",
+            path
+        ))
+    })?;
+    let mut entries = Vec::new();
+    let mut errors = 0u64;
+    for result in reader {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors = errors.saturating_add(1);
+                trace!("directory fallback entry failed in {:?}: {error}", path);
+                continue;
+            }
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                errors = errors.saturating_add(1);
+                trace!(
+                    "directory fallback metadata failed for {:?}: {error}",
+                    entry.path()
+                );
+                continue;
+            }
+        };
+        entries.try_reserve(1).map_err(|error| {
+            DirectoryBatchError::Failed(anyhow::anyhow!(
+                "directory fallback allocation failed: {error}"
+            ))
+        })?;
+        let last_write_time = i64::try_from(metadata.last_write_time()).ok();
+        entries.push(NtfsDirectoryEntry {
+            file_ref: None,
+            name: entry.file_name(),
+            measurement: NtfsFileMeasurement {
+                size: metadata.len(),
+                modified_time: last_write_time.and_then(unix_time_from_filetime),
+                is_dir: metadata.is_dir(),
+                is_reparse: metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0,
+            },
+        });
+    }
+    Ok(DirectoryListing { entries, errors })
+}
+
+#[cfg(windows)]
+fn list_directory_entries(
+    path: &Path,
+    cancel: &AtomicBool,
+) -> Result<DirectoryListing, DirectoryBatchError> {
+    match query_directory_entries(path, cancel) {
+        Ok(entries) => Ok(DirectoryListing { entries, errors: 0 }),
+        Err(DirectoryBatchError::Unavailable(batch_error)) => {
+            debug!(
+                "Batch directory listing unavailable for {:?}: {batch_error:#}; using std fallback",
+                path
+            );
+            fallback_directory_entries(path).map_err(|fallback_error| match fallback_error {
+                DirectoryBatchError::Unavailable(fallback_error) => {
+                    DirectoryBatchError::Unavailable(anyhow::anyhow!(
+                        "batch listing failed: {batch_error:#}; fallback failed: {fallback_error:#}"
+                    ))
+                }
+                other => other,
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn scan_ntfs_directory_tree(
+    root: &Path,
+    target_ref: u64,
+    tx: &Sender<ScanMsg>,
+    cancel: &AtomicBool,
+) -> Result<ScanBuild, ScanFailure> {
+    struct Frame {
+        file_ref: Option<u64>,
+        entry: DirEntry,
+        remaining: std::vec::IntoIter<NtfsDirectoryEntry>,
+    }
+
+    fn map_batch_error(error: DirectoryBatchError) -> ScanFailure {
+        match error {
+            DirectoryBatchError::Cancelled => ScanFailure::Cancelled,
+            DirectoryBatchError::Unavailable(error) | DirectoryBatchError::Incompatible(error) => {
+                ScanFailure::BackendUnavailable(error)
+            }
+            DirectoryBatchError::Failed(error) => ScanFailure::Failed(error),
+        }
+    }
+
+    let root_listing = list_directory_entries(root, cancel).map_err(map_batch_error)?;
+    let mut diagnostics = ScanDiagnostics {
+        walk_errors: root_listing.errors,
+        ..ScanDiagnostics::default()
+    };
+    let root_name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.to_string_lossy().into_owned());
+    let mut root_entry = DirEntry::new_dir(root_name, root.to_path_buf());
+    root_entry
+        .children
+        .try_reserve_exact(root_listing.entries.len())
+        .map_err(|error| {
+            ScanFailure::Failed(anyhow::anyhow!(
+                "NTFS subtree allocation failed at {:?}: {error}",
+                root
+            ))
+        })?;
+
+    let mut ancestry = std::collections::HashSet::new();
+    ancestry.try_reserve(1).map_err(|error| {
+        ScanFailure::Failed(anyhow::anyhow!("NTFS ancestry allocation failed: {error}"))
+    })?;
+    ancestry.insert(target_ref);
+    let mut seen_files = std::collections::HashSet::new();
+    let mut frames = Vec::new();
+    frames.try_reserve(1).map_err(|error| {
+        ScanFailure::Failed(anyhow::anyhow!("NTFS traversal allocation failed: {error}"))
+    })?;
+    frames.push(Frame {
+        file_ref: Some(target_ref),
+        entry: root_entry,
+        remaining: root_listing.entries.into_iter(),
+    });
+    let mut progress = NtfsProgress::default();
+
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err(ScanFailure::Cancelled);
+        }
+
+        let next = frames
+            .last_mut()
+            .expect("NTFS directory traversal always has a root")
+            .remaining
+            .next();
+        if let Some(child) = next {
+            if child.name == std::ffi::OsStr::new(".")
+                || child.name == std::ffi::OsStr::new("..")
+                || child.name.is_empty()
+            {
+                continue;
+            }
+            let parent_path = &frames
+                .last()
+                .expect("NTFS child always has a parent")
+                .entry
+                .path;
+            let child_path = parent_path.join(&child.name);
+            let child_name = child.name.to_string_lossy().into_owned();
+
+            if !child.measurement.is_dir {
+                if let Some(file_ref) = child.file_ref {
+                    if seen_files.len() == seen_files.capacity() {
+                        seen_files.try_reserve(1).map_err(|error| {
+                            ScanFailure::Failed(anyhow::anyhow!(
+                                "NTFS file-ID allocation failed: {error}"
+                            ))
+                        })?;
+                    }
+                    if !seen_files.insert(file_ref) {
+                        continue;
+                    }
+                }
+                let file = create_measured_file(
+                    child_name,
+                    child_path,
+                    child.measurement,
+                    &mut progress,
+                    tx,
+                    cancel,
+                    &diagnostics,
+                )?;
+                frames
+                    .last_mut()
+                    .expect("NTFS file always has a parent")
+                    .entry
+                    .children
+                    .push(file);
+                continue;
+            }
+
+            increment_directory_progress(&mut progress, tx, cancel, &diagnostics)?;
+            let cycle = child
+                .file_ref
+                .is_some_and(|file_ref| ancestry.contains(&file_ref));
+            if cycle {
+                diagnostics.depth_errors = diagnostics.depth_errors.saturating_add(1);
+            }
+            if cycle || child.measurement.is_reparse {
+                frames
+                    .last_mut()
+                    .expect("NTFS directory always has a parent")
+                    .entry
+                    .children
+                    .push(DirEntry::new_dir(child_name, child_path));
+                continue;
+            }
+
+            let listing = match list_directory_entries(&child_path, cancel) {
+                Ok(listing) => listing,
+                Err(DirectoryBatchError::Cancelled) => return Err(ScanFailure::Cancelled),
+                Err(DirectoryBatchError::Failed(error)) => return Err(ScanFailure::Failed(error)),
+                Err(DirectoryBatchError::Incompatible(error)) => {
+                    return Err(ScanFailure::BackendUnavailable(error));
+                }
+                Err(DirectoryBatchError::Unavailable(error)) => {
+                    diagnostics.walk_errors = diagnostics.walk_errors.saturating_add(1);
+                    trace!("NTFS directory unavailable {:?}: {error:#}", child_path);
+                    frames
+                        .last_mut()
+                        .expect("NTFS unavailable directory always has a parent")
+                        .entry
+                        .children
+                        .push(DirEntry::new_dir(child_name, child_path));
+                    continue;
+                }
+            };
+            diagnostics.walk_errors = diagnostics.walk_errors.saturating_add(listing.errors);
+            let mut entry = DirEntry::new_dir(child_name, child_path);
+            entry
+                .children
+                .try_reserve_exact(listing.entries.len())
+                .map_err(|error| {
+                    ScanFailure::Failed(anyhow::anyhow!(
+                        "NTFS subtree allocation failed at {:?}: {error}",
+                        entry.path
+                    ))
+                })?;
+            if let Some(file_ref) = child.file_ref {
+                ancestry.try_reserve(1).map_err(|error| {
+                    ScanFailure::Failed(anyhow::anyhow!("NTFS ancestry allocation failed: {error}"))
+                })?;
+                ancestry.insert(file_ref);
+            }
+            frames.try_reserve(1).map_err(|error| {
+                ScanFailure::Failed(anyhow::anyhow!("NTFS traversal allocation failed: {error}"))
+            })?;
+            frames.push(Frame {
+                file_ref: child.file_ref,
+                entry,
+                remaining: listing.entries.into_iter(),
+            });
+            continue;
+        }
+
+        let frame = frames
+            .pop()
+            .expect("NTFS directory traversal completes an existing frame");
+        if let Some(file_ref) = frame.file_ref {
+            ancestry.remove(&file_ref);
+        }
+        let mut entry = frame.entry;
+        finalize_directory(&mut entry)?;
+        if let Some(parent) = frames.last_mut() {
+            parent.entry.children.push(entry);
+        } else {
+            send_ntfs_tree_progress(tx, cancel, &progress, &diagnostics)?;
+            return Ok(ScanBuild {
+                tree: entry,
+                diagnostics,
+            });
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -928,7 +1497,7 @@ fn selected_directory_refs(
     Ok(selected)
 }
 
-/// Enumerate MFT via FSCTL_ENUM_USN_DATA, build tree, fill sizes via std::fs.
+/// Enumerate MFT via FSCTL_ENUM_USN_DATA and build a measured tree using batched directory metadata.
 #[cfg(windows)]
 fn scan_mft_usn(
     root: &Path,
@@ -942,6 +1511,17 @@ fn scan_mft_usn(
         .relative_components(root)
         .map_err(ScanFailure::BackendUnavailable)?
         .is_empty();
+    if !is_volume_root {
+        info!("Scanning selected NTFS subtree with batched directory enumeration...");
+        match scan_ntfs_directory_tree(root, target_ref, tx, cancel) {
+            Ok(build) => return Ok(build),
+            Err(ScanFailure::Cancelled) => return Err(ScanFailure::Cancelled),
+            Err(ScanFailure::Failed(error)) => return Err(ScanFailure::Failed(error)),
+            Err(ScanFailure::BackendUnavailable(error)) => {
+                warn!("Batched NTFS subtree scan unavailable: {error:#}; retrying through raw MFT");
+            }
+        }
+    }
     info!("Opening volume: {volume_path}; target MFT ref: {target_ref:#x}");
 
     let handle = OwnedFileHandle::open_volume(&volume_path).map_err(|error| {
@@ -1291,19 +1871,19 @@ fn build_tree_from_mft(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| root.to_string_lossy().to_string());
-    let mut tree = build_subtree(
+    info!("Building tree with batched directory metadata...");
+    let mut progress = NtfsProgress::default();
+    let tree = build_subtree(
         target_ref,
         &root_name,
         root,
         records,
         &children_map,
+        tx,
+        &mut progress,
         cancel,
         &mut diagnostics,
     )?;
-
-    info!("Fetching file sizes...");
-    let mut progress = NtfsProgress::default();
-    let _ = fill_sizes(&mut tree, true, &mut progress, tx, cancel, &mut diagnostics)?;
     send_ntfs_tree_progress(tx, cancel, &progress, &diagnostics)?;
 
     Ok(ScanBuild { tree, diagnostics })
@@ -1345,6 +1925,8 @@ fn build_subtree(
     path: &Path,
     records: &[MftRecord],
     children_map: &std::collections::HashMap<u64, Vec<usize>>,
+    tx: &Sender<ScanMsg>,
+    progress: &mut NtfsProgress,
     cancel: &AtomicBool,
     diagnostics: &mut ScanDiagnostics,
 ) -> Result<DirEntry, ScanFailure> {
@@ -1353,6 +1935,7 @@ fn build_subtree(
         entry: DirEntry,
         children: &'a [usize],
         next_child: usize,
+        measurements: Option<DirectoryMeasurements>,
     }
 
     if cancel.load(Ordering::Acquire) {
@@ -1389,6 +1972,7 @@ fn build_subtree(
         entry: root_entry,
         children: root_children,
         next_child: 0,
+        measurements: None,
     });
 
     loop {
@@ -1425,27 +2009,25 @@ fn build_subtree(
                 .path;
             let child_path = parent_path.join(&record.name);
             if !record.is_dir {
-                let extension = child_path
-                    .extension()
-                    .map(|extension| extension.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                frames
-                    .last_mut()
-                    .expect("MFT child always has a parent")
-                    .entry
-                    .children
-                    .push(DirEntry::new_file(
-                        record.name.clone(),
-                        child_path,
-                        0,
-                        extension,
-                        None,
-                    ));
+                let frame = frames.last_mut().expect("MFT file always has a parent");
+                if let Some(file) = build_measured_file(
+                    record,
+                    child_path,
+                    &frame.entry.path,
+                    &mut frame.measurements,
+                    progress,
+                    tx,
+                    cancel,
+                    diagnostics,
+                )? {
+                    frame.entry.children.push(file);
+                }
                 continue;
             }
 
             if ancestry.contains(&record.file_ref) {
                 diagnostics.depth_errors = diagnostics.depth_errors.saturating_add(1);
+                increment_directory_progress(progress, tx, cancel, diagnostics)?;
                 frames
                     .last_mut()
                     .expect("MFT cycle placeholder always has a parent")
@@ -1476,11 +2058,13 @@ fn build_subtree(
                 ScanFailure::Failed(anyhow::anyhow!("MFT ancestry allocation failed: {error}"))
             })?;
             ancestry.insert(record.file_ref);
+            increment_directory_progress(progress, tx, cancel, diagnostics)?;
             frames.push(BuildFrame {
                 file_ref: record.file_ref,
                 entry: child_entry,
                 children: child_indices,
                 next_child: 0,
+                measurements: None,
             });
             continue;
         }
@@ -1489,191 +2073,217 @@ fn build_subtree(
             .pop()
             .expect("MFT traversal always completes an existing frame");
         ancestry.remove(&completed.file_ref);
+        let mut entry = completed.entry;
+        finalize_directory(&mut entry)?;
         if let Some(parent) = frames.last_mut() {
-            parent.entry.children.push(completed.entry);
+            parent.entry.children.push(entry);
         } else {
-            return Ok(completed.entry);
+            return Ok(entry);
         }
     }
 }
 
 #[cfg(windows)]
-fn measure_ntfs_file(
-    entry: &mut DirEntry,
-    progress: &mut NtfsProgress,
-    tx: &Sender<ScanMsg>,
+fn file_measurement(
+    record: &MftRecord,
+    path: &Path,
+    parent_path: &Path,
+    measurements: &mut Option<DirectoryMeasurements>,
     cancel: &AtomicBool,
     diagnostics: &mut ScanDiagnostics,
-) -> Result<bool, ScanFailure> {
+) -> Result<Option<NtfsFileMeasurement>, ScanFailure> {
     if cancel.load(Ordering::Acquire) {
         return Err(ScanFailure::Cancelled);
     }
 
-    let metadata = match std::fs::metadata(&entry.path) {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            diagnostics.metadata_errors = diagnostics.metadata_errors.saturating_add(1);
-            trace!("metadata failed for {:?}: {error}", entry.path);
-            return Ok(false);
-        }
+    if measurements.is_none() {
+        *measurements = Some(match query_directory_measurements(parent_path, cancel) {
+            Ok(batch) => DirectoryMeasurements::Batch(batch),
+            Err(DirectoryBatchError::Cancelled) => return Err(ScanFailure::Cancelled),
+            Err(DirectoryBatchError::Unavailable(error)) => {
+                debug!(
+                    "Batch directory metadata unavailable for {:?}: {error:#}; using per-file metadata fallback",
+                    parent_path
+                );
+                DirectoryMeasurements::Individual
+            }
+            Err(DirectoryBatchError::Incompatible(error)) => {
+                return Err(ScanFailure::BackendUnavailable(anyhow::anyhow!(
+                    "incompatible directory metadata for {:?}: {error:#}",
+                    parent_path
+                )));
+            }
+            Err(DirectoryBatchError::Failed(error)) => return Err(ScanFailure::Failed(error)),
+        });
+    }
+
+    let measurement = match measurements
+        .as_ref()
+        .expect("directory measurement mode is initialized above")
+    {
+        DirectoryMeasurements::Batch(batch) => batch.get(&record.file_ref).copied(),
+        DirectoryMeasurements::Individual => match std::fs::metadata(path) {
+            Ok(metadata) => Some(NtfsFileMeasurement {
+                size: metadata.len(),
+                modified_time: metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_secs()),
+                is_dir: metadata.is_dir(),
+                is_reparse: false,
+            }),
+            Err(error) => {
+                trace!("metadata fallback failed for {:?}: {error}", path);
+                None
+            }
+        },
     };
-    entry.size = metadata.len();
-    entry.own_size = metadata.len();
-    entry.modified_time = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs());
+
+    match measurement {
+        Some(measurement) if measurement.is_dir == record.is_dir => Ok(Some(measurement)),
+        Some(measurement) => {
+            diagnostics.metadata_errors = diagnostics.metadata_errors.saturating_add(1);
+            trace!(
+                "metadata type changed for {:?}: MFT is_dir={}, current is_dir={}",
+                path, record.is_dir, measurement.is_dir
+            );
+            Ok(None)
+        }
+        None => {
+            diagnostics.metadata_errors = diagnostics.metadata_errors.saturating_add(1);
+            trace!("metadata missing for MFT record {:?}", path);
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn build_measured_file(
+    record: &MftRecord,
+    path: PathBuf,
+    parent_path: &Path,
+    measurements: &mut Option<DirectoryMeasurements>,
+    progress: &mut NtfsProgress,
+    tx: &Sender<ScanMsg>,
+    cancel: &AtomicBool,
+    diagnostics: &mut ScanDiagnostics,
+) -> Result<Option<DirEntry>, ScanFailure> {
+    let Some(measurement) = file_measurement(
+        record,
+        &path,
+        parent_path,
+        measurements,
+        cancel,
+        diagnostics,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(create_measured_file(
+        record.name.clone(),
+        path,
+        measurement,
+        progress,
+        tx,
+        cancel,
+        diagnostics,
+    )?))
+}
+
+#[cfg(windows)]
+fn create_measured_file(
+    name: String,
+    path: PathBuf,
+    measurement: NtfsFileMeasurement,
+    progress: &mut NtfsProgress,
+    tx: &Sender<ScanMsg>,
+    cancel: &AtomicBool,
+    diagnostics: &ScanDiagnostics,
+) -> Result<DirEntry, ScanFailure> {
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let entry = DirEntry::new_file(
+        name,
+        path,
+        measurement.size,
+        extension,
+        measurement.modified_time,
+    );
     progress.files = progress
         .files
         .checked_add(1)
         .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("file count overflow")))?;
     progress.bytes = progress
         .bytes
-        .checked_add(entry.size)
+        .checked_add(measurement.size)
         .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("byte count overflow")))?;
-    if progress.files.is_multiple_of(5000) {
+    if progress
+        .files
+        .saturating_add(progress.dirs)
+        .is_multiple_of(5000)
+    {
         send_ntfs_tree_progress(tx, cancel, progress, diagnostics)?;
     }
-    Ok(true)
+    Ok(entry)
 }
 
 #[cfg(windows)]
-fn fill_sizes(
-    entry: &mut DirEntry,
-    is_root: bool,
+fn increment_directory_progress(
     progress: &mut NtfsProgress,
     tx: &Sender<ScanMsg>,
     cancel: &AtomicBool,
-    diagnostics: &mut ScanDiagnostics,
-) -> Result<bool, ScanFailure> {
-    struct SizeFrame {
-        entry: DirEntry,
-        remaining: std::vec::IntoIter<DirEntry>,
-        retained: Vec<DirEntry>,
+    diagnostics: &ScanDiagnostics,
+) -> Result<(), ScanFailure> {
+    progress.dirs = progress
+        .dirs
+        .checked_add(1)
+        .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("directory count overflow")))?;
+    if progress
+        .files
+        .saturating_add(progress.dirs)
+        .is_multiple_of(5000)
+    {
+        send_ntfs_tree_progress(tx, cancel, progress, diagnostics)?;
     }
+    Ok(())
+}
 
-    fn frame_for(mut entry: DirEntry) -> Result<SizeFrame, ScanFailure> {
-        let children = std::mem::take(&mut entry.children);
-        let mut retained = Vec::new();
-        retained
-            .try_reserve_exact(children.len())
-            .map_err(|error| {
-                ScanFailure::Failed(anyhow::anyhow!(
-                    "MFT size-pass allocation failed at {:?}: {error}",
-                    entry.path
-                ))
+#[cfg(windows)]
+fn finalize_directory(entry: &mut DirEntry) -> Result<(), ScanFailure> {
+    entry.size = entry.own_size;
+    entry.file_count = 0;
+    entry.dir_count = 0;
+    for child in &entry.children {
+        entry.size = entry.size.checked_add(child.size).ok_or_else(|| {
+            ScanFailure::Failed(anyhow::anyhow!("size overflow at {:?}", entry.path))
+        })?;
+        entry.file_count = entry
+            .file_count
+            .checked_add(if child.is_dir { child.file_count } else { 1 })
+            .ok_or_else(|| {
+                ScanFailure::Failed(anyhow::anyhow!("file count overflow at {:?}", entry.path))
             })?;
-        Ok(SizeFrame {
-            entry,
-            remaining: children.into_iter(),
-            retained,
-        })
-    }
-
-    if cancel.load(Ordering::Acquire) {
-        return Err(ScanFailure::Cancelled);
-    }
-
-    let placeholder = DirEntry::new_dir(entry.name.clone(), entry.path.clone());
-    let mut root = std::mem::replace(entry, placeholder);
-    if !root.is_dir {
-        let keep = measure_ntfs_file(&mut root, progress, tx, cancel, diagnostics)?;
-        *entry = root;
-        return Ok(keep);
-    }
-    if !is_root {
-        progress.dirs = progress
-            .dirs
-            .checked_add(1)
-            .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("directory count overflow")))?;
-    }
-
-    let mut frames = Vec::new();
-    frames.try_reserve(1).map_err(|error| {
-        ScanFailure::Failed(anyhow::anyhow!(
-            "MFT size traversal allocation failed: {error}"
-        ))
-    })?;
-    frames.push(frame_for(root)?);
-
-    loop {
-        if cancel.load(Ordering::Acquire) {
-            return Err(ScanFailure::Cancelled);
-        }
-
-        let next_child = frames
-            .last_mut()
-            .expect("MFT size traversal always has a root")
-            .remaining
-            .next();
-        if let Some(mut child) = next_child {
-            if child.is_dir {
-                progress.dirs = progress.dirs.checked_add(1).ok_or_else(|| {
-                    ScanFailure::Failed(anyhow::anyhow!("directory count overflow"))
-                })?;
-                frames.try_reserve(1).map_err(|error| {
-                    ScanFailure::Failed(anyhow::anyhow!(
-                        "MFT size traversal allocation failed: {error}"
-                    ))
-                })?;
-                frames.push(frame_for(child)?);
-            } else if measure_ntfs_file(&mut child, progress, tx, cancel, diagnostics)? {
-                frames
-                    .last_mut()
-                    .expect("measured file always has a parent")
-                    .retained
-                    .push(child);
-            }
-            continue;
-        }
-
-        let frame = frames
-            .pop()
-            .expect("MFT size traversal always completes an existing frame");
-        let mut completed = frame.entry;
-        completed.children = frame.retained;
-        completed.size = completed.own_size;
-        completed.file_count = 0;
-        completed.dir_count = 0;
-        for child in &completed.children {
-            completed.size = completed.size.checked_add(child.size).ok_or_else(|| {
-                ScanFailure::Failed(anyhow::anyhow!("size overflow at {:?}", completed.path))
-            })?;
-            completed.file_count = completed
-                .file_count
-                .checked_add(if child.is_dir { child.file_count } else { 1 })
-                .ok_or_else(|| {
-                    ScanFailure::Failed(anyhow::anyhow!(
-                        "file count overflow at {:?}",
-                        completed.path
-                    ))
-                })?;
-            let child_dirs = if child.is_dir {
-                child.dir_count.checked_add(1).ok_or_else(|| {
-                    ScanFailure::Failed(anyhow::anyhow!(
-                        "directory count overflow at {:?}",
-                        completed.path
-                    ))
-                })?
-            } else {
-                0
-            };
-            completed.dir_count = completed.dir_count.checked_add(child_dirs).ok_or_else(|| {
+        let child_dirs = if child.is_dir {
+            child.dir_count.checked_add(1).ok_or_else(|| {
                 ScanFailure::Failed(anyhow::anyhow!(
                     "directory count overflow at {:?}",
-                    completed.path
+                    entry.path
                 ))
-            })?;
-        }
-
-        if let Some(parent) = frames.last_mut() {
-            parent.retained.push(completed);
+            })?
         } else {
-            *entry = completed;
-            return Ok(true);
-        }
+            0
+        };
+        entry.dir_count = entry.dir_count.checked_add(child_dirs).ok_or_else(|| {
+            ScanFailure::Failed(anyhow::anyhow!(
+                "directory count overflow at {:?}",
+                entry.path
+            ))
+        })?;
     }
+    Ok(())
 }
 
 /// System/protected directories to skip at volume root
@@ -1706,6 +2316,54 @@ mod tests {
         name.encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>()
+    }
+
+    fn directory_info_entry(
+        file_ref: u64,
+        size: i64,
+        last_write_time: i64,
+        is_dir: bool,
+        next_entry_offset: u32,
+    ) -> Vec<u8> {
+        use windows::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ID_EXTD_DIR_INFO,
+        };
+
+        let mut header = FILE_ID_EXTD_DIR_INFO::default();
+        header.NextEntryOffset = next_entry_offset;
+        header.EndOfFile = size;
+        header.LastWriteTime = last_write_time;
+        header.FileAttributes = if is_dir {
+            FILE_ATTRIBUTE_DIRECTORY.0
+        } else {
+            0
+        };
+        header.FileNameLength = 2;
+        header.FileId.Identifier[..8].copy_from_slice(&file_ref.to_le_bytes());
+        header.FileName = [u16::from(b'x')];
+        let entry_len = std::mem::size_of::<FILE_ID_EXTD_DIR_INFO>()
+            .max(usize::try_from(next_entry_offset).expect("test offset fits usize"));
+        let mut entry = vec![0u8; entry_len];
+        // SAFETY: entry has room for the complete struct. write_unaligned is
+        // required because Vec<u8> does not promise FILE_ID_EXTD_DIR_INFO alignment.
+        unsafe {
+            entry
+                .as_mut_ptr()
+                .cast::<FILE_ID_EXTD_DIR_INFO>()
+                .write_unaligned(header);
+        }
+        entry
+    }
+
+    fn parse_test_measurements(
+        buffer: &[u8],
+    ) -> Result<std::collections::HashMap<u64, NtfsFileMeasurement>, DirectoryBatchError> {
+        let mut measurements = std::collections::HashMap::new();
+        visit_directory_information(buffer, &mut |file_ref, measurement, _| {
+            measurements.insert(file_ref, measurement);
+            Ok(())
+        })?;
+        Ok(measurements)
     }
 
     fn v2_record(file_ref: u64, parent_ref: u64, name: &str, is_dir: bool) -> Vec<u8> {
@@ -1887,6 +2545,64 @@ mod tests {
     }
 
     #[test]
+    fn filetime_conversion_rejects_pre_epoch_values() {
+        const UNIX_EPOCH_FILETIME: i64 = 116_444_736_000_000_000;
+        assert_eq!(unix_time_from_filetime(UNIX_EPOCH_FILETIME), Some(0));
+        assert_eq!(
+            unix_time_from_filetime(UNIX_EPOCH_FILETIME + 42 * 10_000_000),
+            Some(42)
+        );
+        assert_eq!(unix_time_from_filetime(UNIX_EPOCH_FILETIME - 1), None);
+    }
+
+    #[test]
+    fn directory_measurement_parser_reads_all_entries_by_file_id() {
+        use windows::Win32::Storage::FileSystem::FILE_ID_EXTD_DIR_INFO;
+
+        const UNIX_EPOCH_FILETIME: i64 = 116_444_736_000_000_000;
+        let stride = u32::try_from(std::mem::size_of::<FILE_ID_EXTD_DIR_INFO>())
+            .expect("directory info struct fits u32");
+        let mut buffer = directory_info_entry(0x42, 123, UNIX_EPOCH_FILETIME, false, stride);
+        buffer.extend(directory_info_entry(
+            0x43,
+            0,
+            UNIX_EPOCH_FILETIME + 10_000_000,
+            true,
+            0,
+        ));
+        let measurements =
+            parse_test_measurements(&buffer).expect("valid directory metadata must parse");
+
+        assert_eq!(
+            measurements.get(&0x42),
+            Some(&NtfsFileMeasurement {
+                size: 123,
+                modified_time: Some(0),
+                is_dir: false,
+                is_reparse: false,
+            })
+        );
+        assert_eq!(
+            measurements.get(&0x43),
+            Some(&NtfsFileMeasurement {
+                size: 0,
+                modified_time: Some(1),
+                is_dir: true,
+                is_reparse: false,
+            })
+        );
+    }
+
+    #[test]
+    fn directory_measurement_parser_rejects_overlapping_entries() {
+        let buffer = directory_info_entry(0x42, 123, 0, false, 8);
+        assert!(matches!(
+            parse_test_measurements(&buffer),
+            Err(DirectoryBatchError::Incompatible(_))
+        ));
+    }
+
+    #[test]
     fn directory_selection_follows_only_target_descendants() {
         let edges = vec![
             DirectoryEdge {
@@ -1948,21 +2664,32 @@ mod tests {
             children_map.insert(parent_ref, vec![offset]);
         }
 
+        let (tx, _rx) = crossbeam_channel::bounded(1);
         let cancel = AtomicBool::new(false);
+        let mut progress = NtfsProgress::default();
         let mut diagnostics = ScanDiagnostics::default();
-        let tree = build_subtree(
+        let tree = match build_subtree(
             ROOT_REF,
             "root",
             Path::new(r"C:\root"),
             &records,
             &children_map,
+            &tx,
+            &mut progress,
             &cancel,
             &mut diagnostics,
-        )
-        .expect("deep subtree must build");
+        ) {
+            Ok(tree) => tree,
+            Err(_) => panic!("deep subtree must build"),
+        };
 
         assert_eq!(tree.iter().count(), DEPTH + 1);
-        assert_eq!(diagnostics.depth_errors, 0);
+        assert_eq!(
+            tree.dir_count,
+            u64::try_from(DEPTH).expect("depth fits u64")
+        );
+        assert_eq!(progress.dirs, u64::try_from(DEPTH).expect("depth fits u64"));
+        assert_eq!(diagnostics.total_errors(), 0);
     }
 
     #[test]
@@ -1984,67 +2711,27 @@ mod tests {
         ];
         let children_map = std::collections::HashMap::from([(ROOT_REF, vec![0]), (101, vec![1])]);
 
+        let (tx, _rx) = crossbeam_channel::bounded(1);
         let cancel = AtomicBool::new(false);
+        let mut progress = NtfsProgress::default();
         let mut diagnostics = ScanDiagnostics::default();
-        let tree = build_subtree(
+        let tree = match build_subtree(
             ROOT_REF,
             "root",
             Path::new(r"C:\root"),
             &records,
             &children_map,
+            &tx,
+            &mut progress,
             &cancel,
             &mut diagnostics,
-        )
-        .expect("cycle must be isolated");
+        ) {
+            Ok(tree) => tree,
+            Err(_) => panic!("cycle must be isolated"),
+        };
 
         assert_eq!(tree.iter().count(), 3);
         assert_eq!(diagnostics.depth_errors, 1);
         assert!(tree.children[0].children[0].children.is_empty());
-    }
-
-    #[test]
-    fn size_pass_handles_deep_directory_chains() {
-        const DEPTH: usize = 4_096;
-
-        let mut tree = DirEntry::new_dir(
-            format!("d{DEPTH}"),
-            PathBuf::from(format!(r"C:\root\d{DEPTH}")),
-        );
-        for offset in (0..DEPTH).rev() {
-            let (name, path) = if offset == 0 {
-                ("root".to_string(), PathBuf::from(r"C:\root"))
-            } else {
-                (
-                    format!("d{offset}"),
-                    PathBuf::from(format!(r"C:\root\d{offset}")),
-                )
-            };
-            let mut parent = DirEntry::new_dir(name, path);
-            parent.children.push(tree);
-            tree = parent;
-        }
-
-        let (tx, _rx) = crossbeam_channel::bounded(1);
-        let cancel = AtomicBool::new(false);
-        let mut progress = NtfsProgress::default();
-        let mut diagnostics = ScanDiagnostics::default();
-        let keep = fill_sizes(
-            &mut tree,
-            true,
-            &mut progress,
-            &tx,
-            &cancel,
-            &mut diagnostics,
-        )
-        .expect("deep size pass must complete");
-
-        assert!(keep);
-        assert_eq!(tree.iter().count(), DEPTH + 1);
-        assert_eq!(
-            tree.dir_count,
-            u64::try_from(DEPTH).expect("depth fits u64")
-        );
-        assert_eq!(progress.dirs, u64::try_from(DEPTH).expect("depth fits u64"));
-        assert_eq!(diagnostics.total_errors(), 0);
     }
 }
