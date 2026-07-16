@@ -241,11 +241,7 @@ Video codecs:
 - AV1
 - ProRes
 
-Encoder modes:
-
-- Auto: hardware encoder first, CPU fallback
-- Hardware only
-- Software only
+Video export uses bundled CPU encoders: OpenH264, Kvazaar, rav1e, and prores_aw.
 
 Image sequence formats:
 
@@ -255,13 +251,13 @@ Image sequence formats:
 - TIFF
 - TGA
 
-EXR support is provided through `oiio-rs` (`vfx-core`, `vfx-io`, backed by `exr-core`) and supports common OpenEXR compression modes including ZIP, PIZ, PXR24, B44/B44A, DWA, and HTJ2K variants. FFmpeg integration is provided by the git dependency `playa-ffmpeg`.
+EXR support is provided through `oiio-rs` (`vfx-core`, `vfx-io`, backed by `exr-core`) and supports common OpenEXR compression modes including ZIP, PIZ, PXR24, B44/B44A, DWA, and HTJ2K variants. Video codec, pixel-conversion, and ISO-BMFF primitives come from the pinned `ffmpeg-rs` workspace dependencies; no system FFmpeg installation is required.
 
 The encoder captures the current Squarebob viewport frame-by-frame. For 3D path tracing, it waits for the configured sample target before handing a frame to the encoder.
 
 ## Local Development
 
-The preferred local entry point is `bootstrap.py` or `xtask`, not raw `cargo build`, because FFmpeg/native dependencies require a configured vcpkg environment.
+Use `bootstrap.py`, `xtask`, or normal Cargo commands. Video export builds without a system FFmpeg or vcpkg installation.
 
 Common commands:
 
@@ -270,7 +266,6 @@ python bootstrap.py b          # release build through xtask
 python bootstrap.py b -d       # debug build
 python bootstrap.py t -d       # debug tests
 python bootstrap.py c          # fmt check + clippy through xtask
-python bootstrap.py deps       # install pinned vcpkg dependencies
 python bootstrap.py pkg        # cargo-packager package
 ```
 
@@ -285,30 +280,10 @@ cargo run -p xtask -- test --debug
 cargo run -p xtask -- wipe
 ```
 
-On Windows this repository expects vcpkg at:
-
-```text
-C:\vcpkg
-```
-
-The pinned vcpkg manifest is:
-
-```text
-vcpkg.json
-vcpkg-configuration.json
-```
-
-The active triplets used by CI/local bootstrap are:
-
-- Windows: `x64-windows-static-md-release`
-- Linux: `x64-linux-release`
-- macOS Apple Silicon: `arm64-osx-release`
-
 ## Requirements
 
 - Rust 1.96.0, pinned by `rust-toolchain.toml`.
 - Python 3 for `bootstrap.py`.
-- vcpkg for FFmpeg/native media dependencies.
 - A GPU/backend supported by `wgpu`:
   - Windows: DirectX 12
   - Linux: Vulkan/Wayland/X11 stack
@@ -406,7 +381,6 @@ Required GitHub secrets for signed macOS release builds:
 |-- data/                        Screenshots and bundled factory render preset
 |-- shaders/                     Shader resources used by render paths
 |-- bootstrap.py                 Cross-platform local helper script
-|-- vcpkg.json                   Native FFmpeg dependency manifest
 `-- .github/                     CI/CD workflows and composite actions
 ```
 
@@ -428,9 +402,8 @@ Required GitHub secrets for signed macOS release builds:
 | Serialization/cache | `serde`, `serde_json`, `bincode`, `sha2` | `1`, `1`, `1`, `0.11` |
 | Images | `image` | `0.25` with PNG/JPEG/TIFF/TGA/HDR features in `media-encoder` |
 | Media export | local `media-encoder` crate | workspace `0.1.0`, Rust edition 2024 |
-| FFmpeg binding | `playa-ffmpeg` | git: `https://github.com/ssoj13/playa-ffmpeg` |
+| Video codec stack | `av-codec`, `av-format`, `av-swscale`, `openh264` | pinned `ffmpeg-rs` SSH ref plus bundled OpenH264 |
 | EXR/VFX IO | `vfx-core`, `vfx-io` (`exr-core` backend) | git: `ssh://git@github.com/ssoj13/oiio-rs.git`, `main` |
-| Native deps | FFmpeg via vcpkg | baseline pinned in `vcpkg-configuration.json` |
 | Packaging | `cargo-packager` | `0.11.7` in `bootstrap.py`, GitHub Actions installs with `cargo install cargo-packager --locked` |
 
 ## License

@@ -3,7 +3,7 @@
 bootstrap.py - Unified local build/test/package script for Squarebob.
 
 Cross-platform, Python 3, stdlib only. Ported from Playa's bootstrap.py and
-adapted for this repository's xtask/vcpkg setup.
+adapted for this repository's xtask setup.
 
 Commands:
     b(uild)       Build squarebob-rs via xtask
@@ -11,7 +11,6 @@ Commands:
     c(heck)       Format check + clippy via xtask
     cl(ean)       Clean build artifacts
     d(ownload)    Re-fetch bundled OCIO ACES configs into data/ocio/
-    deps          Install pinned vcpkg manifest dependencies
     pkg(package)  Distribution package via cargo-packager
     h(elp)        Print help
 
@@ -24,7 +23,6 @@ Examples:
     python bootstrap.py b
     python bootstrap.py b -d
     python bootstrap.py c
-    python bootstrap.py deps
 """
 
 from __future__ import annotations
@@ -42,26 +40,6 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.resolve()
 IS_WINDOWS = platform.system() == "Windows"
-IS_MACOS = platform.system() == "Darwin"
-IS_LINUX = platform.system() == "Linux"
-
-DEFAULT_VCPKG_ROOT = Path("C:/vcpkg") if IS_WINDOWS else Path.home() / "vcpkg"
-LOCAL_VCPKG_ROOT = ROOT_DIR / ".vcpkg"
-
-
-def default_triplet() -> str:
-    if IS_WINDOWS:
-        return "x64-windows-static-md-release"
-    if IS_MACOS:
-        machine = platform.machine().lower()
-        return "arm64-osx-release" if machine in ("arm64", "aarch64") else "x64-osx-release"
-    if IS_LINUX:
-        return "x64-linux-release"
-    return ""
-
-
-DEFAULT_TRIPLET = default_triplet()
-
 CARGO_TOOLS = [
     ("cargo-binstall", ["cargo", "binstall", "--version"], ["cargo", "install", "cargo-binstall"]),
     (
@@ -145,38 +123,6 @@ def check_cargo() -> bool:
     return True
 
 
-def env_set(name: str, value: str | os.PathLike[str]) -> None:
-    os.environ[name] = os.fspath(value)
-
-
-def setup_vcpkg() -> None:
-    triplet = os.environ.get("VCPKGRS_TRIPLET") or DEFAULT_TRIPLET
-    manifest_lib = LOCAL_VCPKG_ROOT / "installed" / triplet / "lib" if triplet else None
-
-    if manifest_lib and manifest_lib.exists():
-        env_set("VCPKG_ROOT", LOCAL_VCPKG_ROOT)
-        ok(f"manifest vcpkg: {LOCAL_VCPKG_ROOT}")
-    elif not os.environ.get("VCPKG_ROOT"):
-        if DEFAULT_VCPKG_ROOT.exists():
-            env_set("VCPKG_ROOT", DEFAULT_VCPKG_ROOT)
-            ok(f"vcpkg: {DEFAULT_VCPKG_ROOT}")
-        else:
-            warn(f"vcpkg not found at {DEFAULT_VCPKG_ROOT}")
-
-    if triplet and not os.environ.get("VCPKGRS_TRIPLET"):
-        env_set("VCPKGRS_TRIPLET", triplet)
-
-    vcpkg_root = os.environ.get("VCPKG_ROOT")
-    if vcpkg_root and triplet:
-        pkg_config = Path(vcpkg_root) / "installed" / triplet / "lib" / "pkgconfig"
-        old = os.environ.get("PKG_CONFIG_PATH", "")
-        paths = [str(pkg_config)]
-        if old:
-            paths.append(old)
-        env_set("PKG_CONFIG_PATH", os.pathsep.join(paths))
-        ok(f"triplet: {triplet}")
-
-
 def setup_vs_env() -> None:
     if not IS_WINDOWS:
         return
@@ -227,7 +173,6 @@ def fix_libclang() -> None:
 
 
 def setup_env(include_vs: bool = False) -> None:
-    setup_vcpkg()
     if include_vs:
         setup_vs_env()
     fix_libclang()
@@ -435,40 +380,6 @@ def run_download(_args: argparse.Namespace) -> int:
     return 0
 
 
-def run_deps(_args: argparse.Namespace) -> int:
-    header("VCPKG DEPS")
-    if not which("vcpkg"):
-        vcpkg_exe = DEFAULT_VCPKG_ROOT / ("vcpkg.exe" if IS_WINDOWS else "vcpkg")
-        if vcpkg_exe.exists():
-            vcpkg = str(vcpkg_exe)
-        else:
-            err("vcpkg executable not found")
-            step(f"Expected at {vcpkg_exe} or in PATH")
-            return 1
-    else:
-        vcpkg = "vcpkg"
-
-    triplet = os.environ.get("VCPKGRS_TRIPLET") or DEFAULT_TRIPLET
-    cmd = [
-        vcpkg,
-        "install",
-        "--x-manifest-root",
-        ".",
-        "--x-install-root",
-        ".vcpkg/installed",
-        "--triplet",
-        triplet,
-    ]
-    step("Installing pinned vcpkg manifest dependencies...")
-    code, _, elapsed = run(cmd)
-    if code == 0:
-        ok(f"vcpkg dependencies installed ({fmt_time(elapsed)})")
-    else:
-        err("vcpkg install failed")
-    print()
-    return code
-
-
 def run_package(_args: argparse.Namespace) -> int:
     header("PACKAGE")
     if not ensure_cargo_tools():
@@ -497,7 +408,6 @@ COMMANDS
   c       cargo fmt --check + xtask clippy
   cl      cargo clean
   d       re-fetch bundled OCIO ACES configs into data/ocio/
-  deps    install pinned vcpkg manifest dependencies
   pkg     package via cargo-packager
   h       help
 
@@ -513,11 +423,10 @@ EXAMPLES
   python bootstrap.py b
   python bootstrap.py b -d
   python bootstrap.py c
-  python bootstrap.py deps
   python bootstrap.py clippy --workspace --all-targets -- -D warnings
 """
 
-COMMANDS = ["b", "t", "c", "cl", "d", "deps", "pkg", "h"]
+COMMANDS = ["b", "t", "c", "cl", "d", "pkg", "h"]
 XTASK_COMMANDS = {
     "build",
     "check",
@@ -554,7 +463,7 @@ def main() -> int:
         nargs="?",
         choices=COMMANDS,
         default="h",
-        help="b, t, c, cl, deps, pkg, h",
+        help="b, t, c, cl, d, pkg, h",
     )
     parser.add_argument("-d", "--debug", action="store_true", help="Debug mode")
     parser.add_argument("-f", "--features", help="Cargo features")
@@ -576,7 +485,6 @@ def main() -> int:
         "c": run_check,
         "cl": run_clean,
         "d": run_download,
-        "deps": run_deps,
         "pkg": run_package,
     }
     handler = dispatch.get(args.command)

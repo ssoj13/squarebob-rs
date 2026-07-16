@@ -954,7 +954,7 @@ fn cmd_deploy(install_dir: Option<&str>) -> Result<()> {
     std::fs::copy(&source_exe, &target_exe).context("Failed to copy executable")?;
     println!("  ✓ Copied {}", exe_name);
 
-    // Native deps are linked statically (vfx-io/exr-core, playa-ffmpeg, …); no extra DLL/SO bundles to ship.
+    // Native dependencies are linked statically; no extra DLL/SO bundles to ship.
 
     // Copy shaders directory from project root (optional)
     let source_shaders = PathBuf::from("shaders");

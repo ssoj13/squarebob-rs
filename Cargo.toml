@@ -6,9 +6,8 @@ rust-version.workspace = true
 
 # Produced binary is `squarebob.exe` / `squarebob` rather than the
 # crate-default `squarebob-rs`. The package name stays as `squarebob-rs`
-# because dozens of references (xtask, bootstrap.py, CI, vcpkg.json,
-# ProjectDirs identifiers) treat it as crate identity and renaming
-# would invalidate user-side cache/preset directories.
+# because automation and ProjectDirs identifiers treat it as crate identity;
+# renaming would invalidate user-side cache/preset directories.
 [[bin]]
 name = "squarebob"
 path = "src/main.rs"
@@ -108,7 +107,14 @@ windows = { version = "0.62", features = [
 libc = "0.2"
 
 # External git deps
-playa-ffmpeg = { git = "https://github.com/ssoj13/playa-ffmpeg", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling", "nvenc", "static"] }
+av-codec = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", rev = "c0a8e10b7416ca7a24223f42e3e137809d1d20b1", features = ["enc-hevc", "enc-av1"] }
+av-codec-core = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", rev = "c0a8e10b7416ca7a24223f42e3e137809d1d20b1" }
+av-format = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", rev = "c0a8e10b7416ca7a24223f42e3e137809d1d20b1" }
+av-swscale = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", rev = "c0a8e10b7416ca7a24223f42e3e137809d1d20b1" }
+av-util-core = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", rev = "c0a8e10b7416ca7a24223f42e3e137809d1d20b1" }
+av-util-frame = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", rev = "c0a8e10b7416ca7a24223f42e3e137809d1d20b1" }
+av-util-pixfmt = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", rev = "c0a8e10b7416ca7a24223f42e3e137809d1d20b1" }
+openh264 = { version = "=0.9.7", features = ["source"] }
 vfx-core = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main" }
 vfx-io = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main", default-features = false, features = ["exr", "htj2k", "png", "jpeg", "tiff", "dpx", "hdr"] }
 # Full OCIO-compatible colour management. Replaces the hand-rolled

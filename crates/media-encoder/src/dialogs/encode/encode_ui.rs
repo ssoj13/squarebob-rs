@@ -203,16 +203,14 @@ impl EncodeDialog {
             settings.selected_codec
         );
         log::trace!(
-            "  H.264: impl={:?}, mode={:?}, value={}, preset={}, profile={}",
-            settings.codec_settings.h264.encoder_impl,
+            "  H.264: mode={:?}, value={}, preset={}, profile={}",
             settings.codec_settings.h264.quality_mode,
             settings.codec_settings.h264.quality_value,
             settings.codec_settings.h264.preset,
             settings.codec_settings.h264.profile
         );
         log::trace!(
-            "  H.265: impl={:?}, mode={:?}, value={}, preset={}, profile={}",
-            settings.codec_settings.h265.encoder_impl,
+            "  H.265: mode={:?}, value={}, preset={}, profile={}",
             settings.codec_settings.h265.quality_mode,
             settings.codec_settings.h265.quality_value,
             settings.codec_settings.h265.preset,
@@ -223,11 +221,9 @@ impl EncodeDialog {
             settings.codec_settings.prores.profile
         );
         log::trace!(
-            "  AV1: impl={:?}, mode={:?}, value={}, preset={}",
-            settings.codec_settings.av1.encoder_impl,
+            "  AV1: mode={:?}, value={}",
             settings.codec_settings.av1.quality_mode,
-            settings.codec_settings.av1.quality_value,
-            settings.codec_settings.av1.preset
+            settings.codec_settings.av1.quality_value
         );
         log::trace!("  Tonemap: {:?}", settings.tonemap_mode);
         log::trace!("  ExportMode: {:?}", settings.export_mode);
@@ -266,16 +262,14 @@ impl EncodeDialog {
             self.selected_codec
         );
         log::trace!(
-            "  H.264: impl={:?}, mode={:?}, value={}, preset={}, profile={}",
-            self.codec_settings.h264.encoder_impl,
+            "  H.264: mode={:?}, value={}, preset={}, profile={}",
             self.codec_settings.h264.quality_mode,
             self.codec_settings.h264.quality_value,
             self.codec_settings.h264.preset,
             self.codec_settings.h264.profile
         );
         log::trace!(
-            "  H.265: impl={:?}, mode={:?}, value={}, preset={}, profile={}",
-            self.codec_settings.h265.encoder_impl,
+            "  H.265: mode={:?}, value={}, preset={}, profile={}",
             self.codec_settings.h265.quality_mode,
             self.codec_settings.h265.quality_value,
             self.codec_settings.h265.preset,
@@ -283,11 +277,9 @@ impl EncodeDialog {
         );
         log::trace!("  ProRes: profile={:?}", self.codec_settings.prores.profile);
         log::trace!(
-            "  AV1: impl={:?}, mode={:?}, value={}, preset={}",
-            self.codec_settings.av1.encoder_impl,
+            "  AV1: mode={:?}, value={}",
             self.codec_settings.av1.quality_mode,
-            self.codec_settings.av1.quality_value,
-            self.codec_settings.av1.preset
+            self.codec_settings.av1.quality_value
         );
         log::trace!("  Tonemap: {:?}", self.tonemap_mode);
         log::trace!("  ExportMode: {:?}", self.export_mode);
@@ -315,10 +307,9 @@ impl EncodeDialog {
     /// Build EncoderSettings from current UI state
     pub fn build_encoder_settings(&self) -> EncoderSettings {
         // self.output_path is already normalized (kept in sync with container changes)
-        let (encoder_impl, quality_mode, quality_value, preset, profile, prores_profile) =
+        let (quality_mode, quality_value, preset, profile, prores_profile) =
             match self.selected_codec {
                 VideoCodec::H264 => (
-                    self.codec_settings.h264.encoder_impl,
                     self.codec_settings.h264.quality_mode,
                     self.codec_settings.h264.quality_value,
                     Some(self.codec_settings.h264.preset.clone()),
@@ -326,7 +317,6 @@ impl EncodeDialog {
                     None,
                 ),
                 VideoCodec::H265 => (
-                    self.codec_settings.h265.encoder_impl,
                     self.codec_settings.h265.quality_mode,
                     self.codec_settings.h265.quality_value,
                     Some(self.codec_settings.h265.preset.clone()),
@@ -334,17 +324,15 @@ impl EncodeDialog {
                     None,
                 ),
                 VideoCodec::AV1 => (
-                    self.codec_settings.av1.encoder_impl,
                     self.codec_settings.av1.quality_mode,
                     self.codec_settings.av1.quality_value,
-                    Some(self.codec_settings.av1.preset.clone()),
+                    None,
                     None,
                     None,
                 ),
                 VideoCodec::ProRes => (
-                    crate::dialogs::encode::EncoderImpl::Software,
                     crate::dialogs::encode::QualityMode::CRF,
-                    0, // ProRes doesn't use quality_value
+                    0,
                     None,
                     None,
                     Some(self.codec_settings.prores.profile),
@@ -355,7 +343,6 @@ impl EncodeDialog {
             output_path: self.output_path.clone(),
             container: self.container,
             codec: self.selected_codec,
-            encoder_impl,
             quality_mode,
             quality_value,
             fps: self.fps,
@@ -1000,12 +987,23 @@ impl EncodeDialog {
     }
 
     fn render_h264_settings(&mut self, ui: &mut egui::Ui) {
-        let profiles: &[&str] = &["baseline", "main", "high", "high10", "high422", "high444"];
+        let profiles: &[&str] = &["baseline", "main", "high"];
         render_h26x_settings(
             ui,
             &mut self.codec_settings.h264,
             "h264",
             "18=best, 23=default, 28=fast",
+            &[
+                "ultrafast",
+                "superfast",
+                "veryfast",
+                "faster",
+                "fast",
+                "medium",
+                "slow",
+                "slower",
+                "veryslow",
+            ],
             profiles,
         );
     }
@@ -1017,6 +1015,18 @@ impl EncodeDialog {
             &mut self.codec_settings.h265,
             "h265",
             "28=default (higher than H.264)",
+            &[
+                "ultrafast",
+                "superfast",
+                "veryfast",
+                "faster",
+                "fast",
+                "medium",
+                "slow",
+                "slower",
+                "veryslow",
+                "placebo",
+            ],
             profiles,
         );
     }
@@ -1035,7 +1045,7 @@ impl EncodeDialog {
         });
 
         ui.add_space(4.0);
-        ui.label("ProRes is always software-encoded (prores_ks)");
+        ui.label("ProRes CPU encoder (prores_aw)");
 
         // Empty lines for vertical alignment with H264 tab
         ui.add_space(4.0);
@@ -1052,18 +1062,7 @@ impl EncodeDialog {
 
     /// Render AV1 settings
     fn render_av1_settings(&mut self, ui: &mut egui::Ui) {
-        use crate::dialogs::encode::{EncoderImpl, QualityMode};
-
-        ui.label("Encoder:");
-        ui.horizontal(|ui| {
-            for impl_type in EncoderImpl::all() {
-                ui.radio_value(
-                    &mut self.codec_settings.av1.encoder_impl,
-                    *impl_type,
-                    impl_type.to_string(),
-                );
-            }
-        });
+        use crate::dialogs::encode::QualityMode;
 
         ui.label("Quality Mode:");
         ui.horizontal(|ui| {
@@ -1087,80 +1086,8 @@ impl EncodeDialog {
             );
         });
 
-        ui.horizontal(|ui| {
-            ui.label("Preset:");
-
-            // Determine available presets based on encoder
-            let (presets, descriptions): (Vec<&str>, Vec<&str>) =
-                match self.codec_settings.av1.encoder_impl {
-                    EncoderImpl::Hardware => {
-                        // NVENC/QSV/AMF: p1-p7 + named presets
-                        (
-                            vec![
-                                "p1", "p2", "p3", "p4", "p5", "p6", "p7", "default", "slow",
-                                "medium", "fast",
-                            ],
-                            vec![
-                                "P1 (fastest, lowest quality)",
-                                "P2 (faster, lower quality)",
-                                "P3 (fast, low quality)",
-                                "P4 (medium, default)",
-                                "P5 (slow, good quality)",
-                                "P6 (slower, better quality)",
-                                "P7 (slowest, best quality)",
-                                "Default",
-                                "Slow (HQ 2 passes)",
-                                "Medium (HQ 1 pass)",
-                                "Fast (HP 1 pass)",
-                            ],
-                        )
-                    }
-                    EncoderImpl::Software | EncoderImpl::Auto => {
-                        // SVT-AV1/libaom: numeric 0-13 presets
-                        (
-                            vec![
-                                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
-                                "13",
-                            ],
-                            vec![
-                                "0 (slowest, best)",
-                                "1",
-                                "2",
-                                "3",
-                                "4",
-                                "5",
-                                "6 (balanced)",
-                                "7",
-                                "8",
-                                "9",
-                                "10",
-                                "11",
-                                "12",
-                                "13 (fastest)",
-                            ],
-                        )
-                    }
-                };
-
-            egui::ComboBox::from_id_salt("av1_preset")
-                .selected_text(&self.codec_settings.av1.preset)
-                .show_ui(ui, |ui| {
-                    for (preset, desc) in presets.iter().zip(descriptions.iter()) {
-                        ui.selectable_value(
-                            &mut self.codec_settings.av1.preset,
-                            preset.to_string(),
-                            format!("{} - {}", preset, desc),
-                        );
-                    }
-                });
-        });
-
         ui.add_space(4.0);
-        ui.label("ðŸ’¡ AV1: Best compression, slower encoding. HW: RTX 40xx/Arc/RDNA 3");
-
-        // Empty line for vertical alignment with H264 tab
-        ui.add_space(4.0);
-        ui.label("");
+        ui.label("AV1 CPU encoder (rav1e, fixed speed preset)");
     }
 
     /// Render format-specific settings for image sequence export
@@ -1384,26 +1311,17 @@ impl Drop for EncodeDialog {
 /// Render H.264/H.265 settings. Codec-specific differences are passed as parameters:
 /// - `id_prefix`: "h264" or "h265" â€” used as egui ComboBox id_salt to avoid conflicts
 /// - `crf_hint`: the CRF quality hint string shown next to the slider
+/// - `presets`: codec-supported CPU preset strings
 /// - `profiles`: available profile strings for the profile ComboBox
 fn render_h26x_settings(
     ui: &mut egui::Ui,
     settings: &mut dyn crate::dialogs::encode::H26xSettingsMut,
     id_prefix: &str,
     crf_hint: &str,
+    presets: &[&str],
     profiles: &[&str],
 ) {
-    use crate::dialogs::encode::{EncoderImpl, QualityMode};
-
-    ui.label("Encoder:");
-    ui.horizontal(|ui| {
-        for impl_type in EncoderImpl::all() {
-            ui.radio_value(
-                settings.encoder_impl_mut(),
-                *impl_type,
-                impl_type.to_string(),
-            );
-        }
-    });
+    use crate::dialogs::encode::QualityMode;
 
     ui.add_space(4.0);
 
@@ -1427,25 +1345,6 @@ fn render_h26x_settings(
 
     ui.horizontal(|ui| {
         ui.label("Preset:");
-        let presets: &[&str] = match settings.encoder_impl() {
-            // NVENC/QSV/AMF
-            EncoderImpl::Hardware => &[
-                "default", "slow", "medium", "fast", "p1", "p2", "p3", "p4", "p5", "p6", "p7",
-            ],
-            // libx264 / libx265 (identical preset ladder)
-            EncoderImpl::Software | EncoderImpl::Auto => &[
-                "ultrafast",
-                "superfast",
-                "veryfast",
-                "faster",
-                "fast",
-                "medium",
-                "slow",
-                "slower",
-                "veryslow",
-                "placebo",
-            ],
-        };
         let preset_id = format!("{}_preset", id_prefix);
         egui::ComboBox::from_id_salt(preset_id)
             .selected_text(settings.preset())

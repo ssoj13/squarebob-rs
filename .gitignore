@@ -6,7 +6,6 @@ target/
 .omc
 .claude
 .env
-.vcpkg
 .log
 *.log
 .bughunt/*.log
