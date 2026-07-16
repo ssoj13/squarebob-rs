@@ -91,7 +91,10 @@ impl App {
                             // SAFETY: same invariant — `root_ptr` aliases self.tree;
                             // `renderer.render` does not mutate self.tree.
                             let root = unsafe { &*root_ptr };
-                            r.render(root, &self.viewport, &self.opts)
+                            readback_or_empty(
+                                "GPU 2D screenshot readback failed",
+                                r.render(root, &self.viewport, &self.opts),
+                            )
                         } else {
                             Vec::new()
                         };
@@ -103,9 +106,12 @@ impl App {
             RenderMode::Mode3D => {
                 // If we already rendered this frame, just read back.
                 if self.last_render_frame_3d == self.frame_count
-                    && let Some(r) = &self.renderer_3d
+                    && let Some(r) = &mut self.renderer_3d
                 {
-                    return r.readback_render_texture();
+                    return readback_or_empty(
+                        "3D screenshot readback failed",
+                        r.readback_render_texture(),
+                    );
                 }
 
                 // Otherwise, render once and read back.
@@ -117,20 +123,36 @@ impl App {
                     // SAFETY: `root_ptr` aliases self.tree; the 3D renderer
                     // reads-only from `root` and does not touch self.tree.
                     let root = unsafe { &*root_ptr };
-                    r.render_to_view(
+                    if let Err(error) = r.render_to_view(
                         root,
                         w,
                         h,
                         &self.orbit_camera,
                         &self.render_3d_opts,
                         &self.opts,
-                    );
+                    ) {
+                        log::error!("3D screenshot render failed: {error}");
+                        return Vec::new();
+                    }
                     self.last_render_frame_3d = self.frame_count;
-                    r.readback_render_texture()
+                    readback_or_empty("3D screenshot readback failed", r.readback_render_texture())
                 } else {
                     Vec::new()
                 }
             }
+        }
+    }
+}
+
+fn readback_or_empty(
+    operation: &str,
+    result: Result<Vec<u8>, render_core::ReadbackError>,
+) -> Vec<u8> {
+    match result {
+        Ok(pixels) => pixels,
+        Err(error) => {
+            log::error!("{operation}: {error}");
+            Vec::new()
         }
     }
 }

@@ -120,13 +120,8 @@ impl EnvMap {
         // sRGB-encoded values, so decode them before upload and before building
         // the importance distribution.
         let is_hdr = ext.as_deref().is_some_and(|e| matches!(e, "hdr" | "exr"));
-        let byte_len = render_core::checked_2d_buffer_size("environment texture", w, h, 8)?;
-        let byte_len = usize::try_from(byte_len)
-            .map_err(|_| anyhow::anyhow!("environment texture is too large for this platform"))?;
-        let pixel_len = render_core::checked_pixel_count("environment texture", w, h)?;
-        let pixel_len = usize::try_from(pixel_len).map_err(|_| {
-            anyhow::anyhow!("environment pixel count is too large for this platform")
-        })?;
+        let byte_len = render_core::checked_2d_byte_len("environment texture", w, h, 8)?;
+        let pixel_len = render_core::checked_2d_buffer_len("environment texture", w, h)?;
 
         let mut data = Vec::with_capacity(byte_len);
         let mut luminance = Vec::with_capacity(pixel_len);
@@ -260,9 +255,7 @@ fn build_env_cdfs(
     height: u32,
     luminance: &[f32],
 ) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
-    let pixel_count = render_core::checked_pixel_count("environment CDF", width, height)?;
-    let pixel_count = usize::try_from(pixel_count)
-        .map_err(|_| anyhow::anyhow!("environment CDF is too large for this platform"))?;
+    let pixel_count = render_core::checked_2d_buffer_len("environment CDF", width, height)?;
     anyhow::ensure!(
         luminance.len() == pixel_count,
         "environment luminance length mismatch: expected {pixel_count}, got {}",

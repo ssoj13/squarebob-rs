@@ -124,7 +124,7 @@ pub(super) fn rfd_env_map_pick_start_dir(
 ///
 /// Returns vector of (extension, total_size, file_count) sorted by size descending.
 /// Files without extensions are grouped under "<none>".
-pub(super) fn compute_ext_stats(root: &DirEntry) -> Vec<(String, u64, u64)> {
+pub(crate) fn compute_ext_stats(root: &DirEntry) -> Vec<(String, u64, u64)> {
     let mut map: HashMap<String, (u64, u64)> = HashMap::new();
     for node in root.iter().filter(|node| !node.is_dir) {
         let ext = if node.ext.is_empty() {
@@ -155,7 +155,7 @@ pub(super) fn find_node_by_path<'a>(node: &'a DirEntry, target: &PathBuf) -> Opt
 ///
 /// Only considers leaf files (not directories). Returns (min, max).
 /// If no files found, returns (0, 0).
-pub(super) fn compute_size_range(root: &DirEntry) -> (u64, u64) {
+pub(crate) fn compute_size_range(root: &DirEntry) -> (u64, u64) {
     let mut min = u64::MAX;
     let mut max = 0u64;
     for node in root.iter().filter(|node| !node.is_dir && node.size > 0) {

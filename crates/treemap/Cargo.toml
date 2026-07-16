@@ -20,10 +20,9 @@ optional = true
 
 [dependencies.render-core]
 workspace = true
-optional = true
 
 [features]
 default = ["cpu"]
 cpu = []
-wgpu = ["dep:wgpu", "dep:bytemuck", "dep:render-core"]
+wgpu = ["dep:wgpu", "dep:bytemuck"]
 cuda = []

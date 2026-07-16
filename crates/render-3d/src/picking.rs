@@ -194,7 +194,7 @@ impl PickingState {
             return Ok(());
         };
 
-        let result = (|| {
+        let result = (|| -> Result<u32, render_core::ReadbackError> {
             let buf = self
                 .buffer
                 .as_ref()

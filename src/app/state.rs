@@ -5,7 +5,7 @@ use egui_dock::DockState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 
 use super::DockTab;
 
@@ -39,7 +39,6 @@ impl Default for CameraBookmark {
         }
     }
 }
-use crate::scanner::ScanMsg;
 use render_3d::Renderer3D;
 use render_core::Viewport;
 use render_core::gpu::GpuContext;

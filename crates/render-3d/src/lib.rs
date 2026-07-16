@@ -1505,7 +1505,7 @@ impl Renderer3D {
         debug!("  submit: {:.2}ms", submit_ms);
 
         // Sync pick result
-        self.picking.poll_result(&self.ctx.device);
+        self.picking.poll_result(&self.ctx.device)?;
 
         let readback_start = std::time::Instant::now();
         let result = gpu::map_readback(&self.ctx, &self.readback)?;

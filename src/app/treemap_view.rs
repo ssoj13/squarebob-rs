@@ -1041,13 +1041,19 @@ impl App {
             // in render_to_view — schedule a full pass when the hovered object changes.
             if let Some(r) = &mut self.renderer_3d {
                 let id_before = r.hovered_id();
-                r.pick_from_existing();
-                let id_after = r.hovered_id();
-                if self.render_3d_opts.hover_mode != crate::renderer::HoverMode::None
-                    && id_after != id_before
-                {
-                    self.needs_render_3d = true;
-                    ctx.request_repaint();
+                match r.pick_from_existing() {
+                    Ok(()) => {
+                        let id_after = r.hovered_id();
+                        if self.render_3d_opts.hover_mode != crate::renderer::HoverMode::None
+                            && id_after != id_before
+                        {
+                            self.needs_render_3d = true;
+                            ctx.request_repaint();
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("3D hover pick readback failed: {error}");
+                    }
                 }
             }
             if !self.render_3d_opts.path_tracing {
@@ -1105,14 +1111,17 @@ impl App {
                 // `self`) and is not invalidated for this scope — `set_selected_ids`
                 // mutates a separate field (`selected_3d_ids`), not the tree.
                 let root = unsafe { &*root_ptr };
-                r.render_to_view(
+                if let Err(error) = r.render_to_view(
                     root,
                     w,
                     h,
                     &self.orbit_camera,
                     &self.render_3d_opts,
                     &self.opts,
-                );
+                ) {
+                    log::error!("3D render failed: {error}");
+                    return;
+                }
                 // OCIO + CPU codepath: post-process the just-rendered
                 // PT output through `vfx_ocio::Processor::apply_rgb`
                 // on the CPU, then re-blit. Debug codepath — see the

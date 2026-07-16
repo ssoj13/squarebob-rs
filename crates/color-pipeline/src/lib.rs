@@ -401,7 +401,12 @@ pub enum ColorPipelineError {
     #[error(
         "OCIO view '{view}' on display '{display}' requires HDR output; current compositor is SDR"
     )]
-    UnsupportedHdrOutput { display: String, view: String },
+    UnsupportedHdrOutput {
+        /// OCIO display selected by the active view.
+        display: String,
+        /// OCIO view that requires an HDR output surface.
+        view: String,
+    },
 }
 
 /// Logarithmic scene-linear domain used by a baked 3D LUT.

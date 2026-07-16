@@ -2776,7 +2776,7 @@ impl PathTraceCompute {
                     },
                     wgpu::BindGroupEntry {
                         binding: 13,
-                        resource: self.material_buffer.as_entire_binding(),
+                        resource: materials_buf.as_entire_binding(),
                     },
                 ],
             })
@@ -3116,7 +3116,10 @@ impl PathTraceCompute {
         if let Some(wf) = &mut self.wavefront {
             let (wf_w, wf_h) = wf.dimensions();
             if wf_w != tile_capacity_w || wf_h != tile_capacity_h {
-                wf.resize(device, tile_capacity_w, tile_capacity_h);
+                if let Err(error) = wf.resize(device, tile_capacity_w, tile_capacity_h) {
+                    log::error!("dispatch_wavefront: wavefront resize failed: {error}");
+                    return false;
+                }
                 self.rebuild_wavefront_bind_groups(device);
             }
         }

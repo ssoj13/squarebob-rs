@@ -38,7 +38,7 @@ use std::sync::atomic::Ordering;
 
 use eframe::egui;
 
-use crate::exclusions;
+use crate::exclusions::{self, Exclusions};
 use crate::renderer::{self, RenderBackend, RenderMode};
 use render_3d::Renderer3D;
 use render_core::gpu::GpuContext;
@@ -454,7 +454,7 @@ impl App {
         wrapper.size = filtered.size;
         wrapper.file_count = filtered.file_count;
         wrapper.dir_count = filtered.dir_count;
-        wrapper.children = filtered.children;
+        wrapper.children = std::mem::take(&mut filtered.children);
 
         let free_space_path = wrapper.path.join("__FREE_SPACE__");
         let mut free_entry = DirEntry::new_file(
@@ -633,28 +633,37 @@ impl App {
                 }
                 RenderBackend::Gpu => {
                     let mut renderer_2d = self.renderer_2d_gpu.take();
-                    let pixels = if let Some(r) = &mut renderer_2d {
+                    let gpu_result = if let Some(r) = &mut renderer_2d {
                         let Some(root) = self.display_root() else {
                             self.renderer_2d_gpu = renderer_2d;
                             return;
                         };
-                        r.render(root, &self.viewport, &self.opts)
+                        Some(r.render(root, &self.viewport, &self.opts))
+                    } else {
+                        None
+                    };
+                    self.renderer_2d_gpu = renderer_2d;
+
+                    if let Some(result) = gpu_result {
+                        match result {
+                            Ok(pixels) => pixels,
+                            Err(error) => {
+                                log::error!("GPU 2D treemap readback failed: {error}");
+                                return;
+                            }
+                        }
                     } else {
                         let Some(root) = self.display_root() else {
-                            self.renderer_2d_gpu = renderer_2d;
                             return;
                         };
                         match renderer::cpu::render(root, &self.viewport, &self.opts) {
                             Ok(pixels) => pixels,
                             Err(error) => {
-                                self.renderer_2d_gpu = renderer_2d;
                                 log::error!("CPU treemap render rejected: {error}");
                                 return;
                             }
                         }
-                    };
-                    self.renderer_2d_gpu = renderer_2d;
-                    pixels
+                    }
                 }
             },
             RenderMode::Mode3D => {
@@ -663,35 +672,44 @@ impl App {
                 // for screenshot capture or when the GpuContext is on a
                 // foreign device (no POLYGON_MODE_LINE on eframe's device).
                 let mut renderer_3d = self.renderer_3d.take();
-                let pixels = if let Some(r) = &mut renderer_3d {
+                let gpu_result = if let Some(r) = &mut renderer_3d {
                     let Some(root) = self.display_root() else {
                         self.renderer_3d = renderer_3d;
                         return;
                     };
-                    r.render(
+                    Some(r.render(
                         root,
                         w,
                         h,
                         &self.orbit_camera,
                         &self.render_3d_opts,
                         &self.opts,
-                    )
+                    ))
+                } else {
+                    None
+                };
+                self.renderer_3d = renderer_3d;
+
+                if let Some(result) = gpu_result {
+                    match result {
+                        Ok(pixels) => pixels,
+                        Err(error) => {
+                            log::error!("GPU 3D treemap readback failed: {error}");
+                            return;
+                        }
+                    }
                 } else {
                     let Some(root) = self.display_root() else {
-                        self.renderer_3d = renderer_3d;
                         return;
                     };
                     match renderer::cpu::render(root, &self.viewport, &self.opts) {
                         Ok(pixels) => pixels,
                         Err(error) => {
-                            self.renderer_3d = renderer_3d;
                             log::error!("CPU treemap render rejected: {error}");
                             return;
                         }
                     }
-                };
-                self.renderer_3d = renderer_3d;
-                pixels
+                }
             }
         };
 

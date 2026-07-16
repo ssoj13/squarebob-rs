@@ -5,4 +5,4 @@ mod compute;
 pub mod pathguide;
 pub mod restir;
 
-pub use compute::{PathTraceCompute, PtCameraUniform};
+pub use compute::{BlitLutUploadError, PathTraceCompute, PtCameraUniform};

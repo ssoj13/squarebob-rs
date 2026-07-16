@@ -26,7 +26,7 @@ impl Renderer3D {
         camera: &OrbitCamera,
         opts: &Render3DOptions,
         treemap_opts: &TreeMapOptions,
-    ) {
+    ) -> Result<(), render_core::ReadbackError> {
         use log::{debug, info, warn};
         let render_start = std::time::Instant::now();
         info!(
@@ -60,10 +60,10 @@ impl Renderer3D {
 
         if width == 0 || height == 0 {
             warn!("render_to_view: zero size, skipping");
-            return;
+            return Ok(());
         }
 
-        self.ensure_targets(width, height);
+        self.ensure_targets(width, height)?;
 
         let (layout_w, layout_h) = self.scene_layout_size();
 
@@ -134,7 +134,7 @@ impl Renderer3D {
         );
         if instances.is_empty() {
             warn!("render_to_view: no instances, skipping");
-            return;
+            return Ok(());
         }
 
         // Upload instances (also when buffer was reset even if cache valid)
@@ -171,8 +171,8 @@ impl Renderer3D {
         // not the GPU readback used by PBR/wireframe.
         if !opts.path_tracing && cache_valid && self.instance_count > 0 {
             if let Some((px, py)) = self.picking.pending_pick {
-                self.picking.ensure_readback(&self.ctx.device, width);
-                self.pick_from_existing();
+                self.picking.ensure_readback(&self.ctx.device, width)?;
+                self.pick_from_existing()?;
                 self.picking.request_pick(px, py);
             }
         }
@@ -200,7 +200,7 @@ impl Renderer3D {
             // Arc clone to break borrow conflict (cheap - only refcount bump)
             let instances_pt = Arc::clone(&instances_arc);
             let num_cubes = instances_pt.len();
-            if let Err(error) = pt::render_path_traced_no_readback(
+            pt::render_path_traced_no_readback(
                 self.pt.pt_backend_kind,
                 self,
                 &instances_pt,
@@ -208,10 +208,7 @@ impl Renderer3D {
                 opts,
                 width,
                 height,
-            ) {
-                log::error!("PT frame failed: {error}");
-                return;
-            }
+            )?;
 
             // Outline overlay in PT mode. Picking is handled separately on
             // the UI thread via `pt_pick` (CPU ray cast on the BVH), so
@@ -247,7 +244,7 @@ impl Renderer3D {
                 "PT render (zero-copy): {:.2}ms ({} cubes)",
                 total_ms, num_cubes
             );
-            return;
+            return Ok(());
         }
 
         // Encode PBR/wireframe passes — bundle guarantees both halves valid
@@ -274,12 +271,12 @@ impl Renderer3D {
             &mut encoder,
             &state.targets.object_id_texture,
             state.targets.size,
-        );
+        )?;
 
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
 
         // Blocking poll to read pick result (sync like alembic-rs)
-        self.picking.poll_result(&self.ctx.device);
+        self.picking.poll_result(&self.ctx.device)?;
 
         let total_ms = render_start.elapsed().as_secs_f64() * 1000.0;
         let mode = if opts.show_wireframe {
@@ -295,6 +292,7 @@ impl Renderer3D {
             total_ms,
             instances.len()
         );
+        Ok(())
     }
 
     // NOTE: render_to_command_buffer and render_path_traced_to_buffer removed (unused callback path)
