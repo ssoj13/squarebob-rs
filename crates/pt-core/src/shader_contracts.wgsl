@@ -7,8 +7,16 @@ const PT_DEFAULT_IOR: f32 = 1.5;
 const PT_MIN_IOR: f32 = 1.0;
 const PT_MAX_IOR: f32 = 4.0;
 
+fn is_finite_f32(value: f32) -> bool {
+    return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
+}
+
+fn is_finite_vec3(value: vec3<f32>) -> bool {
+    return is_finite_f32(value.x) && is_finite_f32(value.y) && is_finite_f32(value.z);
+}
+
 fn safe_ior(value: f32) -> f32 {
-    if isNan(value) || isInf(value) {
+    if !is_finite_f32(value) {
         return PT_DEFAULT_IOR;
     }
     return clamp(value, PT_MIN_IOR, PT_MAX_IOR);
@@ -54,6 +62,6 @@ fn shadow_ray_max_t(
     target_normal: vec3<f32>,
     direction: vec3<f32>,
 ) -> f32 {
-    let target = offset_ray_origin(target_position, target_normal, -direction);
-    return distance(origin, target);
+    let adjusted_target = offset_ray_origin(target_position, target_normal, -direction);
+    return distance(origin, adjusted_target);
 }

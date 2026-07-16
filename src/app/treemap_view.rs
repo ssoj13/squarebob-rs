@@ -1069,131 +1069,143 @@ impl App {
             // through the later `maybe_run_oidn_denoise` call which needs
             // `&mut self`.
             let render_state = self.wgpu_render_state.clone().unwrap();
+            // Resolve non-GPU prerequisites before opening the validation scope.
+            // Every path after push_error_scope must reach pop().
+            let root_ptr = match self.display_root() {
+                Some(root) => root as *const _,
+                None => return,
+            };
             #[cfg(debug_assertions)]
             let error_scope = render_state
                 .device
                 .push_error_scope(wgpu::ErrorFilter::Validation);
 
-            // When layout changes, invalidate instances and mark PT scene dirty
-            if self.needs_layout
-                && let Some(r) = &mut self.renderer_3d
-            {
-                r.invalidate_instances();
-                r.mark_pt_scene_dirty();
-            }
-
-            // Get root - use raw pointer to avoid clone (safe: root lives for duration of render)
-            let root_ptr = match self.display_root() {
-                Some(r) => r as *const _,
-                None => return,
-            };
-
-            // Render to texture (root_ptr valid for this scope; see SAFETY below)
-            if let Some(r) = &mut self.renderer_3d {
-                // Sync selected IDs for outline rendering
-                r.set_selected_ids(&self.selected_3d_ids);
-                // Make sure the OCIO `Processor` + baked 3D LUT are
-                // in sync with the live settings BEFORE blitting.
-                // `ensure` is a hash-compare noop when nothing
-                // changed; `sync_color_lut` early-returns when the
-                // pending flag is clear. Both calls are cheap on
-                // the steady-state path.
-                if let Err(error) = self
-                    .color_pipeline
-                    .ensure(&self.render_3d_opts.color_pipeline)
+            let render_result = (|| -> Result<std::time::Duration, render_core::ReadbackError> {
+                // When layout changes, invalidate instances and mark PT scene dirty
+                if self.needs_layout
+                    && let Some(r) = &mut self.renderer_3d
                 {
-                    log::error!("color pipeline rebuild rejected: {error}");
+                    r.invalidate_instances();
+                    r.mark_pt_scene_dirty();
                 }
-                if let Err(error) = r.sync_color_lut(&mut self.color_pipeline) {
-                    log::error!("color LUT upload rejected: {error}");
-                }
-                // SAFETY: `root_ptr` aliases self.tree (DirEntry storage owned by
-                // `self`) and is not invalidated for this scope — `set_selected_ids`
-                // mutates a separate field (`selected_3d_ids`), not the tree.
-                let root = unsafe { &*root_ptr };
-                if let Err(error) = r.render_to_view(
-                    root,
-                    w,
-                    h,
-                    &self.orbit_camera,
-                    &self.render_3d_opts,
-                    &self.opts,
-                ) {
-                    log::error!("3D render failed: {error}");
-                    return;
-                }
-                // OCIO + CPU codepath: post-process the just-rendered
-                // PT output through `vfx_ocio::Processor::apply_rgb`
-                // on the CPU, then re-blit. Debug codepath — see the
-                // warn log inside `apply_cpu_color_pass`.
-                let cp = &self.render_3d_opts.color_pipeline;
-                if cp.mode == color_pipeline::ColorMode::Ocio
-                    && cp.codepath == color_pipeline::ColorCodepath::Cpu
-                {
-                    if let Err(error) =
-                        r.apply_cpu_color_pass(&self.color_pipeline, &self.render_3d_opts)
+
+                // Render to texture (root_ptr valid for this scope; see SAFETY below)
+                if let Some(r) = &mut self.renderer_3d {
+                    // Sync selected IDs for outline rendering
+                    r.set_selected_ids(&self.selected_3d_ids);
+                    // Make sure the OCIO `Processor` + baked 3D LUT are
+                    // in sync with the live settings BEFORE blitting.
+                    // `ensure` is a hash-compare noop when nothing
+                    // changed; `sync_color_lut` early-returns when the
+                    // pending flag is clear. Both calls are cheap on
+                    // the steady-state path.
+                    if let Err(error) = self
+                        .color_pipeline
+                        .ensure(&self.render_3d_opts.color_pipeline)
                     {
-                        log::error!("CPU color readback failed: {error}");
+                        log::error!("color pipeline rebuild rejected: {error}");
+                    }
+                    if let Err(error) = r.sync_color_lut(&mut self.color_pipeline) {
+                        log::error!("color LUT upload rejected: {error}");
+                    }
+                    // SAFETY: `root_ptr` aliases self.tree (DirEntry storage owned by
+                    // `self`) and is not invalidated for this scope — `set_selected_ids`
+                    // mutates a separate field (`selected_3d_ids`), not the tree.
+                    let root = unsafe { &*root_ptr };
+                    r.render_to_view(
+                        root,
+                        w,
+                        h,
+                        &self.orbit_camera,
+                        &self.render_3d_opts,
+                        &self.opts,
+                    )?;
+                    // OCIO + CPU codepath: post-process the just-rendered
+                    // PT output through `vfx_ocio::Processor::apply_rgb`
+                    // on the CPU, then re-blit. Debug codepath — see the
+                    // warn log inside `apply_cpu_color_pass`.
+                    let cp = &self.render_3d_opts.color_pipeline;
+                    if cp.mode == color_pipeline::ColorMode::Ocio
+                        && cp.codepath == color_pipeline::ColorCodepath::Cpu
+                    {
+                        if let Err(error) =
+                            r.apply_cpu_color_pass(&self.color_pipeline, &self.render_3d_opts)
+                        {
+                            log::error!("CPU color readback failed: {error}");
+                        }
                     }
                 }
-            }
-            self.last_render_frame_3d = self.frame_count;
-            self.needs_render_3d = false;
-            let t_render = t0.elapsed();
+                self.last_render_frame_3d = self.frame_count;
+                self.needs_render_3d = false;
+                let t_render = t0.elapsed();
 
-            // OIDN denoise pass. Fires only when PT is active, mode != Off,
-            // and (a) the user pressed "Denoise now", or (b) auto-mode is on
-            // and we've reached the sample target for the current
-            // accumulation (and haven't denoised it yet).
-            self.maybe_run_oidn_denoise(w, h);
+                // OIDN denoise pass. Fires only when PT is active, mode != Off,
+                // and (a) the user pressed "Denoise now", or (b) auto-mode is on
+                // and we've reached the sample target for the current
+                // accumulation (and haven't denoised it yet).
+                self.maybe_run_oidn_denoise(w, h);
 
-            // When OIDN landed this frame, blit its result back into the
-            // PT render target through the megakernel's ACES+gamma pipeline.
-            // This is intentionally *not* a native-egui texture swap —
-            // going through `blit_with_source` keeps hover/selection
-            // overlays and tone-mapping consistent between raw and
-            // denoised display.
-            if self.oidn_display_is_denoised
-                && let (Some(r), Some(denoised_view)) = (
-                    self.renderer_3d.as_ref(),
-                    self.oidn_denoiser.as_ref().map(|d| d.result_view()),
-                )
-            {
-                r.composite_overlay(Some(denoised_view), &self.render_3d_opts);
-            }
-            self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
+                // When OIDN landed this frame, blit its result back into the
+                // PT render target through the megakernel's ACES+gamma pipeline.
+                // This is intentionally *not* a native-egui texture swap —
+                // going through `blit_with_source` keeps hover/selection
+                // overlays and tone-mapping consistent between raw and
+                // denoised display.
+                if self.oidn_display_is_denoised
+                    && let (Some(r), Some(denoised_view)) = (
+                        self.renderer_3d.as_ref(),
+                        self.oidn_denoiser.as_ref().map(|d| d.result_view()),
+                    )
+                {
+                    r.composite_overlay(Some(denoised_view), &self.render_3d_opts);
+                }
+                self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
 
-            // Register/update the PT render-target texture with egui. Same
-            // texture every frame regardless of denoise state — display
-            // source has been mutated in place by the (raw) blit + optional
-            // denoised re-blit above.
-            if let Some(r) = &self.renderer_3d
-                && let Some(texture) = r.get_render_texture()
-            {
-                if let Some(tex_id) = self.render_texture_id {
-                    if size_changed {
+                // Register/update the PT render-target texture with egui. Same
+                // texture every frame regardless of denoise state — display
+                // source has been mutated in place by the (raw) blit + optional
+                // denoised re-blit above.
+                if let Some(r) = &self.renderer_3d
+                    && let Some(texture) = r.get_render_texture()
+                {
+                    if let Some(tex_id) = self.render_texture_id {
+                        if size_changed {
+                            let mut renderer = render_state.renderer.write();
+                            renderer.update_egui_texture_from_wgpu_texture(
+                                &render_state.device,
+                                &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                                wgpu::FilterMode::Linear,
+                                tex_id,
+                            );
+                        }
+                    } else {
                         let mut renderer = render_state.renderer.write();
-                        renderer.update_egui_texture_from_wgpu_texture(
+                        self.render_texture_id = Some(renderer.register_native_texture(
                             &render_state.device,
                             &texture.create_view(&wgpu::TextureViewDescriptor::default()),
                             wgpu::FilterMode::Linear,
-                            tex_id,
-                        );
+                        ));
                     }
-                } else {
-                    let mut renderer = render_state.renderer.write();
-                    self.render_texture_id = Some(renderer.register_native_texture(
-                        &render_state.device,
-                        &texture.create_view(&wgpu::TextureViewDescriptor::default()),
-                        wgpu::FilterMode::Linear,
-                    ));
                 }
-            }
+
+                Ok(t_render)
+            })();
+
             #[cfg(debug_assertions)]
             if let Some(err) = pollster::block_on(error_scope.pop()) {
                 log::error!("wgpu validation error after 3D render: {:?}", err);
                 self.wgpu_error_flag.store(true, Ordering::SeqCst);
             }
+
+            let t_render = match render_result {
+                Ok(duration) => duration,
+                Err(error) => {
+                    log::error!("3D render failed: {error}");
+                    self.wgpu_error_flag.store(true, Ordering::SeqCst);
+                    ctx.request_repaint();
+                    return;
+                }
+            };
             let t_tex = t0.elapsed();
 
             let total_ms = t_tex.as_secs_f64() * 1000.0;

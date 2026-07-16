@@ -223,7 +223,7 @@ fn restir_update_reservoir(
     weight: f32,
     seed: ptr<function, u32>,
 ) {
-    if weight <= 0.0 || isNan(weight) || isInf(weight) {
+    if weight <= 0.0 || !is_finite_f32(weight) {
         return;
     }
     (*reservoir).w_sum += weight;
@@ -245,7 +245,7 @@ fn restir_combine_reservoirs(
         return;
     }
     let weight = target_at_receiver * candidate.w * f32(candidate.m);
-    if isNan(weight) || isInf(weight) || weight <= 0.0 {
+    if !is_finite_f32(weight) || weight <= 0.0 {
         return;
     }
     (*receiver).w_sum += weight;
@@ -256,10 +256,10 @@ fn restir_combine_reservoirs(
 }
 
 fn restir_finalize_reservoir(reservoir: ptr<function, Reservoir>) {
-    let target = restir_target_at((*reservoir).sample, (*reservoir).surface);
-    if (*reservoir).m > 0u && (*reservoir).w_sum > 0.0 && target > 0.0 {
-        (*reservoir).w = (*reservoir).w_sum / (f32((*reservoir).m) * target);
-        if !isNan((*reservoir).w) && !isInf((*reservoir).w) {
+    let target_value = restir_target_at((*reservoir).sample, (*reservoir).surface);
+    if (*reservoir).m > 0u && (*reservoir).w_sum > 0.0 && target_value > 0.0 {
+        (*reservoir).w = (*reservoir).w_sum / (f32((*reservoir).m) * target_value);
+        if is_finite_f32((*reservoir).w) {
             return;
         }
     }

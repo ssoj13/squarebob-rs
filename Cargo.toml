@@ -65,7 +65,7 @@ half = "2.7"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # GPU / rendering
-wgpu = "29"
+wgpu = "29.0.4"
 pollster = "0.4"
 
 # UI (egui ecosystem)

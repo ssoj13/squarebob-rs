@@ -348,7 +348,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Russian roulette (after first bounce)
     var continue_prob = 1.0;
     if params.rr_enabled != 0u && ray.bounce > 0u {
-        if any(isNan(ray.throughput)) || any(isInf(ray.throughput)) {
+        if !is_finite_vec3(ray.throughput) {
             accum[pixel_id] += vec4<f32>(0.0, 0.0, 0.0, 1.0);
             return;
         }

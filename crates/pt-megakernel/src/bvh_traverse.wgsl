@@ -1094,7 +1094,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // integrator step. Reject non-finite paths before probability math and
         // bound survival probability away from both singular endpoints.
         if camera.rr_enabled != 0u && bounce > 0u {
-            if any(isNan(throughput)) || any(isInf(throughput)) {
+            if !is_finite_vec3(throughput) {
                 break;
             }
             let max_throughput = max(max(throughput.x, throughput.y), throughput.z);
