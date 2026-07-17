@@ -1,7 +1,6 @@
 //! Central treemap panel: rendering, hover, selection, context menu, camera controls.
 
 use eframe::egui;
-#[cfg(debug_assertions)]
 use std::sync::atomic::Ordering;
 
 use crate::events::{NavigateUpEvent, SelectPathEvent};
