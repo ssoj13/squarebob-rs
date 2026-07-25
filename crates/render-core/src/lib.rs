@@ -403,6 +403,7 @@ pub mod gpu {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     compatible_surface: None,
                     force_fallback_adapter: false,
+                    apply_limit_buckets: false,
                 })) {
                     Ok(a) => a,
                     Err(e) => {
@@ -824,7 +825,11 @@ where
         Ok(Err(e)) => return Err(ReadbackError::MapFailed(e)),
         Err(e) => return Err(ReadbackError::CallbackDropped(e)),
     }
-    let data = slice.get_mapped_range();
+    // wgpu 30: get_mapped_range now returns Result; the map was already verified
+    // successful via the channel above, so a full-slice mapped range cannot fail.
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer mapped successfully above");
     let result = f(&data);
     drop(data);
     buffer.unmap();

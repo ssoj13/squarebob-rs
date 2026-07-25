@@ -65,16 +65,27 @@ half = "2.7"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # GPU / rendering
-wgpu = "29.0.4"
+wgpu = "30"
 pollster = "0.4"
 
 # UI (egui ecosystem)
-eframe = { version = "0.34", default-features = false }
-egui = "0.34"
-egui-wgpu = "0.34"
-egui_extras = "0.34"
-egui_dock = { version = "0.19", features = ["serde"] }
-egui-phosphor = "0.12.0"
+eframe = { version = "0.35", default-features = false }
+egui = "0.35"
+egui-wgpu = "0.35"
+egui_extras = "0.35"
+egui_dock = { version = "0.20", features = ["serde"] }
+egui-phosphor = "0.13"
+
+# OIDN denoiser Burn stack — GIT deps (a [patch] can't cross 0.21->0.22). Same revs
+# oidn-rs/render-rs/gsplat-rs pin. pt-denoise-oidn uses burn's wgpu backend +
+# `try_into_primitive`, so burn carries wgpu+extension. Keep every burn-wgpu edge
+# default-features=false so `fusion` stays OFF (the `try_into_primitive::<Wgpu>()`
+# -> CubeTensor downcast requires it). Consolidated here (was raw pins in
+# pt-denoise-oidn) so a future bump touches only this block. See
+# colmap-rs/docs/egui-wgpu-bump.md.
+burn = { git = "https://github.com/tracel-ai/burn", rev = "93e63e8e9cf215ffb870ed62132961588a774096", default-features = false, features = ["std", "ndarray", "wgpu", "extension"] }
+burn-wgpu = { git = "https://github.com/tracel-ai/burn", rev = "93e63e8e9cf215ffb870ed62132961588a774096", default-features = false }
+cubecl-wgpu = { git = "https://github.com/tracel-ai/cubecl", rev = "31c5506cfc1dd9d350124910fb51cee8b54a31e1" }
 
 # Imaging
 image = "0.25"
@@ -236,3 +247,20 @@ minimum-system-version = "13.0"
 
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
+
+# wgpu 30 needs egui from git: published egui <=0.35.0 is still wgpu 29; emilk/egui main is 0.35.0
+# ON wgpu 30. Redirect the WHOLE egui family (ours + transitive inside egui_dock/egui-phosphor) to
+# one rev so there is a single egui 0.35 + single wgpu 30 in the lock. (burn/cubecl are git deps
+# above, NOT patched — a [patch] can't cross their 0.21->0.22.) Trim any "not used in the crate
+# graph" entry after the build is green. See colmap-rs/docs/egui-wgpu-bump.md.
+[patch.crates-io]
+egui                 = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+egui-wgpu            = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+egui-winit           = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+eframe               = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+egui_extras          = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+egui_glow            = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+ecolor               = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+epaint               = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+emath                = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
+epaint_default_fonts = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }

@@ -340,7 +340,7 @@ impl App {
         // Sync dock visibility before rendering
         self.sync_dock_tabs_visibility();
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let dock_style = egui_dock::Style::from_egui(ui.global_style().as_ref());
             let mut dock_state =
                 std::mem::replace(&mut self.dock_state, dock::default_dock_state());

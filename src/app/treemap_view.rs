@@ -188,21 +188,25 @@ impl App {
                     .extension()
                     .map(|e| e.to_string_lossy().to_string())
                     .unwrap_or_default();
-                #[allow(deprecated)]
-                egui::show_tooltip_at_pointer(
-                    ctx,
+                // egui 0.35: `show_tooltip_at_pointer` was removed; use the
+                // `Tooltip::always_open(..).show(..)` builder anchored at the pointer.
+                egui::Tooltip::always_open(
+                    ctx.clone(),
                     egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("3d_tooltip_layer")),
                     egui::Id::new("3d_tooltip"),
-                    |ui: &mut egui::Ui| {
-                        ui.set_min_width(250.0);
-                        ui.strong(&file_name);
-                        ui.label(fmt_size(size));
-                        if !ext.is_empty() {
-                            ui.label(format!(".{ext}"));
-                        }
-                        ui.label(&path_str);
-                    },
-                );
+                    egui::PopupAnchor::Pointer,
+                )
+                // Match the old `show_tooltip_at_pointer` cursor gap (egui 0.35 default is 4.0).
+                .gap(12.0)
+                .show(|ui: &mut egui::Ui| {
+                    ui.set_min_width(250.0);
+                    ui.strong(&file_name);
+                    ui.label(fmt_size(size));
+                    if !ext.is_empty() {
+                        ui.label(format!(".{ext}"));
+                    }
+                    ui.label(&path_str);
+                });
             }
         } else if self.hovered_3d_id != 0 || self.sticky_hover.is_some() {
             // Mouse left the 3D view - clear hover state (no layout rebuild needed)
@@ -799,27 +803,31 @@ impl App {
                     egui::StrokeKind::Outside,
                 );
 
-                #[allow(deprecated)]
-                egui::show_tooltip_at_pointer(
-                    ui.ctx(),
+                // egui 0.35: `show_tooltip_at_pointer` was removed; use the
+                // `Tooltip::always_open(..).show(..)` builder anchored at the pointer.
+                egui::Tooltip::always_open(
+                    ui.ctx().clone(),
                     egui::LayerId::new(
                         egui::Order::Tooltip,
                         egui::Id::new("treemap_tooltip_layer"),
                     ),
                     egui::Id::new("treemap_tooltip"),
-                    |ui: &mut egui::Ui| {
-                        ui.set_min_width(250.0);
-                        ui.strong(&name);
-                        ui.label(fmt_size(size));
-                        if !ext.is_empty() {
-                            ui.label(format!(".{}", ext));
-                        }
-                        ui.label(&path_str);
-                        if is_lod_bucket {
-                            ui.small("Double-click or scroll to expand into files");
-                        }
-                    },
-                );
+                    egui::PopupAnchor::Pointer,
+                )
+                // Match the old `show_tooltip_at_pointer` cursor gap (egui 0.35 default is 4.0).
+                .gap(12.0)
+                .show(|ui: &mut egui::Ui| {
+                    ui.set_min_width(250.0);
+                    ui.strong(&name);
+                    ui.label(fmt_size(size));
+                    if !ext.is_empty() {
+                        ui.label(format!(".{}", ext));
+                    }
+                    ui.label(&path_str);
+                    if is_lod_bucket {
+                        ui.small("Double-click or scroll to expand into files");
+                    }
+                });
             }
         } else {
             self.hovered = None;

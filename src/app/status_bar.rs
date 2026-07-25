@@ -10,7 +10,7 @@ use crate::cache;
 impl App {
     /// Render bottom status bar
     pub(super) fn ui_status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status").show_inside(ui, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.progress.scanning {
                     ui.spinner();

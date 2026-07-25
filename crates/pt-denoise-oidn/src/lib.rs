@@ -8,7 +8,7 @@
 //! Burn-allocated input tensors — never a `map_async` round-trip.
 //!
 //! Pipeline per `denoise()` call:
-//! 1. Allocate input tensors (`Tensor::<Wgpu, 4>::zeros`) — backed by wgpu
+//! 1. Allocate input tensors (`Tensor::<4>::zeros`) — backed by wgpu
 //!    buffers on the shared device.
 //! 2. `copy_texture_to_buffer(color_tex → color_input_buf)` on GPU.
 //!    `copy_buffer_to_buffer(albedo_src → albedo_input_buf)` on GPU
@@ -104,7 +104,7 @@ pub struct OidnDenoiser {
     /// Burn device sharing squarebob's wgpu setup. Built on first denoise.
     /// Stored as a `'static` reference (via `Box::leak`) so committed OIDN
     /// models can be cached across denoise passes.
-    burn_device_ref: Option<&'static burn_wgpu::WgpuDevice>,
+    burn_device_ref: Option<&'static burn::tensor::Device>,
 
     /// Cached TZA bytes from the last successful model load. Reused across
     /// `denoise()` calls so we don't re-read the 1.8 MB file from disk
@@ -116,7 +116,7 @@ pub struct OidnDenoiser {
     /// Cached immutable OIDN state: model weights + tile plan, but no
     /// per-pass input/output tensor handles. This keeps repeated denoise
     /// passes fast without retaining stale mutable GPU state between them.
-    cached_filter: Option<Box<oidn_rs::CommittedRtFilter<'static, burn_wgpu::Wgpu<f32, i32>>>>,
+    cached_filter: Option<Box<oidn_rs::CommittedRtFilter<'static>>>,
     cached_filter_key: Option<(bool, bool, Quality, u32, u32, Option<u32>)>,
 
     /// Per-channel HDR clamp applied to the colour input tensor before
@@ -327,11 +327,11 @@ impl OidnDenoiser {
         // UNet rebuild on every periodic fire. The result texture itself
         // is allocated up-front in `new()`, so there's no separate slot
         // to ensure here.
-        let burn_device: &'static burn_wgpu::WgpuDevice = match self.burn_device_ref {
+        let burn_device: &'static burn::tensor::Device = match self.burn_device_ref {
             Some(d) => d,
             None => {
                 let dev = make_burn_device(ctx)?;
-                let leaked: &'static burn_wgpu::WgpuDevice = Box::leak(Box::new(dev));
+                let leaked: &'static burn::tensor::Device = Box::leak(Box::new(dev));
                 self.burn_device_ref = Some(leaked);
                 log::info!(
                     "OIDN: Burn-wgpu device initialised on shared wgpu setup (leaked to 'static for committed filter caching)"
@@ -373,7 +373,6 @@ impl OidnDenoiser {
         // constraint on `copy_buffer_to_buffer`, so they get the natural
         // [1, h, w, 4] shape.
         use burn::tensor::Tensor;
-        type Wgpu = burn_wgpu::Wgpu<f32, i32>;
         let (color_hwc4_padded, color_buf, color_off) = alloc_hwc4_input(burn_device, padded_w, h)?;
         let albedo_bridge = albedo_buf
             .map(|src| -> Result<_> {
@@ -432,7 +431,7 @@ impl OidnDenoiser {
 
         // Trim padding columns from the colour tensor — yields a view of
         // shape [1, h, w, 4] (strided when `pad_cols > 0`).
-        let color_hwc4: Tensor<Wgpu, 4> = if pad_cols == 0 {
+        let color_hwc4: Tensor<4> = if pad_cols == 0 {
             color_hwc4_padded
         } else {
             color_hwc4_padded.slice([0..1, 0..h, 0..w, 0..4])
@@ -483,14 +482,14 @@ impl OidnDenoiser {
         // Convert HWC RGBA → CHW RGB on the same wgpu device via Burn ops.
         // permute is a strided view; downstream ops in run_tensors (slice,
         // reflect_pad, transfer, cat) handle non-contiguous tensors.
-        let color_chw3_t: Tensor<Wgpu, 4> = hwc4_to_chw3(color_hwc4);
+        let color_chw3_t: Tensor<4> = hwc4_to_chw3(color_hwc4);
         // AOV buffers carry a running sum in `.rgb` and a sample count in
         // `.w` (the shaders accumulate per primary hit). Divide before
         // dropping alpha so the network sees per-pixel averages, which is
         // what the OIDN model was trained against.
-        let albedo_chw3_t: Option<Tensor<Wgpu, 4>> =
+        let albedo_chw3_t: Option<Tensor<4>> =
             albedo_bridge.map(|(t, _, _, _)| hwc4_normalize_by_w_to_chw3(t));
-        let normal_chw3_t: Option<Tensor<Wgpu, 4>> =
+        let normal_chw3_t: Option<Tensor<4>> =
             normal_bridge.map(|(t, _, _, _)| hwc4_normalize_by_w_to_chw3(t));
         log::trace!(
             "OIDN pass#{pass_id}: tensors ready color_dims={:?} albedo_dims={:?} normal_dims={:?} color_clamped={} user_scale_env={:?}",
@@ -584,7 +583,7 @@ impl OidnDenoiser {
             // requiring the dir to exist.
             let weights_dir_placeholder: &Path =
                 self.weights_dir.as_deref().unwrap_or(Path::new(""));
-            let mut builder = oidn_rs::RtFilter::<burn_wgpu::Wgpu<f32, i32>>::builder(
+            let mut builder = oidn_rs::RtFilter::builder(
                 burn_device,
                 weights_dir_placeholder,
             )
@@ -624,7 +623,7 @@ impl OidnDenoiser {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("OIDN committed filter cache missing"))?;
         log::trace!("OIDN pass#{pass_id}: committed filter execute_tensors() begin");
-        let out_chw3: Tensor<Wgpu, 4> = filter
+        let out_chw3: Tensor<4> = filter
             .execute_tensors(Some(color_chw3_t), albedo_chw3_t, normal_chw3_t, None)
             .map_err(|e| anyhow::anyhow!("OIDN execute_tensors: {e:?}"))?;
         log::trace!("OIDN pass#{pass_id}: committed filter execute_tensors() done");
@@ -641,10 +640,10 @@ impl OidnDenoiser {
         // Pad width axis if needed so the final buffer's bytes_per_row
         // is 256-aligned for copy_buffer_to_texture. extent.width = w
         // skips the padding columns when writing to the result texture.
-        let out_hwc4_padded: Tensor<Wgpu, 4> = if pad_cols == 0 {
+        let out_hwc4_padded: Tensor<4> = if pad_cols == 0 {
             out_hwc4
         } else {
-            let zeros = Tensor::<Wgpu, 4>::zeros([1, h, pad_cols, 4], burn_device);
+            let zeros = Tensor::<4>::zeros([1, h, pad_cols, 4], burn_device);
             Tensor::cat(vec![out_hwc4, zeros], 2)
         };
         copy_tensor_into_texture(
@@ -694,20 +693,22 @@ impl OidnDenoiser {
 
 // ---------- Helpers ----------
 
-/// Construct a `burn_wgpu::WgpuDevice` that shares squarebob's wgpu setup.
+/// Construct a burn 0.22 `Device` that shares squarebob's wgpu setup.
 ///
 /// Without this bridge OIDN would create its own adapter+device, forcing PCIe
 /// roundtrips on every input/output buffer. By feeding our `Instance`/
 /// `Adapter`/`Device`/`Queue` to `cubecl_wgpu::init_device`, Burn allocates
 /// its tensors on the *same* device.
-pub fn make_burn_device(ctx: &GpuContext) -> Result<burn_wgpu::WgpuDevice> {
+pub fn make_burn_device(ctx: &GpuContext) -> Result<burn::tensor::Device> {
     // A/B test: when this env var is set, build a standalone Burn device
     // (separate wgpu context) so we can isolate whether the all-zero output
     // we're chasing is a `cubecl_wgpu::init_device(WgpuSetup)` bridge bug.
     // Unset → production path (shared device).
     if std::env::var("OIDN_STANDALONE_DEVICE").is_ok() {
         log::warn!("OIDN_STANDALONE_DEVICE set — using non-shared Burn device (debug only)");
-        return Ok(burn_wgpu::WgpuDevice::default());
+        return Ok(burn::tensor::Device::wgpu(
+            burn::tensor::DeviceKind::DefaultDevice,
+        ));
     }
 
     let backend = ctx.adapter.get_info().backend;
@@ -718,8 +719,13 @@ pub fn make_burn_device(ctx: &GpuContext) -> Result<burn_wgpu::WgpuDevice> {
         queue: (*ctx.queue).clone(),
         backend,
     };
-    let device = cubecl_wgpu::init_device(setup, cubecl_wgpu::RuntimeOptions::default());
-    Ok(device)
+    // `init_device` registers a `ComputeClient` on this shared setup and returns a
+    // `WgpuDevice::Existing(id)` bound to it, so every burn tensor built on the
+    // resulting `Device` allocates on the SAME wgpu Device/Queue as PT — the
+    // zero-copy bridge is preserved. `Device::from` lifts the cubecl `WgpuDevice`
+    // into burn 0.22's dynamic-dispatch `Device` (active under burn's `wgpu` feature).
+    let wgpu_device = cubecl_wgpu::init_device(setup, cubecl_wgpu::RuntimeOptions::default());
+    Ok(burn::tensor::Device::from(wgpu_device))
 }
 
 /// Resolve the directory holding OIDN `.tza` weights in this order:
@@ -795,21 +801,22 @@ fn create_result_texture(
 /// context for the caller to issue a direct `copy_buffer_to_buffer` into the
 /// tensor's backing storage without going through CubeCL.
 type HwC4Input = (
-    burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+    burn::tensor::Tensor<4>,
     wgpu::Buffer,
     u64,
 );
 
-fn alloc_hwc4_input(device: &burn_wgpu::WgpuDevice, w: usize, h: usize) -> Result<HwC4Input> {
-    let t = burn::tensor::Tensor::<burn_wgpu::Wgpu<f32, i32>, 4>::zeros([1, h, w, 4], device);
-    // Reach the underlying CubeTensor via the public Tensor::into_primitive +
-    // TensorPrimitive::Float route. All fields on CubeTensor are pub
-    // (burn-cubecl-0.21.0/src/tensor/base.rs).
-    let primitive = t.clone().into_primitive();
-    let cube = match primitive {
-        burn::tensor::TensorPrimitive::Float(c) => c,
-        _ => anyhow::bail!("alloc_hwc4_input: expected Float tensor primitive"),
-    };
+fn alloc_hwc4_input(device: &burn::tensor::Device, w: usize, h: usize) -> Result<HwC4Input> {
+    let t = burn::tensor::Tensor::<4>::zeros([1, h, w, 4], device);
+    // Downcast the dynamic burn 0.22 tensor to the concrete wgpu `CubeTensor` to
+    // reach its backing `wgpu::Buffer`, via the `extension`-feature
+    // `try_into_primitive::<Wgpu>()` — the blessed replacement for the old
+    // `into_primitive()` + `TensorPrimitive::Float` match. All `CubeTensor`
+    // fields are pub (burn-cubecl).
+    let cube = t
+        .clone()
+        .try_into_primitive::<burn_wgpu::Wgpu>()
+        .map_err(|e| anyhow::anyhow!("alloc_hwc4_input try_into_primitive: {e:?}"))?;
     let managed = cube
         .client
         .get_resource(cube.handle.clone())
@@ -824,8 +831,8 @@ fn alloc_hwc4_input(device: &burn_wgpu::WgpuDevice, w: usize, h: usize) -> Resul
 /// `run_tensors` ops (`slice`, `reflect_pad_2d`, `cat`, ...) handle
 /// strides correctly.
 fn hwc4_to_chw3(
-    hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
-) -> burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4> {
+    hwc4: burn::tensor::Tensor<4>,
+) -> burn::tensor::Tensor<4> {
     let dims = hwc4.dims();
     debug_assert_eq!(dims[0], 1);
     debug_assert_eq!(dims[3], 4);
@@ -851,11 +858,10 @@ fn hwc4_to_chw3(
 /// distribution, and the denoiser then sees that hue jitter as noise
 /// it can't smooth.
 fn clamp_firefly_luminance(
-    hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+    hwc4: burn::tensor::Tensor<4>,
     max_lum: f32,
-) -> burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4> {
+) -> burn::tensor::Tensor<4> {
     use burn::tensor::Tensor;
-    type Wgpu = burn_wgpu::Wgpu<f32, i32>;
 
     let dims = hwc4.dims();
     debug_assert_eq!(dims[0], 1);
@@ -870,7 +876,7 @@ fn clamp_firefly_luminance(
     let r = rgb.clone().slice([0..1, 0..h, 0..w, 0..1]);
     let g = rgb.clone().slice([0..1, 0..h, 0..w, 1..2]);
     let b = rgb.clone().slice([0..1, 0..h, 0..w, 2..3]);
-    let lum: Tensor<Wgpu, 4> = r
+    let lum: Tensor<4> = r
         .mul_scalar(0.2126_f32)
         .add(g.mul_scalar(0.7152_f32))
         .add(b.mul_scalar(0.0722_f32));
@@ -898,8 +904,8 @@ fn clamp_firefly_luminance(
 /// with zero accumulated samples (shouldn't happen after frame 0, but
 /// the clear-then-execute window allows it) at zero instead of NaN.
 fn hwc4_normalize_by_w_to_chw3(
-    hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
-) -> burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4> {
+    hwc4: burn::tensor::Tensor<4>,
+) -> burn::tensor::Tensor<4> {
     let dims = hwc4.dims();
     debug_assert_eq!(dims[0], 1);
     debug_assert_eq!(dims[3], 4);
@@ -920,9 +926,9 @@ fn hwc4_normalize_by_w_to_chw3(
 /// roundtrip. The result is contiguous (cat materialises a new tensor),
 /// which is what the subsequent `copy_buffer_to_texture` needs.
 fn chw_rgb_to_hwc_rgba_ones(
-    chw3: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
-    device: &burn_wgpu::WgpuDevice,
-) -> burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4> {
+    chw3: burn::tensor::Tensor<4>,
+    device: &burn::tensor::Device,
+) -> burn::tensor::Tensor<4> {
     let dims = chw3.dims();
     debug_assert_eq!(dims[0], 1);
     debug_assert_eq!(dims[1], 3);
@@ -930,7 +936,7 @@ fn chw_rgb_to_hwc_rgba_ones(
     let w = dims[3];
     // [1, 3, H, W] → [1, H, W, 3]
     let hwc3 = chw3.permute([0, 2, 3, 1]);
-    let ones = burn::tensor::Tensor::<burn_wgpu::Wgpu<f32, i32>, 4>::ones([1, h, w, 1], device);
+    let ones = burn::tensor::Tensor::<4>::ones([1, h, w, 1], device);
     burn::tensor::Tensor::cat(vec![hwc3, ones], 3)
 }
 
@@ -947,7 +953,7 @@ fn chw_rgb_to_hwc_rgba_ones(
 fn copy_tensor_into_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    hwc4: burn::tensor::Tensor<burn_wgpu::Wgpu<f32, i32>, 4>,
+    hwc4: burn::tensor::Tensor<4>,
     dst: &wgpu::Texture,
     valid_w: usize,
     h: usize,
@@ -968,12 +974,11 @@ fn copy_tensor_into_texture(
         );
     }
 
-    // Pull the inner CubeTensor so we can reach its ComputeClient + Handle.
-    let primitive = hwc4.into_primitive();
-    let cube = match primitive {
-        burn::tensor::TensorPrimitive::Float(c) => c,
-        _ => anyhow::bail!("OIDN bridge: expected Float tensor primitive"),
-    };
+    // Pull the inner `CubeTensor` so we can reach its ComputeClient + Handle,
+    // via the `extension`-feature `try_into_primitive::<Wgpu>()`.
+    let cube = hwc4
+        .try_into_primitive::<burn_wgpu::Wgpu>()
+        .map_err(|e| anyhow::anyhow!("OIDN bridge try_into_primitive: {e:?}"))?;
     let managed = cube
         .client
         .get_resource(cube.handle.clone())

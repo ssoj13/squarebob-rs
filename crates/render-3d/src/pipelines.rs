@@ -179,7 +179,8 @@ struct CubePipelineConfig<'a> {
 
 /// Create an instanced cube pipeline with given config
 fn create_cube_pipeline(device: &wgpu::Device, cfg: CubePipelineConfig) -> wgpu::RenderPipeline {
-    let vtx_layouts = geometry::cube_vertex_layouts();
+    // wgpu 30: VertexState.buffers is `&[Option<VertexBufferLayout>]`.
+    let vtx_layouts = geometry::cube_vertex_layouts().map(Some);
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(cfg.label),
         layout: Some(cfg.layout),

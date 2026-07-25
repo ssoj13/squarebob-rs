@@ -295,7 +295,7 @@ impl GpuRenderer2D {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc(), RectInstance::desc()],
+                buffers: &[Some(Vertex::desc()), Some(RectInstance::desc())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {

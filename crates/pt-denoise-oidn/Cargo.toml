@@ -14,15 +14,14 @@ log = { workspace = true }
 half = { workspace = true }
 render-core = { workspace = true }
 
-# Burn + WGPU backend share the same wgpu 29.0.3 we already pin in workspace.
+# Burn 0.22 + WGPU backend share the same wgpu 30 pinned in the workspace root.
 # `cubecl-wgpu::init_device` lets us reuse squarebob's wgpu::Instance/Adapter/
-# Device/Queue, so every Burn dispatch runs on the same GPU context as PT.
-burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
-burn-wgpu = { version = "0.21", default-features = false }
-# Must match the version burn-wgpu 0.21 transitively pulls (otherwise we end
-# up with two wgpu+naga+wgpu-hal copies and the wgpu-hal compile fails on
-# duplicate `windows` types). Burn-wgpu 0.21 → cubecl 0.10 → wgpu 29.0.3.
-cubecl-wgpu = "0.10"
+# Device/Queue, so every Burn dispatch runs on the same GPU context as PT. burn's
+# wgpu+extension features (for `try_into_primitive`) are set on the root workspace
+# dep; keep every burn-wgpu edge default-features=false so `fusion` stays OFF.
+burn = { workspace = true }
+burn-wgpu = { workspace = true }
+cubecl-wgpu = { workspace = true }
 
 # Our fork of Intel OIDN (pure Rust, weights ship as plain git blobs).
 #

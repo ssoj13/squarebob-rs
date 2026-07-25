@@ -12,7 +12,7 @@ impl App {
     /// Render top toolbar panel
     pub(super) fn ui_toolbar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        egui::Panel::top("toolbar").show_inside(ui, |ui| {
+        egui::Panel::top("toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 // === PATH SECTION ===
                 let mut start_scan = false;
@@ -200,7 +200,7 @@ impl App {
         if !self.show_search {
             return;
         }
-        egui::Panel::top("search_bar").show_inside(ui, |ui| {
+        egui::Panel::top("search_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
                 let resp = ui.add(
