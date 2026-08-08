@@ -297,7 +297,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "av-codec"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-aac",
  "av-codec-aac-enc",
@@ -316,7 +316,7 @@ dependencies = [
 [[package]]
 name = "av-codec-aac"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-util-core",
@@ -330,7 +330,7 @@ dependencies = [
 [[package]]
 name = "av-codec-aac-enc"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-aac",
  "av-codec-core",
@@ -345,7 +345,7 @@ dependencies = [
 [[package]]
 name = "av-codec-av1-enc"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-util-core",
@@ -359,7 +359,7 @@ dependencies = [
 [[package]]
 name = "av-codec-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "av-util-data",
@@ -374,21 +374,23 @@ dependencies = [
 [[package]]
 name = "av-codec-h265"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-codec-h26x",
  "av-util-core",
  "av-util-frame",
  "av-util-pixfmt",
+ "codec-simd",
  "log",
+ "rayon",
  "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "av-codec-h265-enc"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-util-core",
@@ -406,7 +408,7 @@ dependencies = [
 [[package]]
 name = "av-codec-h26x"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-util-core",
@@ -420,7 +422,7 @@ dependencies = [
 [[package]]
 name = "av-codec-mp3"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-util-core",
@@ -433,7 +435,7 @@ dependencies = [
 [[package]]
 name = "av-codec-pcm"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-util-core",
@@ -446,7 +448,7 @@ dependencies = [
 [[package]]
 name = "av-codec-prores"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-util-core",
@@ -460,7 +462,7 @@ dependencies = [
 [[package]]
 name = "av-codec-raw"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-core",
  "av-util-core",
@@ -473,19 +475,22 @@ dependencies = [
 [[package]]
 name = "av-format"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
+ "av-codec-core",
  "av-format-core",
  "av-format-mov",
  "av-format-movenc",
  "av-format-mp3",
  "av-format-wav",
+ "av-util-core",
+ "av-util-pixfmt",
 ]
 
 [[package]]
 name = "av-format-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "log",
  "thiserror 2.0.19",
@@ -494,7 +499,7 @@ dependencies = [
 [[package]]
 name = "av-format-mov"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-format-core",
  "av-util-math",
@@ -504,7 +509,7 @@ dependencies = [
 [[package]]
 name = "av-format-movenc"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-format-core",
 ]
@@ -512,7 +517,7 @@ dependencies = [
 [[package]]
 name = "av-format-mp3"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-codec-mp3",
  "av-format-core",
@@ -521,7 +526,7 @@ dependencies = [
 [[package]]
 name = "av-format-wav"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-format-core",
 ]
@@ -549,7 +554,7 @@ dependencies = [
 [[package]]
 name = "av-swscale"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "av-util-cpu",
@@ -562,7 +567,7 @@ dependencies = [
 [[package]]
 name = "av-util-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "bytemuck",
  "log",
@@ -572,7 +577,7 @@ dependencies = [
 [[package]]
 name = "av-util-cpu"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "num-traits",
@@ -581,7 +586,7 @@ dependencies = [
 [[package]]
 name = "av-util-data"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "av-util-math",
@@ -591,7 +596,7 @@ dependencies = [
 [[package]]
 name = "av-util-frame"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "av-util-data",
@@ -604,7 +609,7 @@ dependencies = [
 [[package]]
 name = "av-util-math"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "num-traits",
@@ -613,7 +618,7 @@ dependencies = [
 [[package]]
 name = "av-util-pixfmt"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "av-util-math",
@@ -623,7 +628,7 @@ dependencies = [
 [[package]]
 name = "av-util-samplefmt"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "av-util-str",
@@ -632,7 +637,7 @@ dependencies = [
 [[package]]
 name = "av-util-str"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
 ]
@@ -640,7 +645,7 @@ dependencies = [
 [[package]]
 name = "av-util-tx"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?rev=c0a8e10b7416ca7a24223f42e3e137809d1d20b1#c0a8e10b7416ca7a24223f42e3e137809d1d20b1"
+source = "git+ssh://git@github.com/ssoj13/ffmpeg-rs.git?branch=main#4e7d368b444b2917af9661b9b5779357c47b8e6f"
 dependencies = [
  "av-util-core",
  "av-util-cpu",
@@ -1515,6 +1520,11 @@ checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
 dependencies = [
  "error-code",
 ]
+
+[[package]]
+name = "codec-simd"
+version = "0.3.34"
+source = "git+ssh://git@github.com/ssoj13/codec-simd-rs.git?branch=main#358ee47e0062f4f0333a99810be2d768cbf181cd"
 
 [[package]]
 name = "codespan-reporting"
@@ -5577,6 +5587,7 @@ dependencies = [
 [[package]]
 name = "oidn-model"
 version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#bebbfc5ec26c589121e2b0878ff55a6f669b43a6"
 dependencies = [
  "burn",
  "half",
@@ -5587,6 +5598,7 @@ dependencies = [
 [[package]]
 name = "oidn-rs"
 version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#bebbfc5ec26c589121e2b0878ff55a6f669b43a6"
 dependencies = [
  "burn",
  "bytemuck",
@@ -5602,6 +5614,7 @@ dependencies = [
 [[package]]
 name = "oidn-tza"
 version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#bebbfc5ec26c589121e2b0878ff55a6f669b43a6"
 dependencies = [
  "bytemuck",
  "half",

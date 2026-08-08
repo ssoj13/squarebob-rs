@@ -35,6 +35,8 @@ cubecl-wgpu = { workspace = true }
 # Disable with `default-features = false` if shipping external
 # weights instead.
 #
-# Local sibling checkout while developing squarebob and oidn-rs together.
-# Before publishing, commit/push oidn-rs and switch this back to a pinned git rev.
-oidn-rs = { path = "../../../oidn-rs/crates/oidn-rs", features = ["embed-all"] }
+# Sibling repo over ssh, as the note here used to ask for once oidn-rs was
+# pushed. A `../../../` path binds the build to whatever happens to sit in that
+# directory, so the same commit can compile different code on two machines — and
+# it silently stops working for anyone who has not cloned oidn-rs beside this.
+oidn-rs = { git = "ssh://git@github.com/ssoj13/oidn-rs.git", branch = "main", package = "oidn-rs", features = ["embed-all"] }
