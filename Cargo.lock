@@ -2470,7 +2470,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 [[package]]
 name = "deflate-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#ed52e4d04956e8f151934dc52d97e6488b3989c6"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#cc42c7bc3e9c9c19d75e4d1453e71f689dfd3a96"
 
 [[package]]
 name = "deflate64"
@@ -3181,7 +3181,7 @@ dependencies = [
 [[package]]
 name = "exr-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#ed52e4d04956e8f151934dc52d97e6488b3989c6"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#cc42c7bc3e9c9c19d75e4d1453e71f689dfd3a96"
 dependencies = [
  "deflate-rs",
  "imath-rs",
@@ -4168,7 +4168,7 @@ dependencies = [
 [[package]]
 name = "imath-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#ed52e4d04956e8f151934dc52d97e6488b3989c6"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#cc42c7bc3e9c9c19d75e4d1453e71f689dfd3a96"
 
 [[package]]
 name = "imgref"
@@ -4421,7 +4421,7 @@ checksum = "b454d911ac55068f53495488d8ccd0646eaa540c033a28ee15b07838afafb01f"
 [[package]]
 name = "jph-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/jph-rs.git?branch=main#645016ed7693ac033c0b9612dfb35849cacf8b29"
+source = "git+ssh://git@github.com/ssoj13/jph-rs.git?branch=main#0ae26f6b2facd1d5218873bd5fc36e1c5b80eaaf"
 
 [[package]]
 name = "js-sys"
@@ -8239,8 +8239,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vfx-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#68cb0c145efd04dc7b4872aec35acde65a3a721a"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#e113b38a015af92d26e36ab4203ab1ba1c45e51e"
 dependencies = [
+ "clap",
  "half",
  "rayon",
  "thiserror 2.0.19",
@@ -8249,7 +8250,7 @@ dependencies = [
 [[package]]
 name = "vfx-icc"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#68cb0c145efd04dc7b4872aec35acde65a3a721a"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#e113b38a015af92d26e36ab4203ab1ba1c45e51e"
 dependencies = [
  "bytemuck",
  "lcms-rs",
@@ -8260,7 +8261,7 @@ dependencies = [
 [[package]]
 name = "vfx-io"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#68cb0c145efd04dc7b4872aec35acde65a3a721a"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#e113b38a015af92d26e36ab4203ab1ba1c45e51e"
 dependencies = [
  "byteorder",
  "dashmap",
@@ -8280,12 +8281,13 @@ dependencies = [
  "tracing",
  "vfx-core",
  "vfx-math",
+ "vfx-transfer",
 ]
 
 [[package]]
 name = "vfx-lut"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#68cb0c145efd04dc7b4872aec35acde65a3a721a"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#e113b38a015af92d26e36ab4203ab1ba1c45e51e"
 dependencies = [
  "quick-xml 0.39.4",
  "rayon",
@@ -8297,7 +8299,7 @@ dependencies = [
 [[package]]
 name = "vfx-math"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#68cb0c145efd04dc7b4872aec35acde65a3a721a"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#e113b38a015af92d26e36ab4203ab1ba1c45e51e"
 dependencies = [
  "glam 0.33.2",
  "vfx-core",
@@ -8307,7 +8309,7 @@ dependencies = [
 [[package]]
 name = "vfx-ocio"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#68cb0c145efd04dc7b4872aec35acde65a3a721a"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#e113b38a015af92d26e36ab4203ab1ba1c45e51e"
 dependencies = [
  "glam 0.33.2",
  "glob",
@@ -8328,7 +8330,7 @@ dependencies = [
 [[package]]
 name = "vfx-primaries"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#68cb0c145efd04dc7b4872aec35acde65a3a721a"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#e113b38a015af92d26e36ab4203ab1ba1c45e51e"
 dependencies = [
  "glam 0.33.2",
  "vfx-core",
@@ -8338,7 +8340,7 @@ dependencies = [
 [[package]]
 name = "vfx-transfer"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#68cb0c145efd04dc7b4872aec35acde65a3a721a"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#e113b38a015af92d26e36ab4203ab1ba1c45e51e"
 dependencies = [
  "vfx-core",
 ]
