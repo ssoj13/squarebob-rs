@@ -1301,7 +1301,7 @@ impl OrbitCamera {
 
     /// Get view matrix
     pub fn view_matrix(&self) -> Mat4 {
-        Mat4::look_at_rh(self.position(), self.target, Vec3::Y)
+        glam::camera::rh::view::look_at_mat4(self.position(), self.target, Vec3::Y)
     }
 
     /// Get projection matrix.
@@ -1322,7 +1322,7 @@ impl OrbitCamera {
     /// `self.far` is kept on the struct for backwards-compat with existing
     /// serde presets but is ignored — there is no finite far plane.
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
-        Mat4::perspective_infinite_reverse_rh(self.fov, aspect, self.near)
+        glam::camera::rh::proj::directx::perspective_infinite_reverse(self.fov, aspect, self.near)
     }
 
     /// Get combined view-projection matrix

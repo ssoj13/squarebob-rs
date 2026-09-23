@@ -1356,7 +1356,8 @@ impl Renderer3D {
         let ndc_y = 1.0 - rel_y * 2.0;
 
         // Reversed-Z: near maps to NDC depth 1.0, far to 0.0. But with
-        // `perspective_infinite_reverse_rh`, exactly NDC z=0 = view z=-∞,
+        // `glam::camera::rh::proj::directx::perspective_infinite_reverse`,
+        // exactly NDC z=0 = view z=-∞,
         // so `inv_view_proj * (x, y, 0, 1)` gives w ≈ 0 and the
         // perspective divide produces NaN. Step a tiny ε off the far
         // plane (view_z ≈ -1000 × near is plenty for a pick ray); see

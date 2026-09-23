@@ -4,7 +4,7 @@
 //! pass. `cpu_pick` and its `pick_tree` helper remain methods of `Renderer3D` —
 //! `impl Renderer3D` is re-opened here.
 
-use glam::{Vec3, Vec4};
+use glam::Vec3;
 
 use render_shared::{OrbitCamera, Render3DOptions, hash_transform_offset};
 use squarebob_core::DirEntry;
@@ -40,31 +40,7 @@ impl Renderer3D {
             treemap_opts,
         );
 
-        let rel_x = (screen_x / width as f32).clamp(0.0, 1.0);
-        let rel_y = (screen_y / height as f32).clamp(0.0, 1.0);
-
-        let aspect = width as f32 / height as f32;
-        let view = camera.view_matrix();
-        let proj = camera.projection_matrix(aspect);
-        let inv_view_proj = (proj * view).inverse();
-
-        // NDC: x in [-1,1], y in [-1,1], z in [0,1]
-        let ndc_x = rel_x * 2.0 - 1.0;
-        let ndc_y = 1.0 - rel_y * 2.0;
-
-        let near = Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-        let far = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
-
-        let near_world4 = inv_view_proj * near;
-        let far_world4 = inv_view_proj * far;
-        let near_world = near_world4.truncate() / near_world4.w;
-        let far_world = far_world4.truncate() / far_world4.w;
-
-        let ray_origin = near_world;
-        let ray_dir = (far_world - near_world).normalize_or_zero();
-        if ray_dir == Vec3::ZERO {
-            return None;
-        }
+        let (ray_origin, ray_dir) = Self::screen_ray(width, height, camera, screen_x, screen_y)?;
 
         let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
         let mut hit: Option<CpuPickHit> = None;

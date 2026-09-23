@@ -159,8 +159,9 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
         tracer.upload_scene(device, queue, &scene, Some(&instances))?;
 
         let position = glam::Vec3::new(0.0, 0.0, 3.0);
-        let view = glam::Mat4::look_at_rh(position, glam::Vec3::ZERO, glam::Vec3::Y);
-        let projection = glam::Mat4::perspective_rh(45.0_f32.to_radians(), 1.0, 0.1, 100.0);
+        let view = glam::camera::rh::view::look_at_mat4(position, glam::Vec3::ZERO, glam::Vec3::Y);
+        let projection =
+            glam::camera::rh::proj::directx::perspective(45.0_f32.to_radians(), 1.0, 0.1, 100.0);
         tracer.update_camera(
             queue,
             &pt_megakernel::PtCameraUniform {
