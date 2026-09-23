@@ -1,106 +1,127 @@
-# DIAGRAMS.md
+# Application diagrams
 
-## Application Dataflow
+Updated: 2026-09-23. These diagrams describe inspected source paths. See [AGENTS.md](AGENTS.md) for operating constraints and [plan11.md](plan11.md) for defects and proposed repairs.
 
-```mermaid
-flowchart TD
-    CLI[CLI args] --> Main[src/main.rs]
-    Main --> GpuContext[render_core::gpu::GpuContext::new]
-    GpuContext --> Eframe[eframe WgpuSetup::Existing]
-    GpuContext --> App[App::new]
-    App --> StartScan[App::start_scan]
-    StartScan --> CacheLoad[cache::load_cache]
-    StartScan --> ScannerChoice{Scanner mode}
-    ScannerChoice --> Jwalk[scanner::scan_bg]
-    ScannerChoice --> Ntfs[scanner_ntfs::scan_ntfs_bg]
-    Jwalk --> ScanMsg[ScanMsg channel]
-    Ntfs --> ScanMsg
-    ScanMsg --> Poll[App::poll_scan]
-    Poll --> Tree[DirEntry tree]
-    Tree --> CacheSave[cache::serialize_cache/write_cache_bytes]
-    Tree --> Display[rebuild_display_tree]
-    Display --> TreemapUI[App::ui_treemap]
-    TreemapUI --> CPU2D[treemap::render CPU]
-    TreemapUI --> GPU2D[GpuRenderer2D]
-    TreemapUI --> Renderer3D[render_3d::Renderer3D]
-    CPU2D --> EguiTexture[egui texture]
-    GPU2D --> EguiTexture
-    Renderer3D --> EguiTexture
-```
-
-## Shared GPU Readback Blast Radius
+## Scan, cache, and display dataflow
 
 ```mermaid
 flowchart TD
-    TreemapLegacy[treemap::GpuRenderer2D::render] --> ReadbackTexture[render_core::gpu::readback_texture]
-    Render3DLegacy[Renderer3D::render] --> ReadbackTexture
-    PTReadback[pt::megakernel::render_path_traced] --> ReadbackTexture
-    Screenshot[src/app/screenshot.rs] --> Render3DLegacy
-    ReadbackTexture --> MapReadback[render_core::gpu::map_readback]
-    MapReadback --> MapAsync[BufferSlice::map_async]
-    MapAsync --> CallbackResult[callback Result]
-    CallbackResult --> Channel[std::sync::mpsc channel]
-    Channel --> DoubleUnwrap[rx.recv().unwrap().unwrap]
-    DoubleUnwrap --> Panic[panic on sender drop or BufferAsyncError]
+    CLI["CLI: src/main.rs:19-33"] --> GPU["Shared GpuContext: src/main.rs:145-165"]
+    GPU --> Eframe["eframe WgpuSetup::Existing"]
+    Eframe --> App["App::new"]
+    App --> Start["start_scan: scan_orchestration.rs:299-362"]
+    Start --> Root["ScanRoot: display + canonical path + id"]
+    Root --> CacheCmd["CacheService::load(generation)"]
+    Root --> Select{"Backend"}
+    Select --> Standard["scanner::run_standard / jwalk"]
+    Select --> NTFS["scanner_ntfs::run_ntfs / MFT"]
+    NTFS -->|backend unavailable| Standard
+    Standard --> Terminal["ScanMsg::Progress + terminal outcome"]
+    NTFS --> Terminal
+    CacheCmd --> CacheEvent["CacheEvent::Loaded"]
+    CacheEvent --> Gate["generation and root-id gate"]
+    Terminal --> Gate
+    Gate -->|preview or live result| Install["install_tree / rebuild_display_tree"]
+    Terminal -->|complete| Serialize["serialize_cache_ref in scanner worker"]
+    Serialize --> Store["CacheService::store"]
+    Store --> Atomic["atomic_file::write"]
+    Install --> UI["ui_treemap"]
 ```
 
-## Scan And Cache Sequence
+Cache I/O is owned by an ordered worker with per-root generation watermarks (`src/cache.rs:107-124,174-245`). Only complete scans queue a cache store (`src/app/scan_orchestration.rs:237-250`).
+
+## Scan and cache sequence
 
 ```mermaid
 sequenceDiagram
     participant UI as App UI
-    participant Cache as cache.rs
-    participant Scan as scanner.rs/scanner_ntfs.rs
-    participant Core as squarebob_core::DirEntry
-
-    UI->>Cache: load_cache(scan_path)
-    alt cache hit
-        Cache-->>UI: CachedScan { tree }
-        UI->>UI: compute stats + rebuild_display_tree
-    else cache miss
-        UI->>Scan: scan_bg(path, tx)
-        Scan->>Core: DirEntry::new_file/new_dir
-        Scan->>Scan: aggregate bottom-up + sort_by_size
-        Scan-->>UI: ScanMsg::Done(tree)
-        UI->>Cache: serialize_cache(scan_path, &tree)
-        UI->>Cache: write_cache_bytes on background thread
-        UI->>UI: rebuild_display_tree
+    participant CS as CacheService
+    participant SW as Scan worker
+    participant FS as Filesystem
+    UI->>UI: Retire old scan, advance generation, clear presentation
+    UI->>CS: Load(generation, ScanRoot)
+    UI->>SW: spawn(generation, root, backend)
+    CS->>FS: Read and validate flat cache
+    CS-->>UI: Loaded(generation, root_id, result)
+    UI->>UI: Gate by generation/root_id; optional preview
+    SW->>FS: jwalk or NTFS MFT
+    opt NTFS unavailable
+        SW-->>UI: NtfsFallback warning
+        SW->>FS: Standard scanner fallback
+    end
+    SW-->>UI: Progress
+    SW->>SW: sort, stats, serialize complete tree
+    SW-->>UI: Terminal(Completed/Partial/Cancelled/Failed)
+    UI->>UI: Gate and install live tree
+    opt Completed with serialized bytes
+        UI->>CS: Store(generation, root, bytes)
+        CS->>FS: Atomic cache replacement
+        CS-->>UI: Stored(result)
     end
 ```
 
-## Render Path Split
+## Rendering and readback branches
 
 ```mermaid
 flowchart LR
-    UI[App::ui_treemap] --> Callback{wgpu_render_state && gpu_context?}
-    Callback -->|yes, Mode2D GPU| R2D[render_2d_callback]
-    Callback -->|yes, Mode3D| R3D[render_3d_callback]
-    Callback -->|no| Legacy[render_treemap legacy]
-
-    R2D --> Gpu2D[GpuRenderer2D::render_to_texture]
-    Gpu2D --> Native2D[egui_wgpu native texture]
-
-    R3D --> RTView[Renderer3D::render_to_view]
-    RTView --> Raster[Raster passes]
-    RTView --> PTNoReadback[PT no-readback path]
-    Raster --> Native3D[egui_wgpu native texture]
-    PTNoReadback --> Native3D
-
-    Legacy --> CPUBuffer[Vec<u8> pixels]
-    CPUBuffer --> EguiUpload[egui ColorImage upload]
+    UI["ui_treemap: treemap_view.rs:20-98"] --> Select{"Shared wgpu render state?"}
+    Select -->|2D CPU or no callback| Legacy["render_treemap: app/mod.rs:557"]
+    Select -->|2D GPU| GPU2D["render_2d_callback: treemap_view.rs:1325"]
+    Select -->|3D| GPU3D["render_3d_callback: treemap_view.rs:1001"]
+    Legacy --> CPU["renderer::cpu::render or GPU readback"]
+    CPU --> Upload["egui ColorImage upload"]
+    GPU2D --> Native2D["GpuRenderer2D::render_to_texture"]
+    Native2D --> EguiNative["egui_wgpu native texture"]
+    GPU3D --> View["Renderer3D::render_to_view"]
+    View --> Raster{"Raster or PT"}
+    Raster -->|raster| Pass["raster + object-ID picking"]
+    Raster -->|PT| Trace["path-tracing passes; optional OIDN"]
+    Pass --> EguiNative
+    Trace --> EguiNative
 ```
-
-## Remaining Panic Surface
 
 ```mermaid
 flowchart TD
-    PanicSurface[Remaining runtime panic surface] --> MapReadback[render_core map_readback double unwrap]
-    PanicSurface --> RenderState[render_state/cached_instances expects]
-    PanicSurface --> LazyPT[path_tracer as_mut unwrap after lazy init]
-    PanicSurface --> TreemapSlots[2D render_texture/render_view/instance_buffer unwraps]
-
-    MapReadback --> FixA[Return Result<Vec<u8>, ReadbackError>]
-    RenderState --> FixB[Central require_render_state or result-returning API]
-    LazyPT --> FixC[Single ensure_path_tracer helper]
-    TreemapSlots --> FixD[Bundle render target and instance resources]
+    T2D["2D legacy GpuRenderer2D::render"] --> Copy["render_core::gpu::readback_texture"]
+    R3D["3D legacy Renderer3D::render"] --> Copy
+    PT["PT readback path"] --> Copy
+    Copy --> Layout["TextureReadbackLayout::new: checked dimensions"]
+    Layout --> Stage["TextureReadback staging buffer"]
+    Stage --> Map["map_readback -> map_buffer_read"]
+    Map --> Callback["map_async callback Result + channel"]
+    Callback --> Error{"Map or channel failed?"}
+    Error -->|yes| ResultErr["ReadbackError"]
+    Error -->|no| Pixels["Strip row padding -> Vec of pixels"]
 ```
+
+The older double-`unwrap` panic diagram is obsolete: `map_buffer_read` now returns typed errors (`crates/render-core/src/lib.rs:807-836`). Fallible output allocation remains an audit item (`:740`).
+
+## Screenshot and media codepaths
+
+```mermaid
+flowchart TD
+    Args["--screenshot and delay: cli.rs"] --> Main["main.rs:19-24"]
+    Main --> App["App::new / CLI apply"]
+    App --> Timer["screenshot_start_time after complete scan"]
+    Timer --> Maybe["handle_screenshot: app/screenshot.rs:14-59"]
+    Maybe --> Capture["capture_viewport: screenshot.rs:63-144"]
+    Capture --> Save["save_png: screenshot.rs:160-171"]
+    Maybe --> Exit["optional viewport close"]
+```
+
+```mermaid
+flowchart TD
+    Comp["Comp::get_frame"] --> Choice{"Export type"}
+    Choice -->|video| Video["encode_sequence_from_comp: encode.rs:1173-1309"]
+    Video --> Crop["crop and conditional tonemap"]
+    Crop --> Encoder["VideoEncoder::open / push / finish: video.rs"]
+    Encoder --> Convert["codec conversion / encoded samples"]
+    Convert --> Mux["MovWriter temporary sibling file"]
+    Mux --> Commit["finalize and publish output"]
+    Choice -->|images| Sequence["encode_image_sequence: encode.rs:1811"]
+    Sequence --> Tone["optional tonemap"]
+    Tone --> Writer{"PNG / TIFF / TGA / EXR / JPEG"}
+    Writer --> Frames["numbered image files"]
+```
+
+The image-sequence writer currently ignores selected TIFF/TGA compression; the plan records this as a defect, not intended behavior.

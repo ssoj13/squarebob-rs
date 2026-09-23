@@ -1,142 +1,107 @@
 # AGENTS.md
 
-## Bug-Hunt Operating Notes
+## Bug-hunt operating notes
 
-This repository is a Rust workspace for a desktop disk-usage visualizer with CPU and GPU rendering paths. The current bug-hunt pass was run on 2026-05-16 from the repository root on branch `main`.
+This is the `squarebob-rs` Rust package and `squarebob` binary (`Cargo.toml:1-13`). Source paths below were checked on 2026-09-23. On 2026-09-23, the first user-authorized `python bootstrap.py b` release build failed in upstream `vfx-io` with `E0599`. After the upstream EXR fix and a local `egui_dock` `TabViewer::id` implementation (`src/app/dock.rs:105-110`), a second release build succeeded. No tests ran; see [plan11.md](plan11.md) for the build sequence and remaining warnings. Read [DIAGRAMS.md](DIAGRAMS.md) for Mermaid dataflows; plan11 records the active findings and repair checklist.
 
 Primary constraints for future agents:
 
-- Keep scan data ownership on the main UI side. `DirEntry.rect` uses `Cell`, so the owned tree is intentionally passed through channels and caches rather than shared by `Arc`.
-- Treat `render_core::gpu::GpuContext::new` as the single source of truth for wgpu device setup. `main.rs` passes that same instance/device/queue to eframe and app renderers.
-- Prefer central readback helpers over ad hoc `map_async` blocks. `wgpu::BufferSlice::map_async` returns a callback `Result`; never unwrap channel receive or map errors in UI render paths.
-- Keep 2D/3D zero-copy paths on the eframe-backed device. CPU readback paths are legacy/fallback paths and must return recoverable errors instead of panicking.
-- Do not remove `#[allow(dead_code)]` items without tracing intended feature toggles and platform/API parity stubs.
+- Keep owned scan data on the UI side. `DirEntry.rect` uses `Cell`; scanner/cache workers transfer owned trees through channels.
+- Use `ScanRoot`'s canonical path and native-path ID for operational identity. Its `display` string preserves user spelling for UI/history (`src/path_key.rs:6-62`). Existing cache/exclusion display checks are a confirmed defect in plan11.
+- A scan generation owns a `ScanSession`, progress receiver, and separate terminal receiver. Replacement cancels and retires the prior session; `poll_scan` discards stale generation/root outcomes (`src/scanner.rs:85-153`; `src/app/scan_orchestration.rs:38-69,456-528`).
+- `CacheService` owns ordered cache I/O, generation watermarks, and atomic replacement. Only complete live scans queue a cache store (`src/cache.rs:107-245,909-919`; `src/app/scan_orchestration.rs:237-250`).
+- `render_core::gpu::GpuContext::new` is the wgpu device setup source. `main.rs:145-185` passes its instance/device/queue to eframe and app renderers.
+- Use central `readback_texture`, `map_readback`, and `map_buffer_read` helpers. They return `Result` for layout, map, poll, and channel failures (`crates/render-core/src/lib.rs:551-747,807-836`). Output allocation remains an audit item.
+- Keep native 2D/3D textures on the eframe device. CPU pixels/readback serve 2D CPU, fallback, and screenshot paths (`src/app/treemap_view.rs:20-98`; `src/app/mod.rs:608-647`).
+- Trace `#[allow(dead_code)]`, TODO/FIXME, feature gates, and platform stubs before deleting them. Preserve unrelated worktree changes.
 
-## Inventory Snapshot
+## Workspace inventory
 
-- Root package: `squarebob-rs` binary `squarebob`.
-- Workspace members: `squarebob-core`, `pt-core`, `bvh-gpu`, `pt-megakernel`, `pt-wavefront`, `pt-mats`, `render-core`, `render-shared`, `render-3d`, `media-encoder`, `xtask`, `treemap`, `pt-denoise-oidn`, `gpu-mem`.
-- Files scanned excluding `target/**` and `.git/**`: 223.
-- Existing historical bug-hunt artifact: `.bughunt/plan1.md`.
-- This pass created `.bughunt/plan2.md` and `BUG_HUNT_REPORT.md`.
+`Cargo.toml:15-37` lists 20 members: `squarebob-core`, `pt-core`, `bvh-gpu`, `pt-megakernel`, `pt-wavefront`, `pt-mats`, `render-core`, `render-shared`, `render-3d`, `media-encoder`, `xtask`, `treemap`, `pt-denoise-oidn`, `gpu-mem`, `standard-surface`, `squarebob-widgets`, `pt-material`, `playa-ae`, `egui-colorpicker`, and `color-pipeline`. Earlier file counts and bug-hunt artifact claims were historical snapshots.
 
-## High-Level Dataflow
-
-```text
-CLI args
-  |
-  v
-main.rs
-  |-- parse CLI / test mode
-  |-- create shared render_core::gpu::GpuContext
-  |-- pass WgpuSetup::Existing to eframe
-  v
-App::new
-  |
-  v
-App::start_scan
-  |-- load cache if available
-  |-- choose scanner: jwalk or NTFS MFT on Windows
-  |-- spawn background scanner
-  v
-ScanMsg channel
-  |-- Progress -> App::poll_scan updates UI counters
-  |-- Done(DirEntry) -> cache serialize + display tree rebuild
-  |-- Error/NtfsFallback -> UI progress state
-  v
-App::ui_treemap
-  |-- Mode2D CPU -> treemap::render -> egui texture
-  |-- Mode2D GPU -> treemap::GpuRenderer2D -> eframe texture
-  |-- Mode3D raster/PT -> render_3d::Renderer3D -> eframe texture or CPU readback
-```
-
-## GPU Readback Codepath
+## Application dataflow
 
 ```text
-2D legacy render
-  crates/treemap/src/wgpu.rs:680 -> render_core::gpu::readback_texture
-  crates/treemap/src/wgpu.rs:688 -> render_core::gpu::map_readback
-
-3D raster legacy render
-  crates/render-3d/src/lib.rs:1331 -> render_core::gpu::readback_texture
-  crates/render-3d/src/lib.rs:1348 -> render_core::gpu::map_readback
-
-PT megakernel readback render
-  crates/render-3d/src/pt/megakernel/render.rs:465 -> render_core::gpu::readback_texture
-  crates/render-3d/src/pt/megakernel/render.rs:481 -> render_core::gpu::map_readback
-
-Shared failure point
-  crates/render-core/src/lib.rs:227 -> BufferSlice::map_async callback
-  crates/render-core/src/lib.rs:228 -> tx.send(result).unwrap()
-  crates/render-core/src/lib.rs:232 -> rx.recv().unwrap().unwrap()
+CLI -> main.rs:parse_args
+    -> GpuContext::new -> eframe WgpuSetup::Existing -> App::new
+    -> App::start_scan
+         -> ScanRoot(display, canonical path, id)
+         -> CacheService::Load(generation) -> optional cache preview
+         -> scanner::spawn(generation, jwalk | NTFS MFT)
+              -> NTFS unavailable: standard fallback
+              -> Progress + Terminal(Completed | Partial | Cancelled | Failed)
+         -> App::poll_scan: reject stale generation/id; install tree
+         -> complete scan: CacheService::Store -> atomic cache write
+    -> display_root -> App::ui_treemap
+         -> 2D CPU -> pixel buffer -> egui texture
+         -> 2D GPU -> GpuRenderer2D -> native egui_wgpu texture
+         -> 3D raster/PT -> Renderer3D -> native egui_wgpu texture
+    -> optional screenshot -> capture_viewport -> save_png
 ```
 
-## Scan / Cache Codepath
+Sources: `src/main.rs:19-33,145-185`; `src/app/scan_orchestration.rs:299-362,456-528`; `src/app/treemap_view.rs:20-98`; `src/app/screenshot.rs:14-59`.
+
+## Scan and cache codepath
 
 ```text
-App::start_scan
-  |
-  |-- cache::load_cache(scan_path)
-  |     |-- cache_path(scan_path)
-  |     |-- bincode::deserialize_from
-  |     `-- cached DirEntry tree returned to App
-  |
-  `-- scanner::scan_bg or scanner_ntfs::scan_ntfs_bg
-        |
-        |-- jwalk WalkDir / NTFS MFT enumeration
-        |-- DirEntry::new_file / DirEntry::new_dir
-        |-- sort_by_size
-        `-- tx.send(ScanMsg::Done(tree))
-
-App::poll_scan
-  |
-  |-- compute_ext_stats / compute_size_range
-  |-- cache::serialize_cache
-  |-- cache::write_cache_bytes on background thread
-  `-- rebuild_display_tree + needs_layout
+start_scan
+  |-- retire old scan; clear presentation; advance generation
+  |-- ScanRoot::from_input -> canonical path + stable id
+  |-- exclusions::load; CacheService::load(generation, root)
+  `-- scanner::spawn(generation, root, backend)
+        |-- standard jwalk OR NTFS MFT with standard fallback
+        |-- scanner::finish_build: sort tree + derive stats
+        |-- complete tree: serialize_cache_ref on scan worker
+        `-- terminal channel delivers typed ScanOutcome
+poll_scan
+  |-- poll ordered cache events; gate by generation + root_id
+  |-- drain progress and terminal channels; gate by generation + identity
+  |-- install_tree -> rebuild_display_tree + invalidate layout/render
+  `-- complete outcome -> queue CacheService::store -> atomic_file::write
 ```
 
-## Rendering Codepath
+Sources: `src/app/scan_orchestration.rs:38-69,130-250,299-528`; `src/scanner.rs:134-235`; `src/cache.rs:90-245,273-309,909-919`.
+
+## Rendering and readback codepath
 
 ```text
 App::ui_treemap
-  |
-  |-- callback path when wgpu_render_state and gpu_context exist
-  |     |-- Mode2D + GPU: render_2d_callback
-  |     |     |-- GpuRenderer2D::render_to_texture
-  |     |     `-- egui_wgpu texture registration/update
-  |     |
-  |     `-- Mode3D: render_3d_callback
-  |           |-- Renderer3D::render_to_view
-  |           |-- object-id picking readback
-  |           `-- egui_wgpu texture registration/update
-  |
-  `-- legacy path
-        |-- render_treemap / Renderer3D::render
-        `-- CPU pixel Vec uploaded to egui texture
+  |-- native 2D GPU: render_2d_callback -> render_to_texture -> egui_wgpu
+  |-- native 3D: render_3d_callback -> render_to_view
+  |      |-- raster passes + object-ID picking
+  |      `-- path tracing + optional OIDN denoise
+  `-- legacy: render_treemap -> CPU 2D OR GPU/3D pixel readback -> egui upload
+GPU pixel readback
+  -> TextureReadbackLayout::new (checked geometry)
+  -> readback_texture (reusable staging buffer)
+  -> map_readback -> map_buffer_read
+  -> callback Result/channel -> ReadbackError or packed Vec<u8>
 ```
 
-## Current Bug-Hunt Focus Areas
+Sources: `src/app/treemap_view.rs:20-98,1001-1123,1325-1398`; `src/app/mod.rs:557-647`; `crates/render-core/src/lib.rs:551-747,807-836`. The old double-`unwrap` diagram described a previous implementation.
 
-Archived bug-hunt plans live in `md.old/bughunt-plan1.md` and
-`md.old/bughunt-plan2.md`. The shared readback helper in
-`render-core::gpu::map_readback` now returns `Vec::new()` and logs a
-warning on failure instead of panicking, so the historical "panic on
-map_async" entry is closed.
+## Media export codepath
 
-Remaining open work that earlier passes flagged but did not finish:
+```text
+Comp::get_frame
+  |-- video: encode_sequence_from_comp
+  |      -> crop/conditional tonemap
+  |      -> VideoEncoder::open/push/finish
+  |      -> codec conversion + MovWriter + private partial file + commit
+  `-- image sequence: encode_image_sequence
+         -> optional tonemap -> PNG/TIFF/TGA/EXR/JPEG writer
+```
 
-- Audit readback size arithmetic (`width * height * 4`) for `u32`
-  overflow before casts to `usize` in 2D/3D/PT readback paths.
-- Add `// SAFETY:` comments to remaining `unsafe` blocks across
-  `crates/render-3d`, `crates/bvh-gpu`, and `crates/pt-megakernel`.
-- Consider unifying megakernel readback vs no-readback init paths in
-  `crates/render-3d/src/pt/megakernel/render.rs`.
+Sources: `crates/media-encoder/src/dialogs/encode/encode.rs:1173-1309,1811-1905`; `crates/media-encoder/src/dialogs/encode/video.rs:66-118`. Current TIFF/TGA compression and U16 conversion defects are in plan11.
+
+## Current bug-hunt focus
+
+[plan11.md](plan11.md) is the current review gate. It records canonical identity/display mismatch, NTFS fallback terminal loss, empty 3D target behavior, picking metadata, render duplication, sequence precision/compression, CLI validation, screenshot completion, and readback allocation. Historical bug-hunt references in older notes must be checked against the current worktree before use; the previously named `md.old/` artifacts are absent from the current inventory.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **squarebob-rs** (5550 symbols, 15854 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+GitNexus was rebuilt on 2026-09-23 (5,710 nodes reported). Check graph freshness before relying on query/impact results after further edits; reanalyze when needed. The earlier 5,550-symbol/15,854-relationship/300-flow counts are historical.
 
 > Call `graph_status` when freshness matters. Use `reanalyze` (incremental) or `gitnexus-rs analyze` (full). `detect_changes` does **not** re-index.
 
@@ -168,15 +133,8 @@ This project is indexed by GitNexus as **squarebob-rs** (5550 symbols, 15854 rel
 | `gitnexus://repo/squarebob-rs/processes` | All execution flows |
 | `gitnexus://repo/squarebob-rs/process/{name}` | Step-by-step execution trace |
 
-## CLI
+## Tool discovery
 
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+The old `.claude/skills/gitnexus/` links are absent from this worktree. Discover the currently available GitNexus MCP tools or the `gitnexus-rs` CLI help before use; check graph status and reanalyze if the index is stale. The policy above applies whenever the graph is available.
 
 <!-- gitnexus:end -->

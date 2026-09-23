@@ -56,25 +56,26 @@ clap = { version = "4", features = ["derive"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1"
+# bincode 3.0.0 intentionally fails compilation; keep the latest usable 1.x cache codec.
+bincode = "=1.3.3"
 
 # Math / GPU data
-glam = "0.32"
+glam = "0.33"
 bytemuck = { version = "1.25", features = ["derive"] }
 half = "2.7"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # GPU / rendering
 wgpu = "30"
-pollster = "0.4"
+pollster = "1.0"
 
 # UI (egui ecosystem)
-eframe = { version = "0.35", default-features = false }
-egui = "0.35"
-egui-wgpu = "0.35"
-egui_extras = "0.35"
-egui_dock = { version = "0.20", features = ["serde"] }
-egui-phosphor = "0.13"
+eframe = { version = "0.36", default-features = false }
+egui = "0.36"
+egui-wgpu = "0.36"
+egui_extras = "0.36"
+egui_dock = { version = "0.21", features = ["serde"] }
+egui-phosphor = "0.14"
 
 # OIDN denoiser Burn stack — GIT deps (a [patch] can't cross 0.21->0.22). Same revs
 # oidn-rs/render-rs/gsplat-rs pin. pt-denoise-oidn uses burn's wgpu backend +
@@ -93,11 +94,11 @@ image = "0.25"
 # Concurrency / FS scan
 rayon = "1.12"
 crossbeam-channel = "0.5"
-jwalk = "0.8"
+jwalk = "0.9"
 num_cpus = "1"
 
 # System / OS / UX
-sysinfo = "0.38"
+sysinfo = "0.39"
 directories = "6"
 rfd = "0.17"
 open = "5"
@@ -132,7 +133,7 @@ av-swscale = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main
 av-util-core = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
 av-util-frame = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
 av-util-pixfmt = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
-openh264 = { version = "=0.9.7", features = ["source"] }
+openh264 = { version = "=0.9.8", features = ["source"] }
 vfx-core = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main" }
 vfx-io = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main", default-features = false, features = ["exr", "htj2k", "png", "jpeg", "tiff", "dpx", "hdr"] }
 # Full OCIO-compatible colour management. Replaces the hand-rolled
@@ -254,20 +255,3 @@ minimum-system-version = "13.0"
 
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
-
-# wgpu 30 needs egui from git: published egui <=0.35.0 is still wgpu 29; emilk/egui main is 0.35.0
-# ON wgpu 30. Redirect the WHOLE egui family (ours + transitive inside egui_dock/egui-phosphor) to
-# one rev so there is a single egui 0.35 + single wgpu 30 in the lock. (burn/cubecl are git deps
-# above, NOT patched — a [patch] can't cross their 0.21->0.22.) Trim any "not used in the crate
-# graph" entry after the build is green. See colmap-rs/docs/egui-wgpu-bump.md.
-[patch.crates-io]
-egui                 = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-egui-wgpu            = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-egui-winit           = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-eframe               = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-egui_extras          = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-egui_glow            = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-ecolor               = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-epaint               = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-emath                = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }
-epaint_default_fonts = { git = "https://github.com/emilk/egui", rev = "d28929ec7225205100590fce2836f885bc9ba688" }

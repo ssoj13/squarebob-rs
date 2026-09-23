@@ -105,6 +105,10 @@ pub struct DockTabs<'a> {
 impl<'a> TabViewer for DockTabs<'a> {
     type Tab = DockTab;
 
+    fn id(&mut self, tab: &mut DockTab) -> egui::Id {
+        egui::Id::new(tab)
+    }
+
     fn title(&mut self, tab: &mut DockTab) -> egui::WidgetText {
         match tab {
             DockTab::FileView => "Files".into(),
