@@ -4856,6 +4856,7 @@ dependencies = [
  "rfd",
  "serde",
  "thiserror 2.0.20",
+ "tiff",
  "vfx-core",
  "vfx-io",
  "windows 0.62.2",

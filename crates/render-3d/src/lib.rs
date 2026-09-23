@@ -439,6 +439,8 @@ impl Renderer3D {
             opts.animation_time.to_bits().hash(&mut hasher);
         }
         opts.animate.hash(&mut hasher);
+        // Instance object IDs exist only when hover or path tracing needs picking.
+        (opts.hover_mode != HoverMode::None || opts.path_tracing).hash(&mut hasher);
         // LOD settings
         opts.lod_enabled.hash(&mut hasher);
         if opts.lod_enabled {
@@ -458,6 +460,141 @@ impl Renderer3D {
         // from this hash (handled by shader uniform), so the slider stays live.
         mat_settings_hash(opts).hash(&mut hasher);
         hasher.finish()
+    }
+
+    /// Normalize frame options and keep geometry, IDs, and GPU instances in sync.
+    /// Both native and CPU-readback entry points use this preparation.
+    fn prepare_scene(
+        &mut self,
+        root: &DirEntry,
+        width: u32,
+        height: u32,
+        camera: &OrbitCamera,
+        opts: &Render3DOptions,
+        treemap_opts: &TreeMapOptions,
+    ) -> Result<(Render3DOptions, Arc<Vec<CubeInstance>>, bool), render_core::ReadbackError> {
+        let mut opts = opts.clone();
+        self.pt.pt_backend_kind = pt::backend_from_opts(&opts);
+        if opts.path_tracing && (opts.pt_auto_spp || opts.pt_camera_snap) {
+            let frame_count = pt::frame_count(self.pt.pt_backend_kind, self);
+            let snap_interval = 1.0 / opts.pt_target_fps.max(1.0);
+            let elapsed = self.pt.pt_camera_snap_time.elapsed().as_secs_f32();
+            if elapsed < snap_interval && self.pt.pt_snap_valid && frame_count != 0 {
+                opts.animation_time = self.pt.pt_snap_anim_time;
+                opts.animate = false;
+            }
+        }
+
+        self.ensure_targets(width, height)?;
+        let (layout_w, layout_h) = self.scene_layout_size();
+        let opts_hash = Self::opts_hash(&opts, layout_w, layout_h, camera, height);
+        let cache_valid = !opts.animate
+            && self.cached_instances.is_some()
+            && self.cached_opts_hash == opts_hash
+            && self.cached_layout_size == (layout_w, layout_h);
+        trace!("cache_valid: {}, opts_hash: 0x{:x}", cache_valid, opts_hash);
+
+        let instances = if cache_valid {
+            Arc::clone(
+                self.cached_instances
+                    .as_ref()
+                    .expect("cache_valid requires instances"),
+            )
+        } else {
+            let hovered_path = self
+                .picking
+                .info_for_id(self.picking.hovered_id)
+                .map(|info| info.path.clone());
+            let selected_paths: std::collections::HashSet<_> = self
+                .selected_ids
+                .iter()
+                .filter_map(|id| self.picking.info_for_id(*id).map(|info| info.path.clone()))
+                .collect();
+            treemap::layout(
+                root,
+                0.0,
+                0.0,
+                layout_w as f32,
+                layout_h as f32,
+                treemap_opts,
+            );
+            let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
+            let instances = Arc::new(self.collect_cubes(
+                root,
+                &opts,
+                treemap_opts,
+                world_center,
+                camera.position(),
+                height as f32,
+                camera.fov,
+            ));
+            self.pt.pt_scene_dirty = true;
+            if self.picking.hovered_id != 0
+                && hovered_path.as_deref()
+                    != self
+                        .picking
+                        .info_for_id(self.picking.hovered_id)
+                        .map(|info| info.path.as_path())
+            {
+                self.picking.hovered_id = 0;
+            }
+            let selected_ids: std::collections::HashSet<_> = if selected_paths.is_empty() {
+                std::collections::HashSet::new()
+            } else {
+                instances
+                    .iter()
+                    .filter_map(|instance| {
+                        self.picking
+                            .info_for_id(instance.object_id)
+                            .filter(|info| selected_paths.contains(&info.path))
+                            .map(|_| instance.object_id)
+                    })
+                    .collect()
+            };
+            if selected_ids != self.selected_ids {
+                self.set_selected_ids(&selected_ids);
+            }
+            self.cached_instances = Some(Arc::clone(&instances));
+            if !opts.animate {
+                self.cached_opts_hash = opts_hash;
+                self.cached_layout_size = (layout_w, layout_h);
+            }
+            instances
+        };
+
+        self.instance_count = instances.len() as u32;
+        if instances.is_empty() {
+            self.picking.reset_frame(true);
+            if !self.selected_ids.is_empty() {
+                self.set_selected_ids(&std::collections::HashSet::new());
+            }
+        } else {
+            if self.picking.info_for_id(self.picking.hovered_id).is_none() {
+                self.picking.hovered_id = 0;
+            }
+            if !cache_valid || self.instance_buffer.is_none() {
+                if self.instance_buffer.is_none() || instances.len() > self.instance_buffer_capacity
+                {
+                    let new_capacity = (instances.len() * 5 / 4).max(1024);
+                    let new_size = new_capacity * std::mem::size_of::<CubeInstance>();
+                    self.instance_buffer = Some(render_core::gpu::make_buffer(
+                        &self.ctx.device,
+                        "Instance VBO",
+                        new_size as u64,
+                        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    ));
+                    self.instance_buffer_capacity = new_capacity;
+                }
+                if let Some(buffer) = &self.instance_buffer {
+                    self.ctx.queue.write_buffer(
+                        buffer,
+                        0,
+                        bytemuck::cast_slice(instances.as_slice()),
+                    );
+                }
+            }
+        }
+        Ok((opts, instances, cache_valid))
     }
 
     // ========================================================================
@@ -751,16 +888,11 @@ impl Renderer3D {
             self.instance_count,
             self.instance_buffer_capacity
         );
-        let ib = match self.instance_buffer.as_ref() {
-            Some(b) => {
-                log::trace!("encode_passes: instance_buffer size={}", b.size());
-                b
-            }
-            None => {
-                log::error!("encode_passes: NO INSTANCE BUFFER!");
-                return;
-            }
-        };
+        let ib = self.instance_buffer.as_ref();
+        if self.instance_count > 0 && ib.is_none() {
+            log::error!("encode_passes: NO INSTANCE BUFFER!");
+            return;
+        }
 
         // Pass 1: Main geometry (PBR / wireframe / transparent)
         {
@@ -821,15 +953,13 @@ impl Renderer3D {
             pass.set_pipeline(pipe);
             pass.set_bind_group(0, &self.pbr_bg0, &[]);
             pass.set_bind_group(1, &self.env_bg, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_vertex_buffer(1, ib.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            log::trace!(
-                "encode_passes: draw_indexed indices=0..{}, instances=0..{}",
-                NUM_INDICES,
-                self.instance_count
-            );
-            pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
+            if self.instance_count > 0 {
+                let ib = ib.expect("nonempty scene requires instance buffer");
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_vertex_buffer(1, ib.slice(..));
+                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
+            }
             log::trace!("encode_passes: Pass 1 (Main) DONE");
         }
 
@@ -865,8 +995,28 @@ impl Renderer3D {
         // Shared with the PT-mode outline+picking encoder in
         // `renderer3d/render.rs` — see `encode_object_id_pass` /
         // `encode_outline_pass` for the actual encoder bodies.
-        if opts.hover_mode != HoverMode::None {
-            self.encode_object_id_pass(encoder, targets, ib, opts.double_sided);
+        if self.instance_count == 0 {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Empty Object ID"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &targets.object_id_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+        } else if opts.hover_mode != HoverMode::None {
+            self.encode_object_id_pass(
+                encoder,
+                targets,
+                ib.expect("nonempty scene requires instance buffer"),
+                opts.double_sided,
+            );
         }
         let has_active = !self.selected_ids.is_empty() || hovered_id != 0;
         info!(
@@ -1038,6 +1188,9 @@ impl Renderer3D {
     /// from the previous full `render_to_view` so we don't pay for a
     /// per-instance pass here.
     pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>, opts: &Render3DOptions) {
+        if self.instance_count == 0 {
+            return;
+        }
         let Some(state) = self.render_state.as_ref() else {
             return;
         };
@@ -1068,7 +1221,7 @@ impl Renderer3D {
             source,
         );
         let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
-        if has_active {
+        if opts.hover_mode != HoverMode::None && has_active {
             self.encode_outline_pass(&mut encoder, &state.targets, &state.dyn_bgs);
         }
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
@@ -1293,110 +1446,39 @@ impl Renderer3D {
             .into());
         }
 
-        let hovered_id = self.picking.hovered_id;
-
-        let mut opts = opts.clone();
-        self.pt.pt_backend_kind = pt::backend_from_opts(&opts);
-        if opts.path_tracing {
-            let snap_enabled = opts.pt_auto_spp || opts.pt_camera_snap;
-            if snap_enabled {
-                let frame_count = pt::frame_count(self.pt.pt_backend_kind, self);
-                let snap_interval = 1.0 / opts.pt_target_fps.max(1.0);
-                let elapsed = self.pt.pt_camera_snap_time.elapsed().as_secs_f32();
-                let allow_update =
-                    elapsed >= snap_interval || !self.pt.pt_snap_valid || frame_count == 0;
-                if !allow_update {
-                    opts.animation_time = self.pt.pt_snap_anim_time;
-                    opts.animate = false;
-                }
-            }
-        }
-        let opts = &opts;
-
-        // Wait for previous GPU work before starting new frame.
+        // Wait for previous GPU work before starting a CPU readback frame.
         self.ctx
             .device
             .poll(wgpu::PollType::wait_indefinitely())
             .map_err(render_core::ReadbackError::PollFailed)?;
-        self.ensure_targets(width, height)?;
-
-        let (layout_w, layout_h) = self.scene_layout_size();
-
-        // Check if we can reuse cached instances (only when not animating). Keep geometry stable
-        // across output resizes by caching against the logical scene layout size.
-        let opts_hash = Self::opts_hash(opts, layout_w, layout_h, camera, height);
-        let cache_valid = !opts.animate
-            && self.cached_instances.is_some()
-            && self.cached_opts_hash == opts_hash
-            && self.cached_layout_size == (layout_w, layout_h);
-
-        trace!("cache_valid: {}, opts_hash: 0x{:x}", cache_valid, opts_hash);
-
-        let instances = if cache_valid {
-            // Reuse cached instances
-            self.cached_instances
-                .as_ref()
-                .expect("cached_instances not built — collect_cubes must run before render")
-        } else {
-            log::debug!(
-                "PT cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
-                opts.animate,
-                self.cached_instances.is_some(),
-                self.cached_opts_hash == opts_hash,
-                self.cached_layout_size == (layout_w, layout_h)
-            );
-            // Layout only on cache miss — rect values are already set when cache is valid
-            treemap::layout(
-                root,
-                0.0,
-                0.0,
-                layout_w as f32,
-                layout_h as f32,
-                treemap_opts,
-            );
-            // Collect new instances (this rebuilds id_map with new IDs)
-            let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
-            let new_instances = self.collect_cubes(
-                root,
-                opts,
-                treemap_opts,
-                world_center,
-                camera.position(),
-                height as f32,
-                camera.fov,
-            );
-            // PT scene must be rebuilt to match new object IDs in id_map
-            self.pt.pt_scene_dirty = true;
-
-            // Cache if not animating
-            let arc = Arc::new(new_instances);
-            if !opts.animate {
-                self.cached_instances = Some(arc);
-                self.cached_opts_hash = opts_hash;
-                self.cached_layout_size = (layout_w, layout_h);
-                self.cached_instances
-                    .as_ref()
-                    .expect("cached_instances not built — collect_cubes must run before render")
-            } else {
-                // For animated mode, store temporarily and return reference
-                self.cached_instances = Some(arc);
-                self.cached_instances
-                    .as_ref()
-                    .expect("cached_instances not built — collect_cubes must run before render")
-            }
-        };
-
-        self.instance_count = instances.len() as u32;
+        let (opts, instances, _) =
+            self.prepare_scene(root, width, height, camera, opts, treemap_opts)?;
+        let opts = &opts;
+        let hovered_id = self.picking.hovered_id;
 
         if instances.is_empty() {
-            let len = render_core::checked_2d_buffer_size("empty 3D frame", width, height, 4)?;
-            let len =
-                usize::try_from(len).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
-                    context: "empty 3D frame",
-                    value: len,
-                    target: "usize",
-                })?;
-            return Ok(vec![30; len]);
+            self.update_uniforms(camera, opts, width, height, 0);
+            let state = self
+                .render_state
+                .as_ref()
+                .expect("prepare_scene builds targets");
+            let mut encoder =
+                self.ctx
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Empty 3D Readback Encoder"),
+                    });
+            self.encode_passes(&mut encoder, &state.targets, &state.dyn_bgs, opts, 0);
+            gpu::readback_texture(
+                &self.ctx,
+                &mut encoder,
+                &state.targets.render_texture,
+                width,
+                height,
+                &mut self.readback,
+            )?;
+            self.ctx.queue.submit(std::iter::once(encoder.finish()));
+            return gpu::map_readback(&self.ctx, &self.readback);
         }
 
         let buf_size = instances.len() * std::mem::size_of::<CubeInstance>();
@@ -1404,40 +1486,6 @@ impl Renderer3D {
             warn!(
                 "Instance buffer {} MB exceeds 128 MB GPU limit!",
                 buf_size / 1048576
-            );
-        }
-
-        // Only update GPU buffer if instances changed
-        if !cache_valid {
-            let upload_start = std::time::Instant::now();
-            // Reuse buffer if capacity is sufficient, otherwise reallocate
-            let need_realloc =
-                self.instance_buffer.is_none() || instances.len() > self.instance_buffer_capacity;
-
-            if need_realloc {
-                // Allocate with 25% growth factor to avoid frequent reallocs
-                let new_capacity = (instances.len() * 5 / 4).max(1024);
-                let new_size = new_capacity * std::mem::size_of::<CubeInstance>();
-                self.instance_buffer = Some(render_core::gpu::make_buffer(
-                    &self.ctx.device,
-                    "Instance VBO",
-                    new_size as u64,
-                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                ));
-                self.instance_buffer_capacity = new_capacity;
-            }
-
-            // Update buffer contents
-            if let Some(ref buf) = self.instance_buffer {
-                self.ctx
-                    .queue
-                    .write_buffer(buf, 0, bytemuck::cast_slice(instances));
-            }
-            let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
-            debug!(
-                "buffer_upload: {:.2}ms ({:.2} MB)",
-                upload_ms,
-                buf_size as f64 / 1048576.0
             );
         }
 
@@ -1454,7 +1502,7 @@ impl Renderer3D {
         if opts.path_tracing {
             drop(encoder);
             // Arc clone to break borrow conflict (cheap - only refcount bump)
-            let instances_arc = Arc::clone(instances);
+            let instances_arc = Arc::clone(&instances);
             return pt::render_path_traced(
                 self.pt.pt_backend_kind,
                 self,

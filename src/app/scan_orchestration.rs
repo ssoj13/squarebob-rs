@@ -106,6 +106,8 @@ impl App {
         self.hovered = None;
         self.selected_path = None;
         self.selected_3d_ids.clear();
+        self.marquee_start = None;
+        self.marquee_baseline = None;
         self.sticky_hover = None;
         self.ctx_menu_path = None;
         self.cache_age = None;
@@ -114,6 +116,7 @@ impl App {
         self.needs_render_3d = true;
         self.screenshot_start_time = None;
         self.screenshot_taken = false;
+        self.screenshot_error = None;
     }
 
     fn update_path_history(&mut self, root: &ScanRoot) {
@@ -324,11 +327,17 @@ impl App {
             }
         };
 
-        self.exclusions = match exclusions::load(&root) {
-            Ok(exclusions) => exclusions,
+        let exclusions_warning = match exclusions::load(&root) {
+            Ok(exclusions) => {
+                self.exclusions = exclusions;
+                None
+            }
             Err(error) => {
                 warn!("failed to load exclusions for {:?}: {error:#}", root.path());
-                Exclusions::new(&root)
+                self.exclusions = Exclusions::default();
+                Some(format!(
+                    "exclusions could not be loaded; saved rules were not applied and editing is blocked until repaired: {error:#}"
+                ))
             }
         };
         self.update_path_history(&root);
@@ -341,6 +350,9 @@ impl App {
             scan_engine_label: Some(scan_engine_label),
             ..Default::default()
         };
+        if let Some(warning) = exclusions_warning {
+            self.push_scan_warning(warning);
+        }
 
         let cache_load = self.ensure_cache_service().and_then(|service| {
             service

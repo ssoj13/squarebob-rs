@@ -30,7 +30,6 @@ pub struct CacheQuality {
 pub struct CachedScan {
     pub version: u32,
     pub root_id: String,
-    pub scan_path: String,
     pub timestamp: u64,
     pub quality: CacheQuality,
     pub tree: DirEntry,
@@ -268,14 +267,6 @@ fn legacy_cache_path(root: &ScanRoot) -> Option<PathBuf> {
             path_key::legacy_scan_path_id_hex(root.display())
         ))
     })
-}
-
-pub fn serialize_cache(
-    root: &ScanRoot,
-    tree: &DirEntry,
-    quality: CacheQuality,
-) -> anyhow::Result<Vec<u8>> {
-    serialize_cache_ref(root, tree, quality)
 }
 
 /// Serialize a validated tree without cloning its owned strings or paths.
@@ -536,14 +527,10 @@ fn decode_flat_cache(root: &ScanRoot, bytes: &[u8]) -> anyhow::Result<CachedScan
     if flat.root_id != root.id() {
         anyhow::bail!("cache root identity does not match requested root");
     }
-    if flat.scan_path != root.display() {
-        anyhow::bail!("cache display root does not match requested root");
-    }
     let tree = inflate_flat_tree(flat.nodes, root.path())?;
     let cached = CachedScan {
         version: flat.version,
         root_id: flat.root_id,
-        scan_path: flat.scan_path,
         timestamp: flat.timestamp,
         quality: flat.quality,
         tree,
@@ -802,9 +789,6 @@ fn validate_cached(root: &ScanRoot, cached: &CachedScan) -> anyhow::Result<()> {
     if cached.root_id != root.id() {
         anyhow::bail!("cache root identity does not match requested root");
     }
-    if cached.scan_path != root.display() {
-        anyhow::bail!("cache display root does not match requested root");
-    }
     if cached.tree.path != root.path() {
         anyhow::bail!("cache tree root does not match requested root");
     }
@@ -959,7 +943,6 @@ mod tests {
         CachedScan {
             version: CACHE_VERSION,
             root_id: root.id().to_owned(),
-            scan_path: root.display().to_owned(),
             timestamp: 0,
             quality: CacheQuality {
                 complete: true,
@@ -983,6 +966,26 @@ mod tests {
         let mut cached = valid_cached(&root);
         cached.root_id = "wrong".into();
         assert!(validate_cached(&root, &cached).is_err());
+    }
+
+    #[test]
+    fn accepts_same_root_with_different_display_spelling() {
+        let root = ScanRoot::from_input(".").expect("current directory must resolve");
+        let same_root = ScanRoot::from_input("././").expect("equivalent path must resolve");
+        assert_ne!(root.display(), same_root.display());
+        let cached = valid_cached(&root);
+        validate_cached(&same_root, &cached).expect("canonical identity must be reusable");
+
+        let bytes = serialize_cache_ref(
+            &root,
+            &cached.tree,
+            CacheQuality {
+                complete: true,
+                errors: 0,
+            },
+        )
+        .expect("serialize cache");
+        decode_flat_cache(&same_root, &bytes).expect("canonical cache must decode");
     }
 
     #[test]
@@ -1015,7 +1018,7 @@ mod tests {
         tree.size = 8;
         tree.file_count = 2;
 
-        let bytes = serialize_cache(
+        let bytes = serialize_cache_ref(
             &root,
             &tree,
             CacheQuality {
@@ -1035,7 +1038,7 @@ mod tests {
     #[test]
     fn bounded_decoder_rejects_truncated_and_trailing_input() {
         let root = ScanRoot::from_input(".").expect("current directory must resolve");
-        let mut bytes = serialize_cache(
+        let mut bytes = serialize_cache_ref(
             &root,
             &valid_cached(&root).tree,
             CacheQuality {
@@ -1065,7 +1068,7 @@ mod tests {
         ));
         tree.size = 1;
         tree.file_count = 1;
-        let bytes = serialize_cache(
+        let bytes = serialize_cache_ref(
             &root,
             &tree,
             CacheQuality {
@@ -1113,7 +1116,7 @@ mod tests {
         tree.dir_count = child.dir_count + 1;
         tree.children.push(child);
 
-        let bytes = serialize_cache(
+        let bytes = serialize_cache_ref(
             &root,
             &tree,
             CacheQuality {

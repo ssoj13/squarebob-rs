@@ -489,9 +489,21 @@ impl App {
     }
 
     fn update_exclusions(&mut self, update: impl FnOnce(&mut Exclusions)) {
+        let Some(root) = self.active_root.as_ref() else {
+            self.progress.warning =
+                Some("Select and scan a folder before editing exclusions".into());
+            return;
+        };
+        if self.exclusions.root_id != root.id() {
+            self.progress.warning.get_or_insert_with(|| {
+                "Exclusions could not be loaded; repair the saved rules and rescan before editing"
+                    .into()
+            });
+            return;
+        }
         let mut next = self.exclusions.clone();
         update(&mut next);
-        let write_outcome = match exclusions::save(&next) {
+        let write_outcome = match exclusions::save(root, &next) {
             Ok(outcome) => outcome,
             Err(error) => {
                 log::warn!("Failed to persist exclusions: {error:#}");

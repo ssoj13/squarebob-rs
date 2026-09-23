@@ -37,21 +37,11 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
     if let Some(pg) = cli.pt_path_guiding {
         opts.pt_path_guiding = pg;
     }
-    if let Some(ref m) = cli.pt_oidn_mode {
-        opts.pt_oidn_mode = match m.to_ascii_lowercase().as_str() {
-            "off" => render_shared::OidnModeOption::Off,
-            "color" => render_shared::OidnModeOption::Color,
-            "color_albedo" | "color+albedo" => render_shared::OidnModeOption::ColorAlbedo,
-            // default for any other input → full quality
-            _ => render_shared::OidnModeOption::ColorAlbedoNormal,
-        };
+    if let Some(mode) = cli.pt_oidn_mode {
+        opts.pt_oidn_mode = mode;
     }
-    if let Some(ref q) = cli.pt_oidn_quality {
-        opts.pt_oidn_quality = match q.to_ascii_lowercase().as_str() {
-            "large" | "high" => render_shared::OidnQualityOption::Large,
-            "small" | "fast" => render_shared::OidnQualityOption::Small,
-            _ => render_shared::OidnQualityOption::Base,
-        };
+    if let Some(quality) = cli.pt_oidn_quality {
+        opts.pt_oidn_quality = quality;
     }
     if let Some(a) = cli.pt_oidn_auto {
         opts.pt_oidn_auto = a;
@@ -332,8 +322,8 @@ mod tests {
             pt_restir_m_max: Some(20),
             pt_path_guiding: Some(true),
             pt_svo_resolution: Some(128),
-            pt_oidn_mode: Some("color_albedo_normal".to_string()),
-            pt_oidn_quality: Some("high".to_string()),
+            pt_oidn_mode: Some(render_shared::OidnModeOption::ColorAlbedoNormal),
+            pt_oidn_quality: Some(render_shared::OidnQualityOption::Large),
             pt_oidn_auto: Some(true),
             slice_enabled: Some(true),
             slice_axis: Some(2),

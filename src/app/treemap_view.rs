@@ -415,7 +415,17 @@ impl App {
         {
             if self.marquee_start.is_none() {
                 self.marquee_start = Some(pos);
-                self.marquee_baseline = Some(self.selected_3d_ids.clone());
+                self.marquee_baseline = Some(
+                    self.renderer_3d
+                        .as_ref()
+                        .map(|renderer| {
+                            self.selected_3d_ids
+                                .iter()
+                                .filter_map(|id| renderer.path_for_id(*id).cloned())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                );
             }
             if let Some(start) = self.marquee_start {
                 let rect = egui::Rect::from_two_pos(start, pos);
@@ -727,7 +737,30 @@ impl App {
         ctx: &egui::Context,
     ) {
         if let Some(baseline) = self.marquee_baseline.as_ref() {
-            self.selected_3d_ids = baseline.clone();
+            if baseline.is_empty() {
+                self.selected_3d_ids.clear();
+            } else {
+                self.selected_3d_ids = self
+                    .renderer_3d
+                    .as_ref()
+                    .and_then(|renderer| {
+                        renderer
+                            .cached_instances()
+                            .map(|instances| (renderer, instances))
+                    })
+                    .map(|(renderer, instances)| {
+                        instances
+                            .iter()
+                            .filter(|instance| {
+                                renderer
+                                    .path_for_id(instance.object_id)
+                                    .is_some_and(|path| baseline.contains(path))
+                            })
+                            .map(|instance| instance.object_id)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
         }
         self.select_objects_in_rect(rect, view_rect, w, h, is_pt, add_to_selection);
         self.refresh_selection_overlay(ctx);
@@ -1126,13 +1159,21 @@ impl App {
                         &self.orbit_camera,
                         &self.render_3d_opts,
                         &self.opts,
+                        Some(&mut self.selected_3d_ids),
                     )?;
+                    let empty_scene = r.cached_instances().is_some_and(Vec::is_empty);
+                    if empty_scene {
+                        self.selected_3d_ids.clear();
+                        self.sticky_hover = None;
+                        self.oidn_display_is_denoised = false;
+                    }
                     // OCIO + CPU codepath: post-process the just-rendered
                     // PT output through `vfx_ocio::Processor::apply_rgb`
                     // on the CPU, then re-blit. Debug codepath — see the
                     // warn log inside `apply_cpu_color_pass`.
                     let cp = &self.render_3d_opts.color_pipeline;
-                    if cp.mode == color_pipeline::ColorMode::Ocio
+                    if !empty_scene
+                        && cp.mode == color_pipeline::ColorMode::Ocio
                         && cp.codepath == color_pipeline::ColorCodepath::Cpu
                     {
                         if let Err(error) =
@@ -1150,7 +1191,14 @@ impl App {
                 // and (a) the user pressed "Denoise now", or (b) auto-mode is on
                 // and we've reached the sample target for the current
                 // accumulation (and haven't denoised it yet).
-                self.maybe_run_oidn_denoise(w, h);
+                if self
+                    .renderer_3d
+                    .as_ref()
+                    .and_then(|renderer| renderer.cached_instances())
+                    .is_some_and(|instances| !instances.is_empty())
+                {
+                    self.maybe_run_oidn_denoise(w, h);
+                }
 
                 // When OIDN landed this frame, blit its result back into the
                 // PT render target through the megakernel's ACES+gamma pipeline.

@@ -853,40 +853,15 @@ impl std::fmt::Display for TiffCompression {
     }
 }
 
-/// TIFF bit depth
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum TiffBitDepth {
-    #[default]
-    Eight, // 8-bit
-    Sixteen, // 16-bit
-}
-
-impl TiffBitDepth {
-    pub fn all() -> &'static [TiffBitDepth] {
-        &[TiffBitDepth::Eight, TiffBitDepth::Sixteen]
-    }
-}
-
-impl std::fmt::Display for TiffBitDepth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TiffBitDepth::Eight => write!(f, "8-bit"),
-            TiffBitDepth::Sixteen => write!(f, "16-bit"),
-        }
-    }
-}
-
 /// TIFF sequence settings
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TiffSequenceSettings {
-    pub bit_depth: TiffBitDepth,
     pub compression: TiffCompression,
 }
 
 impl Default for TiffSequenceSettings {
     fn default() -> Self {
         Self {
-            bit_depth: TiffBitDepth::Eight,
             compression: TiffCompression::Lzw,
         }
     }
@@ -1259,11 +1234,13 @@ pub fn encode_sequence_from_comp(
             PixelFormat::RgbaF16 | PixelFormat::RgbaF32
         );
         let frame_for_encode = if encoder.requires_ldr() && source_is_hdr {
-            cropped.tonemap(settings.tonemap_mode).map_err(|error| {
-                EncodeError::EncodeFrameFailed(format!(
-                    "frame {frame_idx} tonemapping failed: {error}"
-                ))
-            })?
+            cropped
+                .tonemap(settings.tonemap_mode, PixelFormat::Rgba8)
+                .map_err(|error| {
+                    EncodeError::EncodeFrameFailed(format!(
+                        "frame {frame_idx} tonemapping failed: {error}"
+                    ))
+                })?
         } else {
             cropped
         };
@@ -1357,6 +1334,21 @@ fn pixel_buf_to_rgba8(buffer: &PixelBuffer) -> Vec<u8> {
         PixelBuffer::F32(data) => data
             .iter()
             .map(|&v| (v.clamp(0.0, 1.0) * 255.0) as u8)
+            .collect(),
+    }
+}
+
+/// Convert the validated RGBA buffer once for both 16-bit image writers.
+fn pixel_buf_to_rgba16(buffer: &PixelBuffer) -> Vec<u16> {
+    match buffer {
+        PixelBuffer::U8(data) => data.iter().map(|&value| u16::from(value) * 257).collect(),
+        PixelBuffer::F16(data) => data
+            .iter()
+            .map(|value| (value.to_f32().clamp(0.0, 1.0) * 65535.0).round() as u16)
+            .collect(),
+        PixelBuffer::F32(data) => data
+            .iter()
+            .map(|&value| (value.clamp(0.0, 1.0) * 65535.0).round() as u16)
             .collect(),
     }
 }
@@ -1577,19 +1569,9 @@ fn write_png_frame(
                 }
             }
         }
-        OutputBitDepth::U16 | OutputBitDepth::F16 | OutputBitDepth::F32 => {
+        OutputBitDepth::U16 => {
             // Convert to U16 for PNG16
-            let rgba16_data: Vec<u16> = match buffer.as_ref() {
-                PixelBuffer::U8(data) => data.iter().map(|&v| (v as u16) * 257).collect(),
-                PixelBuffer::F16(data) => data
-                    .iter()
-                    .map(|v| (v.to_f32().clamp(0.0, 1.0) * 65535.0) as u16)
-                    .collect(),
-                PixelBuffer::F32(data) => data
-                    .iter()
-                    .map(|&v| (v.clamp(0.0, 1.0) * 65535.0) as u16)
-                    .collect(),
-            };
+            let rgba16_data = pixel_buf_to_rgba16(buffer.as_ref());
 
             match channels {
                 ChannelMode::Rgba => {
@@ -1617,6 +1599,11 @@ fn write_png_frame(
                         })?;
                 }
             }
+        }
+        OutputBitDepth::F16 | OutputBitDepth::F32 => {
+            return Err(EncodeError::EncodeFrameFailed(
+                "PNG export supports only U8 or U16 output depth".into(),
+            ));
         }
     }
 
@@ -1674,105 +1661,73 @@ fn write_tiff_frame(
     channels: ChannelMode,
     bit_depth: OutputBitDepth,
 ) -> Result<(), EncodeError> {
-    use image::{ImageBuffer, Rgb, Rgba};
+    use tiff::encoder::{Compression, TiffEncoder, colortype};
 
-    let buffer = frame.buffer();
     let (width, height) = frame.resolution();
+    let buffer = frame.buffer();
+    let compression = match settings.compression {
+        TiffCompression::None => Compression::Uncompressed,
+        TiffCompression::Lzw => Compression::Lzw,
+        TiffCompression::Zip => Compression::Deflate(Default::default()),
+        TiffCompression::PackBits => Compression::Packbits,
+    };
 
-    // TIFF supports U8 and U16
-    match bit_depth {
+    let file = File::create(path).map_err(|error| {
+        EncodeError::OutputCreateFailed(format!("Failed to create TIFF file: {error}"))
+    })?;
+    let mut encoder = TiffEncoder::new(BufWriter::new(file))
+        .map_err(|error| EncodeError::EncodeFrameFailed(format!("TIFF setup failed: {error}")))?
+        .with_compression(compression);
+    let result = match bit_depth {
         OutputBitDepth::U8 => {
-            let rgba_data = pixel_buf_to_rgba8(buffer.as_ref());
+            let rgba = pixel_buf_to_rgba8(buffer.as_ref());
             match channels {
+                ChannelMode::Rgb => encoder.write_image::<colortype::RGB8>(
+                    width as u32,
+                    height as u32,
+                    &strip_alpha(&rgba),
+                ),
                 ChannelMode::Rgba => {
-                    let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(
-                        width as u32,
-                        height as u32,
-                        rgba_data,
-                    )
-                    .ok_or_else(|| {
-                        EncodeError::EncodeFrameFailed("Failed to create TIFF buffer".into())
-                    })?;
-                    img.save(path).map_err(|e| {
-                        EncodeError::EncodeFrameFailed(format!("TIFF save failed: {}", e))
-                    })?;
-                }
-                ChannelMode::Rgb => {
-                    let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
-                        ImageBuffer::from_raw(width as u32, height as u32, strip_alpha(&rgba_data))
-                            .ok_or_else(|| {
-                                EncodeError::EncodeFrameFailed(
-                                    "Failed to create TIFF buffer".into(),
-                                )
-                            })?;
-                    img.save(path).map_err(|e| {
-                        EncodeError::EncodeFrameFailed(format!("TIFF save failed: {}", e))
-                    })?;
+                    encoder.write_image::<colortype::RGBA8>(width as u32, height as u32, &rgba)
                 }
             }
         }
-        OutputBitDepth::U16 | OutputBitDepth::F16 | OutputBitDepth::F32 => {
-            // Convert to U16 for TIFF16
-            let rgba16_data: Vec<u16> = match buffer.as_ref() {
-                PixelBuffer::U8(data) => data.iter().map(|&v| (v as u16) * 257).collect(),
-                PixelBuffer::F16(data) => data
-                    .iter()
-                    .map(|v| (v.to_f32().clamp(0.0, 1.0) * 65535.0) as u16)
-                    .collect(),
-                PixelBuffer::F32(data) => data
-                    .iter()
-                    .map(|&v| (v.clamp(0.0, 1.0) * 65535.0) as u16)
-                    .collect(),
-            };
-
+        OutputBitDepth::U16 => {
+            let rgba = pixel_buf_to_rgba16(buffer.as_ref());
             match channels {
+                ChannelMode::Rgb => encoder.write_image::<colortype::RGB16>(
+                    width as u32,
+                    height as u32,
+                    &strip_alpha(&rgba),
+                ),
                 ChannelMode::Rgba => {
-                    let img: ImageBuffer<Rgba<u16>, Vec<u16>> =
-                        ImageBuffer::from_raw(width as u32, height as u32, rgba16_data)
-                            .ok_or_else(|| {
-                                EncodeError::EncodeFrameFailed(
-                                    "Failed to create TIFF16 buffer".into(),
-                                )
-                            })?;
-                    img.save(path).map_err(|e| {
-                        EncodeError::EncodeFrameFailed(format!("TIFF16 save failed: {}", e))
-                    })?;
-                }
-                ChannelMode::Rgb => {
-                    let img: ImageBuffer<Rgb<u16>, Vec<u16>> = ImageBuffer::from_raw(
-                        width as u32,
-                        height as u32,
-                        strip_alpha(&rgba16_data),
-                    )
-                    .ok_or_else(|| {
-                        EncodeError::EncodeFrameFailed("Failed to create TIFF16 buffer".into())
-                    })?;
-                    img.save(path).map_err(|e| {
-                        EncodeError::EncodeFrameFailed(format!("TIFF16 save failed: {}", e))
-                    })?;
+                    encoder.write_image::<colortype::RGBA16>(width as u32, height as u32, &rgba)
                 }
             }
         }
-    }
-
-    let _ = settings.compression; // TODO: image crate doesn't expose TIFF compression settings easily
-    Ok(())
+        OutputBitDepth::F16 | OutputBitDepth::F32 => {
+            return Err(EncodeError::EncodeFrameFailed(
+                "TIFF export supports only U8 or U16 output depth".into(),
+            ));
+        }
+    };
+    result.map_err(|error| EncodeError::EncodeFrameFailed(format!("TIFF encode failed: {error}")))
 }
 
 /// Write frame to TGA file
 fn write_tga_frame(
     frame: &crate::frame::Frame,
     path: &std::path::Path,
-    _settings: &TgaSequenceSettings,
+    settings: &TgaSequenceSettings,
     channels: ChannelMode,
 ) -> Result<(), EncodeError> {
-    use image::{ImageBuffer, Rgb, Rgba};
+    use image::ImageEncoder;
+    use image::codecs::tga::TgaEncoder;
 
     let buffer = frame.buffer();
     let (width, height) = frame.resolution();
-
-    let rgba_data = match buffer.as_ref() {
-        PixelBuffer::U8(data) => data.clone(),
+    let rgba = match buffer.as_ref() {
+        PixelBuffer::U8(data) => data,
         _ => {
             return Err(EncodeError::EncodeFrameFailed(
                 "TGA requires U8 data. Apply tonemapping for HDR sources.".into(),
@@ -1780,28 +1735,31 @@ fn write_tga_frame(
         }
     };
 
-    match channels {
-        ChannelMode::Rgba => {
-            let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
-                ImageBuffer::from_raw(width as u32, height as u32, rgba_data).ok_or_else(|| {
-                    EncodeError::EncodeFrameFailed("Failed to create TGA buffer".into())
-                })?;
-            img.save(path)
-                .map_err(|e| EncodeError::EncodeFrameFailed(format!("TGA save failed: {}", e)))?;
-        }
-        ChannelMode::Rgb => {
-            let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
-                ImageBuffer::from_raw(width as u32, height as u32, strip_alpha(&rgba_data))
-                    .ok_or_else(|| {
-                        EncodeError::EncodeFrameFailed("Failed to create TGA buffer".into())
-                    })?;
-            img.save(path)
-                .map_err(|e| EncodeError::EncodeFrameFailed(format!("TGA save failed: {}", e)))?;
-        }
-    }
-
-    // TODO: RLE compression when image crate supports it
-    Ok(())
+    let file = File::create(path).map_err(|error| {
+        EncodeError::OutputCreateFailed(format!("Failed to create TGA file: {error}"))
+    })?;
+    let writer = BufWriter::new(file);
+    let encoder = TgaEncoder::new(writer);
+    let encoder = if settings.rle_compression {
+        encoder
+    } else {
+        encoder.disable_rle()
+    };
+    let result = match channels {
+        ChannelMode::Rgb => encoder.write_image(
+            &strip_alpha(rgba),
+            width as u32,
+            height as u32,
+            image::ExtendedColorType::Rgb8,
+        ),
+        ChannelMode::Rgba => encoder.write_image(
+            rgba,
+            width as u32,
+            height as u32,
+            image::ExtendedColorType::Rgba8,
+        ),
+    };
+    result.map_err(|error| EncodeError::EncodeFrameFailed(format!("TGA encode failed: {error}")))
 }
 
 /// Main function to export image sequence
@@ -1893,12 +1851,19 @@ pub fn encode_image_sequence(
             EncodeError::EncodeFrameFailed(format!("Frame {} not available", frame_idx))
         })?;
 
-        // Apply tonemapping if needed (HDR -> LDR for non-EXR formats)
+        // Keep floating-point precision until the U16 PNG/TIFF writer quantizes it.
         let frame_to_write = if settings.apply_tonemap
             || (!settings.format.is_hdr() && frame.pixel_format() != PixelFormat::Rgba8)
         {
+            let output_format = if settings.bit_depth == OutputBitDepth::U16 {
+                PixelFormat::RgbaF32
+            } else if settings.format.is_hdr() {
+                PixelFormat::RgbaF32
+            } else {
+                PixelFormat::Rgba8
+            };
             frame
-                .tonemap(settings.tonemap_mode)
+                .tonemap(settings.tonemap_mode, output_format)
                 .map_err(|e| EncodeError::EncodeFrameFailed(format!("Tonemapping failed: {}", e)))?
         } else {
             frame.clone()

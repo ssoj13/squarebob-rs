@@ -61,12 +61,16 @@ impl PickingState {
         }
     }
 
-    /// Reset ID counter for new frame.
-    /// Keeps id_map entries — reused by `alloc_id` when traversal order is stable (animation).
-    /// Stale entries (id >= next allocation) are harmless: never looked up from current scene.
-    pub fn reset_frame(&mut self) {
+    /// Reset the active ID range for a new instance collection.
+    /// Retain entries for path allocation reuse; lookups ignore inactive IDs.
+    pub fn reset_frame(&mut self, clear_hover: bool) {
         log::trace!("picking.reset_frame: {} entries (reuse)", self.id_map.len());
         self.next_id = 1;
+        if clear_hover {
+            self.hovered_id = 0;
+            self.pending_pick = None;
+            self.pending_px = None;
+        }
     }
 
     /// Allocate a new object ID and map it to a path.
@@ -75,7 +79,11 @@ impl PickingState {
         let id = self.next_id;
         self.next_id += 1;
         match self.id_map.entry(id) {
-            Entry::Occupied(ref e) if e.get().path.as_path() == path => {}
+            Entry::Occupied(mut e) if e.get().path.as_path() == path => {
+                let info = e.get_mut();
+                info.size = size;
+                info.is_dir = is_dir;
+            }
             Entry::Occupied(mut e) => {
                 e.insert(PickInfo {
                     path: path.to_path_buf(),
@@ -229,7 +237,12 @@ impl PickingState {
         let raw = result?;
 
         // Texture encodes selected instances as id | SELECTED_BIT; id_map uses canonical ids only.
-        self.hovered_id = canonical_object_id(raw);
+        let id = canonical_object_id(raw);
+        self.hovered_id = if self.info_for_id(id).is_some() {
+            id
+        } else {
+            0
+        };
         log::trace!(
             "picking::poll_result raw={raw:#x} canonical={}",
             self.hovered_id
@@ -240,10 +253,7 @@ impl PickingState {
     /// Look up path for an object ID
     pub fn path_for_id(&self, id: u32) -> Option<&PathBuf> {
         let id = canonical_object_id(id);
-        if id == 0 {
-            return None;
-        }
-        let result = self.id_map.get(&id).map(|info| &info.path);
+        let result = self.info_for_id(id).map(|info| &info.path);
         if result.is_none() {
             log::debug!(
                 "path_for_id({}): not found in id_map (map has {} entries)",
@@ -258,28 +268,24 @@ impl PickingState {
     pub fn id_for_path(&self, path: &std::path::Path) -> Option<u32> {
         self.id_map
             .iter()
-            .find(|(_, info)| info.path.as_path() == path)
+            .find(|(id, info)| **id > 0 && **id < self.next_id && info.path.as_path() == path)
             .map(|(id, _)| *id)
     }
 
     /// Look up file size for an object ID
     pub fn size_for_id(&self, id: u32) -> Option<u64> {
-        self.id_map
-            .get(&canonical_object_id(id))
-            .map(|info| info.size)
+        self.info_for_id(id).map(|info| info.size)
     }
 
     /// Look up directory flag for an object ID
     pub fn is_dir_for_id(&self, id: u32) -> Option<bool> {
-        self.id_map
-            .get(&canonical_object_id(id))
-            .map(|info| info.is_dir)
+        self.info_for_id(id).map(|info| info.is_dir)
     }
 
     /// Get full pick info for an object ID
     pub fn info_for_id(&self, id: u32) -> Option<&PickInfo> {
         let id = canonical_object_id(id);
-        if id == 0 {
+        if id == 0 || id >= self.next_id {
             return None;
         }
         self.id_map.get(&id)

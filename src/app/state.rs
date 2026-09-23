@@ -384,12 +384,9 @@ pub struct App {
     pub(super) selected_3d_ids: std::collections::HashSet<u32>,
     /// Marquee selection start point (shift+drag)
     pub(super) marquee_start: Option<egui::Pos2>,
-    /// Snapshot of `selected_3d_ids` at the moment the marquee drag
-    /// started. Each frame the live preview resets back to this baseline
-    /// and re-adds the cubes inside the current rectangle, so the
-    /// highlight tracks cursor swings without permanently capturing
-    /// cubes that were briefly inside earlier in the drag.
-    pub(super) marquee_baseline: Option<std::collections::HashSet<u32>>,
+    /// Selected paths at marquee start. Resolve them against current IDs
+    /// each preview frame so LOD rebuilds cannot change selection identity.
+    pub(super) marquee_baseline: Option<std::collections::HashSet<PathBuf>>,
     pub(super) last_hover_pos_3d: Option<(f32, f32)>,
     /// Throttle: last time a hover pick was issued
     pub(super) last_pick_time_3d: std::time::Instant,
@@ -412,6 +409,7 @@ pub struct App {
     pub(super) exit_after_screenshot: bool,
     pub(super) screenshot_start_time: Option<std::time::Instant>,
     pub(super) screenshot_taken: bool,
+    pub(super) screenshot_error: Option<String>,
     pub(super) last_render_frame_3d: u32,
     pub(super) last_render_instant_3d: Option<std::time::Instant>,
     pub(super) render_tick_3d: bool,
@@ -613,6 +611,7 @@ impl Default for App {
             exit_after_screenshot: false,
             screenshot_start_time: None,
             screenshot_taken: false,
+            screenshot_error: None,
             last_render_frame_3d: 0,
             last_render_instant_3d: None,
             render_tick_3d: true,

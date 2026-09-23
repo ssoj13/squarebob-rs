@@ -254,7 +254,15 @@ impl App {
             return;
         }
 
-        let pixels = self.capture_viewport(width, height);
+        let pixels = match self.capture_viewport(width, height) {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                log::error!("Failed to capture encode frame: {error}");
+                request.complete(None);
+                self.cancel_encode_sequence_source();
+                return;
+            }
+        };
         match Frame::rgba8(width as usize, height as usize, pixels) {
             Ok(frame) => request.complete(Some(frame)),
             Err(error) => {

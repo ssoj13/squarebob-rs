@@ -5,8 +5,11 @@
 //! `print_help`, and the per-field `parse_*` helpers all live here.
 
 use pt_mats::MaterializeMode;
+use render_shared::{OidnModeOption, OidnQualityOption};
 
 use crate::renderer::{self, RenderBackend, RenderMode};
+
+pub(crate) const DEFAULT_SCREENSHOT_FILE: &str = "squarebob_screenshot.png";
 
 /// CLI options parsed from arguments
 #[derive(Default, Clone)]
@@ -24,7 +27,7 @@ pub struct CliOptions {
 
     // Screenshot/testing options
     pub screenshot_delay: Option<f32>, // Take screenshot after N seconds
-    pub screenshot_path: Option<String>, // Default: temp/screenshot.png
+    pub screenshot_path: Option<String>, // Resolved from DEFAULT_SCREENSHOT_FILE in parse_args
     pub exit_after_screenshot: bool,
 
     // Render settings (for automated testing)
@@ -87,8 +90,8 @@ pub struct CliOptions {
     pub pt_path_guiding: Option<bool>,
     pub pt_svo_resolution: Option<u32>,
     // OIDN denoiser (replaces the previous à-trous filter).
-    pub pt_oidn_mode: Option<String>,
-    pub pt_oidn_quality: Option<String>,
+    pub pt_oidn_mode: Option<OidnModeOption>,
+    pub pt_oidn_quality: Option<OidnQualityOption>,
     pub pt_oidn_auto: Option<bool>,
     pub slice_enabled: Option<bool>,
     pub slice_axis: Option<u32>,
@@ -103,19 +106,21 @@ pub struct CliOptions {
     pub inertia_friction: Option<f32>,
     pub inertia_cutoff: Option<f32>,
 
-    /// Subcommand: `test` with remaining args (`squarebob-rs test ping`, etc.).
+    /// Subcommand: `test` with remaining arguments.
     pub test_args: Option<Vec<String>>,
 }
 
 pub fn print_help() {
+    let bin = env!("CARGO_BIN_NAME");
+    let screenshot_file = DEFAULT_SCREENSHOT_FILE;
     eprintln!(
-        r#"squarebob-rs - Disk usage visualization tool
+        r#"{bin} - Disk usage visualization tool
 
 USAGE:
-    squarebob-rs [OPTIONS] [PATH]
+    {bin} [OPTIONS] [PATH]
 
 ARGS:
-    [PATH]    Path to scan on startup
+    [PATH]    Path to scan on startup (use -- before a path beginning with -)
 
 OPTIONS:
     -m, --mode <MODE>       Render mode: 2d, 3d (default: 2d)
@@ -134,7 +139,7 @@ OPTIONS:
 
 TESTING OPTIONS:
     --screenshot <SECS>     Take screenshot after N seconds
-    --screenshot-path <P>   Screenshot output path (default: temp/screenshot.png)
+    --screenshot-path <P>   Screenshot output path (default: OS temp/{screenshot_file})
     --exit-after-screenshot Exit after taking screenshot
 
 RENDER SETTINGS (3D, overrides saved config):
@@ -154,6 +159,10 @@ RENDER SETTINGS (3D, overrides saved config):
     -R, --no-pt-russian-roulette Disable Russian roulette
     --pt-path-guiding            Enable path guiding
     --no-pt-path-guiding         Disable path guiding
+    --oidn-mode <MODE>            OIDN mode (off|color|color_albedo|color_albedo_normal)
+    --oidn-quality <QUALITY>      OIDN model size (small|base|large)
+    --oidn-auto                   Enable automatic OIDN
+    --no-oidn-auto                Disable automatic OIDN
     --pt-restir-di               Enable ReSTIR DI
     --no-pt-restir-di            Disable ReSTIR DI
     --pt-restir-gi               Enable ReSTIR GI
@@ -177,6 +186,7 @@ RENDER SETTINGS (3D, overrides saved config):
     --no-pt-auto-spp             Disable auto SPP
     -c, --pt-camera-snap         Enable camera snap
     -C, --no-pt-camera-snap      Disable camera snap
+    --pt-svo-resolution <N>      SVO resolution (clamped to 16..512)
     --pt-spectral <MODE>         Spectral PT mode (off|hero|multi)
     --pt-spectral-samples <N>    Spectral samples per path (hint)
     --pt-spectral-dispersion     Enable spectral dispersion (hint)
@@ -217,12 +227,6 @@ RENDER SETTINGS (3D, overrides saved config):
     --double-sided               Enable double-sided
     --no-double-sided            Disable double-sided
     --materialize <MODE>         Materialize mode (none|byextension|bypath|bysize|byage|random)
-    --mat-allow-lights           Allow emissive materials
-    --no-mat-allow-lights        Disallow emissive materials
-    --mat-light-prob <F>         Emissive material probability
-    --mat-allow-glass            Allow glass materials
-    --no-mat-allow-glass         Disallow glass materials
-    --mat-glass-prob <F>         Glass material probability
     --slice                       Enable slice plane
     --no-slice                    Disable slice plane
     --slice-axis <N>              Slice axis (0=X,1=Y,2=Z)
@@ -242,13 +246,13 @@ RENDER SETTINGS (3D, overrides saved config):
     --inertia-cutoff <F>           Camera inertia cutoff
 
 TEST HARNESS (no GUI):
-    squarebob-rs test [NAME] [ARGS...]         # See: squarebob-rs test help
+    {bin} test [NAME] [ARGS...]         # See: {bin} test help
 
 EXAMPLES:
-    squarebob-rs /home                         # Scan /home with default settings
-    squarebob-rs --mode 3d /home               # Scan /home in 3D mode
-    squarebob-rs -vv --mode 3d                 # 3D mode with DEBUG logging
-    squarebob-rs --mode 3d --path-trace --screenshot 3 .  # Test PT, screenshot after 3s
+    {bin} /home                         # Scan /home with default settings
+    {bin} --mode 3d /home               # Scan /home in 3D mode
+    {bin} -vv --mode 3d                 # 3D mode with DEBUG logging
+    {bin} --mode 3d --path-trace --screenshot 3 .  # Test PT, screenshot after 3s
 "#
     );
 }
@@ -261,7 +265,11 @@ fn parse_vec3(input: &str) -> Option<[f32; 3]> {
     let x = parts[0].trim().parse::<f32>().ok()?;
     let y = parts[1].trim().parse::<f32>().ok()?;
     let z = parts[2].trim().parse::<f32>().ok()?;
-    Some([x, y, z])
+    if [x, y, z].iter().all(|component| component.is_finite()) {
+        Some([x, y, z])
+    } else {
+        None
+    }
 }
 
 fn parse_height_mode(input: &str) -> Option<renderer::CubeHeightMode> {
@@ -339,584 +347,350 @@ fn parse_spectral_mode(input: &str) -> Option<renderer::SpectralMode> {
     }
 }
 
-pub fn parse_args() -> CliOptions {
+fn value<'a>(args: &'a [String], index: &mut usize, option: &str) -> Result<&'a str, String> {
+    let next = args
+        .get(*index + 1)
+        .ok_or_else(|| format!("Missing value for {option}"))?;
+    if next.starts_with('-') && next.parse::<f32>().is_err() {
+        return Err(format!("Missing value for {option} before option '{next}'"));
+    }
+    *index += 1;
+    Ok(next)
+}
+
+fn parse_value<T: std::str::FromStr>(
+    args: &[String],
+    index: &mut usize,
+    option: &str,
+) -> Result<T, String> {
+    let raw = value(args, index, option)?;
+    raw.parse::<T>()
+        .map_err(|_| format!("Invalid value '{raw}' for {option}"))
+}
+
+fn finite(value: f32, option: &str) -> Result<f32, String> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!("Non-finite value for {option}"))
+    }
+}
+
+pub fn parse_args() -> Result<CliOptions, String> {
     let mut opts = CliOptions::default();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
 
     while i < args.len() {
-        let arg = &args[i];
-        match arg.as_str() {
+        let arg = args[i].as_str();
+        match arg {
             "test" => {
                 opts.test_args = Some(args[i + 1..].to_vec());
                 break;
             }
             "-h" | "--help" => {
                 opts.help = true;
-                return opts;
+                return Ok(opts);
             }
             "-v" => opts.verbosity = opts.verbosity.max(1),
             "-vv" => opts.verbosity = opts.verbosity.max(2),
             "-vvv" => opts.verbosity = opts.verbosity.max(3),
             "-l" | "--log" => {
-                i += 1;
-                if i < args.len() && !args[i].starts_with('-') {
-                    opts.log_file = Some(args[i].clone());
+                if args.get(i + 1).is_some_and(|next| !next.starts_with('-')) {
+                    opts.log_file = Some(value(&args, &mut i, arg)?.to_owned());
                 } else {
-                    opts.log_file = Some("squarebob-rs.log".to_string());
-                    if i < args.len() {
-                        i -= 1;
-                    }
+                    opts.log_file = Some("squarebob-rs.log".to_owned());
                 }
             }
-            "--log-modules" => {
-                i += 1;
-                if i < args.len() {
-                    opts.log_modules = Some(args[i].clone());
-                } else {
-                    eprintln!("Missing value for --log-modules, ignoring");
-                }
-            }
-            "--log-ptwf" => {
-                opts.log_modules = Some("pt,wf".to_string());
-            }
-            "--log-ptall" => {
-                opts.log_modules = Some("pt,wf,pg".to_string());
-            }
-            "--log-pt" => {
-                opts.log_pt = true;
-            }
-            "--log-wf" => {
-                opts.log_wf = true;
-            }
-            "--log-pg" => {
-                opts.log_pg = true;
-            }
+            "--log-modules" => opts.log_modules = Some(value(&args, &mut i, arg)?.to_owned()),
+            "--log-ptwf" => opts.log_modules = Some("pt,wf".to_owned()),
+            "--log-ptall" => opts.log_modules = Some("pt,wf,pg".to_owned()),
+            "--log-pt" => opts.log_pt = true,
+            "--log-wf" => opts.log_wf = true,
+            "--log-pg" => opts.log_pg = true,
             "-m" | "--mode" => {
-                i += 1;
-                if i < args.len() {
-                    opts.mode = match args[i].to_lowercase().as_str() {
-                        "2d" => Some(RenderMode::Mode2D),
-                        "3d" => Some(RenderMode::Mode3D),
-                        other => {
-                            eprintln!("Unknown mode '{}', using default", other);
-                            None
-                        }
-                    };
-                }
+                let raw = value(&args, &mut i, arg)?;
+                opts.mode = Some(match raw.to_ascii_lowercase().as_str() {
+                    "2d" => RenderMode::Mode2D,
+                    "3d" => RenderMode::Mode3D,
+                    _ => return Err(format!("Invalid value '{raw}' for {arg}")),
+                });
             }
             "-B" | "--backend" => {
-                i += 1;
-                if i < args.len() {
-                    opts.backend = match args[i].to_lowercase().as_str() {
-                        "cpu" => Some(RenderBackend::Cpu),
-                        "gpu" => Some(RenderBackend::Gpu),
-                        other => {
-                            eprintln!("Unknown backend '{}', using default", other);
-                            None
-                        }
-                    };
-                }
+                let raw = value(&args, &mut i, arg)?;
+                opts.backend = Some(match raw.to_ascii_lowercase().as_str() {
+                    "cpu" => RenderBackend::Cpu,
+                    "gpu" => RenderBackend::Gpu,
+                    _ => return Err(format!("Invalid value '{raw}' for {arg}")),
+                });
             }
-            // Screenshot options
             "--screenshot" => {
-                i += 1;
-                if i < args.len() {
-                    if let Ok(secs) = args[i].parse::<f32>() {
-                        opts.screenshot_delay = Some(secs);
-                    } else {
-                        eprintln!("Invalid screenshot delay '{}', ignoring", args[i]);
-                    }
+                let delay = finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?;
+                if delay < 0.0 {
+                    return Err(format!("Screenshot delay must be non-negative: {delay}"));
                 }
+                opts.screenshot_delay = Some(delay);
             }
             "--screenshot-path" => {
-                i += 1;
-                if i < args.len() {
-                    opts.screenshot_path = Some(args[i].clone());
-                }
+                opts.screenshot_path = Some(value(&args, &mut i, arg)?.to_owned())
             }
-            "--exit-after-screenshot" => {
-                opts.exit_after_screenshot = true;
-            }
-            // Render settings
-            "-p" | "--path-trace" => {
-                opts.path_tracing = Some(true);
-            }
-            "-P" | "--no-path-trace" => {
-                opts.path_tracing = Some(false);
-            }
-            "-w" | "--wavefront" => {
-                opts.wavefront = Some(true);
-            }
-            "-W" | "--no-wavefront" => {
-                opts.wavefront = Some(false);
-            }
+            "--exit-after-screenshot" => opts.exit_after_screenshot = true,
+            "-p" | "--path-trace" => opts.path_tracing = Some(true),
+            "-P" | "--no-path-trace" => opts.path_tracing = Some(false),
+            "-w" | "--wavefront" => opts.wavefront = Some(true),
+            "-W" | "--no-wavefront" => opts.wavefront = Some(false),
+            "-e" | "--env-map" => opts.env_map_enabled = Some(true),
+            "-E" | "--no-env-map" => opts.env_map_enabled = Some(false),
+            "-f" | "--wireframe" => opts.wireframe = Some(true),
+            "--pt-path-guiding" => opts.pt_path_guiding = Some(true),
+            "--no-pt-path-guiding" => opts.pt_path_guiding = Some(false),
+            "--oidn-auto" => opts.pt_oidn_auto = Some(true),
+            "--no-oidn-auto" => opts.pt_oidn_auto = Some(false),
+            "--pt-restir-di" => opts.pt_restir_di = Some(true),
+            "--no-pt-restir-di" => opts.pt_restir_di = Some(false),
+            "--pt-restir-gi" => opts.pt_restir_gi = Some(true),
+            "--no-pt-restir-gi" => opts.pt_restir_gi = Some(false),
+            "--pt-adaptive-sampling" => opts.pt_adaptive_sampling = Some(true),
+            "--no-pt-adaptive-sampling" => opts.pt_adaptive_sampling = Some(false),
+            "-G" | "--no-pt-gpu-bvh" => opts.pt_gpu_bvh = Some(false),
+            "-a" | "--animate" => opts.animate = Some(true),
+            "-A" | "--no-animate" => opts.animate = Some(false),
+            "-F" | "--no-wireframe" => opts.wireframe = Some(false),
+            "-g" | "--pt-gpu-bvh" => opts.pt_gpu_bvh = Some(true),
+            "--pt-bvh-refit" => opts.pt_bvh_refit = Some(true),
+            "--no-pt-bvh-refit" => opts.pt_bvh_refit = Some(false),
+            "-r" | "--pt-russian-roulette" => opts.pt_russian_roulette = Some(true),
+            "-R" | "--no-pt-russian-roulette" => opts.pt_russian_roulette = Some(false),
+            "-d" | "--pt-dof" => opts.pt_dof_enabled = Some(true),
+            "-D" | "--no-pt-dof" => opts.pt_dof_enabled = Some(false),
+            "-c" | "--pt-camera-snap" => opts.pt_camera_snap = Some(true),
+            "-C" | "--no-pt-camera-snap" => opts.pt_camera_snap = Some(false),
+            "--pt-env-importance" => opts.pt_env_importance_sampling = Some(true),
+            "--no-pt-env-importance" => opts.pt_env_importance_sampling = Some(false),
+            "--pt-auto-spp" => opts.pt_auto_spp = Some(true),
+            "--no-pt-auto-spp" => opts.pt_auto_spp = Some(false),
+            "--pt-spectral-dispersion" => opts.pt_spectral_dispersion = Some(true),
+            "--no-pt-spectral-dispersion" => opts.pt_spectral_dispersion = Some(false),
+            "--pt-restir-temporal" => opts.pt_restir_temporal = Some(true),
+            "--no-pt-restir-temporal" => opts.pt_restir_temporal = Some(false),
+            "--pt-restir-spatial" => opts.pt_restir_spatial = Some(true),
+            "--no-pt-restir-spatial" => opts.pt_restir_spatial = Some(false),
+            "--height-squared" => opts.height_squared = Some(true),
+            "--no-height-squared" => opts.height_squared = Some(false),
+            "--flat-shading" => opts.flat_shading = Some(true),
+            "--no-flat-shading" => opts.flat_shading = Some(false),
+            "--double-sided" => opts.double_sided = Some(true),
+            "--no-double-sided" => opts.double_sided = Some(false),
+            "--env-visible" => opts.env_map_visible = Some(true),
+            "--no-env-visible" => opts.env_map_visible = Some(false),
+            "--env-animate" => opts.env_animate = Some(true),
+            "--no-env-animate" => opts.env_animate = Some(false),
+            "--slice" => opts.slice_enabled = Some(true),
+            "--no-slice" => opts.slice_enabled = Some(false),
+            "--slice-invert" => opts.slice_invert = Some(true),
+            "--no-slice-invert" => opts.slice_invert = Some(false),
+            "--slice-use-vector" => opts.slice_use_vector = Some(true),
+            "--slice-use-axis" => opts.slice_use_vector = Some(false),
+            "--lod" => opts.lod_enabled = Some(true),
+            "--no-lod" => opts.lod_enabled = Some(false),
+            "--inertia" => opts.inertia_enabled = Some(true),
+            "--no-inertia" => opts.inertia_enabled = Some(false),
             "-t" | "--pt-wavefront-tile" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_wavefront_tile_size = args[i].parse::<u32>().ok();
-                    if opts.pt_wavefront_tile_size.is_none() {
-                        eprintln!("Invalid value for --pt-wavefront-tile, ignoring");
-                    }
-                } else {
-                    eprintln!("Missing value for --pt-wavefront-tile, ignoring");
-                }
+                opts.pt_wavefront_tile_size = Some(parse_value::<u32>(&args, &mut i, arg)?);
             }
             "-b" | "--bounces" => {
-                i += 1;
-                if i < args.len()
-                    && let Ok(n) = args[i].parse::<u32>()
-                {
-                    opts.pt_max_bounces = Some(n);
-                }
+                opts.pt_max_bounces = Some(parse_value::<u32>(&args, &mut i, arg)?)
             }
-            "-s" | "--samples" => {
-                i += 1;
-                if i < args.len()
-                    && let Ok(n) = args[i].parse::<u32>()
-                {
-                    opts.pt_samples = Some(n);
-                }
-            }
-            "-e" | "--env-map" => {
-                opts.env_map_enabled = Some(true);
-            }
-            "-E" | "--no-env-map" => {
-                opts.env_map_enabled = Some(false);
-            }
-            "-f" | "--wireframe" => {
-                opts.wireframe = Some(true);
-            }
-            "--pt-path-guiding" => {
-                opts.pt_path_guiding = Some(true);
-            }
-            "--no-pt-path-guiding" => {
-                opts.pt_path_guiding = Some(false);
-            }
+            "-s" | "--samples" => opts.pt_samples = Some(parse_value::<u32>(&args, &mut i, arg)?),
+            "--env-path" => opts.env_map_path = Some(value(&args, &mut i, arg)?.to_owned()),
             "--oidn-mode" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_oidn_mode = Some(args[i].clone());
-                }
+                let raw = value(&args, &mut i, arg)?;
+                opts.pt_oidn_mode = Some(match raw.to_ascii_lowercase().as_str() {
+                    "off" => OidnModeOption::Off,
+                    "color" => OidnModeOption::Color,
+                    "color_albedo" | "color+albedo" => OidnModeOption::ColorAlbedo,
+                    "color_albedo_normal" | "color+albedo+normal" => {
+                        OidnModeOption::ColorAlbedoNormal
+                    }
+                    _ => return Err(format!("Invalid value '{raw}' for {arg}")),
+                });
             }
             "--oidn-quality" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_oidn_quality = Some(args[i].clone());
-                }
-            }
-            "--oidn-auto" => {
-                opts.pt_oidn_auto = Some(true);
-            }
-            "--no-oidn-auto" => {
-                opts.pt_oidn_auto = Some(false);
-            }
-            "--pt-restir-di" => {
-                opts.pt_restir_di = Some(true);
-            }
-            "--no-pt-restir-di" => {
-                opts.pt_restir_di = Some(false);
-            }
-            "--pt-restir-gi" => {
-                opts.pt_restir_gi = Some(true);
-            }
-            "--no-pt-restir-gi" => {
-                opts.pt_restir_gi = Some(false);
-            }
-            "--pt-adaptive-sampling" => {
-                opts.pt_adaptive_sampling = Some(true);
-            }
-            "--no-pt-adaptive-sampling" => {
-                opts.pt_adaptive_sampling = Some(false);
-            }
-            "--no-pt-gpu-bvh" => {
-                opts.pt_gpu_bvh = Some(false);
-            }
-            "-a" | "--animate" => {
-                opts.animate = Some(true);
-            }
-            "-A" | "--no-animate" => {
-                opts.animate = Some(false);
-            }
-            "-F" | "--no-wireframe" => {
-                opts.wireframe = Some(false);
-            }
-            "-g" | "--pt-gpu-bvh" => {
-                opts.pt_gpu_bvh = Some(true);
-            }
-            "--pt-bvh-refit" => {
-                opts.pt_bvh_refit = Some(true);
-            }
-            "--no-pt-bvh-refit" => {
-                opts.pt_bvh_refit = Some(false);
-            }
-            "-r" | "--pt-russian-roulette" => {
-                opts.pt_russian_roulette = Some(true);
-            }
-            "-R" | "--no-pt-russian-roulette" => {
-                opts.pt_russian_roulette = Some(false);
-            }
-            "-d" | "--pt-dof" => {
-                opts.pt_dof_enabled = Some(true);
-            }
-            "-D" | "--no-pt-dof" => {
-                opts.pt_dof_enabled = Some(false);
-            }
-            "-c" | "--pt-camera-snap" => {
-                opts.pt_camera_snap = Some(true);
-            }
-            "-C" | "--no-pt-camera-snap" => {
-                opts.pt_camera_snap = Some(false);
+                let raw = value(&args, &mut i, arg)?;
+                opts.pt_oidn_quality = Some(match raw.to_ascii_lowercase().as_str() {
+                    "large" | "high" => OidnQualityOption::Large,
+                    "base" | "balanced" => OidnQualityOption::Base,
+                    "small" | "fast" => OidnQualityOption::Small,
+                    _ => return Err(format!("Invalid value '{raw}' for {arg}")),
+                });
             }
             "-u" | "--pt-spp" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_samples_per_update = args[i].parse::<u32>().ok();
-                    if opts.pt_samples_per_update.is_none() {
-                        eprintln!("Invalid value for --pt-spp, ignoring");
-                    }
-                } else {
-                    eprintln!("Missing value for --pt-spp, ignoring");
-                }
-            }
-            "--pt-max-transmission" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_max_transmission_depth = args[i].parse::<u32>().ok();
-                }
-            }
-            "--pt-aperture" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_aperture = args[i].parse::<f32>().ok();
-                }
-            }
-            "--pt-focus" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_focus_distance = args[i].parse::<f32>().ok();
-                }
-            }
-            "--pt-env-importance" => {
-                opts.pt_env_importance_sampling = Some(true);
-            }
-            "--no-pt-env-importance" => {
-                opts.pt_env_importance_sampling = Some(false);
-            }
-            "--pt-target-fps" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_target_fps = args[i].parse::<f32>().ok();
-                }
-            }
-            "--pt-auto-spp" => {
-                opts.pt_auto_spp = Some(true);
-            }
-            "--no-pt-auto-spp" => {
-                opts.pt_auto_spp = Some(false);
-            }
-            "--pt-spectral" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_spectral_mode = parse_spectral_mode(&args[i]);
-                    if opts.pt_spectral_mode.is_none() {
-                        eprintln!("Invalid value for --pt-spectral, ignoring");
-                    }
-                } else {
-                    eprintln!("Missing value for --pt-spectral, ignoring");
-                }
-            }
-            "--pt-spectral-samples" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_spectral_samples = args[i].parse::<u32>().ok();
-                    if opts.pt_spectral_samples.is_none() {
-                        eprintln!("Invalid value for --pt-spectral-samples, ignoring");
-                    }
-                } else {
-                    eprintln!("Missing value for --pt-spectral-samples, ignoring");
-                }
-            }
-            "--pt-spectral-dispersion" => {
-                opts.pt_spectral_dispersion = Some(true);
-            }
-            "--no-pt-spectral-dispersion" => {
-                opts.pt_spectral_dispersion = Some(false);
-            }
-            "--pt-restir-temporal" => {
-                opts.pt_restir_temporal = Some(true);
-            }
-            "--no-pt-restir-temporal" => {
-                opts.pt_restir_temporal = Some(false);
-            }
-            "--pt-restir-spatial" => {
-                opts.pt_restir_spatial = Some(true);
-            }
-            "--no-pt-restir-spatial" => {
-                opts.pt_restir_spatial = Some(false);
-            }
-            "--pt-restir-mmax" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_restir_m_max = args[i].parse::<u32>().ok();
-                }
+                opts.pt_samples_per_update = Some(parse_value::<u32>(&args, &mut i, arg)?)
             }
             "--pt-svo-resolution" => {
-                i += 1;
-                if i < args.len() {
-                    opts.pt_svo_resolution = args[i].parse::<u32>().ok().map(|v| v.clamp(16, 512));
-                }
+                opts.pt_svo_resolution =
+                    Some(parse_value::<u32>(&args, &mut i, arg)?.clamp(16, 512));
+            }
+            "--pt-spectral" => {
+                let raw = value(&args, &mut i, arg)?;
+                opts.pt_spectral_mode = Some(
+                    parse_spectral_mode(raw)
+                        .ok_or_else(|| format!("Invalid value '{raw}' for {arg}"))?,
+                );
             }
             "--height-mode" => {
-                i += 1;
-                if i < args.len() {
-                    let mode_lc = args[i].to_lowercase();
-                    if matches!(
-                        mode_lc.as_str(),
-                        "depth2" | "depth_squared" | "depthsquared"
-                    ) {
-                        opts.height_mode = Some(renderer::CubeHeightMode::Depth);
-                        opts.height_squared = Some(true);
-                    } else {
-                        opts.height_mode = parse_height_mode(&args[i]);
-                    }
-                }
-            }
-            "--height-squared" => {
-                opts.height_squared = Some(true);
-            }
-            "--no-height-squared" => {
-                opts.height_squared = Some(false);
-            }
-            "--height-scale" => {
-                i += 1;
-                if i < args.len() {
-                    opts.height_scale = args[i].parse::<f32>().ok();
+                let raw = value(&args, &mut i, arg)?;
+                let mode = raw.to_ascii_lowercase();
+                if matches!(mode.as_str(), "depth2" | "depth_squared" | "depthsquared") {
+                    opts.height_mode = Some(renderer::CubeHeightMode::Depth);
+                    opts.height_squared = Some(true);
+                } else {
+                    opts.height_mode = Some(
+                        parse_height_mode(raw)
+                            .ok_or_else(|| format!("Invalid value '{raw}' for {arg}"))?,
+                    );
                 }
             }
             "--color-mode" => {
-                i += 1;
-                if i < args.len() {
-                    opts.color_mode = parse_color_mode(&args[i]);
-                }
+                let raw = value(&args, &mut i, arg)?;
+                opts.color_mode = Some(
+                    parse_color_mode(raw)
+                        .ok_or_else(|| format!("Invalid value '{raw}' for {arg}"))?,
+                );
             }
             "--hash-effect" => {
-                i += 1;
-                if i < args.len() {
-                    opts.hash_effect = parse_hash_effect(&args[i]);
-                }
-            }
-            "--hash-strength" => {
-                i += 1;
-                if i < args.len() {
-                    opts.hash_effect_strength = args[i].parse::<f32>().ok();
-                }
-            }
-            "--animation-time" => {
-                i += 1;
-                if i < args.len() {
-                    opts.animation_time = args[i].parse::<f32>().ok();
-                }
-            }
-            "--animation-speed" => {
-                i += 1;
-                if i < args.len() {
-                    opts.animation_speed = args[i].parse::<f32>().ok();
-                }
+                let raw = value(&args, &mut i, arg)?;
+                opts.hash_effect = Some(
+                    parse_hash_effect(raw)
+                        .ok_or_else(|| format!("Invalid value '{raw}' for {arg}"))?,
+                );
             }
             "--hover-mode" => {
-                i += 1;
-                if i < args.len() {
-                    opts.hover_mode = parse_hover_mode(&args[i]);
-                }
-            }
-            "--hover-outline-width" => {
-                i += 1;
-                if i < args.len() {
-                    opts.hover_outline_width = args[i].parse::<f32>().ok();
-                }
-            }
-            "--hover-outline-alpha" => {
-                i += 1;
-                if i < args.len() {
-                    opts.hover_outline_alpha = args[i].parse::<f32>().ok();
-                }
-            }
-            "--roughness" => {
-                i += 1;
-                if i < args.len() {
-                    opts.roughness = args[i].parse::<f32>().ok();
-                }
-            }
-            "--metalness" => {
-                i += 1;
-                if i < args.len() {
-                    opts.metalness = args[i].parse::<f32>().ok();
-                }
-            }
-            "--specular-ior" => {
-                i += 1;
-                if i < args.len() {
-                    opts.specular_ior = args[i].parse::<f32>().ok();
-                }
-            }
-            "--xray-alpha" => {
-                i += 1;
-                if i < args.len() {
-                    opts.xray_alpha = args[i].parse::<f32>().ok();
-                }
-            }
-            "--flat-shading" => {
-                opts.flat_shading = Some(true);
-            }
-            "--no-flat-shading" => {
-                opts.flat_shading = Some(false);
-            }
-            "--double-sided" => {
-                opts.double_sided = Some(true);
-            }
-            "--no-double-sided" => {
-                opts.double_sided = Some(false);
+                let raw = value(&args, &mut i, arg)?;
+                opts.hover_mode = Some(
+                    parse_hover_mode(raw)
+                        .ok_or_else(|| format!("Invalid value '{raw}' for {arg}"))?,
+                );
             }
             "--materialize" => {
-                i += 1;
-                if i < args.len() {
-                    opts.materialize_mode = parse_materialize_mode(&args[i]);
-                }
-            }
-            "--env-intensity" => {
-                i += 1;
-                if i < args.len() {
-                    opts.env_map_intensity = args[i].parse::<f32>().ok();
-                }
-            }
-            "--env-rotation" => {
-                i += 1;
-                if i < args.len() {
-                    opts.env_map_rotation = args[i].parse::<f32>().ok();
-                }
-            }
-            "--env-visible" => {
-                opts.env_map_visible = Some(true);
-            }
-            "--no-env-visible" => {
-                opts.env_map_visible = Some(false);
-            }
-            "--env-path" => {
-                i += 1;
-                if i < args.len() {
-                    opts.env_map_path = Some(args[i].clone());
-                }
-            }
-            "--env-animate" => {
-                opts.env_animate = Some(true);
-            }
-            "--no-env-animate" => {
-                opts.env_animate = Some(false);
-            }
-            "--env-speed" => {
-                i += 1;
-                if i < args.len() {
-                    opts.env_speed = args[i].parse::<f32>().ok();
-                }
+                let raw = value(&args, &mut i, arg)?;
+                opts.materialize_mode = Some(
+                    parse_materialize_mode(raw)
+                        .ok_or_else(|| format!("Invalid value '{raw}' for {arg}"))?,
+                );
             }
             "--background-color" => {
-                i += 1;
-                if i < args.len() {
-                    if let Some(color) = parse_vec3(&args[i]) {
-                        opts.background_color = Some(color);
-                    } else {
-                        eprintln!("Invalid background color '{}', ignoring", args[i]);
-                    }
-                }
-            }
-            "--slice" => {
-                opts.slice_enabled = Some(true);
-            }
-            "--no-slice" => {
-                opts.slice_enabled = Some(false);
-            }
-            "--slice-axis" => {
-                i += 1;
-                if i < args.len() {
-                    opts.slice_axis = args[i].parse::<u32>().ok();
-                }
-            }
-            "--slice-pos" => {
-                i += 1;
-                if i < args.len() {
-                    opts.slice_position = args[i].parse::<f32>().ok();
-                }
-            }
-            "--slice-pos-vector" => {
-                i += 1;
-                if i < args.len() {
-                    opts.slice_position_vector = args[i].parse::<f32>().ok();
-                }
-            }
-            "--slice-invert" => {
-                opts.slice_invert = Some(true);
-            }
-            "--no-slice-invert" => {
-                opts.slice_invert = Some(false);
-            }
-            "--slice-use-vector" => {
-                opts.slice_use_vector = Some(true);
-            }
-            "--slice-use-axis" => {
-                opts.slice_use_vector = Some(false);
+                let raw = value(&args, &mut i, arg)?;
+                opts.background_color = Some(parse_vec3(raw).ok_or_else(|| {
+                    format!("Invalid value '{raw}' for {arg}: expected finite R,G,B")
+                })?);
             }
             "--slice-normal" => {
-                i += 1;
-                if i < args.len() {
-                    if let Some(normal) = parse_vec3(&args[i]) {
-                        opts.slice_normal = Some(normal);
-                    } else {
-                        eprintln!("Invalid slice normal '{}', ignoring", args[i]);
-                    }
-                }
+                let raw = value(&args, &mut i, arg)?;
+                opts.slice_normal = Some(parse_vec3(raw).ok_or_else(|| {
+                    format!("Invalid value '{raw}' for {arg}: expected finite X,Y,Z")
+                })?);
             }
-            "--lod" => {
-                opts.lod_enabled = Some(true);
+            "--pt-max-transmission" => {
+                opts.pt_max_transmission_depth = Some(parse_value::<u32>(&args, &mut i, arg)?)
             }
-            "--no-lod" => {
-                opts.lod_enabled = Some(false);
+            "--pt-aperture" => {
+                opts.pt_aperture = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--pt-focus" => {
+                opts.pt_focus_distance = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--pt-target-fps" => {
+                opts.pt_target_fps = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--pt-spectral-samples" => {
+                opts.pt_spectral_samples = Some(parse_value::<u32>(&args, &mut i, arg)?)
+            }
+            "--pt-restir-mmax" => {
+                opts.pt_restir_m_max = Some(parse_value::<u32>(&args, &mut i, arg)?)
+            }
+            "--height-scale" => {
+                opts.height_scale = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--hash-strength" => {
+                opts.hash_effect_strength =
+                    Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--animation-time" => {
+                opts.animation_time = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--animation-speed" => {
+                opts.animation_speed = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--hover-outline-width" => {
+                opts.hover_outline_width =
+                    Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--hover-outline-alpha" => {
+                opts.hover_outline_alpha =
+                    Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--roughness" => {
+                opts.roughness = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--metalness" => {
+                opts.metalness = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--specular-ior" => {
+                opts.specular_ior = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--xray-alpha" => {
+                opts.xray_alpha = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--env-intensity" => {
+                opts.env_map_intensity = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--env-rotation" => {
+                opts.env_map_rotation = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--env-speed" => {
+                opts.env_speed = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--slice-axis" => opts.slice_axis = Some(parse_value::<u32>(&args, &mut i, arg)?),
+            "--slice-pos" => {
+                opts.slice_position = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
+            }
+            "--slice-pos-vector" => {
+                opts.slice_position_vector =
+                    Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
             }
             "--lod-min-size" => {
-                i += 1;
-                if i < args.len() {
-                    opts.lod_min_screen_size = args[i].parse::<f32>().ok();
-                }
-            }
-            "--inertia" => {
-                opts.inertia_enabled = Some(true);
-            }
-            "--no-inertia" => {
-                opts.inertia_enabled = Some(false);
+                opts.lod_min_screen_size =
+                    Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
             }
             "--inertia-friction" => {
-                i += 1;
-                if i < args.len() {
-                    opts.inertia_friction = args[i].parse::<f32>().ok();
-                }
+                opts.inertia_friction = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
             }
             "--inertia-cutoff" => {
-                i += 1;
-                if i < args.len() {
-                    opts.inertia_cutoff = args[i].parse::<f32>().ok();
-                }
+                opts.inertia_cutoff = Some(finite(parse_value::<f32>(&args, &mut i, arg)?, arg)?)
             }
-            _ => {
-                // Assume it's a path if it doesn't start with -
-                if !arg.starts_with('-') {
-                    opts.path = Some(arg.clone());
-                } else {
-                    eprintln!("Unknown option '{}', ignoring", arg);
+            "--" => {
+                let path = args.get(i + 1).ok_or("Missing path after --")?;
+                if i + 2 != args.len() {
+                    return Err("Only one path can follow --".to_owned());
                 }
+                opts.path = Some(path.clone());
+                break;
             }
+            _ if arg.starts_with('-') => return Err(format!("Unknown option '{arg}'")),
+            _ => opts.path = Some(arg.to_owned()),
         }
         i += 1;
     }
 
-    opts
+    if opts.screenshot_delay.is_some() && opts.screenshot_path.is_none() {
+        opts.screenshot_path = Some(
+            std::env::temp_dir()
+                .join(DEFAULT_SCREENSHOT_FILE)
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+
+    Ok(opts)
 }

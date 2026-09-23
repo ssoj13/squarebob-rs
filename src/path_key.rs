@@ -40,11 +40,6 @@ impl ScanRoot {
         })
     }
 
-    pub fn from_canonical_path(path: PathBuf) -> anyhow::Result<Self> {
-        let display = path.to_string_lossy().into_owned();
-        Self::from_input(&display)
-    }
-
     pub fn display(&self) -> &str {
         &self.display
     }
@@ -111,14 +106,6 @@ mod tests {
         let nested = ScanRoot::from_input("././").expect("equivalent path must resolve");
         assert!(direct.same_identity(&nested));
         assert_eq!(direct.path(), nested.path());
-    }
-
-    #[test]
-    fn identity_uses_canonical_path_not_display_spelling() {
-        let a = ScanRoot::from_input(".").expect("current directory must resolve");
-        let b = ScanRoot::from_canonical_path(a.path().to_path_buf())
-            .expect("canonical path must resolve");
-        assert_eq!(a.id(), b.id());
-        assert_ne!(a.display(), b.display());
+        assert_ne!(direct.display(), nested.display());
     }
 }

@@ -72,6 +72,14 @@ impl App {
                     ui.label("Select a folder and click Scan to analyze disk usage");
                 }
 
+                if let Some(warning) = &self.progress.warning {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 170, 60),
+                        format!("Warning: {warning}"),
+                    )
+                    .on_hover_text(warning);
+                }
+
                 // Right side stats + hover
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let now = std::time::Instant::now();

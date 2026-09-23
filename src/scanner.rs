@@ -133,7 +133,9 @@ impl Drop for ScanSession {
 
 pub fn spawn(generation: u64, root: ScanRoot, backend: ScanBackend) -> anyhow::Result<ScanSession> {
     let (tx, receiver) = crossbeam_channel::bounded(16);
-    let (terminal_tx, terminal_receiver) = crossbeam_channel::bounded(1);
+    // The terminal channel carries at most one backend notice and one outcome.
+    // It must not block a retired worker whose receiver is no longer polled.
+    let (terminal_tx, terminal_receiver) = crossbeam_channel::unbounded();
     let session_root = root.clone();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();

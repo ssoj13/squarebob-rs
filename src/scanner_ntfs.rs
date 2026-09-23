@@ -408,10 +408,7 @@ pub(crate) fn run_ntfs(
         Err(ScanFailure::Cancelled) => ScanOutcome::Cancelled,
         Err(ScanFailure::BackendUnavailable(error)) => {
             warn!("NTFS backend unavailable: {error:#}, falling back to standard");
-            match tx.try_send(ScanMsg::NtfsFallback(format!("{error:#}"))) {
-                Ok(()) | Err(crossbeam_channel::TrySendError::Full(_)) => {}
-                Err(crossbeam_channel::TrySendError::Disconnected(_)) => return,
-            }
+            let _ = terminal_tx.send(ScanMsg::NtfsFallback(format!("{error:#}")));
             match crate::scanner::scan_dir_public(root.path(), &tx, &cancel) {
                 Ok(build) => finish_build(&root, build),
                 Err(ScanFailure::Cancelled) => ScanOutcome::Cancelled,

@@ -6,14 +6,11 @@
 
 use std::sync::Arc;
 
-use glam::Vec3;
-use log::trace;
-
 use render_shared::{HoverMode, OrbitCamera, Render3DOptions};
 use squarebob_core::DirEntry;
 use treemap::TreeMapOptions;
 
-use crate::geometry::{self, CubeInstance, NUM_INDICES};
+use crate::geometry::{self, NUM_INDICES};
 use crate::targets::{DynamicBindGroups, RenderTargets};
 use crate::{Renderer3D, pt};
 
@@ -26,6 +23,7 @@ impl Renderer3D {
         camera: &OrbitCamera,
         opts: &Render3DOptions,
         treemap_opts: &TreeMapOptions,
+        selected_ids: Option<&mut std::collections::HashSet<u32>>,
     ) -> Result<(), render_core::ReadbackError> {
         use log::{debug, info, warn};
         let render_start = std::time::Instant::now();
@@ -34,135 +32,36 @@ impl Renderer3D {
             width, height, opts.path_tracing, opts.show_wireframe
         );
 
-        // Force xray_alpha = 1.0 for PBR mode (transparency only in PT)
-        let mut opts = opts.clone();
-        if !opts.path_tracing {
-            opts.xray_alpha = 1.0;
-        }
-        self.pt.pt_backend_kind = pt::backend_from_opts(&opts);
-
-        // Freeze animation time for PT auto-SPP/camera snap between updates
-        if opts.path_tracing {
-            let snap_enabled = opts.pt_auto_spp || opts.pt_camera_snap;
-            if snap_enabled {
-                let frame_count = pt::frame_count(self.pt.pt_backend_kind, self);
-                let snap_interval = 1.0 / opts.pt_target_fps.max(1.0);
-                let elapsed = self.pt.pt_camera_snap_time.elapsed().as_secs_f32();
-                let allow_update =
-                    elapsed >= snap_interval || !self.pt.pt_snap_valid || frame_count == 0;
-                if !allow_update {
-                    opts.animation_time = self.pt.pt_snap_anim_time;
-                    opts.animate = false;
-                }
-            }
-        }
-        let opts = &opts;
-
         if width == 0 || height == 0 {
             warn!("render_to_view: zero size, skipping");
             return Ok(());
         }
-
-        self.ensure_targets(width, height)?;
-
-        let (layout_w, layout_h) = self.scene_layout_size();
-
-        // Check if we can reuse cached instances. The cache depends on the logical scene layout,
-        // not the output texture size, so resizing the window only updates camera/render targets.
-        let opts_hash = Self::opts_hash(opts, layout_w, layout_h, camera, height);
-        let cache_valid = !opts.animate
-            && self.cached_instances.is_some()
-            && self.cached_opts_hash == opts_hash
-            && self.cached_layout_size == (layout_w, layout_h);
-
-        trace!("cache_valid: {}, opts_hash: 0x{:x}", cache_valid, opts_hash);
-
-        // Own an `Arc` so we can call `pick_from_existing` (`&mut self`) without borrowing `cached_instances`.
-        let instances_arc: Arc<Vec<CubeInstance>> = if cache_valid {
-            Arc::clone(
-                self.cached_instances
-                    .as_ref()
-                    .expect("cached_instances not built — collect_cubes must run before render"),
-            )
-        } else {
-            log::info!(
-                "cache MISS: animate={}, has_cache={}, hash_match={}, size_match={}",
-                opts.animate,
-                self.cached_instances.is_some(),
-                self.cached_opts_hash == opts_hash,
-                self.cached_layout_size == (layout_w, layout_h)
-            );
-            // Layout only on cache miss — rect values are already set when cache is valid
-            treemap::layout(
-                root,
-                0.0,
-                0.0,
-                layout_w as f32,
-                layout_h as f32,
-                treemap_opts,
-            );
-            let world_center = Vec3::new(layout_w as f32 / 2.0, -(layout_h as f32 / 2.0), 0.0);
-            let new_instances = self.collect_cubes(
-                root,
-                opts,
-                treemap_opts,
-                world_center,
-                camera.position(),
-                height as f32,
-                camera.fov,
-            );
-            // PT scene must be rebuilt to match new object IDs in id_map
-            self.pt.pt_scene_dirty = true;
-
-            let arc = Arc::new(new_instances);
-            if !opts.animate {
-                self.cached_instances = Some(Arc::clone(&arc));
-                self.cached_opts_hash = opts_hash;
-                self.cached_layout_size = (layout_w, layout_h);
-            } else {
-                self.cached_instances = Some(Arc::clone(&arc));
-            }
-            arc
-        };
-
-        let instances: &[CubeInstance] = instances_arc.as_ref();
-
-        self.instance_count = instances.len() as u32;
+        let (opts, instances_arc, cache_valid) =
+            self.prepare_scene(root, width, height, camera, opts, treemap_opts)?;
+        if let Some(ids) = selected_ids {
+            ids.clone_from(&self.selected_ids);
+        }
+        let opts = &opts;
+        let instances = instances_arc.as_slice();
         info!(
             "render_to_view: instance_count={}, cache_valid={}",
             self.instance_count, cache_valid
         );
         if instances.is_empty() {
-            warn!("render_to_view: no instances, skipping");
-            return Ok(());
-        }
-
-        // Upload instances (also when buffer was reset even if cache valid)
-        let need_upload = !cache_valid || self.instance_buffer.is_none();
-        info!(
-            "render_to_view: need_upload={}, buffer_exists={}",
-            need_upload,
-            self.instance_buffer.is_some()
-        );
-        if need_upload {
-            let need_realloc =
-                self.instance_buffer.is_none() || instances.len() > self.instance_buffer_capacity;
-            if need_realloc {
-                let new_capacity = (instances.len() * 5 / 4).max(1024);
-                let new_size = new_capacity * std::mem::size_of::<CubeInstance>();
-                self.instance_buffer = Some(render_core::gpu::make_buffer(
-                    &self.ctx.device,
-                    "Instance VBO",
-                    new_size as u64,
-                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                ));
-                self.instance_buffer_capacity = new_capacity;
-            }
-            if let Some(ref buf) = self.instance_buffer {
+            self.update_uniforms(camera, opts, width, height, 0);
+            let state = self
+                .render_state
+                .as_ref()
+                .expect("prepare_scene builds targets");
+            let mut encoder =
                 self.ctx
-                    .queue
-                    .write_buffer(buf, 0, bytemuck::cast_slice(instances));
-            }
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Empty 3D Encoder"),
+                    });
+            self.encode_passes(&mut encoder, &state.targets, &state.dyn_bgs, opts, 0);
+            self.ctx.queue.submit(std::iter::once(encoder.finish()));
+            return Ok(());
         }
 
         // Match outline/hover uniforms to the *current* cursor: read last frame's object_id buffer
@@ -210,14 +109,11 @@ impl Renderer3D {
                 height,
             )?;
 
-            // Outline overlay in PT mode. Picking is handled separately on
-            // the UI thread via `pt_pick` (CPU ray cast on the BVH), so
-            // this block runs only when there's something to highlight —
-            // no Object ID readback needed. We still do an Object ID pass
-            // because the outline shader samples that texture to detect
-            // silhouettes of the hovered/selected IDs.
+            // PT uses CPU ray picking, but the outline shader still needs a
+            // current Object ID texture. Keep it ready for selection-only
+            // recomposites that do not run another full PT frame.
             let has_active_overlay = !self.selected_ids.is_empty() || hovered_id != 0;
-            if opts.hover_mode != HoverMode::None && has_active_overlay {
+            if opts.hover_mode != HoverMode::None {
                 let state = self
                     .render_state
                     .as_ref()
@@ -234,7 +130,9 @@ impl Renderer3D {
                         });
 
                 self.encode_object_id_pass(&mut enc, &state.targets, ib, opts.double_sided);
-                self.encode_outline_pass(&mut enc, &state.targets, &state.dyn_bgs);
+                if has_active_overlay {
+                    self.encode_outline_pass(&mut enc, &state.targets, &state.dyn_bgs);
+                }
 
                 self.ctx.queue.submit(std::iter::once(enc.finish()));
             }

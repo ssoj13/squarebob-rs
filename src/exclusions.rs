@@ -84,10 +84,14 @@ pub fn load(root: &ScanRoot) -> anyhow::Result<Exclusions> {
         anyhow::bail!("could not determine exclusions directory");
     };
     let legacy_path = legacy_exclusions_path(root);
-    let (path, legacy) = if current_path.exists() {
+    let (path, legacy) = if current_path.try_exists()? {
         (current_path, false)
-    } else if let Some(path) = legacy_path.filter(|path| path.exists()) {
-        (path, true)
+    } else if let Some(path) = legacy_path {
+        if path.try_exists()? {
+            (path, true)
+        } else {
+            return Ok(Exclusions::new(root));
+        }
     } else {
         return Ok(Exclusions::new(root));
     };
@@ -100,12 +104,12 @@ pub fn load(root: &ScanRoot) -> anyhow::Result<Exclusions> {
             anyhow::bail!("legacy exclusions root does not match requested root");
         }
         exclusions.root_id = root.id().to_owned();
-        exclusions.scan_path = root.display().to_owned();
     }
     validate(root, &exclusions)?;
+    exclusions.scan_path = root.display().to_owned();
 
     if legacy {
-        let outcome = save(&exclusions)?;
+        let outcome = save(root, &exclusions)?;
         if outcome.is_durable() {
             fs::remove_file(&path)?;
         } else if let Some(warning) = outcome.warning() {
@@ -115,12 +119,13 @@ pub fn load(root: &ScanRoot) -> anyhow::Result<Exclusions> {
     Ok(exclusions)
 }
 
-pub fn save(exclusions: &Exclusions) -> anyhow::Result<crate::atomic_file::WriteOutcome> {
-    let root = ScanRoot::from_input(&exclusions.scan_path)
-        .map_err(|error| anyhow::anyhow!("invalid exclusions root: {error:#}"))?;
-    validate(&root, exclusions)?;
+pub fn save(
+    root: &ScanRoot,
+    exclusions: &Exclusions,
+) -> anyhow::Result<crate::atomic_file::WriteOutcome> {
+    validate(root, exclusions)?;
 
-    let Some(path) = exclusions_path(&root) else {
+    let Some(path) = exclusions_path(root) else {
         anyhow::bail!("could not determine exclusions directory");
     };
     let json = serde_json::to_vec_pretty(exclusions)?;
@@ -136,15 +141,17 @@ fn validate(root: &ScanRoot, exclusions: &Exclusions) -> anyhow::Result<()> {
     if exclusions.root_id != root.id() {
         anyhow::bail!("exclusions root identity does not match requested root");
     }
-    if exclusions.scan_path != root.display() {
-        anyhow::bail!("exclusions display root does not match canonical scan root");
-    }
     if exclusions
         .paths
         .iter()
-        .any(|path| !path.starts_with(root.path()))
+        .any(|path| match path.strip_prefix(root.path()) {
+            Ok(relative) => relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_))),
+            Err(_) => true,
+        })
     {
-        anyhow::bail!("exclusions file contains a path outside the scan root");
+        anyhow::bail!("exclusions file contains a path outside the scan root or with traversal");
     }
     Ok(())
 }
@@ -152,6 +159,24 @@ fn validate(root: &ScanRoot, exclusions: &Exclusions) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equivalent_root_display_keeps_exclusions_valid() {
+        let root = ScanRoot::from_input(".").expect("current directory must resolve");
+        let same_root = ScanRoot::from_input("././").expect("equivalent path must resolve");
+        let mut exclusions = Exclusions::new(&root);
+        exclusions.add(&root.path().join("child"));
+        assert_ne!(root.display(), same_root.display());
+        validate(&same_root, &exclusions).expect("canonical identity must match");
+    }
+
+    #[test]
+    fn rejects_parent_traversal_in_member_path() {
+        let root = ScanRoot::from_input(".").expect("current directory must resolve");
+        let mut exclusions = Exclusions::new(&root);
+        exclusions.add(&root.path().join("..").join("outside"));
+        assert!(validate(&root, &exclusions).is_err());
+    }
 
     #[test]
     fn membership_uses_native_paths() {

@@ -46,9 +46,7 @@ impl Renderer3D {
             self.cached_instances_rebuild_count
         );
         let need_picking = opts.hover_mode != HoverMode::None || opts.path_tracing;
-        if need_picking {
-            self.picking.reset_frame();
-        }
+        self.picking.reset_frame(false);
         // Drop mat-class cache once per frame if mat-settings changed.
         self.mat_cache.ensure(opts);
         // Zero per-frame override hit counters before any classify

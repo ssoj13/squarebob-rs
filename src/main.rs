@@ -17,7 +17,13 @@ pub use cli::CliOptions;
 use log::info;
 
 fn main() -> eframe::Result<()> {
-    let cli = cli::parse_args();
+    let cli = match cli::parse_args() {
+        Ok(cli) => cli,
+        Err(error) => {
+            eprintln!("Error: {error}\nRun --help for usage.");
+            std::process::exit(2);
+        }
+    };
 
     if cli.help {
         cli::print_help();
@@ -132,14 +138,8 @@ fn main() -> eframe::Result<()> {
     if let Some(backend) = &cli.backend {
         info!("CLI backend: {:?}", backend);
     }
-    if cli.screenshot_delay.is_some() {
-        info!(
-            "Screenshot mode: delay={:?}s, path={:?}",
-            cli.screenshot_delay,
-            cli.screenshot_path
-                .as_deref()
-                .unwrap_or("temp/screenshot.png")
-        );
+    if let (Some(delay), Some(path)) = (cli.screenshot_delay, cli.screenshot_path.as_deref()) {
+        info!("Screenshot mode: delay={delay}s, path={path:?}");
     }
 
     // Build the wgpu setup ourselves so we can share the same Instance /

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -378,40 +379,81 @@ impl Frame {
 }
 
 pub trait FrameConversion {
-    fn tonemap(&self, mode: TonemapMode) -> Result<Frame, String>;
+    /// Map RGB through the selected curve; keep alpha linear until output quantization.
+    fn tonemap(&self, mode: TonemapMode, output_format: PixelFormat) -> Result<Frame, String>;
     fn to_rgb24(&self) -> Result<Vec<u8>, String>;
     fn to_rgb48(&self) -> Result<Vec<u16>, String>;
 }
 
 impl FrameConversion for Frame {
-    fn tonemap(&self, mode: TonemapMode) -> Result<Frame, String> {
-        let mut out = Vec::with_capacity(self.layout.element_count());
-        match self.buffer.as_ref() {
-            PixelBuffer::U8(data) => {
-                return Frame::rgba8(self.layout.width(), self.layout.height(), data.clone())
-                    .map_err(|error| error.to_string());
-            }
-            PixelBuffer::F16(data) => {
-                for value in data {
-                    out.push(float_to_u8(value.to_f32(), mode));
-                }
-            }
-            PixelBuffer::F32(data) => {
-                for &value in data {
-                    out.push(float_to_u8(value, mode));
-                }
-            }
+    fn tonemap(&self, mode: TonemapMode, output_format: PixelFormat) -> Result<Frame, String> {
+        let (width, height) = self.resolution();
+        if matches!(
+            (self.buffer.as_ref(), output_format),
+            (PixelBuffer::U8(_), PixelFormat::Rgba8)
+        ) {
+            return Ok(self.clone());
         }
-        Frame::rgba8(self.layout.width(), self.layout.height(), out)
-            .map_err(|error| error.to_string())
+
+        let source_is_u8 = matches!(self.buffer.as_ref(), PixelBuffer::U8(_));
+        let map_channel = |index: usize, value: f32| {
+            if index % RGBA_CHANNELS == 3 {
+                value.clamp(0.0, 1.0)
+            } else if source_is_u8 {
+                value
+            } else {
+                tonemap_value(value, mode)
+            }
+        };
+        let values: Cow<'_, [f32]> = match self.buffer.as_ref() {
+            PixelBuffer::U8(data) => {
+                Cow::Owned(data.iter().map(|&value| f32::from(value) / 255.0).collect())
+            }
+            PixelBuffer::F16(data) => Cow::Owned(data.iter().map(|value| value.to_f32()).collect()),
+            PixelBuffer::F32(data) => Cow::Borrowed(data.as_slice()),
+        };
+
+        match output_format {
+            PixelFormat::Rgba8 => Frame::rgba8(
+                width,
+                height,
+                values
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, value)| float_to_u8(map_channel(index, value)))
+                    .collect(),
+            ),
+            PixelFormat::RgbaF16 => Frame::rgba_f16(
+                width,
+                height,
+                values
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, value)| F16::from_f32(map_channel(index, value)))
+                    .collect(),
+            ),
+            PixelFormat::RgbaF32 => Frame::rgba_f32(
+                width,
+                height,
+                values
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, value)| map_channel(index, value))
+                    .collect(),
+            ),
+        }
+        .map_err(|error| error.to_string())
     }
 
     fn to_rgb24(&self) -> Result<Vec<u8>, String> {
         let rgba = match self.buffer.as_ref() {
             PixelBuffer::U8(data) => data.clone(),
-            PixelBuffer::F16(_) | PixelBuffer::F32(_) => {
-                self.tonemap(TonemapMode::default())?.to_rgba8_vec()?
-            }
+            PixelBuffer::F16(_) | PixelBuffer::F32(_) => self
+                .tonemap(TonemapMode::default(), PixelFormat::Rgba8)?
+                .to_rgba8_vec()?,
         };
         let capacity = self
             .layout
@@ -462,7 +504,7 @@ impl Frame {
         match self.buffer.as_ref() {
             PixelBuffer::U8(data) => Ok(data.clone()),
             PixelBuffer::F16(_) | PixelBuffer::F32(_) => self
-                .tonemap(TonemapMode::default())
+                .tonemap(TonemapMode::default(), PixelFormat::Rgba8)
                 .and_then(|frame| frame.to_rgba8_vec()),
         }
     }
@@ -520,10 +562,8 @@ fn copy_rows<T: Copy>(
     Ok(())
 }
 
-fn float_to_u8(value: f32, mode: TonemapMode) -> u8 {
-    (tonemap_value(value, mode) * 255.0)
-        .round()
-        .clamp(0.0, 255.0) as u8
+fn float_to_u8(value: f32) -> u8 {
+    (value * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 fn float_to_u16(value: f32) -> u16 {

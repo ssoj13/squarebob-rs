@@ -737,7 +737,8 @@ pub mod gpu {
 
             let row_bytes = layout.row_bytes as usize;
             let padded_row_bytes = layout.padded_row_bytes as usize;
-            let mut pixels = Vec::with_capacity(layout.output_size);
+            let mut pixels = Vec::new();
+            pixels.try_reserve_exact(layout.output_size)?;
             for row in 0..layout.height as usize {
                 let start = row * padded_row_bytes;
                 pixels.extend_from_slice(&data[start..start + row_bytes]);
@@ -754,6 +755,7 @@ pub enum ReadbackError {
     PollFailed(wgpu::PollError),
     CallbackDropped(std::sync::mpsc::RecvError),
     MapFailed(wgpu::BufferAsyncError),
+    MappedRangeAccess(wgpu::MapRangeError),
     MissingTarget,
     StagingBufferTooSmall { required: u64, capacity: u64 },
     MappedRangeTooSmall { expected: usize, actual: usize },
@@ -782,6 +784,7 @@ impl std::fmt::Display for ReadbackError {
                 write!(f, "map callback dropped before completion: {e}")
             }
             Self::MapFailed(e) => write!(f, "map_async failed: {e:?}"),
+            Self::MappedRangeAccess(e) => write!(f, "mapped range access failed: {e}"),
             Self::MissingTarget => write!(f, "readback has no encoded target"),
             Self::StagingBufferTooSmall { required, capacity } => write!(
                 f,
@@ -825,11 +828,13 @@ where
         Ok(Err(e)) => return Err(ReadbackError::MapFailed(e)),
         Err(e) => return Err(ReadbackError::CallbackDropped(e)),
     }
-    // wgpu 30: get_mapped_range now returns Result; the map was already verified
-    // successful via the channel above, so a full-slice mapped range cannot fail.
-    let data = slice
-        .get_mapped_range()
-        .expect("buffer mapped successfully above");
+    let data = match slice.get_mapped_range() {
+        Ok(data) => data,
+        Err(error) => {
+            buffer.unmap();
+            return Err(ReadbackError::MappedRangeAccess(error));
+        }
+    };
     let result = f(&data);
     drop(data);
     buffer.unmap();
