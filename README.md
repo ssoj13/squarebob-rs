@@ -289,7 +289,7 @@ cargo run -p xtask -- wipe
   - macOS: Metal
 - On Windows, Visual Studio C++ build tools for native builds.
 
-The NTFS MFT scanner is Windows-only and may require elevated permissions. If it cannot be used, the app falls back to the standard scanner.
+Both scanner modes use the pinned private GitHub `fscan-rs` crate. Standard mode streams directory entries on Windows, Linux, and macOS; Squarebob builds its own tree for the display. The NTFS MFT mode is Windows-only, deduplicates hard-link file IDs for disk-usage totals, and may require elevated permissions. Native scans cap their in-memory tree at 250,000 nodes. When that backend is unavailable, Squarebob falls back to the standard scanner; cancellation remains a separate outcome.
 
 ## Packaging
 
