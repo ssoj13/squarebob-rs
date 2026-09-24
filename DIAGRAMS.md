@@ -1,6 +1,6 @@
 # Application diagrams
 
-Updated: 2026-09-23. These diagrams describe inspected source paths. See [AGENTS.md](AGENTS.md) for operating constraints, [plan11.md](plan11.md) for original findings, and [plan12.md](plan12.md) for the current repair review.
+Updated: 2026-09-23. These diagrams describe inspected source paths. See [AGENTS.md](AGENTS.md) for operating constraints, [plan11.md](plan11.md) for original findings, [plan12.md](plan12.md) for systemic repairs, and [plan13.md](plan13.md) for the camera and CPU-picking follow-up.
 
 ## Scan, cache, and display dataflow
 
@@ -15,10 +15,11 @@ flowchart TD
     Exclusions -->|load error| Warning["Warning shown; exclusion edits blocked"]
     Root --> CacheCmd["CacheService::load(generation)"]
     Root --> Select{"Backend"}
-    Select --> Standard["scanner::run_standard / jwalk"]
-    Select --> NTFS["scanner_ntfs::run_ntfs / MFT"]
-    NTFS -->|backend unavailable; warning on terminal channel| Standard
-    Standard -->|build returned| Build["finish_build: sort + stats"]
+    Select --> Standard["run_standard -> scan_dir -> fscan_rs::scan_standard"]
+    Select --> NTFS["scanner_ntfs::run_ntfs -> fscan_rs::scan_ntfs_tree_with_progress"]
+    NTFS -->|scan error; warning on terminal channel| Standard
+    Standard --> Ancestors["scan_dir: reconstruct omitted ancestor directories"]
+    Ancestors -->|build returned| Build["finish_build: sort + stats"]
     NTFS -->|build returned| Build
     Standard -->|cancelled or failed| Terminal["Terminal outcome"]
     NTFS -->|cancelled or failed| Terminal
@@ -37,7 +38,7 @@ flowchart TD
     Install --> UI["ui_treemap"]
 ```
 
-Cache I/O is owned by an ordered worker with per-root generation watermarks (`src/cache.rs:107-124,174-245`). Only complete scans queue a cache store (`src/app/scan_orchestration.rs:237-250`).
+Cache I/O is owned by an ordered worker with per-root generation watermarks (`src/cache.rs:107-124,174-245`). Only complete scans queue a cache store (`src/app/scan_orchestration.rs:237-250`). Standard traversal reconstructs parents missing from walker callbacks before assembling the partial tree (`src/scanner.rs:302,315-366,432-440`); the NTFS adapter converts the `fscan-rs` tree into owned `DirEntry` nodes (`src/scanner_ntfs.rs:62-150`).
 
 ## Scan and cache sequence
 
@@ -54,8 +55,8 @@ sequenceDiagram
     CS->>FS: Read and validate flat cache
     CS-->>UI: Loaded(generation, root_id, result)
     UI->>UI: Gate by generation/root_id; optional preview
-    SW->>FS: jwalk or NTFS MFT
-    opt NTFS unavailable
+    SW->>FS: fscan-rs standard or NTFS MFT
+    opt NTFS scan error
         SW-->>UI: NtfsFallback on terminal channel
         SW->>FS: Standard scanner fallback
     end
@@ -99,7 +100,7 @@ flowchart LR
     Trace --> EguiNative
 ```
 
-Shift-drag selection keeps path identity across instance rebuilds (`src/app/treemap_view.rs:412-458,729-767`; `src/app/scan_orchestration.rs:91-111`).
+Shift-drag selection keeps path identity across instance rebuilds (`src/app/treemap_view.rs:412-458,729-767`; `src/app/scan_orchestration.rs:91-111`). CPU fallback picking calls `Renderer3D::screen_ray`, which applies the camera's reversed-Z near/far convention (`crates/render-3d/src/renderer3d/cpu_pick.rs:29-58`; `crates/render-3d/src/lib.rs:1343-1378`).
 
 ```mermaid
 flowchart LR
@@ -108,6 +109,14 @@ flowchart LR
     Remap --> Inside["Add instances inside current rectangle"]
     Inside --> Overlay["Refresh selection overlay"]
     NewScan["New scan"] --> Reset["Clear drag start and path baseline"]
+```
+
+```mermaid
+flowchart LR
+    Cursor["App fallback cursor pick"] --> Pick["Renderer3D::cpu_pick"]
+    Pick --> Ray["Renderer3D::screen_ray"]
+    Ray --> Near["NDC near Z = 1; far Z = 0.001"]
+    Near --> Tree["pick_tree against current layout"]
 ```
 
 ```mermaid

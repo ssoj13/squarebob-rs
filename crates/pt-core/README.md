@@ -3,14 +3,14 @@
 pt-core is the shared foundation for path tracing.
 
 ## Why this exists
-Both megakernel and wavefront PT need the same scene representation, BVH data, and GPU buffer
-layouts. This crate provides those shared definitions so PT implementations stay consistent.
+The megakernel path tracer and GPU BVH builder share instance and BVH layouts. This crate defines those types and the CPU BVH builder without depending on a renderer.
 
 ## What it provides
-- `Instance` representation and instance BVH build (CPU SAH).
-- GPU data layouts for nodes, instances, and materials.
-- BVH builders and helpers used by PT pipelines.
+- `Instance`, `BvhNode`, and AABB representations shared with the path tracer.
+- GPU data layouts for nodes and instances; `GpuMaterial` re-exports `standard_surface::StandardSurfaceParams`.
+- CPU SAH instance BVH builder and GPU upload helpers.
 
 ## Where it is used
-- `crates/pt-megakernel` and `crates/pt-wavefront`.
-- `crates/render-3d`: PT scene upload and BVH build selection.
+- `crates/pt-megakernel`: scene upload and CPU BVH fallback.
+- `crates/bvh-gpu`: shared instance and node types for GPU BVH construction.
+- `crates/render-3d`: PT scene preparation.

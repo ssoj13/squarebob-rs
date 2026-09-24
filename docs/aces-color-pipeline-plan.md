@@ -1,6 +1,8 @@
 # ACES + Color Pipeline — Settings Section (planned)
 
-**Status:** TODO (task #7). Tracked here so the design survives across compactions and sprints.
+> Historical design record from the earlier color pipeline. The implemented OCIO-based Color v2 path is described in [CHANGELOG.md](../CHANGELOG.md); the options and UI below are proposals, not the current settings contract.
+
+**Original status:** TODO (task #7). Retained as a design record; the current implementation uses the OCIO Color v2 path.
 
 **Goal:** Replace the current blit-time single-shader ACES with a full,
 configurable display-pipeline section under `Settings → Color` (sits

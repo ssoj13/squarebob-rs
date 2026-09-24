@@ -1,5 +1,7 @@
 # PLAN10 — Remove `ffmpeg-sys-next` and rebuild video export
 
+> Historical July 2026 implementation plan. Its worktree, dependency SHAs, open checkboxes, and source line references describe the pre-migration state; they are not current instructions. The current media path is summarized in [README.md](README.md#encoding) and [AGENTS.md](AGENTS.md#media-export-codepath), with later review in [plan12.md](plan12.md#image-sequence-encoding).
+
 Updated: 2026-07-15  
 Workspace: `C:\projects\projects.rust.cg\cglibs\squarebob-rs`  
 Branch: `main`  

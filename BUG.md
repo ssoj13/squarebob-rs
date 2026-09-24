@@ -1,6 +1,14 @@
 # BUG
 
-Known defects and follow-ups found from other repos. Newest first; `[ ]` open, `[x]` done.
+Known defects and follow-ups found from other repos and this workspace. Newest first; `[ ]` open, `[x]` done.
+
+## 2026-09-23 Partial scan with an omitted parent
+
+- [x] **The standard scanner now reconstructs parents omitted after metadata errors.** `src/scanner.rs:302,315-366` validates yielded paths and inserts every missing ancestor once before assembly (`src/scanner.rs:433-441`). Walker errors still flow into `ScanDiagnostics` (`src/scanner.rs:313-314,412-421`), so `finish_build` can return `Partial` (`src/scanner.rs:204-236`). The source-level loss is repaired; no regression test or runtime scan was run for this case.
+
+## 2026-09-23 Portable package binary name
+
+- [x] **The portable archive binary name now matches the Cargo target.** `Cargo.toml:11-13` declares `squarebob`; `.github/workflows/ci.yml:37-40` now sets `BINARY_NAME: squarebob`. The Linux and Windows portable steps use that variable (`ci.yml:243-254,257-274`). The source-level mismatch is resolved; neither packaging branch has been run in this review.
 
 ## 2026-09-23 Vendored BSDF copies
 

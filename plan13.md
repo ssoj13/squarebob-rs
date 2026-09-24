@@ -10,7 +10,7 @@ Updated: 2026-09-23. This report follows [plan12.md](plan12.md). It covers the f
 - [x] Resolve the connected CPU fallback ray-picking depth-order defect and review its callers.
 - [x] Re-run the workspace compiler and focused formatting/diff checks after that fix.
 - [x] Record the final GitNexus reindex and change-detection scope.
-- [ ] Publish the authorized main-branch commit; SHA and remote confirmation belong in the final chat.
+- [x] Publish the authorized main-branch commit: `6562a5280c42195345dee2fef36c59254ee7d894` was pushed to `origin/main`.
 
 ## What changed
 
@@ -54,7 +54,7 @@ A workspace Rust-source search on the edited tree found zero remaining `Mat4::lo
 - Compiler warnings: `cargo check --workspace --locked` exited 0 in 1m35s after the API replacements, with no `warning:` or `error:` in complete stderr. After the CPU picking fix, the final incremental workspace check exited 0 in 4.29s; stderr contained only `Checking render-3d`, `Checking squarebob-rs`, and `Finished`, with no warnings or errors. No tests or application run were performed.
 - Runtime or visual verification: not performed in this focused pass.
 - GitNexus: final reindex reported 5,728 nodes and 13,176 relationships. `detect-changes --scope all` exited 0 with 12 changed symbols, three affected symbols, five files, and MEDIUM risk. The staged change gate runs after this report is added.
-- Commit and push: authorized for `main`; the final chat records the SHA and remote confirmation.
+- Commit and push: `6562a5280c42195345dee2fef36c59254ee7d894` was pushed to `origin/main`; the worktree was clean at that confirmation.
 
 ## Follow-up boundary
 

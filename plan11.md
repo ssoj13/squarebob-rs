@@ -1,6 +1,6 @@
 # plan11 — Analytical bug hunt and systemic repair plan
 
-Updated: 2026-09-23. Scope: analytical source review, dependency refresh, and user-authorized release build follow-up. The final release build succeeded after upstream EXR and local dock API repairs. No tests were run; the 12 bug-hunt fixes below remain proposed.
+Updated: 2026-09-23. Scope: analytical source review, dependency refresh, and user-authorized release build follow-up. The final release build succeeded after upstream EXR and local dock API repairs. No tests were run in this original analytical pass. The 12 findings below are historical proposals; [plan12.md](plan12.md) records their implemented repairs and remaining runtime gates, and [plan13.md](plan13.md) records the later warning cleanup.
 
 ## Status and reading order
 

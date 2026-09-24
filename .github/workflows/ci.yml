@@ -37,7 +37,7 @@ concurrency:
 env:
   APP_BUNDLE_ID: io.github.ssoj13.squarebobrs
   APP_NAME: Squarebob
-  BINARY_NAME: squarebob-rs
+  BINARY_NAME: squarebob
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 

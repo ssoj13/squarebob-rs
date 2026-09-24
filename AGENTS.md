@@ -2,12 +2,13 @@
 
 ## Bug-hunt operating notes
 
-This is the `squarebob-rs` Rust package and `squarebob` binary (`Cargo.toml:1-13`). Source paths below were checked on 2026-09-23. On 2026-09-23, the first user-authorized `python bootstrap.py b` release build failed in upstream `vfx-io` with `E0599`. After the upstream EXR fix and a local `egui_dock` `TabViewer::id` implementation (`src/app/dock.rs:105-110`), a second release build succeeded. No tests ran; see [plan11.md](plan11.md) for that build sequence and remaining warnings. The current bug-hunt edits are tracked in [plan12.md](plan12.md), and their build/runtime status must be checked there. Read [DIAGRAMS.md](DIAGRAMS.md) for Mermaid dataflows.
+This is the `squarebob-rs` Rust package and `squarebob` binary (`Cargo.toml:1-13`). Source paths below were checked on 2026-09-23. On 2026-09-23, the first user-authorized `python bootstrap.py b` release build failed in upstream `vfx-io` with `E0599`. After the upstream EXR fix and a local `egui_dock` `TabViewer::id` implementation (`src/app/dock.rs:105-110`), a second release build succeeded. No tests ran; see [plan11.md](plan11.md) for that build sequence and the warnings observed then. The completed systemic repairs are tracked in [plan12.md](plan12.md); [plan13.md](plan13.md) records the subsequent warning and CPU-picking fixes. Read [DIAGRAMS.md](DIAGRAMS.md) for Mermaid dataflows. Neither pass ran tests or a visual comparison.
 
 Primary constraints for future agents:
 
 - Keep owned scan data on the UI side. `DirEntry.rect` uses `Cell`; scanner/cache workers transfer owned trees through channels.
 - Use `ScanRoot`'s canonical path and native-path ID for operational identity. Its `display` string preserves user spelling for UI/history (`src/path_key.rs:6-62`). Cache and exclusion validation now use the canonical identity; inspect `plan12.md` for the source review and outstanding verification.
+- The standard walker calls `fscan_rs::scan_standard`; its entry callback builds the owned tree and reports progress (`src/scanner.rs:288-421`). It reconstructs omitted parent directories from yielded paths (`src/scanner.rs:302,315-366`). The Windows NTFS adapter calls `fscan_rs::scan_ntfs_tree_with_progress` and converts its tree to owned `DirEntry` nodes (`src/scanner_ntfs.rs:62-150`). `Cargo.toml` and `Cargo.lock` pin the private GitHub `fscan-rs` revision `aa0185f8a45dcf3ad949d97b88b5950009444cb2`.
 - A scan generation owns a `ScanSession`, progress receiver, and separate terminal receiver. Replacement cancels and retires the prior session; `poll_scan` discards stale generation/root outcomes (`src/scanner.rs:85-153`; `src/app/scan_orchestration.rs:38-69,456-528`).
 - `CacheService` owns ordered cache I/O, generation watermarks, and atomic replacement. Only complete live scans queue a cache store (`src/cache.rs:107-245,893-905`; `src/app/scan_orchestration.rs:237-250`). Flat cache v4 still carries a serialized display-path field for decoding, but runtime validation uses canonical root ID (`src/cache.rs:39-48,523-535,786-797`).
 - `render_core::gpu::GpuContext::new` is the wgpu device setup source. `main.rs:145-185` passes its instance/device/queue to eframe and app renderers.
@@ -28,8 +29,9 @@ CLI -> cli::parse_args: Result; main exits 2 on invalid input
          -> ScanRoot(display, canonical path, id)
          -> exclusions::load -> valid policy or visible warning + edit guard
          -> CacheService::Load(generation) -> optional cache preview
-         -> scanner::spawn(generation, jwalk | NTFS MFT)
-              -> NTFS unavailable: terminal-channel warning + standard fallback
+         -> scanner::spawn(generation, fscan-rs standard | NTFS MFT)
+              -> NTFS unavailable at selection: choose standard backend
+              -> NTFS scan error: terminal-channel warning + standard fallback
               -> Progress + Terminal(Completed | Partial | Cancelled | Failed)
          -> App::poll_scan: reject stale generation/id; install tree
          -> complete scan: CacheService::Store -> atomic cache write
@@ -52,7 +54,7 @@ start_scan
   |-- exclusions::load; warn and block edits on unreadable policy
   |-- CacheService::load(generation, root)
   `-- scanner::spawn(generation, root, backend)
-        |-- standard jwalk OR NTFS MFT with terminal-channel fallback warning
+        |-- fscan-rs standard OR NTFS MFT with terminal-channel fallback warning
         |-- scanner::finish_build: sort tree + derive stats
         |-- complete tree: serialize_cache_ref on scan worker
         `-- terminal channel delivers typed ScanOutcome
@@ -104,7 +106,7 @@ Sources: `crates/media-encoder/src/dialogs/encode/encode.rs:1148-1280,1657-1762,
 
 ## Current bug-hunt focus
 
-[plan12.md](plan12.md) is the current review gate. It tracks the code changes for canonical identity, NTFS fallback, empty 3D frames, picking, render preparation, sequence precision/compression, CLI validation, screenshot completion, and readback allocation. [plan11.md](plan11.md) retains the original evidence and wider audit backlog. Historical bug-hunt references in older notes must be checked against the current worktree before use; the previously named `md.old/` artifacts are absent from the current inventory.
+[plan13.md](plan13.md) records the bug-hunt pass at `6562a5280c42195345dee2fef36c59254ee7d894`; it resolved the four `glam` warnings recorded in [plan12.md](plan12.md). The scanner migration now uses a pinned GitHub revision. `cargo check` and the scanner unit tests passed on Windows; large-scan performance and other platforms remain unverified. [plan14.md](plan14.md) records the earlier documentation checkpoint and publication update. [plan12.md](plan12.md) retains the systemic repair and runtime gates; [plan11.md](plan11.md) retains the original evidence and wider workspace audit backlog. Check historical source references against the current worktree before use.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

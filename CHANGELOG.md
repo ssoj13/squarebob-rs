@@ -6,6 +6,19 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-09-23 — Dependency and correctness pass
+
+- **Updated** the egui, wgpu, glam, scanner, and media dependency requirements; refreshed the owned Git dependencies in `Cargo.lock`. The `bincode` 1.3.3 cache codec remains pinned because the published 3.0.0 package intentionally fails compilation.
+- **Fixed** the EXR dependency API break in `oiio-rs` and implemented the `egui_dock` tab ID required by the upgraded dock API. The authorized release build then completed.
+- **Fixed** scan root identity handling in cache and exclusions, preserved exclusion files on load failure, and delivered NTFS fallback warnings through the terminal channel.
+- **Changed** the standard and NTFS scanner adapters to use the pinned private GitHub `fscan-rs` crate while retaining Squarebob's owned tree, progress, cancellation, and terminal-outcome contract. The standard adapter reconstructs directories omitted by walker metadata errors. Scanner unit tests and `cargo check` passed on Windows; full runtime parity remains unmeasured.
+- **Fixed** CLI argument validation and screenshot completion: invalid options fail with an error, and a screenshot is marked complete only after capture and save succeed.
+- **Unified** 3D scene preparation across native and readback output, cleared empty-scene state and picking, remapped selection by path after instance rebuilds, and made GPU readback allocation failures recoverable.
+- **Applied** TIFF compression and TGA RLE settings, kept floating precision until U16 image-sequence quantization, and removed the duplicate TIFF bit-depth setting.
+- **Replaced** deprecated glam camera constructors with explicit right-handed projection APIs. CPU fallback picking now uses the same reversed-Z screen ray as the renderer.
+
+The committed bug-hunt pass and the subsequent scanner integration each passed Cargo compilation checks. The standard and NTFS adapter unit tests passed on Windows; visual and large-scan comparisons were not run. See [plan11.md](plan11.md), [plan12.md](plan12.md), [plan13.md](plan13.md), and [plan14.md](plan14.md) for evidence and remaining work.
+
 ## 2026-05-22 (afternoon) — vfx-rs chain-construction parity rolls in
 
 Squarebob proper got no code changes in this round, but the bundled

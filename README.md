@@ -12,8 +12,7 @@ It is inspired by tools like SequoiaView, WinDirStat and KDirStat, but the rende
 - 2D treemap with CPU and GPU rendering backends.
 - 3D treemap made from file and folder cubes with depth, materials, hover feedback, and selection.
 - Progressive GPU path tracing with BVH acceleration, denoising, spectral options, adaptive sampling, ReSTIR/path-guiding experiments, and wavefront infrastructure.
-- Parallel directory scanning via `jwalk`.
-- Optional NTFS MFT scanner on Windows for faster scans when permissions allow it.
+- Background standard directory scanning through `fscan-rs`, with an optional NTFS MFT scanner on Windows when permissions allow it.
 - Dockable `egui_dock` UI: tree, treemap, extensions, settings, and floating encode dialog.
 - Reusable `media-encoder` crate for video and image sequence export.
 - Built-in render defaults from `data/default.json`, with optional runtime override via a `default.json` placed next to the executable.
@@ -257,7 +256,7 @@ The encoder captures the current Squarebob viewport frame-by-frame. For 3D path 
 
 ## Local Development
 
-Use `bootstrap.py`, `xtask`, or normal Cargo commands. Video export builds without a system FFmpeg or vcpkg installation.
+Use `bootstrap.py`, `xtask`, or normal Cargo commands. Video export builds without a system FFmpeg or vcpkg installation. The scanner dependency resolves from the private `ssoj13/fscan-rs` GitHub repository at the revision pinned in `Cargo.toml` and `Cargo.lock`; access to that repository is required to build.
 
 Common commands:
 
@@ -344,7 +343,7 @@ Behavior:
 - Verify installs Rust + Clippy, restores caches, runs workspace clippy, and runs workspace tests through `xtask`.
 - Manual `workflow_dispatch` with `package=true` skips verify and runs packaging for the selected platform(s).
 - Tags matching `v*` run verify, package, and publish GitHub Release assets.
-- `concurrency.cancel-in-progress` is enabled so a newer run on the same ref cancels older runs.
+- `concurrency.cancel-in-progress` applies to pull requests; runs for `main` pushes and tags are not cancelled by a newer run.
 
 Required GitHub secrets for signed macOS release builds:
 
@@ -362,7 +361,7 @@ Required GitHub secrets for signed macOS release builds:
 |-- src/                         Main Squarebob app and egui integration
 |   |-- app/                     App state, dock UI, toolbar, scanning, presets, encode adapter
 |   |-- cli.rs                   Command-line parser
-|   |-- scanner.rs               Standard parallel scanner
+|   |-- scanner.rs               Background standard scanner
 |   |-- scanner_ntfs.rs          Windows NTFS MFT scanner
 |   `-- main.rs                  Binary entry point
 |-- crates/
@@ -377,9 +376,17 @@ Required GitHub secrets for signed macOS release builds:
 |   |-- pt-wavefront             Wavefront path tracing infrastructure
 |   |-- bvh-gpu                  GPU BVH construction/refit
 |   |-- media-encoder            Reusable encode dialog and media export implementation
-|   `-- xtask                    Build/test/release automation
+|   |-- xtask                    Build/test/release automation
+|   |-- pt-denoise-oidn          OIDN integration
+|   |-- gpu-mem                  GPU memory utilities
+|   |-- standard-surface         Standard Surface shaders and material data
+|   |-- squarebob-widgets        Shared widgets
+|   |-- pt-material              PT material types
+|   |-- playa-ae                 Composition engine
+|   |-- egui-colorpicker         Color picker
+|   `-- color-pipeline           OCIO/display color pipeline
+|-- docs/                        Historical design and integration plans
 |-- data/                        Screenshots and bundled factory render preset
-|-- shaders/                     Shader resources used by render paths
 |-- bootstrap.py                 Cross-platform local helper script
 `-- .github/                     CI/CD workflows and composite actions
 ```
@@ -389,22 +396,28 @@ Required GitHub secrets for signed macOS release builds:
 | Area | Main crates/tools | Version / source |
 | --- | --- | --- |
 | Rust toolchain | `rustc`, `cargo`, `clippy` | `1.96.0` via `rust-toolchain.toml` |
-| UI shell | `egui`, `egui-wgpu`, `eframe` | `0.34` |
-| Docking | `egui_dock` | `0.19` with `serde` |
-| Icons | `egui-phosphor` | `0.12.0` |
-| GPU | `wgpu` | `29` |
-| Math / GPU data | `glam`, `bytemuck`, `half` | `0.32`, `1`, `2.7.x` |
+| UI shell | `egui`, `egui-wgpu`, `eframe` | `0.36` |
+| Docking | `egui_dock` | `0.21` with `serde` |
+| Icons | `egui-phosphor` | `0.14` |
+| GPU | `wgpu` | `30` |
+| Math / GPU data | `glam`, `bytemuck`, `half` | `0.33`, `1.25`, `2.7.x` |
 | 2D treemap | local `treemap` crate | workspace `0.1.0`, optional `wgpu` feature |
 | 3D renderer | local `render-3d`, `render-shared`, `render-core` crates | workspace `0.1.0` |
 | Path tracing | local `pt-core`, `pt-megakernel`, `pt-wavefront`, `pt-mats`, `bvh-gpu` crates | workspace `0.1.0` |
-| Scanning | `jwalk`, `rayon`, `windows` | `0.8`, `1.12`, `0.62` |
-| App services | `directories`, `rfd`, `open`, `trash`, `sysinfo` | `6`, `0.17`, `5`, `5`, `0.38` |
+| Scanning | `fscan-rs`, `rayon`, `windows` | GitHub revision `aa0185f8`, `1.12`, `0.62` |
+| App services | `directories`, `rfd`, `open`, `trash`, `sysinfo` | `6`, `0.17`, `5`, `5`, `0.39` |
 | Serialization/cache | `serde`, `serde_json`, `bincode`, `sha2` | `1`, `1`, `1`, `0.11` |
 | Images | `image` | `0.25` with PNG/JPEG/TIFF/TGA/HDR features in `media-encoder` |
 | Media export | local `media-encoder` crate | workspace `0.1.0`, Rust edition 2024 |
 | Video codec stack | `av-codec`, `av-format`, `av-swscale`, `openh264` | pinned `ffmpeg-rs` SSH ref plus bundled OpenH264 |
 | EXR/VFX IO | `vfx-core`, `vfx-io` (`exr-core` backend) | git: `ssh://git@github.com/ssoj13/oiio-rs.git`, `main` |
 | Packaging | `cargo-packager` | `0.11.7` in `bootstrap.py`, GitHub Actions installs with `cargo install cargo-packager --locked` |
+
+## Architecture and bug-hunt notes
+
+[AGENTS.md](AGENTS.md) maps the active codepaths, [DIAGRAMS.md](DIAGRAMS.md) shows the dataflows, and [plan13.md](plan13.md) records the latest completed bug-hunt verification; [plan14.md](plan14.md) records the documentation audit and the remaining packaging verification gate. The earlier [plan11.md](plan11.md) and [plan12.md](plan12.md) retain dependency and repair history. [PLAN.md](PLAN.md) is a historical video-export migration plan; [BUG.md](BUG.md) tracks open source-level findings.
+
+Historical design records: [ACES color pipeline](docs/aces-color-pipeline-plan.md), [OIDN integration](docs/oidn-integration-plan.md), [OIDN bridge API survey](docs/oidn-phase1-i5-survey.md), and [OIDN Phase I](docs/oidn-phase1-plan.md).
 
 ## License
 

@@ -94,8 +94,6 @@ image = "0.25"
 # Concurrency / FS scan
 rayon = "1.12"
 crossbeam-channel = "0.5"
-jwalk = "0.9"
-num_cpus = "1"
 
 # System / OS / UX
 sysinfo = "0.39"
@@ -178,13 +176,12 @@ serde_json = { workspace = true }
 egui = { workspace = true }
 egui-wgpu = { workspace = true }
 egui_dock = { workspace = true }
-jwalk = { workspace = true }
+fscan-rs = { git = "ssh://git@github.com/ssoj13/fscan-rs.git", rev = "aa0185f8a45dcf3ad949d97b88b5950009444cb2" }
 rayon = { workspace = true }
 crossbeam-channel = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
-num_cpus = { workspace = true }
 rfd = { workspace = true }
 open = { workspace = true }
 trash = { workspace = true }
@@ -224,6 +221,9 @@ libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

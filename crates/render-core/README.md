@@ -1,14 +1,16 @@
 # render-core
 
-render-core wraps the low-level GPU context used by the renderers.
+render-core holds shared viewport, GPU setup, checked GPU layouts, and readback utilities.
 
 ## Why this exists
-We want a minimal, reusable GPU context (device/queue/surface formats) without dragging in
-renderer or app logic.
+The app creates one `GpuContext` and passes its instance, device, and queue to eframe and the renderers. Layout and readback checks live here so callers use the same error handling.
 
 ## What it provides
-- `GpuContext` and helper utilities for wgpu setup.
-- Shared GPU-related glue used by render-2d/render-3d.
+- `gpu::GpuContext` for wgpu instance, adapter, device, queue, and format selection.
+- `Viewport` pan and zoom state.
+- Checked buffer and texture layout helpers with `GpuLayoutError`.
+- Texture readback and buffer mapping helpers with `ReadbackError`.
 
 ## Where it is used
-- `crates/render-3d` and any future GPU renderer crates.
+- `src/main.rs`: creates the shared GPU context for eframe.
+- `crates/treemap`, `crates/render-3d`, and PT/BVH crates: layout and readback helpers.

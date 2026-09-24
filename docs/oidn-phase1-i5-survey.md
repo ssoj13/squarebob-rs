@@ -1,5 +1,7 @@
 # I.5 — wgpu::Buffer ↔ Burn Tensor bridge: API survey
 
+> Historical May 2026 API survey. The cited registry paths and Burn/CubeCL versions describe that pinned survey environment. Check the current dependency graph and [OIDN integration history](../CHANGELOG.md) before using the API conclusions for new code.
+
 **Outcome:** Path 1 (zero-copy wrap of external `wgpu::Buffer` as a Burn tensor) is **NOT feasible** with the burn 0.21 / cubecl 0.10 public API. Path 2 (device-local `copy_buffer_to_buffer` against Burn-allocated tensors) is **fully feasible with zero crate patches**. Total implementation effort: ~3-6 h.
 
 All citations below are absolute paths inside the local cargo registry cache (`C:/Programs/Ntutil/apps/prog/lang/Rust/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`).

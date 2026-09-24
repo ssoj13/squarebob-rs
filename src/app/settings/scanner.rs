@@ -22,7 +22,7 @@ impl App {
                         ui,
                         &mut self.scanner_mode,
                         &[
-                            (ScannerMode::Standard, "jwalk"),
+                            (ScannerMode::Standard, "Standard"),
                             (ScannerMode::Ntfs, "NTFS MFT"),
                         ],
                         MultiButtonAxis::Horizontal,

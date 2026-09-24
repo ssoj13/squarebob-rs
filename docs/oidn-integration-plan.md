@@ -1,5 +1,7 @@
 # OIDN Integration Plan — squarebob-rs
 
+> Historical integration plan. Use [AGENTS.md](../AGENTS.md#rendering-and-readback-codepath) and [README.md](../README.md#path-tracing) for the current renderer path; dependency versions and line references below describe the May 2026 design state.
+
 **Date:** 2026-05-14
 **Target:** Replace the current à-trous denoiser with a fully GPU pipeline of
 our Intel-OIDN-port (`oidn-rs`), running on the same `wgpu::Device` as the

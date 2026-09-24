@@ -1,5 +1,7 @@
 # plan12 — Systemic bug-hunt implementation review
 
+> Historical implementation report. Its four recorded `glam` warnings were resolved in [plan13.md](plan13.md); the final committed workspace check for that follow-up passed without warnings. The unchecked publication steps below refer to the state when this report was written; the completed main-branch commit is `5bdced34abed5a61092e7dd305fecd9a1947bd4a`.
+
 Updated: 2026-09-23. This report follows [plan11.md](plan11.md). It records the implemented source changes and the review work that remains. The final incremental `cargo check -p squarebob-rs --locked` passed after all edits. No tests or application run were performed.
 
 ## Scope and evidence

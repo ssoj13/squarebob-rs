@@ -1,7 +1,7 @@
 //! Background filesystem scanning with typed terminal outcomes and owned workers.
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use log::{debug, info, trace, warn};
+use log::{info, trace, warn};
 use squarebob_core::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -177,7 +177,7 @@ fn run_standard(
     let outcome = match scan_dir(root.path(), &tx, &cancel) {
         Ok(build) => finish_build(&root, build),
         Err(ScanFailure::Cancelled) => ScanOutcome::Cancelled,
-        Err(ScanFailure::BackendUnavailable(error) | ScanFailure::Failed(error)) => {
+        Err(ScanFailure::Failed(error)) => {
             ScanOutcome::Failed(format!("{error:#}"))
         }
     };
@@ -191,7 +191,6 @@ pub(crate) struct ScanBuild {
 
 pub(crate) enum ScanFailure {
     Cancelled,
-    BackendUnavailable(anyhow::Error),
     Failed(anyhow::Error),
 }
 
@@ -290,113 +289,135 @@ fn scan_dir(
     tx: &Sender<ScanMsg>,
     cancel: &AtomicBool,
 ) -> Result<ScanBuild, ScanFailure> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     let root_name = root
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| root.to_string_lossy().to_string());
     let root_entry = DirEntry::new_dir(root_name, root.to_path_buf());
-    let walker = jwalk::WalkDir::new(root)
-        .skip_hidden(false)
-        .follow_links(false)
-        .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus::get()));
-
     let mut dirs: HashMap<PathBuf, Vec<DirEntry>> = HashMap::new();
     let mut all_dirs: Vec<PathBuf> = vec![root.to_path_buf()];
+    let mut known_dirs: HashSet<PathBuf> = HashSet::from([root.to_path_buf()]);
     let mut file_count = 0u64;
     let mut dir_count = 0u64;
     let mut total_bytes = 0u64;
     let mut progress_counter = 0u64;
     let mut diagnostics = ScanDiagnostics::default();
 
-    for entry in walker {
-        if cancelled(cancel) {
-            info!("Scan cancelled by user");
-            return Err(ScanFailure::Cancelled);
-        }
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                if error.path() == Some(root) {
-                    return Err(ScanFailure::Failed(anyhow::anyhow!(
-                        "cannot enumerate scan root {:?}: {error}",
-                        root
-                    )));
-                }
-                debug!("Walk error: {error}");
-                diagnostics.walk_errors = diagnostics.walk_errors.saturating_add(1);
-                continue;
+    let walk = fscan_rs::scan_standard(
+        root,
+        cancel,
+        |_| true,
+        |entry, progress| {
+            diagnostics.walk_errors = progress.errors;
+            let path = entry.path.clone();
+            let relative = path.strip_prefix(root).map_err(|_| {
+                ScanFailure::Failed(anyhow::anyhow!(
+                    "scanner returned path outside scan root: {path:?}"
+                ))
+            })?;
+            if relative.as_os_str().is_empty()
+                || relative
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(ScanFailure::Failed(anyhow::anyhow!(
+                    "scanner returned malformed entry path: {path:?}"
+                )));
             }
-        };
+            let parent = path.parent().ok_or_else(|| {
+                ScanFailure::Failed(anyhow::anyhow!(
+                    "scanner returned entry without parent: {path:?}"
+                ))
+            })?;
+            let is_dir = entry.kind == fscan_rs::EntryKind::Directory;
+            let mut dir_path = if is_dir { path.as_path() } else { parent };
+            // Known directories have a known chain to root, so stop at the first one.
+            while dir_path != root && !known_dirs.contains(dir_path) {
+                let dir_parent = dir_path.parent().ok_or_else(|| {
+                    ScanFailure::Failed(anyhow::anyhow!(
+                        "scanner returned directory without parent: {dir_path:?}"
+                    ))
+                })?;
+                let dir_name = dir_path
+                    .file_name()
+                    .ok_or_else(|| {
+                        ScanFailure::Failed(anyhow::anyhow!(
+                            "scanner returned malformed directory path: {dir_path:?}"
+                        ))
+                    })?
+                    .to_string_lossy()
+                    .to_string();
+                dir_count = dir_count.checked_add(1).ok_or_else(|| {
+                    ScanFailure::Failed(anyhow::anyhow!("directory count overflow"))
+                })?;
+                known_dirs.insert(dir_path.to_path_buf());
+                all_dirs.push(dir_path.to_path_buf());
+                dirs.entry(dir_parent.to_path_buf())
+                    .or_default()
+                    .push(DirEntry::new_dir(dir_name, dir_path.to_path_buf()));
+                dir_path = dir_path.parent().ok_or_else(|| {
+                    ScanFailure::Failed(anyhow::anyhow!(
+                        "scanner returned directory outside scan root: {dir_path:?}"
+                    ))
+                })?;
+            }
 
-        let path = entry.path();
-        if path == root {
-            continue;
-        }
-        let Some(parent) = path.parent().map(Path::to_path_buf) else {
-            diagnostics.walk_errors = diagnostics.walk_errors.saturating_add(1);
-            continue;
-        };
-        let name = entry.file_name().to_string_lossy().to_string();
+            if !is_dir {
+                let name = entry.name.to_string_lossy().to_string();
+                let size = entry.len;
+                let modified_time = entry
+                    .modified
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+                let ext = path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                file_count = file_count
+                    .checked_add(1)
+                    .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("file count overflow")))?;
+                total_bytes = total_bytes
+                    .checked_add(size)
+                    .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("byte count overflow")))?;
+                dirs.entry(parent.to_path_buf()).or_default().push(DirEntry::new_file(
+                    name,
+                    path,
+                    size,
+                    ext,
+                    modified_time,
+                ));
+            }
 
-        if entry.file_type().is_dir() {
-            dir_count = dir_count
-                .checked_add(1)
-                .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("directory count overflow")))?;
-            all_dirs.push(path.clone());
-            dirs.entry(parent)
-                .or_default()
-                .push(DirEntry::new_dir(name, path));
-        } else {
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    diagnostics.metadata_errors = diagnostics.metadata_errors.saturating_add(1);
-                    debug!("Metadata error for {:?}: {error}", path);
-                    continue;
-                }
-            };
-            let size = metadata.len();
-            let modified_time = metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs());
-            let ext = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            file_count = file_count
-                .checked_add(1)
-                .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("file count overflow")))?;
-            total_bytes = total_bytes
-                .checked_add(size)
-                .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("byte count overflow")))?;
-            dirs.entry(parent).or_default().push(DirEntry::new_file(
-                name,
-                path,
-                size,
-                ext,
-                modified_time,
-            ));
+            progress_counter = progress_counter.saturating_add(1);
+            if progress_counter.is_multiple_of(5000) {
+                trace!(
+                    "Progress: {file_count} files, {dir_count} dirs, {} errors",
+                    diagnostics.total_errors()
+                );
+                send_progress(
+                    tx,
+                    cancel,
+                    file_count,
+                    dir_count,
+                    total_bytes,
+                    diagnostics.total_errors(),
+                )?;
+            }
+            Ok(fscan_rs::Visit::Continue)
+        },
+    );
+    match walk {
+        Ok(progress) => diagnostics.walk_errors = progress.errors,
+        Err(fscan_rs::ScanError::Cancelled) => return Err(ScanFailure::Cancelled),
+        Err(fscan_rs::ScanError::Root(error)) => {
+            return Err(ScanFailure::Failed(anyhow::anyhow!(
+                "cannot enumerate scan root {:?}: {error}",
+                root
+            )));
         }
-
-        progress_counter = progress_counter.saturating_add(1);
-        if progress_counter.is_multiple_of(5000) {
-            trace!(
-                "Progress: {file_count} files, {dir_count} dirs, {} errors",
-                diagnostics.total_errors()
-            );
-            send_progress(
-                tx,
-                cancel,
-                file_count,
-                dir_count,
-                total_bytes,
-                diagnostics.total_errors(),
-            )?;
-        }
+        Err(fscan_rs::ScanError::Sink(error)) => return Err(error),
     }
 
     send_progress(
@@ -504,6 +525,21 @@ fn scan_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standard_backend_builds_nested_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let child = temp.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("item.txt"), b"hello").unwrap();
+        let (tx, _rx) = crossbeam_channel::bounded(16);
+        let build = scan_dir(temp.path(), &tx, &AtomicBool::new(false))
+            .unwrap_or_else(|_| panic!("standard scan failed"));
+        assert!(build.diagnostics.is_complete());
+        assert_eq!(build.tree.children.len(), 1);
+        assert_eq!(build.tree.children[0].children.len(), 1);
+        assert_eq!(build.tree.children[0].children[0].size, 5);
+    }
 
     #[test]
     fn diagnostics_control_completeness() {

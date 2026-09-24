@@ -16,20 +16,26 @@ use super::{App, ScannerMode};
 impl App {
     fn backend_for_mode(mode: ScannerMode, root: &ScanRoot) -> (ScanBackend, String) {
         match mode {
-            ScannerMode::Standard => (ScanBackend::Standard, "jwalk".to_owned()),
+            ScannerMode::Standard => (ScanBackend::Standard, "fscan standard".to_owned()),
             ScannerMode::Ntfs => {
                 #[cfg(windows)]
                 {
                     if scanner_ntfs::is_ntfs_available(root.path()) {
                         (ScanBackend::Ntfs, "NTFS MFT".to_owned())
                     } else {
-                        (ScanBackend::Standard, "jwalk (NTFS unavailable)".to_owned())
+                        (
+                            ScanBackend::Standard,
+                            "fscan standard (NTFS unavailable)".to_owned(),
+                        )
                     }
                 }
                 #[cfg(not(windows))]
                 {
                     let _ = root;
-                    (ScanBackend::Standard, "jwalk (NTFS unavailable)".to_owned())
+                    (
+                        ScanBackend::Standard,
+                        "fscan standard (NTFS unavailable)".to_owned(),
+                    )
                 }
             }
         }
@@ -519,7 +525,8 @@ impl App {
                 }
                 #[cfg(windows)]
                 ScanMsg::NtfsFallback(error) => {
-                    self.progress.scan_engine_label = Some("jwalk (NTFS fallback)".to_owned());
+                    self.progress.scan_engine_label =
+                        Some("fscan standard (NTFS fallback)".to_owned());
                     self.push_scan_warning(format!(
                         "NTFS backend unavailable ({error}); using standard scanner"
                     ));

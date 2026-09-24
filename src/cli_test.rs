@@ -61,7 +61,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 println!("is_ntfs_available: {}", fs_ok);
                 if !fs_ok {
                     println!(
-                        "MFT fast path: no (not NTFS or path has no drive letter). App will use jwalk here."
+                        "MFT fast path: no (not NTFS or path has no drive letter). App will use fscan standard here."
                     );
                     return Ok(());
                 }
@@ -73,7 +73,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                     "MFT_ioctl: works on this volume — you may enable Settings → Scanner → NTFS MFT."
                 );
                 println!(
-                    "Default GUI scanner is jwalk (Standard), NOT MFT unless you change saved settings.",
+                    "Default GUI scanner is fscan standard, NOT MFT unless you change saved settings.",
                 );
                 Ok(())
             }

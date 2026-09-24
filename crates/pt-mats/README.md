@@ -16,14 +16,17 @@ index into the caller-supplied library.
 
 - `MaterialSource`: scalar dimension to classify on (extension, path,
   size, age, depth, random).
-- `MaterialDistribution`: shaping curve applied to the source value
-  before bucketing (direct, quantised, gradient, spatial noise, bands).
+- `MaterialDistribution`: source-value shaping before weighted slot selection
+  (`Direct`, `Stratified`, `Spatial`, `Perlin`, `Gradient`).
 - `MaterializeMode`: legacy preset shortcut for `MaterialSource`.
-- `MaterializeSettings`: full classification knob bundle (seed,
-  source/distribution choice, quant levels, palette pin, etc.).
+- `MaterializeSettings`: classification settings (seed, source, distribution,
+  band count, spatial scale) plus palette settings consumed by color ramps.
 - `MaterialInput`: per-cube inputs handed to `classify_to_index`.
-- `classify_to_index(input, settings, library_size) -> u32`: pick a
-  material index in `0..library_size`.
+- `classify_to_index(input, settings, weights) -> u32`: pick a material
+  index in `0..weights.len()` using non-negative per-slot weights.
+  An empty or all-zero weight slice, or `MaterialSource::None`, selects slot 0.
+- `override_picker`: a separate seeded vote for material overrides using
+  the same distribution modes.
 - Palette helpers (`Palette`, `sample_palette`,
   `auto_palette_for_source`, `hierarchical_path_value`) — used by
   upstream colour-ramp consumers, not by the classifier itself.
@@ -31,9 +34,9 @@ index into the caller-supplied library.
 ## Where it is used
 
 - `crates/render-3d/src/renderer3d/material_cache.rs`: calls
-  `classify_to_index` once per unique path; results are cached per
-  PBR/PT bucket and invalidated on `MaterializeSettings` change or
-  library identity change.
+  `classify_to_index` with the current library weights. Cache entries are
+  invalidated when settings or library identity change; spatial and Perlin
+  distributions are evaluated for each cube.
 - `crates/render-3d/src/renderer3d/instance_collect.rs`: consumes
   palette + `MaterialDistribution` for per-cube colour ramps.
 
@@ -42,7 +45,5 @@ index into the caller-supplied library.
 - Material slots, JSON serialisation, per-cube variance: `pt-material`.
 - GPU material layout (`GpuMaterial` / `StandardSurfaceParams`):
   `pt-core` and `standard-surface`.
-- Glass / light overrides (legacy `MaterialClass` slot routing): gone.
-  Glass-vs-emissive is now a property of the `StandardSurface` params
-  themselves (transmission weight / emission weight), edited per
-  library slot.
+- Glass and emissive behavior is represented by the transmission and
+  emission weights in each library slot's `StandardSurfaceParams`.

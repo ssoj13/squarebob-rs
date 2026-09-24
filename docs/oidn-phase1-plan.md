@@ -1,5 +1,7 @@
 # OIDN Phase I — Full GPU pipeline in `oidn-rs`
 
+> Historical Phase I plan. The completion record below describes the May 2026 integration; consult [AGENTS.md](../AGENTS.md#rendering-and-readback-codepath) and the [OIDN changelog](../CHANGELOG.md) for the current repository context.
+
 **Repo:** `git@github.com:ssoj13/oidn-rs.git` (our fork, currently pulled in
 as a local path dep from squarebob's `pt-denoise-oidn`).
 **Goal:** Lift the remaining CPU pixel-loops in `unet_runner.rs` and
