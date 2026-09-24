@@ -6,6 +6,27 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-09-24 — Move to oiio-rs `bc99b59c` (ACES 2.0 CG default)
+
+- **Updated** `vfx-core`/`vfx-io`/`vfx-ocio`/`vfx-lut` from oiio-rs `106b9bc` to
+  `bc99b59c` (also moves `exr-rs` from `b987a09d` to `85fe27a6` transitively).
+  No API breaks hit this repo: squarebob-rs does not call `GpuProcessor::generate_shader`
+  and does not hand-build OCIO GPU bind groups, so neither the OCIO-10 `Result`
+  change nor the new `wgsl_prelude`/`GpuOcioResources` host API applies here.
+- **Breaking** (behaviour): `vfx_ocio::builtin::default_config()` — used by
+  `ColorPipelineSettings`'s `ConfigSource::BuiltIn` — is now OCIO's
+  `ocio://default`, the ACES 2.0 CG config (`cg-config-v4.0.0_aces-v2.0_ocio-v2.5`),
+  no longer the Studio all-views config. `ColorPipelineSettings::default()`'s
+  display/view were `"sRGB"` / `"ACES 1.0 SDR-video"`, names the CG config
+  doesn't have; they are now `"sRGB - Display"` / `"ACES 2.0 - SDR 100 nits
+  (Rec.709)"`, the CG config's tonemapped SDR Rec.709 view (the closest
+  analogue of the old default). Stale "ACES 1.3" / "Studio All-Views"
+  comments and UI hover text in `crates/color-pipeline/src/lib.rs` and
+  `src/app/settings/color.rs` updated to match.
+- `cargo check --workspace --all-targets`: 0 errors, 0 warnings. `cargo test
+  --workspace`: 46 passed, 0 failed, 2 ignored (pre-existing doctest `ignore`
+  markers in `playa-ae`, unrelated to this change).
+
 ## 2026-09-23 — Dependency and correctness pass
 
 - **Updated** the egui, wgpu, glam, scanner, and media dependency requirements; refreshed the owned Git dependencies in `Cargo.lock`. The `bincode` 1.3.3 cache codec remains pinned because the published 3.0.0 package intentionally fails compilation.

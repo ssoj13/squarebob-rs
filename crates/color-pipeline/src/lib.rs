@@ -92,9 +92,9 @@ impl BuiltInTonemap {
 /// Where to source the active OCIO `Config` from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ConfigSource {
-    /// `vfx_ocio::builtin::default_config()` — the latest embedded
-    /// release shipped with the vfx-ocio crate (currently ACES 2.0
-    /// Studio All-Views v4.0.0).
+    /// `vfx_ocio::builtin::default_config()` — OCIO's `ocio://default`,
+    /// the ACES 2.0 CG config shipped with the vfx-ocio crate
+    /// (`cg-config-v4.0.0_aces-v2.0_ocio-v2.5`).
     #[default]
     BuiltIn,
     /// One of the embedded release configs (`vfx_ocio::builtin::embedded`).
@@ -158,7 +158,8 @@ pub struct PerSourceOcio {
     /// scene-linear output is fed into this space.
     #[serde(default)]
     pub input_space: String,
-    /// Display name from the config (e.g. `"sRGB"` / `"Rec.709"`).
+    /// Display name from the config (e.g. `"sRGB - Display"` /
+    /// `"Rec.1886 Rec.709 - Display"`).
     #[serde(default)]
     pub display: String,
     /// View name from the config, restricted to the views
@@ -249,14 +250,16 @@ impl Default for ColorPipelineSettings {
             builtin: BuiltInTonemap::default(),
             codepath: ColorCodepath::default(),
             ocio_config: ConfigSource::default(),
-            // Sensible defaults for the built-in ACES 1.3 config:
+            // Sensible defaults for the built-in ACES 2.0 CG config:
             // input = working space role, output = sRGB display +
-            // ACES 1.0 SDR-video view. The default look slot is
-            // empty so the rendered image is identical to the
-            // reference ACES output until the user dials a look in.
+            // the ACES 2.0 SDR Rec.709 output-transform view (the
+            // CG config's tonemapped analogue of the old ACES 1.0
+            // SDR-video view). The default look slot is empty so
+            // the rendered image is identical to the reference ACES
+            // output until the user dials a look in.
             ocio_input_space: "scene_linear".to_string(),
-            ocio_display: "sRGB".to_string(),
-            ocio_view: "ACES 1.0 SDR-video".to_string(),
+            ocio_display: "sRGB - Display".to_string(),
+            ocio_view: "ACES 2.0 - SDR 100 nits (Rec.709)".to_string(),
             ocio_look: None,
             ocio_custom_lut: None,
             builtin_ocio: PerSourceOcio::default(),
@@ -545,7 +548,7 @@ fn identity_lut(size: usize, shaper: LutShaper) -> Result<BakedLut3D, String> {
 impl ColorPipeline {
     /// Initialise from a settings struct. Loads the appropriate
     /// `Config` (built-in / bundled / external) and builds the
-    /// initial `Processor`. Falls back to the built-in ACES 1.3
+    /// initial `Processor`. Falls back to the built-in ACES 2.0 CG
     /// config if external loading fails, so the renderer always
     /// has *some* config to work with.
     ///
@@ -965,9 +968,9 @@ fn default_bundled_dir() -> std::path::PathBuf {
 }
 
 /// Load the requested config, falling back to the built-in
-/// ACES 1.3 on any error. Returns both the loaded `Config` and
-/// the source that actually backed it (which may be `BuiltIn`
-/// even if the caller asked for `External`).
+/// ACES 2.0 CG config on any error. Returns both the loaded
+/// `Config` and the source that actually backed it (which may be
+/// `BuiltIn` even if the caller asked for `External`).
 fn load_config(
     source: &ConfigSource,
     bundled_dir: &std::path::Path,
@@ -977,7 +980,8 @@ fn load_config(
             // "BuiltIn" semantically = the default config that ships
             // with vfx-ocio. With the programmatic ACES 1.3 port now
             // retired (kept in-tree as a dormant experiment), the
-            // default is the latest embedded release.
+            // default is OCIO's `ocio://default`, the ACES 2.0 CG
+            // config.
             (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)
         }
         ConfigSource::Embedded(name) => match vfx_ocio::builtin::embedded::get(name) {
@@ -985,7 +989,7 @@ fn load_config(
             None => {
                 log::warn!(
                     "color-pipeline: embedded config {name:?} not found in registry \
-                     — falling back to built-in ACES 1.3",
+                     — falling back to built-in ACES 2.0 CG",
                 );
                 (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)
             }
@@ -997,7 +1001,7 @@ fn load_config(
                 Err(e) => {
                     log::warn!(
                         "color-pipeline: failed to load bundled config {}: {e} \
-                         — falling back to built-in ACES 1.3",
+                         — falling back to built-in ACES 2.0 CG",
                         path.display()
                     );
                     (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)
@@ -1009,7 +1013,7 @@ fn load_config(
             Err(e) => {
                 log::warn!(
                     "color-pipeline: failed to load external config {}: {e} \
-                     — falling back to built-in ACES 1.3",
+                     — falling back to built-in ACES 2.0 CG",
                     path.display()
                 );
                 (vfx_ocio::builtin::default_config(), ConfigSource::BuiltIn)

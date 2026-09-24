@@ -156,7 +156,8 @@ impl App {
                         settings_grid(ui, "color_ocio_grid", |ui| {
                             ui.label("Config:").on_hover_text(
                                 "Which OCIO Config to use.\n\
-                                 ACES 1.3 (built-in) — programmatic, no file.\n\
+                                 Default (built-in) — OCIO's ocio://default, the \
+                                 ACES 2.0 CG config.\n\
                                  Embedded configs — full release `.ocio` files \
                                  bundled into the binary (ACES 2.0 CG/Studio).\n\
                                  External — load a .ocio / .ocioz / .json from disk.",
@@ -178,7 +179,7 @@ impl App {
                                 .width(288.0)
                                 .selected_text(current_label)
                                 .show_ui(ui, |ui| {
-                                    // ACES 1.3 programmatic baseline.
+                                    // Built-in ACES 2.0 CG baseline (ocio://default).
                                     let is_b = matches!(cp.ocio_config, ConfigSource::BuiltIn);
                                     if ui
                                         .selectable_label(is_b, "Default (latest embedded)")
@@ -306,7 +307,7 @@ impl App {
 
                             ui.label("View:").on_hover_text(
                                 "View transform for the selected Display. \
-                                 Common: 'ACES 1.0 SDR-video', 'Raw', \
+                                 Common: 'ACES 2.0 - SDR 100 nits (Rec.709)', 'Raw', \
                                  'Un-tone-mapped'.",
                             );
                             ocio_view_dropdown(
