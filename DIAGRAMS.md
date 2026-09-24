@@ -1,6 +1,6 @@
 # Application diagrams
 
-Updated: 2026-09-23. These diagrams describe inspected source paths. See [AGENTS.md](AGENTS.md) for operating constraints, [plan11.md](plan11.md) for original findings, [plan12.md](plan12.md) for systemic repairs, and [plan13.md](plan13.md) for the camera and CPU-picking follow-up.
+Updated: 2026-09-23. These diagrams describe inspected source paths. See [AGENTS.md](AGENTS.md) for operating constraints, [plan11.md](plan11.md) for original findings, [plan12.md](plan12.md) for systemic repairs, [plan13.md](plan13.md) for the camera and CPU-picking follow-up, and [plan15.md](plan15.md) for the typed NTFS outcome repair.
 
 ## Scan, cache, and display dataflow
 
@@ -17,12 +17,12 @@ flowchart TD
     Root --> Select{"Backend"}
     Select --> Standard["run_standard -> scan_dir -> fscan_rs::scan_standard"]
     Select --> NTFS["scanner_ntfs::run_ntfs -> fscan_rs::scan_ntfs_tree_with_progress"]
-    NTFS -->|scan error; warning on terminal channel| Standard
+    NTFS -->|BackendUnavailable; terminal warning| Standard
     Standard --> Ancestors["scan_dir: reconstruct omitted ancestor directories"]
     Ancestors -->|build returned| Build["finish_build: sort + stats"]
     NTFS -->|build returned| Build
     Standard -->|cancelled or failed| Terminal["Terminal outcome"]
-    NTFS -->|cancelled or failed| Terminal
+    NTFS -->|Cancelled or Failed| Terminal
     Build -->|complete tree| Serialize["serialize_cache_ref in scanner worker"]
     Build -->|partial tree| Terminal
     Serialize --> Terminal
@@ -56,9 +56,12 @@ sequenceDiagram
     CS-->>UI: Loaded(generation, root_id, result)
     UI->>UI: Gate by generation/root_id; optional preview
     SW->>FS: fscan-rs standard or NTFS MFT
-    opt NTFS scan error
+    opt NTFS BackendUnavailable
         SW-->>UI: NtfsFallback on terminal channel
         SW->>FS: Standard scanner fallback
+    end
+    opt NTFS Cancelled or Failed
+        Note over SW: No standard fallback
     end
     SW-->>UI: Progress (bounded channel)
     opt A build returned

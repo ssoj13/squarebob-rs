@@ -136,7 +136,8 @@ pub(crate) fn run_ntfs(
                 },
             },
         ),
-        Err(error) => {
+        Err(fscan_rs::ScanFailure::Cancelled) => ScanOutcome::Cancelled,
+        Err(fscan_rs::ScanFailure::BackendUnavailable(error)) => {
             let _ = terminal_tx.send(ScanMsg::NtfsFallback(format!("{error:#}")));
             match crate::scanner::scan_dir_public(root.path(), &tx, &cancel) {
                 Ok(build) => finish_build(&root, build),
@@ -145,6 +146,9 @@ pub(crate) fn run_ntfs(
                     ScanOutcome::Failed(format!("standard fallback failed: {error:#}"))
                 }
             }
+        }
+        Err(fscan_rs::ScanFailure::Failed(error)) => {
+            ScanOutcome::Failed(format!("NTFS scan failed: {error:#}"))
         }
     };
     let _ = terminal_tx.send(ScanMsg::Terminal(outcome));

@@ -404,7 +404,7 @@ Required GitHub secrets for signed macOS release builds:
 | 2D treemap | local `treemap` crate | workspace `0.1.0`, optional `wgpu` feature |
 | 3D renderer | local `render-3d`, `render-shared`, `render-core` crates | workspace `0.1.0` |
 | Path tracing | local `pt-core`, `pt-megakernel`, `pt-wavefront`, `pt-mats`, `bvh-gpu` crates | workspace `0.1.0` |
-| Scanning | `fscan-rs`, `rayon`, `windows` | GitHub revision `aa0185f8`, `1.12`, `0.62` |
+| Scanning | `fscan-rs`, `rayon`, `windows` | GitHub revision `c33d4474`, `1.12`, `0.62` |
 | App services | `directories`, `rfd`, `open`, `trash`, `sysinfo` | `6`, `0.17`, `5`, `5`, `0.39` |
 | Serialization/cache | `serde`, `serde_json`, `bincode`, `sha2` | `1`, `1`, `1`, `0.11` |
 | Images | `image` | `0.25` with PNG/JPEG/TIFF/TGA/HDR features in `media-encoder` |
@@ -415,7 +415,7 @@ Required GitHub secrets for signed macOS release builds:
 
 ## Architecture and bug-hunt notes
 
-[AGENTS.md](AGENTS.md) maps the active codepaths, [DIAGRAMS.md](DIAGRAMS.md) shows the dataflows, and [plan13.md](plan13.md) records the latest completed bug-hunt verification; [plan14.md](plan14.md) records the documentation audit and the remaining packaging verification gate. The earlier [plan11.md](plan11.md) and [plan12.md](plan12.md) retain dependency and repair history. [PLAN.md](PLAN.md) is a historical video-export migration plan; [BUG.md](BUG.md) tracks open source-level findings.
+[AGENTS.md](AGENTS.md) maps the active codepaths, [DIAGRAMS.md](DIAGRAMS.md) shows the dataflows, and [plan13.md](plan13.md) records the latest completed bug-hunt verification; [plan14.md](plan14.md) records the documentation audit; [plan15.md](plan15.md) records the typed NTFS repair and current verification gates. The earlier [plan11.md](plan11.md) and [plan12.md](plan12.md) retain dependency and repair history. [PLAN.md](PLAN.md) is a historical video-export migration plan; [BUG.md](BUG.md) tracks open source-level findings.
 
 Historical design records: [ACES color pipeline](docs/aces-color-pipeline-plan.md), [OIDN integration](docs/oidn-integration-plan.md), [OIDN bridge API survey](docs/oidn-phase1-i5-survey.md), and [OIDN Phase I](docs/oidn-phase1-plan.md).
 

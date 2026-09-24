@@ -2,6 +2,10 @@
 
 Known defects and follow-ups found from other repos and this workspace. Newest first; `[ ]` open, `[x]` done.
 
+## 2026-09-23 NTFS failure classification after scanner extraction
+
+- [x] **The adapter distinguishes cancellation, unavailable backend, and fatal failure.** Published `fscan-rs` commit `c33d447` returns typed `ScanFailure` from its public NTFS tree API (`../fscan-rs/src/scanner.rs:99-105`; `../fscan-rs/src/ntfs.rs:394-433`). Squarebob maps only `BackendUnavailable` to standard fallback, maps cancellation to `Cancelled`, and reports `Failed` terminally (`src/scanner_ntfs.rs:139-154`). `Cargo.toml:179` and `Cargo.lock:3339` pin the fix. The source repair compiles on Windows; no focused NTFS outcome test or runtime scan was run ([plan15.md](plan15.md)).
+
 ## 2026-09-23 Partial scan with an omitted parent
 
 - [x] **The standard scanner now reconstructs parents omitted after metadata errors.** `src/scanner.rs:302,315-366` validates yielded paths and inserts every missing ancestor once before assembly (`src/scanner.rs:433-441`). Walker errors still flow into `ScanDiagnostics` (`src/scanner.rs:313-314,412-421`), so `finish_build` can return `Partial` (`src/scanner.rs:204-236`). The source-level loss is repaired; no regression test or runtime scan was run for this case.
