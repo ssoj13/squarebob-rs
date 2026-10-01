@@ -1542,7 +1542,7 @@ dependencies = [
 [[package]]
 name = "codec-simd"
 version = "0.3.35"
-source = "git+ssh://git@github.com/ssoj13/codec-simd-rs.git?branch=main#051832b4317d59e0d409d0712471bd84708e695d"
+source = "git+ssh://git@github.com/ssoj13/codec-simd-rs.git?branch=main#c79919b3304a18e66393e61527f868a94b95ac03"
 
 [[package]]
 name = "codespan-reporting"
@@ -2456,7 +2456,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 [[package]]
 name = "deflate-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#e85d560897642b14684787e19091bcd7b816023b"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#1e454eaf9e637efb1b90cf1e270f87e09851dff9"
 
 [[package]]
 name = "deflate64"
@@ -3174,7 +3174,7 @@ dependencies = [
 [[package]]
 name = "exr-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#e85d560897642b14684787e19091bcd7b816023b"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#1e454eaf9e637efb1b90cf1e270f87e09851dff9"
 dependencies = [
  "codec-simd",
  "deflate-rs",
@@ -4180,7 +4180,7 @@ dependencies = [
 [[package]]
 name = "imath-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#e85d560897642b14684787e19091bcd7b816023b"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#1e454eaf9e637efb1b90cf1e270f87e09851dff9"
 
 [[package]]
 name = "imgref"
@@ -4423,8 +4423,8 @@ checksum = "b454d911ac55068f53495488d8ccd0646eaa540c033a28ee15b07838afafb01f"
 
 [[package]]
 name = "jph-rs"
-version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/jph-rs.git?branch=main#2e6d03d4d636d2a74315cd9509a37a42aa411f56"
+version = "0.2.0"
+source = "git+ssh://git@github.com/ssoj13/jph-rs.git?branch=main#7f7b1518cb927437bf2aa19ad76687aae4cd4e67"
 
 [[package]]
 name = "js-sys"
