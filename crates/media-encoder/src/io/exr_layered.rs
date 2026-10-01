@@ -2,11 +2,8 @@ use std::path::Path;
 
 use crate::io::IoError;
 
-pub use vfx_core::AttrValue;
-pub use vfx_io::{
-    ChannelKind, ChannelSampleType, ChannelSamples, ImageChannel, ImageLayer, LayeredImage,
-    Metadata,
-};
+pub use vfx_core::{AttrValue, DataFormat};
+pub use vfx_io::{ChannelData, ChannelKind, ChannelSamples, ImageLayer, LayeredImage, Metadata};
 
 fn map_layers_err(e: vfx_io::IoError) -> IoError {
     IoError::Exr(e.to_string())

@@ -1363,8 +1363,8 @@ fn write_exr_frame(
     bit_depth: OutputBitDepth,
 ) -> Result<(), EncodeError> {
     use crate::io::exr_layered::{
-        AttrValue, ChannelKind, ChannelSampleType, ChannelSamples, ImageChannel, ImageLayer,
-        LayeredImage, Metadata, write_exr_layers,
+        AttrValue, ChannelData, ChannelSamples, DataFormat, ImageLayer, LayeredImage, Metadata,
+        write_exr_layers,
     };
 
     let buffer = frame.buffer();
@@ -1383,10 +1383,10 @@ fn write_exr_frame(
         bit_depth,
         OutputBitDepth::F16 | OutputBitDepth::U8 | OutputBitDepth::U16
     );
-    let sample_type = if use_half {
-        ChannelSampleType::F16
+    let format = if use_half {
+        DataFormat::F16
     } else {
-        ChannelSampleType::F32
+        DataFormat::F32
     };
 
     let n_out = match channels {
@@ -1407,38 +1407,29 @@ fn write_exr_frame(
     }
 
     let names: &[&str] = &["R", "G", "B", "A"];
-    let kinds: &[ChannelKind] = &[
-        ChannelKind::Color,
-        ChannelKind::Color,
-        ChannelKind::Color,
-        ChannelKind::Alpha,
-    ];
 
+    // The channel kind follows from the name (R/G/B colour, A alpha) in vfx-io's layer.
     let mut exr_channels = Vec::with_capacity(n_out);
     for c in 0..n_out {
-        exr_channels.push(ImageChannel {
-            name: names[c].to_string(),
-            kind: kinds[c],
-            sample_type,
-            samples: ChannelSamples::F32(std::mem::take(&mut planar[c])),
-            sampling: (1, 1),
-            // OpenEXR convention: alpha quantized linearly; chroma channels exponentially.
-            quantize_linearly: c == 3,
-        });
+        exr_channels.push((
+            names[c].to_string(),
+            format,
+            ChannelData {
+                samples: ChannelSamples::F32(std::mem::take(&mut planar[c])),
+                sampling: (1, 1),
+                // OpenEXR convention: alpha quantized linearly; chroma channels exponentially.
+                quantize_linearly: c == 3,
+            },
+        ));
     }
 
     // Per-layer compression goes into spec.attributes — vfx-io's writer reads it
     // back per layer. Future multi-layer encode reuses
     // this same path with more layers.
-    let mut layer = ImageLayer {
-        name: String::new(),
-        width: width as u32,
-        height: height as u32,
-        channels: exr_channels,
-        ..Default::default()
-    };
-    layer.spec.attributes.insert(
-        "compression".to_string(),
+    let mut layer = ImageLayer::from_channels("", width as u32, height as u32, exr_channels)
+        .map_err(|error| EncodeError::EncodeFrameFailed(error.to_string()))?;
+    layer.set_attr(
+        "compression",
         AttrValue::String(settings.compression.to_oiio_string(settings.dwa_quality)),
     );
 
