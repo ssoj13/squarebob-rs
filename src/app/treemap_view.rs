@@ -19,6 +19,7 @@ impl App {
     /// Render the central treemap/3D panel
     pub(super) fn ui_treemap(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.sync_display(&ctx);
         if self.display_root().is_some() {
             let available = ui.available_size();
             let w = available.x.max(1.0) as u32;
@@ -696,12 +697,16 @@ impl App {
             // source (OIDN result if denoised, raw PT accumulator
             // otherwise) plus the outline overlay. No fresh PT sample.
             let source = if self.oidn_display_is_denoised {
-                self.oidn_denoiser.as_ref().map(|d| d.result_view())
+                self.oidn_denoiser.as_ref().map(|d| d.result_texture())
             } else {
                 None
             };
-            if let Some(r) = self.renderer_3d.as_ref() {
-                r.composite_overlay(source, &self.render_3d_opts);
+            if let Some(r) = self.renderer_3d.as_mut() {
+                if let Err(error) =
+                    r.composite_overlay(source, &self.render_3d_opts, &self.color_pipeline)
+                {
+                    log::error!("PT display composite failed: {error}");
+                }
             }
             ctx.request_repaint();
         } else {
@@ -1167,21 +1172,6 @@ impl App {
                         self.sticky_hover = None;
                         self.oidn_display_is_denoised = false;
                     }
-                    // OCIO + CPU codepath: post-process the just-rendered
-                    // PT output through `vfx_ocio::Processor::apply_rgb`
-                    // on the CPU, then re-blit. Debug codepath — see the
-                    // warn log inside `apply_cpu_color_pass`.
-                    let cp = &self.render_3d_opts.color_pipeline;
-                    if !empty_scene
-                        && cp.mode == color_pipeline::ColorMode::Ocio
-                        && cp.codepath == color_pipeline::ColorCodepath::Cpu
-                    {
-                        if let Err(error) =
-                            r.apply_cpu_color_pass(&self.color_pipeline, &self.render_3d_opts)
-                        {
-                            log::error!("CPU color readback failed: {error}");
-                        }
-                    }
                 }
                 self.last_render_frame_3d = self.frame_count;
                 self.needs_render_3d = false;
@@ -1200,26 +1190,26 @@ impl App {
                     self.maybe_run_oidn_denoise(w, h);
                 }
 
-                // When OIDN landed this frame, blit its result back into the
-                // PT render target through the megakernel's ACES+gamma pipeline.
-                // This is intentionally *not* a native-egui texture swap —
-                // going through `blit_with_source` keeps hover/selection
-                // overlays and tone-mapping consistent between raw and
-                // denoised display.
-                if self.oidn_display_is_denoised
-                    && let (Some(r), Some(denoised_view)) = (
-                        self.renderer_3d.as_ref(),
-                        self.oidn_denoiser.as_ref().map(|d| d.result_view()),
-                    )
+                // Raw and denoised PT sources use the same display-only color path.
+                // CPU OCIO must never replace the raw accumulator consumed by OIDN.
+                if self.render_3d_opts.path_tracing
+                    && let Some(r) = self.renderer_3d.as_mut()
+                    && r.cached_instances()
+                        .is_some_and(|instances| !instances.is_empty())
                 {
-                    r.composite_overlay(Some(denoised_view), &self.render_3d_opts);
+                    let source = if self.oidn_display_is_denoised {
+                        self.oidn_denoiser.as_ref().map(|d| d.result_texture())
+                    } else {
+                        None
+                    };
+                    r.composite_overlay(source, &self.render_3d_opts, &self.color_pipeline)?;
                 }
                 self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
 
                 // Register/update the PT render-target texture with egui. Same
                 // texture every frame regardless of denoise state — display
-                // source has been mutated in place by the (raw) blit + optional
-                // denoised re-blit above.
+                // target contains the selected source processed by the shared
+                // display color path above; raw PT input remains untouched.
                 if let Some(r) = &self.renderer_3d
                     && let Some(texture) = r.get_render_texture()
                 {

@@ -231,6 +231,11 @@ impl OidnDenoiser {
         self.quality
     }
 
+    /// Raw scene-linear result for either CPU or GPU display processing.
+    pub fn result_texture(&self) -> &wgpu::Texture {
+        &self.result_texture
+    }
+
     pub fn result_view(&self) -> &wgpu::TextureView {
         &self.result_view
     }

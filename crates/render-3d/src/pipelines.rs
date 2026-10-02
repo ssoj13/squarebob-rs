@@ -236,7 +236,7 @@ fn create_fullscreen_pipeline(
             module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: render_core::DISPLAY_TEXTURE_FORMAT,
                 blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -258,7 +258,9 @@ impl Pipelines {
         // Shader modules
         let pbr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("PBR Shader"),
-            source: wgpu::ShaderSource::Wgsl(PBR_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(
+                format!("{}\n{}", render_core::DISPLAY_TRANSFER_WGSL, PBR_SHADER).into(),
+            ),
         });
         let obj_id_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ObjID Shader"),
@@ -270,7 +272,9 @@ impl Pipelines {
         });
         let skybox_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Skybox Shader"),
-            source: wgpu::ShaderSource::Wgsl(SKYBOX_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(
+                format!("{}\n{}", render_core::DISPLAY_TRANSFER_WGSL, SKYBOX_SHADER).into(),
+            ),
         });
 
         // Pipeline layouts
@@ -295,7 +299,7 @@ impl Pipelines {
             immediate_size: 0,
         });
 
-        let rgba8 = wgpu::TextureFormat::Rgba8Unorm;
+        let display_format = render_core::DISPLAY_TEXTURE_FORMAT;
 
         Self {
             pbr: create_cube_pipeline(
@@ -305,7 +309,7 @@ impl Pipelines {
                     layout: &pbr_layout,
                     shader: &pbr_shader,
                     fs_entry: "fs_main",
-                    format: rgba8,
+                    format: display_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     cull: None, // TEMP: disabled culling for debugging
                     polygon_mode: wgpu::PolygonMode::Fill,
@@ -320,7 +324,7 @@ impl Pipelines {
                     layout: &pbr_layout,
                     shader: &pbr_shader,
                     fs_entry: "fs_main",
-                    format: rgba8,
+                    format: display_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     cull: None,
                     polygon_mode: wgpu::PolygonMode::Fill,
@@ -335,7 +339,7 @@ impl Pipelines {
                     layout: &pbr_layout,
                     shader: &pbr_shader,
                     fs_entry: "fs_wireframe",
-                    format: rgba8,
+                    format: display_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     cull: None,
                     polygon_mode: wgpu::PolygonMode::Line,
@@ -350,7 +354,7 @@ impl Pipelines {
                     layout: &pbr_layout,
                     shader: &pbr_shader,
                     fs_entry: "fs_main",
-                    format: rgba8,
+                    format: display_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     cull: None,
                     polygon_mode: wgpu::PolygonMode::Fill,

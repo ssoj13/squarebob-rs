@@ -713,6 +713,8 @@ pub struct PathTraceCompute {
     color_lut_view: wgpu::TextureView,
     color_lut_sampler: wgpu::Sampler,
     cpu_color_readback: render_core::gpu::TextureReadback,
+    /// Display-light scratch; raw PT and denoiser textures are never color-transformed.
+    cpu_color_output: Option<wgpu::Texture>,
 
     // GPU BVH builder with refit support for animation
     bvh_builder: GpuBvhBuilder,
@@ -1213,7 +1215,9 @@ impl PathTraceCompute {
         // Blit pipeline
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pt_blit_shader"),
-            source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(
+                format!("{}\n{}", render_core::DISPLAY_TRANSFER_WGSL, BLIT_WGSL).into(),
+            ),
         });
 
         // Blit-time uniforms. Layout mirrors `BlitParams` in blit.wgsl:
@@ -1581,6 +1585,7 @@ impl PathTraceCompute {
             color_lut_view,
             color_lut_sampler,
             cpu_color_readback: render_core::gpu::TextureReadback::default(),
+            cpu_color_output: None,
             bvh_builder: GpuBvhBuilder::new(device),
             bvh_config: GpuBvhConfig::default(),
             bvh_refit_preferred: true,
@@ -4276,9 +4281,8 @@ impl PathTraceCompute {
             // `COPY_SRC` is required by `pt-denoise-oidn`, which runs
             // `copy_texture_to_buffer` on this texture every denoise call.
             // STORAGE+TEXTURE alone caused MissingTextureUsage validation.
-            // `COPY_DST` powers the OCIO CPU-color codepath
-            // (`apply_cpu_color_in_place`) — it reads back, mutates,
-            // and re-uploads the same texture.
+            // `COPY_DST` also permits diagnostic uploads. CPU display processing
+            // reads this raw source and uploads into its own scratch texture.
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC
@@ -5362,18 +5366,35 @@ impl PathTraceCompute {
         Ok(())
     }
 
-    /// Read the PT accumulator's display-side `output_texture` back to CPU,
-    /// apply a colour transform to RGB, preserve alpha, and re-upload.
+    /// Read a raw PT or denoiser source, transform RGB in host staging in place,
+    /// and upload to a separate display-light scratch texture. Preserve raw sources.
     ///
     /// Uses the shared checked, reusable readback path. Layout, device polling,
     /// callback delivery, mapping, and host allocation failures stay recoverable.
     pub fn apply_cpu_color_in_place(
         &mut self,
         ctx: &render_core::gpu::GpuContext,
+        source: Option<&wgpu::Texture>,
         apply: impl FnOnce(&mut [[f32; 3]]),
-    ) -> Result<(), render_core::ReadbackError> {
+    ) -> Result<wgpu::TextureView, render_core::ReadbackError> {
         const BYTES_PER_PIXEL: u32 = 16;
         const LABEL: &str = "PT CPU color readback";
+        let source = source.unwrap_or(&self.output_texture);
+        if source.format() != wgpu::TextureFormat::Rgba32Float {
+            return Err(render_core::ReadbackError::UnsupportedFormat(
+                source.format(),
+            ));
+        }
+        for (expected, actual) in [(self.width, source.width()), (self.height, source.height())] {
+            if expected != actual {
+                return Err(render_core::GpuLayoutError::LengthMismatch {
+                    context: LABEL,
+                    left: expected as usize,
+                    right: actual as usize,
+                }
+                .into());
+            }
+        }
 
         let layout = render_core::gpu::TextureReadbackLayout::new(
             LABEL,
@@ -5391,7 +5412,7 @@ impl PathTraceCompute {
         render_core::gpu::readback_texture_bytes(
             ctx,
             &mut encoder,
-            &self.output_texture,
+            source,
             self.width,
             self.height,
             BYTES_PER_PIXEL,
@@ -5425,9 +5446,35 @@ impl PathTraceCompute {
         for (pixel, alpha) in pixels.into_iter().zip(alphas) {
             packed.push([pixel[0], pixel[1], pixel[2], alpha]);
         }
+        if self
+            .cpu_color_output
+            .as_ref()
+            .is_none_or(|texture| texture.width() != self.width || texture.height() != self.height)
+        {
+            self.cpu_color_output = Some(ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("PT CPU display-light scratch"),
+                size: wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }));
+        }
+        let output = self
+            .cpu_color_output
+            .as_ref()
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
         ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.output_texture,
+                texture: output,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -5444,7 +5491,7 @@ impl PathTraceCompute {
                 depth_or_array_layers: 1,
             },
         );
-        Ok(())
+        Ok(output.create_view(&Default::default()))
     }
 
     pub fn blit(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {

@@ -11,6 +11,29 @@ impl App {
     /// Render bottom status bar
     pub(super) fn ui_status_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("status").show(ui, |ui| {
+            if let Some(state) = ui
+                .ctx()
+                .data(|d| d.get_temp::<egui_display::DisplayState>(egui_display::state_id()))
+            {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!(
+                        "Display: {} · white {:.0} nits",
+                        state.output.label(),
+                        state.target.white
+                    ));
+                    if let Some(error) = &state.error {
+                        ui.colored_label(ui.visuals().warn_fg_color, error);
+                    }
+                    if state.output.is_hdr()
+                        && state.info.coarse.and_then(|info| info.high_dynamic_range) == Some(false)
+                    {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "The OS reports HDR is off; highlights may be clipped.",
+                        );
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 if self.progress.scanning {
                     ui.spinner();

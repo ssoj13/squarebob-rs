@@ -118,15 +118,13 @@ pub enum ConfigSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(u8)]
 pub enum ColorCodepath {
-    /// `Processor::apply_rgb` on the readback buffer each frame.
-    /// Slow (`O(W*H)` per frame plus a GPU→CPU readback), but
-    /// numerically identical to the OCIO reference and trivially
-    /// correct for any transform vfx-ocio can build.
+    /// Apply the compiled OCIO processor directly to a readback buffer.
+    /// Avoids LUT interpolation, at the cost of per-pixel CPU work and readback.
+    /// Writes separate display storage; the scene-linear source stays unchanged.
     Cpu,
-    /// `GpuProcessor::extract_gpu_shader_info` → GLSL → naga →
-    /// WGSL, patched into the blit shader. Fast (no readback),
-    /// but the GLSL→WGSL translation has a non-zero risk surface;
-    /// some exotic transforms fall back to CPU automatically.
+    /// Bake the compiled OCIO processor into a logarithmically shaped 3D LUT
+    /// and sample it in the common display blit. Avoids frame readback;
+    /// interpolation approximates the processor between baked grid points.
     #[default]
     Gpu,
 }
@@ -190,6 +188,12 @@ pub struct ColorPipelineSettings {
     pub builtin: BuiltInTonemap,
     /// Active codepath. Honoured by both modes.
     pub codepath: ColorCodepath,
+    /// Actual negotiated window output; runtime state, never a preset promise.
+    #[serde(skip)]
+    pub output_hdr: bool,
+    /// SDR reference white of the negotiated output, in nits.
+    #[serde(skip)]
+    pub reference_white_nits: f32,
 
     // ── OCIO-mode fields ──
     /// Which OCIO config the pipeline is currently consulting.
@@ -249,6 +253,8 @@ impl Default for ColorPipelineSettings {
             mode: ColorMode::default(),
             builtin: BuiltInTonemap::default(),
             codepath: ColorCodepath::default(),
+            output_hdr: false,
+            reference_white_nits: 203.0,
             ocio_config: ConfigSource::default(),
             // Sensible defaults for the built-in ACES 2.0 CG config:
             // input = working space role, output = sRGB display +
@@ -280,9 +286,8 @@ impl ColorPipelineSettings {
     /// `Ocio + Gpu` returns [`OCIO_LUT_TAG`] (shader trilinear-samples
     /// the baked 3D LUT);
     /// `Ocio + Cpu` returns `0` — the host has already replaced the PT
-    /// output texture with display-encoded pixels via
-    /// `apply_cpu_color_in_place`, so the blit just needs to clamp-
-    /// passthrough.
+    /// output texture with display-linear light via
+    /// `apply_cpu_color_in_place`, so the blit only encodes the canvas transport.
     pub const fn resolved_tonemap_tag(&self) -> u32 {
         match self.mode {
             ColorMode::BuiltIn => self.builtin.gpu_tag(),
@@ -305,6 +310,8 @@ impl ColorPipelineSettings {
         (self.mode as u8).hash(&mut h);
         (self.builtin as u8).hash(&mut h);
         (self.codepath as u8).hash(&mut h);
+        self.output_hdr.hash(&mut h);
+        self.reference_white_nits.to_bits().hash(&mut h);
         match &self.ocio_config {
             ConfigSource::BuiltIn => 0u8.hash(&mut h),
             ConfigSource::Bundled(name) => {
@@ -350,7 +357,7 @@ pub struct ColorPipeline {
     last_hash: u64,
     /// Set to `true` whenever [`Self::rebuild`] produces a fresh
     /// baked LUT (including the initial bake in [`Self::new`]).
-    /// The renderer host polls it via [`Self::take_pending_lut`]
+    /// The renderer host polls it via [`Self::pending_lut`]
     /// once per frame and uploads when it observes a pending flag.
     /// Keeps the upload signal decoupled from the `ensure()` return
     /// value, so callers that just want to refresh dropdown lists
@@ -361,8 +368,10 @@ pub struct ColorPipeline {
     /// actually loaded or fell through silently.
     custom_lut_status: CustomLutStatus,
     /// Whether OCIO output contains code values that must be decoded into
-    /// eframe's linear composition transport before final output encoding.
+    /// display-linear light before the common canvas transport encoding.
     decode_code_values_for_transport: bool,
+    /// Absolute HDR display light is normalized to the canvas reference white.
+    output_scale: f32,
     /// Hard failure from the most recent settings rebuild. Kept until a
     /// different settings hash rebuilds successfully.
     last_error: Option<String>,
@@ -400,9 +409,9 @@ pub enum ColorPipelineError {
     /// LUT dimensions, allocation, or bake failed.
     #[error("{0}")]
     Lut(String),
-    /// Selected OCIO view requires an HDR surface that eframe does not expose.
+    /// Selected OCIO view requires HDR but the negotiated window output is SDR.
     #[error(
-        "OCIO view '{view}' on display '{display}' requires HDR output; current compositor is SDR"
+        "OCIO view '{view}' on display '{display}' requires HDR output; negotiated window output is SDR"
     )]
     UnsupportedHdrOutput {
         /// OCIO display selected by the active view.
@@ -508,6 +517,7 @@ fn bake_shaped_lut(
     size: usize,
     shaper: LutShaper,
     decode_code_values_for_transport: bool,
+    output_scale: f32,
 ) -> Result<BakedLut3D, String> {
     let mut samples = shaped_lut_inputs(size, shaper)?;
     processor.apply_rgb(&mut samples);
@@ -516,17 +526,16 @@ fn bake_shaped_lut(
     data.try_reserve_exact(element_count)
         .map_err(|error| format!("cannot allocate baked {size}³ LUT: {error}"))?;
     for sample in samples {
-        // OCIO display processors return display-encoded values. The
-        // eframe consumes a linear offscreen texture and performs the sRGB
-        // transfer in its final output stage. Decode here so the transport
-        // encode/decode pair preserves OCIO code values without double-OETF.
+        // Store display-linear Rec.709 light. The common blit encodes the
+        // extended-sRGB float canvas; the shared present pass then performs
+        // the negotiated SDR/PQ/HLG/scRGB output encoding exactly once.
         data.extend(sample.map(|value| {
             if !value.is_finite() {
                 0.0
             } else if decode_code_values_for_transport {
-                display_encoded_to_surface_linear(value)
+                display_encoded_to_surface_linear(value) * output_scale
             } else {
-                value
+                value * output_scale
             }
         }));
     }
@@ -569,6 +578,7 @@ impl ColorPipeline {
             lut_upload_pending: false,
             custom_lut_status: CustomLutStatus::NotSet,
             decode_code_values_for_transport: false,
+            output_scale: 1.0,
             last_error: None,
         };
         let hash = settings.build_hash();
@@ -613,6 +623,7 @@ impl ColorPipeline {
         log::error!("color-pipeline: rebuild failed: {message}");
         self.processor = None;
         self.decode_code_values_for_transport = false;
+        self.output_scale = 1.0;
         self.lut_3d = match identity_lut(DEFAULT_LUT_SIZE, LutShaper::default()) {
             Ok(identity) => Some(identity),
             Err(fallback_error) => {
@@ -632,6 +643,7 @@ impl ColorPipeline {
             // their math is in the blit shader.
             self.processor = None;
             self.decode_code_values_for_transport = false;
+            self.output_scale = 1.0;
             // Mark a pending upload so the host re-pushes the
             // identity LUT (or whatever the renderer's default is)
             // when the user toggles back from OCIO mode. Without
@@ -651,16 +663,17 @@ impl ColorPipeline {
             return Ok(());
         }
         let output_encoding = self.output_encoding(&settings.ocio_display, &settings.ocio_view);
-        if output_encoding == vfx_ocio::Encoding::Hdr {
+        if output_encoding == vfx_ocio::Encoding::Hdr && !settings.output_hdr {
             return Err(ColorPipelineError::UnsupportedHdrOutput {
                 display: settings.ocio_display.clone(),
                 view: settings.ocio_view.clone(),
             });
         }
-        let decode_code_values_for_transport = !matches!(
-            output_encoding,
-            vfx_ocio::Encoding::SceneLinear | vfx_ocio::Encoding::DisplayLinear
-        );
+        let decode_code_values_for_transport = !settings.output_hdr
+            && !matches!(
+                output_encoding,
+                vfx_ocio::Encoding::SceneLinear | vfx_ocio::Encoding::DisplayLinear
+            );
 
         // OCIO mode — build a display processor via
         // `DisplayViewTransform`. The user-picked look from the UI
@@ -697,7 +710,7 @@ impl ColorPipeline {
         // (AP0 → display) and combine. The third leg re-runs the
         // display chain from AP0 instead of the user-selected input
         // space, so the LMT is sandwiched correctly.
-        let proc = match settings.ocio_custom_lut.as_ref() {
+        let mut proc = match settings.ocio_custom_lut.as_ref() {
             None => {
                 self.custom_lut_status = CustomLutStatus::NotSet;
                 self.config.processor_for_display_view_transform(&dvt)?
@@ -754,6 +767,67 @@ impl ColorPipeline {
             }
         };
 
+        // HDR presentation needs actual display light, not PQ code values
+        // carried through an sRGB canvas. Match exr-view's OCIO contract:
+        // selected view color space -> display-reference XYZ D65 -> Rec.709.
+        let mut output_scale = 1.0;
+        if settings.output_hdr {
+            if !settings.reference_white_nits.is_finite() || settings.reference_white_nits <= 0.0 {
+                return Err(ColorPipelineError::Lut(
+                    "display reference white must be finite and positive".into(),
+                ));
+            }
+            let cs = self
+                .config
+                .find_view(&settings.ocio_display, &settings.ocio_view)
+                .and_then(|view| {
+                    self.config
+                        .colorspace(view.effective_colorspace(&settings.ocio_display))
+                })
+                .ok_or_else(|| {
+                    ColorPipelineError::Lut("selected view has no output color space".into())
+                })?;
+            if !cs.is_data() {
+                if cs.reference_space_type() != vfx_ocio::ReferenceSpaceType::Display {
+                    return Err(ColorPipelineError::Lut(format!(
+                        "HDR presentation requires a display-referred output color space, got '{}'",
+                        cs.name()
+                    )));
+                }
+                let mut transforms: Vec<_> = cs
+                    .to_display_reference()
+                    .cloned()
+                    .or_else(|| {
+                        cs.from_display_reference()
+                            .map(|transform| transform.clone().inverse())
+                    })
+                    .into_iter()
+                    .collect();
+                transforms.push(vfx_ocio::Transform::Matrix(vfx_ocio::MatrixTransform {
+                    name: String::new(),
+                    matrix: vfx_ocio::color_matrix::conversion_matrix_from_xyz_d65(
+                        &vfx_ocio::color_matrix::REC709,
+                        vfx_ocio::color_matrix::Adaptation::None,
+                    )
+                    .map_err(|error| ColorPipelineError::Lut(error.to_string()))?,
+                    offset: [0.0; 4],
+                    direction: vfx_ocio::TransformDirection::Forward,
+                }));
+                let decode = vfx_ocio::Processor::from_transform(
+                    &vfx_ocio::Transform::Group(vfx_ocio::GroupTransform {
+                        name: String::new(),
+                        transforms,
+                        direction: vfx_ocio::TransformDirection::Forward,
+                    }),
+                    vfx_ocio::TransformDirection::Forward,
+                )?;
+                proc = vfx_ocio::Processor::combine(&proc, &decode)?;
+                if output_encoding == vfx_ocio::Encoding::Hdr {
+                    output_scale = 100.0 / settings.reference_white_nits;
+                }
+            }
+        }
+
         // Bake over a logarithmic scene-linear domain. A plain [0,1]³
         // LUT clips every HDR highlight before the display transform.
         let shaper = LutShaper::default();
@@ -762,6 +836,7 @@ impl ColorPipeline {
             DEFAULT_LUT_SIZE,
             shaper,
             decode_code_values_for_transport,
+            output_scale,
         ) {
             Ok(baked) => baked,
             Err(error) => {
@@ -780,6 +855,7 @@ impl ColorPipeline {
         };
         self.processor = Some(proc);
         self.decode_code_values_for_transport = decode_code_values_for_transport;
+        self.output_scale = output_scale;
         self.lut_3d = Some(baked);
         self.lut_upload_pending = true;
         Ok(())
@@ -814,9 +890,9 @@ impl ColorPipeline {
         self.lut_upload_pending = false;
     }
 
-    /// Apply the cached display processor, then convert its encoded
-    /// output to the linear values expected by eframe composition.
-    /// Eframe's final SDR transfer reconstructs the processor's code values.
+    /// Apply the cached processor to display-linear light relative to SDR
+    /// reference white. The common blit owns extended-sRGB canvas encoding;
+    /// the shared presenter owns the selected output transfer.
     pub fn apply_cpu_to_surface_linear(&self, pixels: &mut [[f32; 3]]) {
         if let Some(processor) = &self.processor {
             processor.apply_rgb(pixels);
@@ -825,9 +901,9 @@ impl ColorPipeline {
                     if !value.is_finite() {
                         0.0
                     } else if self.decode_code_values_for_transport {
-                        display_encoded_to_surface_linear(value)
+                        display_encoded_to_surface_linear(value) * self.output_scale
                     } else {
-                        value
+                        value * self.output_scale
                     }
                 });
             }
@@ -1025,6 +1101,90 @@ fn load_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hdr_settings() -> ColorPipelineSettings {
+        let mut settings = ColorPipelineSettings {
+            mode: ColorMode::Ocio,
+            output_hdr: true,
+            ..Default::default()
+        };
+        let config = vfx_ocio::builtin::default_config();
+        let (display, view) = config
+            .displays()
+            .displays()
+            .iter()
+            .find_map(|display| {
+                config
+                    .get_views(display.name())
+                    .into_iter()
+                    .find_map(|view| {
+                        let cs = config.colorspace(view.effective_colorspace(display.name()))?;
+                        (cs.encoding() == vfx_ocio::Encoding::Hdr
+                            && cs.reference_space_type() == vfx_ocio::ReferenceSpaceType::Display)
+                            .then(|| (display.name().to_string(), view.name().to_string()))
+                    })
+            })
+            .expect("the shipped ACES config must provide an HDR display view");
+        settings.ocio_display = display;
+        settings.ocio_view = view;
+        settings
+    }
+
+    #[test]
+    fn hdr_view_requires_actual_hdr_output() {
+        let mut settings = hdr_settings();
+        settings.output_hdr = false;
+        let pipeline = ColorPipeline::new(&settings);
+        assert!(pipeline.last_error().is_some());
+        assert!(pipeline.processor.is_none());
+    }
+
+    #[test]
+    fn hdr_view_reference_white_changes_light_units_not_nits() {
+        let mut settings = hdr_settings();
+        let mut pipeline = ColorPipeline::new(&settings);
+        assert_eq!(pipeline.last_error(), None);
+        assert!(!pipeline.decode_code_values_for_transport);
+        let mut first = [[0.18; 3], [4.0; 3]];
+        pipeline.apply_cpu_to_surface_linear(&mut first);
+        let first_lut = pipeline.lut_3d.as_ref().unwrap().data.clone();
+        settings.reference_white_nits *= 2.0;
+        pipeline.ensure(&settings).unwrap();
+        let mut second = [[0.18; 3], [4.0; 3]];
+        pipeline.apply_cpu_to_surface_linear(&mut second);
+        for (a, b) in first.iter().flatten().zip(second.iter().flatten()) {
+            assert!(a.is_finite() && b.is_finite());
+            assert!((a - b * 2.0).abs() <= 1e-5 * a.abs().max(1.0));
+        }
+        for (a, b) in first_lut
+            .iter()
+            .zip(&pipeline.lut_3d.as_ref().unwrap().data)
+        {
+            assert!((a - b * 2.0).abs() <= 1e-5 * a.abs().max(1.0));
+        }
+        settings.reference_white_nits = f32::NAN;
+        assert!(pipeline.ensure(&settings).is_err());
+        assert!(pipeline.processor.is_none());
+    }
+
+    #[test]
+    fn sdr_view_can_feed_hdr_canvas_as_relative_display_light() {
+        let settings = ColorPipelineSettings {
+            mode: ColorMode::Ocio,
+            output_hdr: true,
+            ..Default::default()
+        };
+        let pipeline = ColorPipeline::new(&settings);
+        assert_eq!(pipeline.last_error(), None);
+        assert_eq!(pipeline.output_scale, 1.0);
+        let mut pixels = [[0.18; 3]];
+        pipeline.apply_cpu_to_surface_linear(&mut pixels);
+        assert!(
+            pixels[0]
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.0)
+        );
+    }
 
     #[test]
     fn logarithmic_shaper_has_exact_black_and_exposure_endpoints() {

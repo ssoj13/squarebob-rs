@@ -145,29 +145,7 @@ fn agx_filmic(color: vec3<f32>) -> vec3<f32> {
     return max(out, vec3<f32>(0.0));
 }
 
-// SMPTE ST 2084 (PQ) inverse-EOTF — encodes display-linear nits to
-// the 10-bit PQ-encoded signal expected by HDR10 displays. Input is
-// nits normalised to 1.0 = 10_000 nits (so an Rec.2020 1000-nit signal
-// peaks at 0.1). Returns `[0,1]`.
-//
-// Constants are the canonical PQ parameters (m1, m2, c1, c2, c3 from
-// SMPTE ST 2084:2014, also called Rec.2100 PQ).
-//
-// Reserved for a future direct HDR-surface path. It is deliberately not
-// called by the SDR eframe composition path: emitting PQ into its SDR output
-// stage would be a false HDR mode and would apply the wrong transfer function.
-fn pq_inverse_eotf(nits_normalised: vec3<f32>) -> vec3<f32> {
-    let m1 = 0.1593017578125;       // 1305 / 8192
-    let m2 = 78.84375;              // 2523 / 32 (× 32 = 78.84375)
-    let c1 = 0.8359375;             // 3424 / 4096
-    let c2 = 18.8515625;            // 2413 / 4096 × 32
-    let c3 = 18.6875;               // 2392 / 4096 × 32
-    let l  = max(nits_normalised, vec3<f32>(0.0));
-    let lm1 = pow(l, vec3<f32>(m1));
-    let num = c1 + c2 * lm1;
-    let den = vec3<f32>(1.0) + c3 * lm1;
-    return pow(num / den, vec3<f32>(m2));
-}
+// PQ encoding belongs to the shared egui-display final presentation pass.
 
 // ACES Reference Gamut Compression (cyan/magenta/yellow asymmetric).
 // Pulls samples that lie outside the display gamut back inside with a
@@ -285,8 +263,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let kind = u32(blit_params.color.x);
     var mapped: vec3<f32>;
     switch kind {
-        case 0u: { mapped = saturate(scene); }                  // None
-        case 1u: { mapped = saturate(scene); }                  // Linear (curve-less)
+        case 0u: { mapped = scene; }                  // None
+        case 1u: { mapped = scene; }                  // Linear (curve-less)
         case 2u: { mapped = reinhard(scene); }                  // Reinhard
         case 4u: {                                              // AcesFull (legacy)
             let working = blit_params.aces_pre * scene;
@@ -313,11 +291,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             mapped = saturate(agx_filmic(scene));
         }
         case 6u: {
-            // Shaper-aware OCIO LUT. The CPU bakes the full display
-            // processor over a logarithmic scene-linear domain, then decodes
-            // its display-encoded output to the linear values required by the
-            // eframe compositor. Eframe's final SDR output encoding restores
-            // the processor's code values exactly once.
+            // Shaper-aware OCIO LUT contains display-linear Rec.709 light.
+            // The common transport encoding below preserves HDR headroom.
             let lut_size = blit_params.lut_shaper.x;
             let shaped = vec3<f32>(
                 lut_shaper_encode(scene.r),
@@ -330,10 +305,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         default: { mapped = aces_filmic(scene); }               // AcesFilmic (default)
     }
 
-    // Offscreen contract is display-linear. Eframe composites this
-    // Rgba8Unorm texture and owns the sole final SDR transfer stage (shader
-    // OETF on gamma framebuffers, hardware OETF on sRGB targets). OCIO samples
-    // were already transport-decoded during
-    // LUT baking; built-in curves are naturally display-linear here.
-    return vec4<f32>(mapped, 1.0);
+    // Egui samples non-sRGB textures as extended-sRGB code values.
+    // Float targets retain values above reference white; egui-display owns
+    // the final SDR/scRGB/HDR10 transfer and primary conversion.
+    return vec4<f32>(display_encode(mapped), 1.0);
 }

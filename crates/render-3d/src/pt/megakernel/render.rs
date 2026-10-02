@@ -45,7 +45,7 @@ pub(super) fn render_path_traced_frame(
     use pt_megakernel::{PathTraceCompute, PtCameraUniform};
 
     // Lazy init path tracer
-    let surface_format = wgpu::TextureFormat::Rgba8Unorm;
+    let surface_format = render_core::DISPLAY_TEXTURE_FORMAT;
     if renderer.pt.path_tracer.is_none() {
         let mut pt = PathTraceCompute::new(
             &renderer.ctx.device,

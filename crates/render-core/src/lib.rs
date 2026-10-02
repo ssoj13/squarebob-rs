@@ -1,5 +1,12 @@
 use std::sync::Arc;
 
+/// Extended-sRGB float viewport transport; values above one preserve HDR highlights.
+/// SDR readback clips this representation to RGBA8; presentation applies the output transfer.
+pub const DISPLAY_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Shared sign-preserving extended-sRGB encoding for linear viewport shader output.
+pub const DISPLAY_TRANSFER_WGSL: &str = include_str!("display_transfer.wgsl");
+
 /// Viewport state for pan/zoom
 #[derive(Debug, Clone)]
 pub struct Viewport {
@@ -632,6 +639,7 @@ pub mod gpu {
         buffer: Option<wgpu::Buffer>,
         capacity: u64,
         layout: Option<TextureReadbackLayout>,
+        format: Option<wgpu::TextureFormat>,
     }
 
     impl TextureReadback {
@@ -640,7 +648,7 @@ pub mod gpu {
         }
     }
 
-    /// Encode a tightly packed pixel texture into reusable staging storage.
+    /// Encode a raw pixel texture into reusable staging storage without color conversion.
     pub fn readback_texture_bytes(
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
@@ -688,10 +696,11 @@ pub mod gpu {
             },
         );
         staging.layout = Some(layout);
+        staging.format = None;
         Ok(())
     }
 
-    /// Encode an RGBA8 texture copy into reusable staging storage.
+    /// Encode an RGBA8 or extended-sRGB RGBA16Float texture for packed SDR RGBA8 readback.
     pub fn readback_texture(
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
@@ -700,19 +709,28 @@ pub mod gpu {
         height: u32,
         staging: &mut TextureReadback,
     ) -> Result<(), ReadbackError> {
+        let format = texture.format();
+        let bytes_per_pixel = match format {
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => 4,
+            wgpu::TextureFormat::Rgba16Float => 8,
+            _ => return Err(ReadbackError::UnsupportedFormat(format)),
+        };
         readback_texture_bytes(
             ctx,
             encoder,
             texture,
             width,
             height,
-            4,
-            "RGBA8 Readback",
+            bytes_per_pixel,
+            "SDR Readback",
             staging,
-        )
+        )?;
+        staging.format = Some(format);
+        Ok(())
     }
 
-    /// Map the most recently encoded copy and strip row padding.
+    /// Map the most recent copy and strip row padding. Semantic float readback converts to
+    /// SDR RGBA8, clipping extended-range values; raw byte readback preserves all channels.
     pub fn map_readback(
         ctx: &GpuContext,
         staging: &TextureReadback,
@@ -726,7 +744,7 @@ pub mod gpu {
             let actual = data.len();
             let expected = usize::try_from(layout.buffer_size).map_err(|_| {
                 ReadbackError::Layout(GpuLayoutError::ValueTooLarge {
-                    context: "RGBA8 mapped range",
+                    context: "texture mapped range",
                     value: layout.buffer_size,
                     target: "usize",
                 })
@@ -737,11 +755,32 @@ pub mod gpu {
 
             let row_bytes = layout.row_bytes as usize;
             let padded_row_bytes = layout.padded_row_bytes as usize;
+            let convert = staging.format == Some(wgpu::TextureFormat::Rgba16Float);
+            let output_size = if convert {
+                layout.output_size / 2
+            } else {
+                layout.output_size
+            };
             let mut pixels = Vec::new();
-            pixels.try_reserve_exact(layout.output_size)?;
+            pixels.try_reserve_exact(output_size)?;
             for row in 0..layout.height as usize {
                 let start = row * padded_row_bytes;
-                pixels.extend_from_slice(&data[start..start + row_bytes]);
+                let source = &data[start..start + row_bytes];
+                if convert {
+                    for channel in source.chunks_exact(2) {
+                        let value =
+                            half::f16::from_bits(u16::from_le_bytes([channel[0], channel[1]]))
+                                .to_f32();
+                        let value = if value.is_nan() {
+                            0.0
+                        } else {
+                            value.clamp(0.0, 1.0)
+                        };
+                        pixels.push((value * 255.0).round() as u8);
+                    }
+                } else {
+                    pixels.extend_from_slice(source);
+                }
             }
             Ok(pixels)
         })?
@@ -757,6 +796,7 @@ pub enum ReadbackError {
     MapFailed(wgpu::BufferAsyncError),
     MappedRangeAccess(wgpu::MapRangeError),
     MissingTarget,
+    UnsupportedFormat(wgpu::TextureFormat),
     StagingBufferTooSmall { required: u64, capacity: u64 },
     MappedRangeTooSmall { expected: usize, actual: usize },
     HostAllocation(std::collections::TryReserveError),
@@ -786,6 +826,9 @@ impl std::fmt::Display for ReadbackError {
             Self::MapFailed(e) => write!(f, "map_async failed: {e:?}"),
             Self::MappedRangeAccess(e) => write!(f, "mapped range access failed: {e}"),
             Self::MissingTarget => write!(f, "readback has no encoded target"),
+            Self::UnsupportedFormat(format) => {
+                write!(f, "unsupported texture readback format: {format:?}")
+            }
             Self::StagingBufferTooSmall { required, capacity } => write!(
                 f,
                 "readback staging buffer too small: requires {required} bytes, capacity {capacity}"
@@ -844,6 +887,93 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn float_readback_preserves_raw_and_converts_sdr() {
+        let ctx = gpu::GpuContext::new().expect("GPU adapter required");
+        let (width, height) = (33, 2);
+        let mut raw = Vec::new();
+        let mut expected = Vec::new();
+        for pixel in 0..width * height {
+            let (values, bytes) = match pixel % 3 {
+                0 => ([-0.5, 0.0, 0.5, 1.0], [0, 0, 128, 255]),
+                1 => (
+                    [2.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+                    [255, 0, 255, 0],
+                ),
+                _ => ([0.25, 0.75, 1.0, 0.0], [64, 191, 255, 0]),
+            };
+            for value in values {
+                raw.extend_from_slice(&half::f16::from_f32(value).to_bits().to_le_bytes());
+            }
+            expected.extend_from_slice(&bytes);
+        }
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("float readback regression"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DISPLAY_TEXTURE_FORMAT,
+            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &raw,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 8),
+                rows_per_image: Some(height),
+            },
+            texture.size(),
+        );
+        let mut staging = gpu::TextureReadback::default();
+        let mut raw_staging = gpu::TextureReadback::default();
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        gpu::readback_texture(&ctx, &mut encoder, &texture, width, height, &mut staging).unwrap();
+        gpu::readback_texture_bytes(
+            &ctx,
+            &mut encoder,
+            &texture,
+            width,
+            height,
+            8,
+            "raw regression",
+            &mut raw_staging,
+        )
+        .unwrap();
+        ctx.queue.submit([encoder.finish()]);
+        assert_eq!(gpu::map_readback(&ctx, &staging).unwrap(), expected);
+        assert_eq!(gpu::map_readback(&ctx, &raw_staging).unwrap(), raw);
+
+        let capacity = staging.capacity();
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        gpu::readback_texture_bytes(
+            &ctx,
+            &mut encoder,
+            &texture,
+            width,
+            height,
+            8,
+            "reused raw regression",
+            &mut staging,
+        )
+        .unwrap();
+        ctx.queue.submit([encoder.finish()]);
+        assert_eq!(staging.capacity(), capacity);
+        assert_eq!(gpu::map_readback(&ctx, &staging).unwrap(), raw);
+    }
 
     #[test]
     fn checked_layout_rejects_zero_extent() {

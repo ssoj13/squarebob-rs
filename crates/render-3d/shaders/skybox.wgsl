@@ -79,5 +79,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = dir_to_equirect_uv(dir, env.rotation);
     let color = textureSample(env_map, env_sampler, uv).rgb * env.intensity;
 
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(display_encode(color), 1.0);
 }

@@ -175,8 +175,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 egui = { workspace = true }
 egui-wgpu = { workspace = true }
+egui-winit = { version = "0.36", features = ["serde", "accesskit"] }
+winit = "0.30"
+ron = "0.12"
+egui-display = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
 egui_dock = { workspace = true }
-fscan-rs = { git = "ssh://git@github.com/ssoj13/fscan-rs.git", rev = "c33d4474b5004ec047ecd065f96f6a53addbc97e" }
+fscan-rs = { git = "ssh://git@github.com/ssoj13/fscan-rs.git", rev = "5f57af677f902522e52977e07e1acd88661339aa" }
 rayon = { workspace = true }
 crossbeam-channel = { workspace = true }
 anyhow = { workspace = true }

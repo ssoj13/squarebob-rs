@@ -139,6 +139,16 @@ pub(super) struct PersistState {
     pub filter_merge_outside: bool,
 }
 
+impl PersistState {
+    /// RON preserves egui's nonfinite rectangle sentinels; accept valid legacy JSON.
+    pub(super) fn decode(text: &str) -> Result<Self, String> {
+        ron::from_str(text).or_else(|ron_error| {
+            serde_json::from_str(text)
+                .map_err(|json_error| format!("RON: {ron_error}; JSON: {json_error}"))
+        })
+    }
+}
+
 pub(super) fn default_autosave_interval() -> f32 {
     5.0
 }

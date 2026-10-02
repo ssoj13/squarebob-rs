@@ -1166,107 +1166,81 @@ impl Renderer3D {
         &self.ctx
     }
 
-    /// Re-blit `denoised_view` (an Rgba32Float texture produced by OIDN)
-    /// into the same render-target the megakernel writes to, going through
-    /// the standard `blit_with_source` (ACES tonemap + gamma 2.2) pipeline.
-    /// This is how denoised output reaches the screen without bypassing
-    /// the tone-mapping chain. No-op when `targets` or `path_tracer` are
-    /// uninitialised.
+    /// Display raw scene-linear PT or OIDN color through the selected CPU/GPU
+    /// color processor, then encode the common float canvas transport.
+    /// CPU processing uses separate scratch storage and consumes camera exposure
+    /// before OCIO; neither source is changed. No-op before renderer initialization.
     /// Re-composite `render_view` from a colour source and re-draw the
     /// outline overlay on top. Used by both the OIDN denoise display
     /// switch and the selection-change refresh path — neither needs a
     /// fresh PT sample, both just want the latest colour + outline
     /// state on screen.
     ///
-    /// `source = Some(view)` uses that view (e.g. the OIDN result
-    /// texture).
-    /// `source = None` blits PT's own output view (the accumulator
-    /// post-tonemap); equivalent to "re-display the last PT frame".
+    /// `source = Some(texture)` selects raw OIDN color; `None` selects the
+    /// sample-normalized raw PT output. Repeated composition always starts
+    /// from the original scene-linear values.
     ///
     /// The outline pass is conditional on having something to
     /// highlight (selection or hover); the object_id texture is reused
     /// from the previous full `render_to_view` so we don't pay for a
     /// per-instance pass here.
-    pub fn composite_overlay(&self, source: Option<&wgpu::TextureView>, opts: &Render3DOptions) {
+    pub fn composite_overlay(
+        &mut self,
+        source: Option<&wgpu::Texture>,
+        opts: &Render3DOptions,
+        pipeline: &color_pipeline::ColorPipeline,
+    ) -> Result<(), render_core::ReadbackError> {
         if self.instance_count == 0 {
-            return;
+            return Ok(());
         }
         let Some(state) = self.render_state.as_ref() else {
-            return;
+            return Ok(());
         };
-        let Some(pt) = self.pt.path_tracer.as_ref() else {
-            return;
+        let Some(pt) = self.pt.path_tracer.as_mut() else {
+            return Ok(());
         };
+        let cpu = opts.color_pipeline.mode == color_pipeline::ColorMode::Ocio
+            && opts.color_pipeline.codepath == color_pipeline::ColorCodepath::Cpu;
+        let view = if cpu {
+            let exposure = opts.effective_exposure_multiplier();
+            Some(pt.apply_cpu_color_in_place(&self.ctx, source, |pixels| {
+                for pixel in pixels.iter_mut() {
+                    *pixel = pixel.map(|value| value * exposure);
+                }
+                pipeline.apply_cpu_to_surface_linear(pixels);
+            })?)
+        } else {
+            source.map(|texture| texture.create_view(&Default::default()))
+        };
+        // Both raw PT and denoised sources follow the same display path.
+        // CPU processing already consumed camera exposure and produced display light.
+        pt.set_blit_exposure(
+            &self.ctx.queue,
+            if cpu {
+                1.0
+            } else {
+                opts.effective_exposure_multiplier()
+            },
+        );
+        let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
+        pt.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
         let mut encoder = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("composite_overlay"),
             });
-        // Push the FULL colour-pipeline state, not just exposure. This
-        // is the OIDN denoise-display path; without re-pushing the lane,
-        // a user changing Color settings while the denoise is on-screen
-        // would see no effect until the next PT render frame.
-        pt.set_blit_exposure(&self.ctx.queue, opts.effective_exposure_multiplier());
-        // Legacy ODT / RRT tag + aces_pre/post matrix uploads
-        // gone with phase 11 — `color_pipeline.resolved_tonemap_tag()`
-        // is the sole tag now and the shader's aces_pre/post lanes
-        // are unused (will be removed in the follow-up shader pass).
-        let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
-        pt.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
         pt.blit_with_source(
             &self.ctx.device,
             &mut encoder,
             &state.targets.render_view,
-            source,
+            view.as_ref(),
         );
         let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
         if opts.hover_mode != HoverMode::None && has_active {
             self.encode_outline_pass(&mut encoder, &state.targets, &state.dyn_bgs);
         }
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    /// Run the OCIO CPU-color codepath in place on the PT output
-    /// texture, then re-composite to display the result.
-    ///
-    /// Only the `ColorMode::Ocio + ColorCodepath::Cpu` combination
-    /// hits this path. The blit-time tonemap tag is already coerced
-    /// to `0` (clamp passthrough) by
-    /// `ColorPipelineSettings::resolved_tonemap_tag` for this mode,
-    /// so `render_to_view` produces an intermediate frame that is
-    /// scene-linear-but-clamped on screen; this method then mutates
-    /// `output_texture` into surface-linear transport values and re-blits.
-    ///
-    /// Caller is responsible for only invoking this when the
-    /// CPU+OCIO combination is selected — wired in the per-frame
-    /// host loop in `treemap_view.rs`.
-    pub fn apply_cpu_color_pass(
-        &mut self,
-        pipeline: &color_pipeline::ColorPipeline,
-        opts: &Render3DOptions,
-    ) -> Result<(), render_core::ReadbackError> {
-        let Some(pt) = self.pt.path_tracer.as_mut() else {
-            return Ok(());
-        };
-        if pt.frame_count == 0 {
-            // PT hasn't produced an accumulated frame yet — nothing
-            // worth reading back. The first blit already painted the
-            // (zero-sample) output_texture; the next frame's CPU pass
-            // will pick up real data.
-            return Ok(());
-        }
-        #[cfg(debug_assertions)]
-        log::warn!(
-            "render-3d: CPU color path active — readback every frame is slow, \
-             this is a debug codepath"
-        );
-        pt.apply_cpu_color_in_place(&self.ctx, |pixels| {
-            pipeline.apply_cpu_to_surface_linear(pixels);
-        })?;
-        // Re-blit the surface-linear transport texture. Eframe's final
-        // output stage performs the only SDR transfer; tag 0 adds no OETF.
-        self.composite_overlay(None, opts);
         Ok(())
     }
 

@@ -334,7 +334,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
     let emis_bright = max(mat.emission.r, max(mat.emission.g, mat.emission.b));
     let alpha = max(in.color.a * camera.xray_alpha, min(spec_bright + emis_bright, 1.0));
 
-    return vec4<f32>(lit, alpha);
+    return vec4<f32>(display_encode(lit), alpha);
 }
 
 // ============================================================================

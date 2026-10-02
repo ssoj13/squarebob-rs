@@ -18,6 +18,8 @@ impl App {
     /// rebuilt and PT accumulation is not reset (same contract as the
     /// denoiser section).
     pub(super) fn ui_settings_color(&mut self, ui: &mut egui::Ui, dirty: &mut SettingsDirty) {
+        self.sync_display(ui.ctx());
+        ui.collapsing("Display output", crate::display_host::settings_ui);
         // Keep the live `ColorPipeline` in sync with the settings
         // BEFORE we sample any dropdown lists from it. `ensure` is
         // a hash-compare noop when nothing changed.
@@ -92,10 +94,9 @@ impl App {
                     ui.end_row();
 
                     ui.label("Codepath:").on_hover_text(
-                        "CPU = run vfx-ocio's Processor::apply_rgb on the\n\
-                               readback buffer. Slow but bit-exact reference.\n\
-                         GPU = bake to a 3D LUT / WGSL stub on the blit pass.\n\
-                               Fast — default for normal use.",
+                        "OCIO: CPU evaluates the selected view directly after GPU readback (slower).\n\
+                         GPU uses a cached 3D LUT (fast; interpolation approximation).\n\
+                         Built-in tone maps use shaders regardless of this selection.",
                     );
                     ui.horizontal(|ui| {
                         if ui
@@ -315,6 +316,7 @@ impl App {
                                 "color_view_cb",
                                 &mut cp.ocio_view,
                                 &view_options,
+                                cp.output_hdr,
                                 dirty,
                             );
                             ui.end_row();
@@ -491,12 +493,13 @@ fn ocio_view_dropdown(
     id_salt: &str,
     current: &mut String,
     options: &[(String, Encoding)],
+    output_hdr: bool,
     dirty: &mut SettingsDirty,
 ) -> bool {
     let current_encoding = options
         .iter()
         .find_map(|(name, encoding)| (name == current).then_some(*encoding));
-    let display = if current_encoding == Some(Encoding::Hdr) {
+    let display = if current_encoding == Some(Encoding::Hdr) && !output_hdr {
         format!("⛔ {current}")
     } else if options.iter().any(|(name, _)| name == current) {
         current.clone()
@@ -512,13 +515,13 @@ fn ocio_view_dropdown(
         .show_ui(ui, |ui| {
             for (option, encoding) in options {
                 let selected = option == current;
-                let supported = *encoding != Encoding::Hdr;
+                let supported = *encoding != Encoding::Hdr || output_hdr;
                 let mut response = ui
                     .add_enabled_ui(supported, |ui| ui.selectable_label(selected, option))
                     .inner;
                 if !supported {
                     response = response.on_hover_text(
-                        "HDR OCIO output requires HDR surface negotiation. Current eframe compositor is SDR.",
+                        "HDR OCIO output requires an active HDR display output. Enable OS HDR and choose a supported HDR output above.",
                     );
                 }
                 if response.clicked() && !selected {

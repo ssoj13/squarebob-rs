@@ -19,6 +19,8 @@ pub mod filters;
 pub mod helpers;
 mod icons;
 mod image_sequence;
+#[cfg(test)]
+mod persistence_tests;
 pub mod presets;
 mod render_loop;
 mod scan_orchestration;
@@ -57,8 +59,21 @@ use helpers::{compute_ext_stats, find_node_by_path};
 use state::{PersistState, SavedOpts};
 
 impl App {
+    pub(super) fn sync_display(&mut self, ctx: &egui::Context) {
+        if let Some(state) =
+            ctx.data(|d| d.get_temp::<egui_display::DisplayState>(egui_display::state_id()))
+        {
+            let cp = &mut self.render_3d_opts.color_pipeline;
+            if cp.output_hdr != state.target.hdr || cp.reference_white_nits != state.target.white {
+                self.needs_render_3d = true;
+            }
+            cp.output_hdr = state.target.hdr;
+            cp.reference_white_nits = state.target.white;
+        }
+    }
+
     pub fn new(
-        cc: &eframe::CreationContext<'_>,
+        cc: &crate::display_host::CreationContext<'_>,
         cli: crate::CliOptions,
         gpu_ctx: Arc<GpuContext>,
     ) -> Self {
@@ -73,10 +88,13 @@ impl App {
         };
 
         // Restore persisted state
-        if let Some(storage) = cc.storage
-            && let Some(json) = storage.get_string("squarebob_state")
-            && let Ok(s) = serde_json::from_str::<PersistState>(&json)
-        {
+        if let Some(s) = cc.storage.and_then(|storage| {
+            storage.get_string("squarebob_state").and_then(|json| {
+                PersistState::decode(&json)
+                    .inspect_err(|error| log::warn!("Cannot restore application settings: {error}"))
+                    .ok()
+            })
+        }) {
             app.scan_path = s.scan_path;
             app.show_settings = s.show_settings;
             app.show_outliner = s.show_outliner;
@@ -757,8 +775,8 @@ impl App {
 // ── eframe::App impl ──
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.run_frame(ui, frame);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.run_frame(ui);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -810,8 +828,15 @@ impl eframe::App for App {
             encode_dialog_settings: self.encode_dialog.save_to_settings(),
             filter_merge_outside: self.filter_merge_outside,
         };
-        if let Ok(json) = serde_json::to_string(&state) {
-            storage.set_string("squarebob_state", json);
+        match ron::to_string(&state) {
+            Ok(text) => storage.set_string("squarebob_state", text),
+            Err(error) => log::error!("Cannot serialize application settings: {error}"),
         }
+    }
+}
+
+impl crate::display_host::NativeApp for App {
+    fn ui_native(&mut self, ui: &mut egui::Ui) {
+        self.run_frame(ui);
     }
 }

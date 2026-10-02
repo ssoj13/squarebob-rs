@@ -7,7 +7,7 @@ Updated: 2026-09-23. These diagrams describe inspected source paths. See [AGENTS
 ```mermaid
 flowchart TD
     CLI["CLI Result: src/main.rs:19-28"] --> GPU["Shared GpuContext: src/main.rs:145-165"]
-    GPU --> Eframe["eframe WgpuSetup::Existing"]
+    GPU --> Eframe["Shared device / display_host native owner"]
     Eframe --> App["App::new"]
     App --> Start["start_scan: scan_orchestration.rs:299-362"]
     Start --> Root["ScanRoot: display + canonical path + id"]
@@ -175,3 +175,118 @@ flowchart TD
 ```
 
 The image-sequence writer now routes selected TIFF and TGA compression to their encoders (`crates/media-encoder/src/dialogs/encode/encode.rs:1664-1680,1718-1762`). App capture supplies RGBA8 (`src/app/image_sequence.rs:257-267`), so its U16 export cannot recover higher source precision.
+
+## OIDN progressive preview and numerical dataflow — 2026-10-02
+
+The audited bridge is described in [plan16.md](plan16.md) and [the source report](../oidn-rs/bughunt/squarebob_bridge.md). These diagrams describe checked code, including open defects; they do not identify the measured noise cause.
+
+```mermaid
+flowchart TD
+    PT["PT normalized HDR texture + AOV sums/counts"] --> Trigger["App trigger: treemap_view.rs1491-1532"]
+    Trigger --> Copy["Shared-device external copies: pt-denoise-oidn/lib.rs392-422"]
+    Copy --> RGB["Trim padded width; HDR luminance clamp457-485"]
+    Copy --> AOV["AOV RGB/max(W,1):906-919"]
+    RGB --> CHW["NCHW RGB"]
+    AOV --> Net["Immutable cached model; fresh tensors627"]
+    CHW --> Net
+    Camera["Physical-camera multiplier or Manual: treemap_view1587-1591"] --> Scale["Env override > caller > autoexposure515-518"]
+    Scale --> Net
+    Weight["Resolve stem + bytes548"] --> Cache["Bytes cache drops stem550-552"]
+    Cache --> Net
+    Net --> Out["HWC RGBA alpha1; padded rows639-648"]
+    Out --> Resource["CubeCL get_resource: flush + allocation pin"]
+    Resource --> Result["Copy to separate result_texture991-1012"]
+    Result --> Poll["Device poll676; error currently discarded"]
+    Poll --> View["result_view -> composite_overlay"]
+    View --> Display["render_view target: render-3d/lib.rs1217-1222"]
+```
+
+```mermaid
+flowchart TD
+    SPP["current_spp"] --> Time["t=clamp(SPP/256,0,1)"]
+    Time --> Smooth["s=t*t*(3-2*t)"]
+    Smooth --> Clamp["min(2,user)+(user-min(2,user))*s"]
+    User["App clamp 10 adaptive=true"] --> Clamp
+    Clamp --> Input["RGB scaled together by luminance ceiling"]
+    Input --> Preview["128SPP: ceiling6;256SPP+: ceiling10"]
+```
+
+The ceiling changes for early default previews even with identical raw inputs (`crates/pt-denoise-oidn/src/lib.rs:457-470`). It is constant after 256 SPP. A frozen-input test with fixed versus adaptive clamp separates this policy from raw renderer changes.
+
+```mermaid
+sequenceDiagram
+    participant PT as PT samples
+    participant App as App scheduler
+    participant OIDN as OIDN bridge
+    PT->>App:128SPP, target 300, interval 128
+    App->>OIDN:Periodic pass
+    OIDN-->>App:Success; any-denoise flag=true, last=128
+    PT->>App:256SPP
+    App->>OIDN:Periodic pass
+    OIDN-->>App:Success; any-denoise flag=true, last=256
+    PT->>App:Final300SPP
+    Note over App: auto_final false because flag=true; periodic delta44<128
+    Note over App,OIDN: No final pass; displayed denoised snapshot remains256SPP
+```
+
+The final scheduling defect is checked at `src/app/treemap_view.rs:1510-1522,1609-1612`. The proposed repaired state tracks successfully denoisedSPP and accumulation identity, with final completion separate from earlier preview success. This proposal is awaiting production approval.
+
+Verification follow-up: the synthetic GPU probe and 32 fixed-input repeats passed, as did workspace compilation and actual squarebob binary linking. No actual-scene noise reproduction or native numerical parity result is asserted. Exact commands, logs, and device limits are in [Squarebob plan16](plan16.md).
+
+## Native measurements and shared PQ presentation follow-up
+
+[Native runtime report](../oidn-rs/bughunt/native_runtime.md) records 90 successful finite synthetic runs and all 23 archive byte matches. Earlier missing-asset/no-runtime statements are historical. Aligned explicit-scale CPU/WGPU results are close; unaligned AOV and odd/tiny exposure are separate measured defects. The checker SD change measures restored contrast, not error against a clean target. See [Astra numerics](../oidn-rs/bughunt/astra_numerics.md).
+
+The following display source is implemented under explicit PQ authorization; final actual-window/color/shader validation remains tracked in [Squarebob plan17](../squarebob-rs/plan17.md).
+
+```mermaid
+flowchart TB
+    Raw["Scene-linear PT / OIDN result"] --> View["Exposure + OCIO view / look"]
+    View --> Decode["Output color space to display-reference XYZ D65"]
+    Decode --> Light["Rec.709 light relative to actual reference white"]
+    Light --> Canvas["Float extended-sRGB canvas: renderer + GUI"]
+    State["Actual surface negotiation: HDR / white / peak"] --> Decode
+    State --> Present["Shared egui-display PresentPass"]
+    Canvas --> Present
+    Present --> Surface["Supported SDR / HDR10 PQ / HLG / scRGB"]
+    Request["Persisted requested output"] --> State
+    State --> Fallback["Unsupported request: explicit SDR fallback"]
+```
+
+PQ encoding belongs only to the shared presenter (`present.rs:127-149,202-215,766` at locked egui-widgets revision06acf665). Source anchors: Squarebob `display_host.rs:309-310,389-455,520-584`; color pipeline `lib.rs:772-808`. This diagram does not claim measured physical display luminance or reproduction of the user's scene. OIDN's PU transfer is unrelated to display PQ and remains a separate inference contract.
+
+## CPU display source ownership after authorized repair
+
+Earlier bridge diagrams covered GPU composition. CPU display now uses the same shared composition entry point for raw and denoised sources; it does not overwrite either raw source. See [Squarebob plan17](../squarebob-rs/plan17.md) and [Astra post-fix review](../oidn-rs/bughunt/astra_pq_review.md).
+
+```mermaid
+flowchart LR
+    PT["Raw PT accumulation"] --> Shared["Shared composite_overlay"]
+    OIDN["Raw OIDN result texture"] --> Shared
+    Shared --> Lane{"CPU or GPU color lane"}
+    Lane -->|CPU| Exposure["Physical exposure before OCIO"]
+    Exposure --> Processor["Immutable processor; caller scratch RGB"]
+    Processor --> Scratch["Separate reusable CPU display texture"]
+    Lane -->|GPU| Blit["Exposure and OCIO during GPU blit"]
+    Scratch --> Canvas["Float extended-sRGB canvas"]
+    Blit --> Canvas
+    Canvas --> Present["Canonical PresentPass"]
+    Present --> Surface["Negotiated SDR/PQ/HLG/scRGB"]
+```
+
+CPU immutability/order and bounded full-PresentPass signal tests passed; actual GUI retry and main push remain pending. This does not resolve the user's scene noise cause or authorize unrelated denoiser repairs.
+
+## Final verified persistence and output state
+
+Actual PBR/PT GPU/PT CPU windows and CPU-state restart passed; actual output is HDR10(PQ), Rgb10a2Unorm/Bt2100Pq. This supersedes preceding pending-GUI notes. Main publication is explicitly authorized; receipt belongs in OIDN plan3. Multi-monitor/manual lifecycle and physical luminance remain unverified.
+
+```mermaid
+flowchart LR
+    App["Complete typed App PersistState"] --> RON["RON payload: preserves dock infinity sentinels"]
+    Display["DisplayPrefs"] --> JSON["JSON string payload"]
+    RON --> Map["Existing outer storage map"]
+    JSON --> Map
+    Map --> Restore["RON App decode; valid legacy JSON fallback"]
+    Restore --> CPU["CPU path and physical camera restored"]
+    Map --> Negotiation["Actual HDR10 PQ surface negotiation"]
+```

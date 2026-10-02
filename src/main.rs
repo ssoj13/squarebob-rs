@@ -3,6 +3,7 @@ mod atomic_file;
 mod cache;
 mod cli;
 mod cli_test;
+mod display_host;
 mod events;
 mod exclusions;
 mod path_key;
@@ -16,7 +17,7 @@ pub use cli::CliOptions;
 
 use log::info;
 
-fn main() -> eframe::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = match cli::parse_args() {
         Ok(cli) => cli,
         Err(error) => {
@@ -59,7 +60,7 @@ fn main() -> eframe::Result<()> {
         "debug" => log::LevelFilter::Debug,
         _ => log::LevelFilter::Trace,
     };
-    builder.filter_module("squarebob_rs", app_level);
+    builder.filter_module(module_path!(), app_level);
     // Keep first-party OIDN diagnostics on the same -v/-vv/-vvv scale as the
     // app. INFO is pass summaries, DEBUG is the denoise contract, TRACE is
     // heavy tensor diagnostics/readback.
@@ -165,11 +166,18 @@ fn main() -> eframe::Result<()> {
         queue: (*gpu_ctx.queue).clone(),
     };
 
+    let persistence_path = match std::env::var_os("SQUAREBOB_STORAGE_PATH") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => eframe::storage_dir("squarebob-rs")
+            .ok_or("Cannot find Squarebob persistence directory")?
+            .join("app.ron"),
+    };
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_title("squarebob-rs"),
         persist_window: true,
+        persistence_path: Some(persistence_path),
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::Existing(existing_setup),
             ..Default::default()
@@ -178,9 +186,8 @@ fn main() -> eframe::Result<()> {
     };
 
     let gpu_for_app = gpu_ctx.clone();
-    eframe::run_native(
-        "squarebob-rs",
+    display_host::run(
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, cli, gpu_for_app.clone())))),
+        Box::new(move |cc| Ok(app::App::new(cc, cli, gpu_for_app.clone()))),
     )
 }

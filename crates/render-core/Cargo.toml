@@ -10,6 +10,7 @@ wgpu = { workspace = true }
 pollster = { workspace = true }
 log = { workspace = true }
 gpu-mem = { workspace = true }
+half = { workspace = true }
 
 [features]
 default = []

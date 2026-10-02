@@ -106,8 +106,9 @@ impl App {
         }
     }
 
-    pub(super) fn run_frame(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    pub(super) fn run_frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.sync_display(&ctx);
         self.frame_count = self.frame_count.saturating_add(1);
         if self.wgpu_error_flag.swap(false, Ordering::SeqCst) {
             log::warn!("wgpu error flagged; resetting GPU renderers and textures");
