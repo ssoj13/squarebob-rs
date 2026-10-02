@@ -19,7 +19,14 @@ impl App {
     /// denoiser section).
     pub(super) fn ui_settings_color(&mut self, ui: &mut egui::Ui, dirty: &mut SettingsDirty) {
         self.sync_display(ui.ctx());
-        ui.collapsing("Display output", crate::display_host::settings_ui);
+        tinted_section(
+            ui,
+            "Display output",
+            false,
+            self.settings_tint_mix,
+            self.settings_section_header_height,
+            crate::display_host::settings_ui,
+        );
         // Keep the live `ColorPipeline` in sync with the settings
         // BEFORE we sample any dropdown lists from it. `ensure` is
         // a hash-compare noop when nothing changed.
