@@ -76,11 +76,8 @@ impl OidnMode {
 
 /// Lazy-built OIDN denoiser.
 pub struct OidnDenoiser {
-    /// Optional filesystem fallback for TZA blobs not baked into the
-    /// binary by an `embed-*` feature on `oidn-rs`. `None` means we run
-    /// embed-only — fine for the standard HDR modes since `embed-hdr`
-    /// covers them all; required if the user wants `clean_aux`,
-    /// `lightmap`, or LDR modes.
+    /// Optional filesystem weights override, with embedded models as fallback.
+    /// `None` selects embedded models only.
     weights_dir: Option<PathBuf>,
 
     mode: OidnMode,
@@ -106,18 +103,11 @@ pub struct OidnDenoiser {
     /// models can be cached across denoise passes.
     burn_device_ref: Option<&'static burn::tensor::Device>,
 
-    /// Cached TZA bytes from the last successful model load. Reused across
-    /// `denoise()` calls so we don't re-read the 1.8 MB file from disk
-    /// on every interval-fire. Key = (use_albedo, use_normal, quality)
-    /// since these fully determine which TZA file gets picked.
-    cached_model_key: Option<(bool, bool, Quality)>,
-    cached_model_bytes: Option<Vec<u8>>,
-
     /// Cached immutable OIDN state: model weights + tile plan, but no
     /// per-pass input/output tensor handles. This keeps repeated denoise
     /// passes fast without retaining stale mutable GPU state between them.
     cached_filter: Option<Box<oidn_rs::CommittedRtFilter<'static>>>,
-    cached_filter_key: Option<(bool, bool, Quality, u32, u32, Option<u32>)>,
+    cached_filter_key: Option<(bool, bool, Quality, u32, u32)>,
 
     /// Per-channel HDR clamp applied to the colour input tensor before
     /// it reaches the UNet. `0.0` (or non-finite) disables clamping;
@@ -163,8 +153,6 @@ impl OidnDenoiser {
             last_latency_ms: None,
             pass_id: 0,
             burn_device_ref: None,
-            cached_model_key: None,
-            cached_model_bytes: None,
             cached_filter: None,
             cached_filter_key: None,
             input_clamp: 0.0,
@@ -522,85 +510,32 @@ impl OidnDenoiser {
             .and_then(|s| s.parse::<f32>().ok());
         let user_scale: Option<f32> = env_scale.or(self.external_input_scale);
 
-        // Cache TZA bytes across denoise calls. Key = (use_albedo, use_normal,
-        // quality) since hdr is always true for our pipeline. When the user
-        // toggles mode/quality we transparently reload.
-        let cache_key = (use_albedo, use_normal, self.quality);
-        if self.cached_model_key != Some(cache_key) {
-            self.cached_model_bytes = None;
-            self.cached_model_key = None;
-        }
-        let cached_bytes = match self.cached_model_bytes.clone() {
-            Some(b) => Some(b),
-            None => {
-                // Delegate weight discovery to oidn-rs: tries the embed-hdr
-                // blob baked into the binary first, then `weights_dir`
-                // (resolved via env / exe-relative / cwd; missing dir is
-                // fine — embedded path covers the standard modes alone).
-                let base_key = oidn_rs::registry::select_rt(
-                    /*has_color*/ true,
-                    use_albedo,
-                    use_normal,
-                    /*hdr*/ true,
-                    /*srgb*/ false,
-                    /*clean_aux*/ false,
-                    self.quality,
-                );
-                let fallback_dir = self.weights_dir.as_deref();
-                let loaded = base_key
-                    .ok()
-                    .and_then(|key| oidn_rs::weights::resolve(&key, self.quality, fallback_dir));
-                if let Some((stem, b)) = loaded {
-                    log::debug!("OIDN: weights resolved stem={} ({} bytes)", stem, b.len());
-                    self.cached_model_bytes = Some(b.clone());
-                    self.cached_model_key = Some(cache_key);
-                    Some(b)
-                } else {
-                    None
-                }
-            }
-        };
-
         // Cache immutable committed OIDN state only. The cached object owns
         // the loaded UNet + tile plan, but each execute call receives fresh
         // per-pass tensors and keeps no references after returning.
-        let filter_key = (
-            use_albedo,
-            use_normal,
-            self.quality,
-            w as u32,
-            h as u32,
-            user_scale.map(f32::to_bits),
-        );
+        let filter_key = (use_albedo, use_normal, self.quality, w as u32, h as u32);
         if self.cached_filter_key != Some(filter_key) {
             log::debug!(
-                "OIDN pass#{pass_id}: building committed RtFilter hdr={} quality={:?} input_scale_override={:?} cached_weights={}",
+                "OIDN pass#{pass_id}: building committed RtFilter hdr={} quality={:?} input_scale_override={:?}",
                 hdr,
                 self.quality,
                 user_scale,
-                cached_bytes.is_some()
             );
-            // weights_dir is only consulted by RtFilter::commit when the
-            // builder wasn't given pre-loaded bytes via `.weights(...)`.
-            // We always pass cached bytes below (resolved via
-            // `oidn_rs::weights::resolve`), so the path here is a
-            // formality — empty string keeps the type happy without
-            // requiring the dir to exist.
-            let weights_dir_placeholder: &Path =
-                self.weights_dir.as_deref().unwrap_or(Path::new(""));
-            let mut builder = oidn_rs::RtFilter::builder(
-                burn_device,
-                weights_dir_placeholder,
-            )
-            .hdr(hdr)
-            .quality(self.quality)
-            .nan_to_zero(self.nan_protect);
-            if let Some(s) = user_scale {
-                builder = builder.input_scale(Some(s));
-            }
-            if let Some(bytes) = cached_bytes.clone() {
-                builder = builder.weights(bytes);
-            }
+            // Use the shared resolver only when committing a different model
+            // or tile geometry. Committed state owns the loaded weights; each
+            // later pass supplies fresh tensors and updates runtime exposure.
+            let weights_dir = self.weights_dir.as_deref().unwrap_or(Path::new(""));
+            let source = if self.weights_dir.is_some() {
+                oidn_rs::weights::SourcePolicy::DiskFirst
+            } else {
+                oidn_rs::weights::SourcePolicy::EmbeddedOnly
+            };
+            let builder = oidn_rs::RtFilter::builder(burn_device, weights_dir)
+                .weight_source(source)
+                .hdr(hdr)
+                .quality(self.quality)
+                .nan_to_zero(self.nan_protect)
+                .input_scale(user_scale);
             let filter = builder.build();
             let committed = filter
                 .commit_tensor_model(w, h, true, use_albedo, use_normal)
@@ -805,11 +740,7 @@ fn create_result_texture(
 /// Helper return type for [`alloc_hwc4_input`]; the wgpu side carries enough
 /// context for the caller to issue a direct `copy_buffer_to_buffer` into the
 /// tensor's backing storage without going through CubeCL.
-type HwC4Input = (
-    burn::tensor::Tensor<4>,
-    wgpu::Buffer,
-    u64,
-);
+type HwC4Input = (burn::tensor::Tensor<4>, wgpu::Buffer, u64);
 
 fn alloc_hwc4_input(device: &burn::tensor::Device, w: usize, h: usize) -> Result<HwC4Input> {
     let t = burn::tensor::Tensor::<4>::zeros([1, h, w, 4], device);
@@ -835,9 +766,7 @@ fn alloc_hwc4_input(device: &burn::tensor::Device, w: usize, h: usize) -> Result
 /// without copying. The result is non-contiguous (view); downstream
 /// `run_tensors` ops (`slice`, `reflect_pad_2d`, `cat`, ...) handle
 /// strides correctly.
-fn hwc4_to_chw3(
-    hwc4: burn::tensor::Tensor<4>,
-) -> burn::tensor::Tensor<4> {
+fn hwc4_to_chw3(hwc4: burn::tensor::Tensor<4>) -> burn::tensor::Tensor<4> {
     let dims = hwc4.dims();
     debug_assert_eq!(dims[0], 1);
     debug_assert_eq!(dims[3], 4);
@@ -862,10 +791,7 @@ fn hwc4_to_chw3(
 /// pick up *different* hue shifts depending on their per-channel
 /// distribution, and the denoiser then sees that hue jitter as noise
 /// it can't smooth.
-fn clamp_firefly_luminance(
-    hwc4: burn::tensor::Tensor<4>,
-    max_lum: f32,
-) -> burn::tensor::Tensor<4> {
+fn clamp_firefly_luminance(hwc4: burn::tensor::Tensor<4>, max_lum: f32) -> burn::tensor::Tensor<4> {
     use burn::tensor::Tensor;
 
     let dims = hwc4.dims();
@@ -908,9 +834,7 @@ fn clamp_firefly_luminance(
 /// `sample_count` in `.w`. `clamp_min(1.0)` on the divisor keeps pixels
 /// with zero accumulated samples (shouldn't happen after frame 0, but
 /// the clear-then-execute window allows it) at zero instead of NaN.
-fn hwc4_normalize_by_w_to_chw3(
-    hwc4: burn::tensor::Tensor<4>,
-) -> burn::tensor::Tensor<4> {
+fn hwc4_normalize_by_w_to_chw3(hwc4: burn::tensor::Tensor<4>) -> burn::tensor::Tensor<4> {
     let dims = hwc4.dims();
     debug_assert_eq!(dims[0], 1);
     debug_assert_eq!(dims[3], 4);
