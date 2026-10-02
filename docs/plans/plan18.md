@@ -1,6 +1,6 @@
 # plan18 — Published OIDN dependency delivery
 
-Updated: 2026-10-02. Status: **published OIDN dependency verified; Squarebob publication in progress**. Continues [plan16](plan16.md), [plan17](plan17.md), and [OIDN plan4](../../../oidn-rs/plan4.md#publication-receipt--2026-10-02).
+Updated: 2026-10-02. Status: **published OIDN dependency verified; Squarebob publication confirmed**. Continues [plan16](plan16.md), [plan17](plan17.md), and [OIDN plan4](../../../oidn-rs/plan4.md#publication-receipt--2026-10-02).
 
 ## Authorization and delivered source
 
@@ -23,12 +23,14 @@ The initial failed check remains in [stdout](../../../oidn-rs/bughunt/native-ver
 
 All nine relocated documents (`BUG.md`, `PLAN.md`, and `plan11.md` through `plan17.md`) match the preceding HEAD content byte for byte. Their move to `docs/plans` is preserved; older relative links inside them remain historical.
 
-## Remaining delivery and diagnostic scope
+## Publication and diagnostic scope
 
 - [x] Publish and remotely verify the OIDN source revision.
 - [x] Preserve the existing Squarebob bridge and document-move commit.
 - [x] Refresh only the OIDN lock entries and check the final diff.
 - [x] Check all workspace targets and link the actual binary against the published dependency.
-- [ ] Commit and push the Squarebob dependency update; record its confirmed remote revision.
+- [x] Commit and push the Squarebob dependency update; remote `main` confirmed at `e4cd39bebf6cff907264a12b852993f66819a682`.
+
+The dependency update was committed and pushed to Squarebob `main` as `e4cd39bebf6cff907264a12b852993f66819a682`; the remote revision was confirmed independently. Its lock retains the OIDN source revision `09bdf7e4b7e5c091e262400c7eb7cfcbe9677763`. Subsequent publication-receipt documentation does not change that API source pin.
 
 The earlier frozen96x64 GPU diagnostic produced identical repeated and fixed-clamp outputs, including32 repeats. Adaptive SPP1/256 changed the fixture by max8.448264122. These remain bounded input-policy measurements, not a reproduction or explanation of the user's progressive scene noise. Compilation and binary linking do not extend the numerical or physical-display claims in the preceding plans.
