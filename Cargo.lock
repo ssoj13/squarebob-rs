@@ -6012,10 +6012,9 @@ dependencies = [
 [[package]]
 name = "oidn-model"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#bebbfc5ec26c589121e2b0878ff55a6f669b43a6"
+source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#09bdf7e4b7e5c091e262400c7eb7cfcbe9677763"
 dependencies = [
  "burn",
- "half",
  "oidn-tza",
  "thiserror 2.0.20",
 ]
@@ -6023,25 +6022,24 @@ dependencies = [
 [[package]]
 name = "oidn-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#bebbfc5ec26c589121e2b0878ff55a6f669b43a6"
+source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#09bdf7e4b7e5c091e262400c7eb7cfcbe9677763"
 dependencies = [
  "burn",
  "bytemuck",
  "half",
  "log",
- "memmap2",
  "oidn-model",
  "oidn-tza",
  "thiserror 2.0.20",
- "tracing",
 ]
 
 [[package]]
 name = "oidn-tza"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#bebbfc5ec26c589121e2b0878ff55a6f669b43a6"
+source = "git+ssh://git@github.com/ssoj13/oidn-rs.git?branch=main#09bdf7e4b7e5c091e262400c7eb7cfcbe9677763"
 dependencies = [
  "bytemuck",
+ "bytes",
  "half",
  "thiserror 2.0.20",
 ]
