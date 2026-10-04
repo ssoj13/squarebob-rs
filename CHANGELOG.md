@@ -6,6 +6,16 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-10-04 — EXR through exr-core only
+
+- **Changed** `render-3d` environment maps: EXR decodes through `exr-core` (our 1:1 OpenEXR port)
+  via `exr-image`'s `image` hooks. The per-extension `set_format` table is gone: it forced
+  `ImageFormat::OpenExr` (crates.io `exr`, bypassing the hooks) and only repeated what
+  `ImageReader::open` does. A test decodes `.exr`/`.EXR` with radiance above 1 intact.
+- **Changed** the workspace `image` dependency drops its default features (which pulled crates.io
+  `exr`); its format set comes from `exr-image`. egui-widgets-rs moves to `6afc5cb` (egui-display
+  writes EXR through exr-core). `cargo tree -i exr` is empty.
+
 ## 2026-09-24 — Move to oiio-rs `bc99b59c` (ACES 2.0 CG default)
 
 - **Updated** `vfx-core`/`vfx-io`/`vfx-ocio`/`vfx-lut` from oiio-rs `106b9bc` to

@@ -1891,7 +1891,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2754,7 +2754,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 [[package]]
 name = "deflate-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#a2c5d7b8a45c12d774fc63f94719431dbe5bd69f"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#b8dde60ddb85637d40174658cc6a9efceb29ed26"
 
 [[package]]
 name = "deflate64"
@@ -2888,7 +2888,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3058,15 +3058,16 @@ dependencies = [
 [[package]]
 name = "egui-display"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#06acf66506583e2cef07450ac304d8ae0414b59d"
+source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#6afc5cb83c8d18800980a519cb140c534374f7e5"
 dependencies = [
  "bytemuck",
  "egui",
  "egui-wgpu",
  "egui-widgets-config",
- "exr",
+ "exr-core",
  "gpu-info-rs",
  "half",
+ "imath-rs",
  "log",
  "png",
  "serde",
@@ -3115,7 +3116,7 @@ dependencies = [
 [[package]]
 name = "egui-widgets-config"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#06acf66506583e2cef07450ac304d8ae0414b59d"
+source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#6afc5cb83c8d18800980a519cb140c534374f7e5"
 dependencies = [
  "egui",
  "egui-phosphor 0.14.0 (git+ssh://git@github.com/ssoj13/egui-phosphor.git?branch=main)",
@@ -3469,7 +3470,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3538,7 +3539,7 @@ dependencies = [
 [[package]]
 name = "exr-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#a2c5d7b8a45c12d774fc63f94719431dbe5bd69f"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#b8dde60ddb85637d40174658cc6a9efceb29ed26"
 dependencies = [
  "codec-simd",
  "deflate-rs",
@@ -3548,6 +3549,15 @@ dependencies = [
  "murmur3",
  "rayon",
  "smallvec",
+]
+
+[[package]]
+name = "exr-image"
+version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#b8dde60ddb85637d40174658cc6a9efceb29ed26"
+dependencies = [
+ "exr-core",
+ "image",
 ]
 
 [[package]]
@@ -4119,7 +4129,7 @@ dependencies = [
 [[package]]
 name = "gpu-info-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/gpu-info-rs.git?branch=main#43d0078526ee00513e1a4b7b572351fdc4324c1a"
+source = "git+ssh://git@github.com/ssoj13/gpu-info-rs.git?branch=main#f18397007dece0b20e4c8fda268203a2da370e37"
 dependencies = [
  "ash",
  "bytemuck",
@@ -4564,7 +4574,7 @@ dependencies = [
 [[package]]
 name = "imath-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#a2c5d7b8a45c12d774fc63f94719431dbe5bd69f"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#b8dde60ddb85637d40174658cc6a9efceb29ed26"
 
 [[package]]
 name = "imgref"
@@ -4810,7 +4820,7 @@ checksum = "b454d911ac55068f53495488d8ccd0646eaa540c033a28ee15b07838afafb01f"
 [[package]]
 name = "jph-rs"
 version = "0.2.0"
-source = "git+ssh://git@github.com/ssoj13/jph-rs.git?branch=main#e7232855b7774315515f7ffe13f6d8dc67190713"
+source = "git+ssh://git@github.com/ssoj13/jph-rs.git?branch=main#a1bf2dbbe6c3e000d67063ce2bb5aff4bd6f1b13"
 
 [[package]]
 name = "js-sys"
@@ -6760,7 +6770,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7079,9 +7089,12 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "color-pipeline",
+ "exr-core",
+ "exr-image",
  "glam",
  "half",
  "image",
+ "imath-rs",
  "log",
  "pt-core",
  "pt-material",
@@ -7291,7 +7304,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8033,7 +8046,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9373,7 +9386,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

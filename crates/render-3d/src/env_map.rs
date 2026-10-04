@@ -1,7 +1,8 @@
 //! Environment map loading and management
-//! Supports HDR/LDR images (PNG/JPG/HDR/EXR) via the image crate
+//! Supports HDR/LDR images (PNG/JPG/HDR/EXR) via the image crate; EXR decodes through exr-core
+//! (exr-image's hooks), never crates.io `exr`.
 
-use image::{GenericImageView, ImageFormat, ImageReader};
+use image::{DynamicImage, GenericImageView, ImageReader};
 use log::info;
 use render_core::gpu::GpuContext;
 
@@ -102,17 +103,7 @@ impl EnvMap {
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase());
-        let mut reader = ImageReader::open(path)?;
-        if let Some(e) = ext.as_deref() {
-            match e {
-                "hdr" => reader.set_format(ImageFormat::Hdr),
-                "exr" => reader.set_format(ImageFormat::OpenExr),
-                "png" => reader.set_format(ImageFormat::Png),
-                "jpg" | "jpeg" => reader.set_format(ImageFormat::Jpeg),
-                _ => {}
-            }
-        }
-        let img = reader.decode()?;
+        let img = read_image(path)?;
         let (w, h) = img.dimensions();
 
         // Environment textures have one contract: scene-linear RGBA16F.
@@ -221,6 +212,14 @@ impl EnvMap {
         info!("Loaded env map: {}x{} {:?} from {:?}", w, h, format, path);
         Ok(())
     }
+}
+
+/// Decode an environment image by its extension. EXR goes through exr-core (`exr_image`'s hooks on
+/// `ImageReader`), every other format through `image`. Do not force a format with `set_format`:
+/// an explicit `ImageFormat::OpenExr` bypasses the hooks and would need crates.io `exr`.
+fn read_image(path: &std::path::Path) -> anyhow::Result<DynamicImage> {
+    exr_image::register();
+    Ok(ImageReader::open(path)?.decode()?)
 }
 
 fn srgb_to_linear(value: f32) -> f32 {
@@ -337,5 +336,32 @@ mod tests {
     #[test]
     fn cdf_rejects_mismatched_luminance() {
         assert!(build_env_cdfs(2, 2, &[1.0; 3]).is_err());
+    }
+
+    /// An EXR environment (any extension casing) decodes through exr-core with radiance above 1
+    /// intact — the HDR path `load_from_file` relies on, without crates.io `exr`.
+    #[test]
+    fn exr_environment_decodes_through_exr_core() {
+        use exr_core::attr::Compression;
+        use exr_core::{ChannelData, Image};
+        use imath_rs::{Box2i, V2i};
+
+        let dir = std::env::temp_dir().join(format!("render-3d-exr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let window = Box2i { min: V2i { x: 0, y: 0 }, max: V2i { x: 1, y: 0 } };
+        let image = Image::new(window)
+            .with_channel("R", ChannelData::Float(vec![4.0, 0.25]))
+            .with_channel("G", ChannelData::Float(vec![2.0, 0.5]))
+            .with_channel("B", ChannelData::Float(vec![1.0, 19.5]));
+        for name in ["sky.exr", "SKY.EXR"] {
+            let path = dir.join(name);
+            image.write(&path, Compression::Zip).unwrap();
+            let img = read_image(&path).unwrap();
+            assert_eq!(img.dimensions(), (2, 1));
+            let px = img.to_rgba32f();
+            assert_eq!(px.get_pixel(0, 0).0, [4.0, 2.0, 1.0, 1.0], "{name}");
+            assert_eq!(px.get_pixel(1, 0).0, [0.25, 0.5, 19.5, 1.0], "{name}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
