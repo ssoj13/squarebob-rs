@@ -109,45 +109,52 @@ Sources: `crates/media-encoder/src/dialogs/encode/encode.rs:1148-1280,1657-1762,
 
 [plan13.md](plan13.md) records the bug-hunt pass at `6562a5280c42195345dee2fef36c59254ee7d894`; it resolved the four `glam` warnings recorded in [plan12.md](plan12.md). The scanner migration now uses a pinned GitHub revision. `cargo check` and the scanner unit tests passed on Windows; large-scan performance and other platforms remain unverified. [plan14.md](plan14.md) records the earlier documentation checkpoint and publication update. [plan15.md](plan15.md) records the typed NTFS outcome repair, the cleanup of incidental lockfile changes, and current CI/runtime verification gates. The current repair passed `cargo metadata --locked --no-deps` and `cargo check --workspace --locked -q` on Windows with empty check stderr; no tests were run for it. [plan12.md](plan12.md) retains the systemic repair and runtime gates; [plan11.md](plan11.md) retains the original evidence and wider workspace audit backlog. Check historical source references against the current worktree before use.
 
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
+<!-- gitnexus-rs:start -->
+# GitNexus-rs — Code Intelligence
 
-GitNexus was fully reindexed on 2026-09-23 after the bug-hunt edits (5,720 nodes and 13,170 relationships reported). Check graph freshness before relying on query/impact results after further edits; reanalyze when needed. Earlier graph counts are historical.
+This project is indexed by gitnexus-rs as **squarebob-rs** (5697 symbols, 13022 relationships, 300 execution flows). Use the gitnexus-rs MCP tools to understand code, assess impact, and navigate safely.
 
 > Call `graph_status` when freshness matters. Use `reanalyze` (incremental) or `gitnexus-rs analyze` (full). `detect_changes` does **not** re-index.
 
 ## Always Do
 
-- **Check graph freshness** with `graph_status` before trusting query/impact on a repo you have been editing.
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `detect_changes({scope: "all"})` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
+- **Check graph freshness** with `graph_status` before trusting query/impact results on a repo you have been editing.
 - **Update the graph** with `reanalyze` (incremental) or `gitnexus-rs analyze` (full). `detect_changes` does **not** re-index.
 - **Uncommitted edits** while commit is fresh: `reanalyze` with `scope: "unstaged"`, or run `gitnexus-rs watch` in a terminal.
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER edit a function, class, or method without first running `impact` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+- NEVER rename symbols with find-and-replace — use `rename`, which understands the call graph (it previews by default).
+- NEVER commit changes without running `detect_changes` to check affected scope.
 
 ## Resources
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/squarebob-rs/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/squarebob-rs/context` | Codebase overview |
 | `gitnexus://repo/squarebob-rs/clusters` | All functional areas |
 | `gitnexus://repo/squarebob-rs/processes` | All execution flows |
 | `gitnexus://repo/squarebob-rs/process/{name}` | Step-by-step execution trace |
 
-## Tool discovery
+## Skills
 
-The old `.claude/skills/gitnexus/` links are absent from this worktree. Discover the currently available GitNexus MCP tools or the `gitnexus-rs` CLI help before use; check graph status and reanalyze if the index is stale. The policy above applies whenever the graph is available.
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-rs-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-rs-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-rs-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus-rs-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus-rs-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-rs-cli/SKILL.md` |
 
-<!-- gitnexus:end -->
+<!-- gitnexus-rs:end -->
 
 ## OIDN bridge audit and verification — 2026-10-02
 
