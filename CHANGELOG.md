@@ -6,6 +6,12 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-10-06 — phosphor icons, attr-grid
+- UI icons through `egui_widgets_config::icons` (phosphor) instead of Unicode glyphs; removed
+  egui-widgets crates (`egui-attr-table` / `egui-attr` / `egui-vector`) replaced by `egui-attr-grid`;
+  egui-widgets on main. **WIP checkpoint from a stopped agent: not fully verified** - build, clippy
+  and the icon scan test must be re-run.
+
 ## 2026-10-04 — EXR through exr-core only
 
 - **Changed** `render-3d` environment maps: EXR decodes through `exr-core` (our 1:1 OpenEXR port)
