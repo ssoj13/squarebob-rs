@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::App;
 use super::helpers::fmt_size;
-use super::icons;
+use egui_widgets_config::icons;
 
 impl App {
     pub(super) fn ui_ext_stats(&mut self, ui: &mut egui::Ui) {
@@ -22,7 +22,7 @@ impl App {
             ui.strong("Ext");
             ui.add(
                 egui::TextEdit::singleline(&mut self.ext_search_text)
-                    .hint_text(icons::MAGNIFYING_GLASS)
+                    .hint_text(icons::SEARCH)
                     .desired_width(ui.available_width() - 120.0),
             );
             if ui

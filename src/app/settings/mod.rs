@@ -17,7 +17,7 @@ pub(super) use dirty::SettingsDirty;
 pub(super) use ramp_widget::{RampUiCtx, curve_rows, ramp_section};
 
 use super::App;
-use super::icons;
+use egui_widgets_config::icons;
 use super::state::SettingsTab;
 use crate::renderer::OrbitCamera;
 use eframe::egui;
@@ -196,7 +196,7 @@ impl App {
 
             // Save button
             if ui
-                .small_button(icons::FLOPPY_DISK)
+                .small_button(egui_phosphor::regular::FLOPPY_DISK)
                 .on_hover_text("Save preset")
                 .clicked()
                 && !self.preset_name.is_empty()

@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::thread::JoinHandle;
 
 use eframe::egui;
-use egui_phosphor::regular as icons;
+use egui_widgets_config::icons;
 use log::info;
 
 use crate::dialogs::encode::{
@@ -636,7 +636,7 @@ impl EncodeDialog {
                                 });
 
                                 if !is_available {
-                                    ui.label(icons::X)
+                                    ui.label(icons::CLOSE)
                                         .on_hover_text(format!("{} encoder not available", codec));
                                 }
                             }

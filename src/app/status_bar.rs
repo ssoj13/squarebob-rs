@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::App;
 use super::helpers::{disk_free_info, fmt_size};
-use super::icons;
+use egui_widgets_config::icons;
 use crate::cache;
 
 impl App {

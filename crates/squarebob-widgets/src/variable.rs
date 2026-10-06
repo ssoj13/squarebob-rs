@@ -16,6 +16,7 @@
 //! widget so collapse state survives across frames.
 
 use eframe::egui::{self, Color32, Response, Ui, Widget};
+use egui_widgets_config::icons;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
@@ -65,7 +66,7 @@ fn render_triangle(
     state: &mut VariableState,
 ) -> bool {
     let expanded = state.is_expanded(id);
-    let arrow = if expanded { "▼" } else { "▶" };
+    let arrow = if expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT };
     let color = if has_variance_now {
         ORANGE
     } else {

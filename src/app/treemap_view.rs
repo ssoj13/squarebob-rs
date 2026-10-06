@@ -9,7 +9,7 @@ use treemap::GpuRenderer2D;
 
 use super::App;
 use super::helpers::{find_node_by_path, fmt_size, path_to_dir};
-use super::icons;
+use egui_widgets_config::icons;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::shell::{properties_label, shell_properties};
 use super::shell::{reveal_label, shell_open, shell_open_terminal, shell_reveal, trash_label};
@@ -982,7 +982,7 @@ impl App {
                             action_include = true;
                             close = true;
                         }
-                    } else if ui.button(format!("{} Exclude", icons::X)).clicked() {
+                    } else if ui.button(format!("{} Exclude", icons::CLOSE)).clicked() {
                         action_exclude = true;
                         close = true;
                     }

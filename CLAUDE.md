@@ -44,3 +44,9 @@ This project is indexed by gitnexus-rs as **squarebob-rs** (5697 symbols, 13022 
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-rs-cli/SKILL.md` |
 
 <!-- gitnexus-rs:end -->
+
+## Icons (chore/widgets-icons)
+- UI icons come from `egui_widgets_config::icons`; the font is installed in `src/app/mod.rs` with
+  `egui_widgets_config::add_icon_font`. `tests/icons.rs` scans the app + widget crates for symbol-block glyphs.
+- TODO [ ] missing in `icons::*`, still raw `egui_phosphor::regular` in `src/app/toolbar.rs` (MOON, SUN theme toggle)
+  and `src/app/settings/mod.rs` (FLOPPY_DISK); drop the `egui-phosphor` dependency once they exist.
