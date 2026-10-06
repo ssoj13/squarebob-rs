@@ -10,6 +10,7 @@ use super::{SettingsDirty, settings_grid, tinted_section};
 use crate::app::App;
 use color_pipeline::{BuiltInTonemap, ColorCodepath, ColorMode, ConfigSource, vfx_ocio::Encoding};
 use eframe::egui;
+use egui_widgets_config::icons;
 
 impl App {
     /// Colour pipeline section. Every control here is a display-side
@@ -419,7 +420,7 @@ impl App {
                                         .map(|n| n.to_string_lossy().into_owned())
                                         .unwrap_or_else(|| path.display().to_string());
                                     ui.label(
-                                        egui::RichText::new(format!("✔ Loaded: {name}"))
+                                        egui::RichText::new(format!("{} Loaded: {name}", icons::SUCCESS))
                                             .color(egui::Color32::from_rgb(120, 200, 120)),
                                     )
                                     .on_hover_text(path.display().to_string());
@@ -430,7 +431,7 @@ impl App {
                                         .map(|n| n.to_string_lossy().into_owned())
                                         .unwrap_or_else(|| path.display().to_string());
                                     ui.label(
-                                        egui::RichText::new(format!("✗ Failed: {name}"))
+                                        egui::RichText::new(format!("{} Failed: {name}", icons::ERROR))
                                             .color(egui::Color32::from_rgb(220, 110, 110)),
                                     )
                                     .on_hover_text(format!("{}\n\n{error}", path.display()));
@@ -507,7 +508,7 @@ fn ocio_view_dropdown(
         .iter()
         .find_map(|(name, encoding)| (name == current).then_some(*encoding));
     let display = if current_encoding == Some(Encoding::Hdr) && !output_hdr {
-        format!("⛔ {current}")
+        format!("{} {current}", icons::ERROR)
     } else if options.iter().any(|(name, _)| name == current) {
         current.clone()
     } else if current.trim().is_empty() {

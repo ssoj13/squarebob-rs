@@ -76,6 +76,8 @@ egui-wgpu = "0.36"
 egui_extras = "0.36"
 egui_dock = { version = "0.21", features = ["serde"] }
 egui-phosphor = "0.14"
+# Shared phosphor icon vocabulary (`icons::*`) + `add_icon_font`, from the same egui-widgets-rs as egui-display.
+egui-widgets-config = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
 
 # OIDN denoiser Burn stack — GIT deps (a [patch] can't cross 0.21->0.22). Same revs
 # oidn-rs/render-rs/gsplat-rs pin. pt-denoise-oidn uses burn's wgpu backend +
@@ -221,7 +223,8 @@ color-pipeline = { workspace = true }
 uuid = { workspace = true }
 pt-denoise-oidn = { workspace = true }
 sysinfo = { workspace = true }
-egui-phosphor = { workspace = true }
+egui-phosphor = { workspace = true } # raw MOON / SUN / FLOPPY_DISK until icons::* has them
+egui-widgets-config = { workspace = true }
 gpu-mem = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

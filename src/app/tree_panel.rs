@@ -11,7 +11,7 @@ use squarebob_core::DirEntry;
 
 use super::App;
 use super::helpers::{collect_all_dir_paths, format_tree_label};
-use super::icons;
+use egui_widgets_config::icons;
 
 /// Row content height passed to [`egui::ScrollArea::show_rows`].
 ///

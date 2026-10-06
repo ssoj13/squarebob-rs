@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::App;
 use super::helpers::rfd_pick_folder;
-use super::icons;
+use egui_widgets_config::icons;
 use crate::events::{NavigateUpEvent, ZoomResetEvent};
 use crate::renderer::{RenderBackend, RenderMode};
 
@@ -75,7 +75,7 @@ impl App {
                         self.events.emit(NavigateUpEvent);
                     }
                     if ui
-                        .button(format!("{} Reset", icons::ARROW_COUNTER_CLOCKWISE))
+                        .button(format!("{} Reset", icons::RESET))
                         .on_hover_text("Reset zoom (Escape)")
                         .clicked()
                     {
@@ -123,9 +123,9 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Dark/Light toggle
                     let theme_label = if self.dark_mode {
-                        icons::MOON
+                        egui_phosphor::regular::MOON
                     } else {
-                        icons::SUN
+                        egui_phosphor::regular::SUN
                     };
                     let theme_hover = if self.dark_mode {
                         "Switch to Light"

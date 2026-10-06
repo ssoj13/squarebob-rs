@@ -17,7 +17,6 @@ mod dock;
 mod ext_panel;
 pub mod filters;
 pub mod helpers;
-mod icons;
 mod image_sequence;
 #[cfg(test)]
 mod persistence_tests;
@@ -217,7 +216,7 @@ impl App {
         }
 
         let mut fonts = egui::FontDefinitions::default();
-        media_encoder::add_icon_font(&mut fonts);
+        egui_widgets_config::add_icon_font(&mut fonts);
         cc.egui_ctx.set_fonts(fonts);
 
         // Apply theme

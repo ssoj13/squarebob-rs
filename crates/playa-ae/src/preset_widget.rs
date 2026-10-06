@@ -9,6 +9,7 @@
 //! UI groups them automatically.
 
 use egui::Ui;
+use egui_widgets_config::icons;
 
 use crate::attrs::Attrs;
 use crate::presets::{ApplyReport, PresetBank};
@@ -58,7 +59,7 @@ pub fn presets_button(
 ) -> PresetButtonEvent {
     let mut event = PresetButtonEvent::None;
 
-    let button = ui.menu_button("Presets ▾", |ui| {
+    let button = ui.menu_button(format!("Presets {}", icons::CARET_DOWN), |ui| {
         ui.set_min_width(220.0);
 
         // Group preset names by the segment before "/". Flat names

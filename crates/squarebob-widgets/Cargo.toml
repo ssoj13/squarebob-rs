@@ -20,6 +20,7 @@ description = "Reusable egui widgets for squarebob — attribute editor, value+v
 [dependencies]
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 egui = { workspace = true }
+egui-widgets-config = { workspace = true }
 egui_extras = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

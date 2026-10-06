@@ -9,6 +9,7 @@
 use super::{SettingsDirty, control_label, settings_grid, tinted_section};
 use crate::app::App;
 use eframe::egui;
+use egui_widgets_config::icons;
 use render_shared::{OidnModeOption, OidnQualityOption};
 
 impl App {
@@ -234,7 +235,7 @@ impl App {
                         (visuals.weak_text_color(), "Manual mode".to_string())
                     };
                 ui.horizontal(|ui| {
-                    ui.colored_label(status_color, "●");
+                    ui.colored_label(status_color, icons::CIRCLE);
                     ui.label(egui::RichText::new(status_text).small());
                 });
 
