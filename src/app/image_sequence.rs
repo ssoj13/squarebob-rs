@@ -690,7 +690,9 @@ impl App {
                 }
                 renderer.mark_pt_env_dirty();
             }
-            self.on_render_mode_changed(session.mode);
+            if self.render_mode != session.mode {
+                self.invalidate_render_mode_resources();
+            }
             self.invalidate_encode_preview();
         }
     }
@@ -952,6 +954,49 @@ mod tests {
             assert!(app.render_3d_opts.env_animate);
             assert_eq!(app.render_mode, RenderMode::Mode2D);
             assert!(app.needs_layout && app.needs_render_3d);
+        }
+    }
+
+    #[test]
+    fn export_terminal_cleanup_preserves_camera_edited_after_authored_mode_change() {
+        for cancelled in [false, true] {
+            for failed in [false, true] {
+                let mut app = author_scene();
+                app.render_mode = RenderMode::Mode2D;
+                app.encode_render_session = Some(
+                    app.freeze_encode_render_session(PngEncoding::Sdr8, 203.0)
+                        .unwrap(),
+                );
+                // The top toolbar changes authored mode while the export still owns 2D.
+                app.render_mode = RenderMode::Mode3D;
+                app.on_render_mode_changed(RenderMode::Mode2D);
+                // Physical FoV / Reset camera subsequently edit the authored pose.
+                app.orbit_camera.yaw = 0.71;
+                app.orbit_camera.pitch = -0.23;
+                app.orbit_camera.distance = 456.0;
+                app.orbit_camera.target = glam::Vec3::new(17.0, -28.0, 9.0);
+                app.orbit_camera.fov = 0.86;
+                let authored_camera = serde_json::to_value(&app.orbit_camera).unwrap();
+                app.render_texture_id = Some(egui::TextureId::User(91));
+                if failed {
+                    app.encode_render_session.as_mut().unwrap().error =
+                        Some("render failure".into());
+                }
+                if cancelled {
+                    app.cancel_encode_sequence_source();
+                } else {
+                    app.restore_encode_render_state();
+                }
+                assert_eq!(
+                    serde_json::to_value(&app.orbit_camera).unwrap(),
+                    authored_camera,
+                    "cancelled={cancelled}, failed={failed}"
+                );
+                assert_eq!(app.render_mode, RenderMode::Mode3D);
+                assert!(app.encode_render_session.is_none());
+                assert!(app.render_texture_id.is_none());
+                assert!(app.needs_layout && app.needs_render_3d);
+            }
         }
     }
 

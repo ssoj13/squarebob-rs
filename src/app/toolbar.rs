@@ -229,25 +229,7 @@ impl App {
         if self.render_mode == old_mode {
             return;
         }
-        self.treemap_tex = None;
-        // Free the previous mode's egui texture registration, then clear the
-        // id so the next mode starts fresh. Skipping `free_texture` would
-        // leak the registration in egui_wgpu's internal map on every mode
-        // switch. Both 3D and 2D-GPU paths register native textures
-        // (post-Stage D.1), so this applies to either direction.
-        if let (Some(render_state), Some(id)) = (&self.wgpu_render_state, self.render_texture_id) {
-            let mut renderer = render_state.renderer.write();
-            renderer.free_texture(&id);
-        }
-        self.render_texture_id = None;
-        self.needs_layout = true;
-
-        if let Some(renderer) = &mut self.renderer_3d {
-            renderer.reset_render_targets();
-        }
-        if let Some(renderer) = &mut self.renderer_2d_gpu {
-            renderer.reset_render_targets();
-        }
+        self.invalidate_render_mode_resources();
 
         // Set front view matching 2D layout when switching to 3D
         if self.render_mode == RenderMode::Mode3D {
@@ -266,6 +248,29 @@ impl App {
             } else {
                 self.orbit_camera = crate::renderer::OrbitCamera::default();
             }
+        }
+    }
+
+    /// Drop mode-specific preview resources without changing the authored camera.
+    pub(super) fn invalidate_render_mode_resources(&mut self) {
+        self.treemap_tex = None;
+        // Free the previous mode's egui texture registration, then clear the
+        // id so the next mode starts fresh. Skipping `free_texture` would
+        // leak the registration in egui_wgpu's internal map on every mode
+        // switch. Both 3D and 2D-GPU paths register native textures
+        // (post-Stage D.1), so this applies to either direction.
+        if let (Some(render_state), Some(id)) = (&self.wgpu_render_state, self.render_texture_id) {
+            let mut renderer = render_state.renderer.write();
+            renderer.free_texture(&id);
+        }
+        self.render_texture_id = None;
+        self.needs_layout = true;
+
+        if let Some(renderer) = &mut self.renderer_3d {
+            renderer.reset_render_targets();
+        }
+        if let Some(renderer) = &mut self.renderer_2d_gpu {
+            renderer.reset_render_targets();
         }
     }
 }
