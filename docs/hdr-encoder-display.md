@@ -28,7 +28,7 @@ The separate nodes/profiles proposal is not an implemented runtime dependency.
 SquareBob's earlier [image_sequence.rs](../src/app/image_sequence.rs) path captured the
 viewport and constructed `Frame::rgba8`. Higher file bit depth could not recover discarded
 HDR precision. Earlier production/metadata-library checkpoints and latest ordinary app tests
-passed; the current production build remains pending.
+passed; latest actual production and workspace checks also passed, as scoped below.
 
 The actual typed canvas is **RGBA16Float containing extended-sRGB codes for Rec.709 display
 light**. It is a processed display result, not raw PT radiance, scene-linear light or AP1.
@@ -145,7 +145,10 @@ review closed with one P2, corrected by that commit. Earlier `95027` recorded a 
 build and 56 passed / one failed / three ignored. Final ordinary gate `48040` passed after
 the fixture correction: release compile **1m40s**, runtime **57 passed / zero failed /
 three ignored in 0.98s**, as recorded in `%TEMP%/squarebob-final-bin-tests.log`.
-The current production build is pending. These ordinary tests do not execute the ignored GPU
+Main `8ac9d58f6f4245d431ed7f892e34ad1d9c58d511` is verified against the exact remote,
+clean/current. Actual production build `21158` passed in **1m59s** and real squarebob.exe
+`--help` exited 0. `cargo check --release --locked --workspace --all-targets` session `33869`
+passed in **4m55s**, without warnings/errors. These ordinary tests do not execute the ignored GPU
 freeze, motion-movie or preset-screenshot tests, or certify zero-copy encoding/full parity.
 
 Camera-slot/preset/toolbar foundation passed 24 UI tests and one GPU test generating seven
@@ -183,8 +186,13 @@ impact could not find a new test. Fresh registry/meta does not certify tool-quer
 The authoritative owned mirror now has 39 SHA-verified source files and default local
 `.gitnexus`: 5968 nodes / 13831 edges, graph_status HEAD/index `efe1448` fresh at 08:12:27,
 then test reindex at 08:16. The newest test impact is LOW, zero direct callers / zero flows.
+Those are earlier mirror receipts. Latest authoritative pre-8ac mirror is
+`C:/projects/projects.rust.cg/.codex-worktrees/squarebob-main-gate-20261007-0407c6ea38691`:
+two latest files SHA-verified, standard local DB 5968 nodes / 13831 edges, HEAD/index `6c1`
+fresh at 08:21:08. Precommit detect covered nine symbols / two files, LOW / zero flows.
 These receipts certify the matched mirror's graph, not the foreign canonical original.
-The `--out` loader defect persists and Apps is fixing it; exact failure is retained in
+The `--out` loader defect persists; Apps' canonical resolved-storage architecture fix awaits
+source/tests. Exact failure is retained in
 oh-my-harness BUG3.md, 2026-10-07.
 Earlier CRITICAL camera-path impact/two-file LOW detect and exact remote publication remain
 historical receipts, not proof of newer-test graph coverage. Shared widgets' full post-push index
@@ -193,9 +201,16 @@ passed. Preserve existing `C:/Temp/bob` files; no gratuitous extra videos/render
 WarpBro reference main `cd505435cfafff60102f6038e55fb44d148f8e36` integrates d411 in four
 files (lock/app/gpu/ocio); plain all-target passed in 28.01s without warnings.
 Latest specialized-radiance gate passed with all four routes/all guides exact and unchanged
-tolerance; 15 OCIO tests passed, including invalid-input/look warm-cache cases. Paired DE-call
-measurement still shows about 27–28% regression; the owner is tuning the narrow affine
-boundary before performance acceptance. Strict clippy
+tolerance; 15 OCIO tests passed, including invalid-input/look warm-cache cases.
+Ordinary oxide `27252` passed 254 tests, zero failed, ten intentionally ignored and four
+previously certified native-movie fixtures filtered in 35.80s, without extra movie reruns.
+Paired DE-call
+measurement still shows about 27–28% regression. The narrow affine attempt failed the
+original oracle because the compiler dropped inline-never intent; it was reverted and the
+correct published production source is frozen (docs main `d1bc4ba8`). Authorized cuda-oxide
+inline-intent propagation work is pending plan/compile in an owned producer checkout/tool
+build, without global replacement. No performance acceptance or completed WarpBro claim.
+Strict clippy
 stopped at an existing fractal-materials eight-argument factory before WarpBro linting.
 
 Shared source receipts: 31 tests passed, including measured cLLI, real FFmpeg/ffprobe checks
