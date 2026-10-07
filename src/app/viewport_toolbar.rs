@@ -239,13 +239,6 @@ pub(super) mod tests {
         egui_widgets_config::ensure_icon_font(&ctx);
         let mut app = App::default();
         app.render_mode = RenderMode::Mode3D;
-        for _ in 0..20 {
-            let (_, bar) = toolbar_frame(&ctx, &mut app, 280.0, vec![]);
-            assert!(bar.rect.width() <= 280.0);
-        }
-        let (mut output, bar) = toolbar_frame(&ctx, &mut app, 280.0, vec![]);
-        assert!(visible_text(&output, "2D"));
-        assert!(!visible_text(&output, "CamClip:"));
         let text_rect = |output: &egui::FullOutput, predicate: fn(&str) -> bool| {
             output
                 .shapes
@@ -256,14 +249,37 @@ pub(super) mod tests {
                     }
                     _ => None,
                 })
-                .expect("toolbar text geometry")
+                .unwrap_or_else(|| {
+                    let painted_labels: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                            _ => None,
+                        })
+                        .collect();
+                    panic!("toolbar text geometry; painted labels: {painted_labels:?}");
+                })
         };
-        let samples = text_rect(&output, |label| label.ends_with(" spp"));
-        let camera = text_rect(&output, |label| label == "CamClip:");
+        // egui omits fully clipped text from its paint output. Measure ordering
+        // while both controls are visible, then exercise the narrow scroll area.
+        for _ in 0..20 {
+            toolbar_frame(&ctx, &mut app, 1200.0, vec![]);
+        }
+        let (wide_output, _) = toolbar_frame(&ctx, &mut app, 1200.0, vec![]);
+        let samples = text_rect(&wide_output, |label| label.ends_with(" spp"));
+        let camera = text_rect(&wide_output, |label| label == "CamClip:");
         assert!(
             camera.left() >= samples.right(),
             "camera clips must follow samples without overlap"
         );
+        for _ in 0..20 {
+            let (_, bar) = toolbar_frame(&ctx, &mut app, 280.0, vec![]);
+            assert!(bar.rect.width() <= 280.0);
+        }
+        let (mut output, bar) = toolbar_frame(&ctx, &mut app, 280.0, vec![]);
+        assert!(visible_text(&output, "2D"));
+        assert!(!visible_text(&output, "CamClip:"));
         let pointer = egui::pos2(bar.rect.left() + 90.0, bar.rect.center().y);
         toolbar_frame(
             &ctx,

@@ -1,6 +1,6 @@
 # HDR, encoder, and display parity with WarpBro
 
-Current design and status, 2026-10-06. The user requested full parity, deduplication and
+Current design and status, 2026-10-07. The user requested full parity, deduplication and
 one source of truth. Reuse actual WarpBro export/color/display behavior through the existing
 egui-display export module and thin application adapters. Keep existing formats/codecs and
 UI behavior. This document describes the current path and its open gates; it does not certify
@@ -8,7 +8,9 @@ unfinished consumer code.
 
 ## One shared implementation
 
-The published shared revision is `3443b6f46a2a72526c9542b1e7d8e528c88142bc`.
+The export extraction was published in `3443b6f46a2a72526c9542b1e7d8e528c88142bc`;
+current shared policy source is `d4117f50`. Latest changelog `8127947` changes docs only;
+the consumed source is byte-identical to d411 and needs no rebuild for that prose update.
 [egui-display export.rs](../../egui-widgets-rs/crates/egui-display/src/export.rs) contains
 the actual primitives extracted from [WarpBro export.rs](../../warpbro-rs/src/export.rs):
 PNG encoding, display-light scaling, HDR measurements, PNG-sequence video, FFmpeg lifecycle
@@ -25,8 +27,8 @@ The separate nodes/profiles proposal is not an implemented runtime dependency.
 
 SquareBob's earlier [image_sequence.rs](../src/app/image_sequence.rs) path captured the
 viewport and constructed `Frame::rgba8`. Higher file bit depth could not recover discarded
-HDR precision. Production and canonical-metadata library checkpoints now passed, but the
-newest viewport UI changes remain outside those receipts and need application/UI verification.
+HDR precision. Earlier production/metadata-library checkpoints and latest ordinary app tests
+passed; the current production build remains pending.
 
 The actual typed canvas is **RGBA16Float containing extended-sRGB codes for Rec.709 display
 light**. It is a processed display result, not raw PT radiance, scene-linear light or AP1.
@@ -70,8 +72,9 @@ Newest source routes both window and inline hosts through an immutable post-edit
 EncodeLaunchRequest/event, preserving the settings selected by that edit. FrameSourceResult
 retains capture errors and Cancelled; unexpected extent is rejected instead of silently cropped.
 Completion notification is best-effort after an already successful file commit. These changes
-have scoped file/source receipts below. Immutable launch settings do not establish full renderer freeze or a
-monitor-independent SDR still view; both remain open.
+have scoped file/source receipts below. Frozen session ownership and independent SDR-view
+selection now pass ordinary tests; the ignored GPU freeze test and full native color parity
+remain outside those receipts.
 
 The existing shared Display UI uses reference white 80–1000 nits and HLG peak 400–2000
 with Auto/manual controls. Auto applies to white/peak, not a sixth output mode. Unsupported
@@ -124,22 +127,38 @@ must preserve an existing destination and must not publish a partial video as co
 ### Latest checkpoint — 2026-10-07
 
 The older receipts below remain historical. Current shared OutputKind/view resolver is
-extracted from actual WarpBro policy in egui-display::export; the producer is not yet
-published. Toolbar source passed 15 ordinary tests on Rust 1.96 and its sole independent
-producer review closed without findings. Six policy tests did not execute in `21437` because
-disk-full IO stopped regex-syntax compilation; current coherent-lock `82388` is active.
+extracted from actual WarpBro policy in egui-display::export and published in `d4117f50`.
+Fifteen toolbar tests, six policy tests and strict Rust 1.96 release all-target clippy passed;
+sole Apps producer review closed without findings. Earlier `21437` stopped on disk-full
+regex-syntax IO before tests; the later passing gates supersede that pending status.
 
 FrozenRenderSession is source-complete across nine files plus ColorPipeline. It owns frozen
 DirEntry/camera/quality/options, its own ColorPipeline and existing 3D/2D renderer resources
 moved out of author fields. It does not mutate authored time/flags. GPU worker failure and
 the final readback drain preserve actual capture causes; strict configuration/LUT-bake failure
 is an error. Its 3D SDR source is RGBA16F float, avoiding an 8-bit pre-gamma intermediate.
-Eight ordinary tests plus one ignored GPU test are source-only: no compile, execution or
-reindex receipt yet, pending the published shared API. This does not certify zero-copy encoding.
+Freeze source was published in `b487bbb`; camera-restore fix
+`6c1e4edbcd470aac466b77c245acbdca2023d350` separates resource invalidation from an
+authored-camera action. All nine ordinary Frozen session tests and the finish/cancel ×
+failed-path camera regressions passed in latest-source `95027`. Sole independent Plan
+review closed with one P2, corrected by that commit. Earlier `95027` recorded a 19m16s
+build and 56 passed / one failed / three ignored. Final ordinary gate `48040` passed after
+the fixture correction: release compile **1m40s**, runtime **57 passed / zero failed /
+three ignored in 0.98s**, as recorded in `%TEMP%/squarebob-final-bin-tests.log`.
+The current production build is pending. These ordinary tests do not execute the ignored GPU
+freeze, motion-movie or preset-screenshot tests, or certify zero-copy encoding/full parity.
 
 Camera-slot/preset/toolbar foundation passed 24 UI tests and one GPU test generating seven
 screenshots. Visual inspection found narrow overlap, floating-bar and fade-fixture issues;
-fixes are source-ready, but new screenshots are not accepted. Five mandatory nullable camera
+geometry fixes are source-ready. Existing camera/preset/store/pointer UI tests passed.
+The earlier failing test was
+`app::viewport_toolbar::tests::narrow_viewport_toolbar_horizontal_scroll_reaches_camera_slots`
+with `toolbar text geometry`: painted-label diagnostics at 280px omitted CamClip completely.
+The corrected fixture measures natural ordering with both controls visible at 1200px, then
+exercises actual 280px scrolling, camera-button visibility and the separate scrollbar row.
+The final suite passed; this correction changes no production UI. Failed-label diagnostics
+are retained. No new screenshots are accepted. The user instruction skips extra screenshot/demo generation
+after relevant tests pass; it is not a mandatory completion blocker. Five mandatory nullable camera
 slots use LMB recall / RMB store. Old screenshots in `C:/Temp/bob/ui-20261007` do not close
 narrow acceptance. Full EXR metadata, remaining OCIO/proxy/denoise/snapshot/full-toolbar
 features and overall performance/native acceptance remain open.
@@ -148,15 +167,36 @@ The actual retained WarpBro reference now includes Kvazaar/Vulkan motion (51 fra
 2.125s, 256x256), a fractional clip (32 frames, 66x50), two-frame 16x16 HDR fixtures and a
 nine-frame 256x256 Vulkan partial clip. Actual OIDN HDR/all-quality, PNG-video PQ HEVC/PQ
 ProRes/HLG HEVC/SDR ProRes tags+CLL and partial exact `24000/1001` gates each passed.
-Use those scoped references without claiming the entire WarpBro suite passed: its specialized
-Fast one-object radiance still fails at max_abs `5.9247017e-5`. Exact retained folders are in
+Use those scoped references without claiming the entire WarpBro suite passed. The earlier
+Fast one-object discrepancy is now resolved: specialized radiance and all guides are exact
+on all four routes, with unchanged tolerance. Exact retained folders are in
 [WarpBro HANDOFF](../../warpbro-rs/HANDOFF.md). The twelve SquareBob three-frame 64x64 codec
 fixtures remain technical clips, not real application-motion delivery.
 
 SquareBob floating Git refs were audited against actual remotes and explicit fscan moved
 `5f57` → `94dd173`. Owned SHA-matched mirror full-force `54164` and subsequent serialized
 `94939`/five-file reindex passed; the canonical original DB remains foreign-locked and unfresh.
-Shared policy-helper source still needs its next reindex. No global graph freshness is claimed.
+No global graph freshness is claimed.
+The canonical foreign MCP DB was not repaired. Isolated GITNEXUS_HOME `analyze --out`
+wrote fresh owned storage, but CLI graph_status/list_repos read stale canonical `.gitnexus`;
+impact could not find a new test. Fresh registry/meta does not certify tool-query freshness.
+The authoritative owned mirror now has 39 SHA-verified source files and default local
+`.gitnexus`: 5968 nodes / 13831 edges, graph_status HEAD/index `efe1448` fresh at 08:12:27,
+then test reindex at 08:16. The newest test impact is LOW, zero direct callers / zero flows.
+These receipts certify the matched mirror's graph, not the foreign canonical original.
+The `--out` loader defect persists and Apps is fixing it; exact failure is retained in
+oh-my-harness BUG3.md, 2026-10-07.
+Earlier CRITICAL camera-path impact/two-file LOW detect and exact remote publication remain
+historical receipts, not proof of newer-test graph coverage. Shared widgets' full post-push index
+passed. Preserve existing `C:/Temp/bob` files; no gratuitous extra videos/renders after tests pass.
+
+WarpBro reference main `cd505435cfafff60102f6038e55fb44d148f8e36` integrates d411 in four
+files (lock/app/gpu/ocio); plain all-target passed in 28.01s without warnings.
+Latest specialized-radiance gate passed with all four routes/all guides exact and unchanged
+tolerance; 15 OCIO tests passed, including invalid-input/look warm-cache cases. Paired DE-call
+measurement still shows about 27–28% regression; the owner is tuning the narrow affine
+boundary before performance acceptance. Strict clippy
+stopped at an existing fractal-materials eight-argument factory before WarpBro linting.
 
 Shared source receipts: 31 tests passed, including measured cLLI, real FFmpeg/ffprobe checks
 of six SDR/PQ/HLG HEVC+ProRes combinations and cancellation. Strict release all-target clippy
@@ -232,9 +272,12 @@ These are open correctness, performance and UI gates, not completed hidden sourc
   without old-format aliases or default repair. The shared Display UI already provides
   SDR8/SDR10/PQ/HLG/scRGB, Auto/manual white and HLG peak, requested-versus-actual fallback,
   OS white/peak/full-frame/headroom/depth and HDR-off state; verify wiring, do not duplicate it.
-- [ ] Narrow-width and 100/150% screenshots are inspected. Existing Computer Use native-pipe
-  failure leaves native acceptance open; GPU kittest/builds do not prove physical monitor
-  luminance. Record hardware, actual modes, fixture hashes, commands and tolerances.
+- [x] Correct and rerun the narrow-toolbar measurement fixture: final ordinary suite passed
+  57 tests, zero failed, three ignored. Historical narrow/100–150% visual
+  defects remain recorded; no new screenshots are accepted. Skip extra screenshot/demo
+  generation after relevant tests pass, as requested. Existing Computer Use native-pipe
+  failure limits native evidence; GPU kittest/builds do not prove physical monitor luminance.
+  Record hardware, actual modes, fixture hashes, commands and tolerances for executed gates.
 
 ## Standards and related work
 
