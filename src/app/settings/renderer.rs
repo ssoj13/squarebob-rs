@@ -9,7 +9,7 @@ use crate::renderer::{
     PtSamplerMode, RenderMode, SpectralMode,
 };
 use eframe::egui;
-use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
+use pt_mats::{MaterialDistribution, MaterialSource, Palette};
 
 use super::{RampUiCtx, SETTINGS_LABEL_WIDTH, curve_rows, ramp_section, settings_grid};
 
@@ -817,7 +817,6 @@ impl App {
                     .show(ui, |ui| {
                         // Source: what data determines the material
                         control_label(ui, "Source:");
-                        let old_source = self.render_3d_opts.mat_source;
                         if multibutton_exclusive(
                             ui,
                             &mut self.render_3d_opts.mat_source,
@@ -831,20 +830,6 @@ impl App {
                             ],
                             MultiButtonAxis::Horizontal,
                         ) {
-                            self.render_3d_opts.materialize_mode =
-                                match self.render_3d_opts.mat_source {
-                                    MaterialSource::None => MaterializeMode::None,
-                                    MaterialSource::Extension => MaterializeMode::ByExtension,
-                                    MaterialSource::Path => MaterializeMode::ByPath,
-                                    MaterialSource::Size => MaterializeMode::BySize,
-                                    MaterialSource::Age | MaterialSource::Depth => {
-                                        MaterializeMode::ByAge
-                                    }
-                                    MaterialSource::Random => MaterializeMode::Random,
-                                };
-                            self.mark_pt_scene_dirty();
-                        }
-                        if self.render_3d_opts.mat_source != old_source {
                             self.mark_pt_scene_dirty();
                         }
                         ui.end_row();
@@ -1854,13 +1839,16 @@ impl App {
                                 ) {
                                     dlg = dlg.set_directory(dir);
                                 }
-                                if let Some(path) = dlg.pick_file()
-                                    && let Some(r) = &mut self.renderer_3d
-                                {
-                                    if let Err(e) = r.load_env_map(&path) {
-                                        log::error!("Env map: {e}");
-                                    } else {
+                                if let Some(path) = dlg.pick_file() {
+                                    if self.encode_render_session.is_some() {
                                         self.render_3d_opts.env_map_path = Some(path);
+                                        self.needs_layout = true;
+                                    } else if let Some(r) = &mut self.renderer_3d {
+                                        if let Err(e) = r.load_env_map(&path) {
+                                            log::error!("Env map: {e}");
+                                        } else {
+                                            self.render_3d_opts.env_map_path = Some(path);
+                                        }
                                     }
                                 }
                             }

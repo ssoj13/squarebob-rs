@@ -68,6 +68,10 @@ pub fn downcast<E: Event>(event: &BoxedEvent) -> Option<&E> {
 #[derive(Clone, Debug)]
 pub struct MaterialsChangedEvent;
 
+/// Activate render/display Settings after the dock has returned to its host.
+#[derive(Clone, Debug)]
+pub struct OpenSettingsEvent;
+
 /// Navigation: go into directory
 #[derive(Clone, Debug)]
 pub struct NavigateIntoEvent(pub std::path::PathBuf);

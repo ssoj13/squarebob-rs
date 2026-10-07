@@ -1,7 +1,7 @@
 /// Renderer abstraction: CPU (rayon) or GPU (wgpu) backends.
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
-use pt_mats::{MaterialDistribution, MaterialSource, MaterializeMode, Palette};
+use pt_mats::{MaterialDistribution, MaterialSource, Palette};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -573,7 +573,6 @@ pub struct Render3DOptions {
     pub xray_alpha: f32,
     pub flat_shading: bool,
     pub double_sided: bool,
-    pub materialize_mode: MaterializeMode, // Legacy, kept for compatibility
     #[serde(default)]
     pub mat_source: MaterialSource,
     #[serde(default)]
@@ -1051,7 +1050,6 @@ impl Default for Render3DOptions {
             xray_alpha: 1.0,
             flat_shading: false,
             double_sided: false,
-            materialize_mode: MaterializeMode::ByExtension,
             mat_source: MaterialSource::Extension,
             mat_distribution: MaterialDistribution::Direct,
             mat_quant_levels: default_quant_levels(),
@@ -1191,7 +1189,7 @@ mod tests {
 }
 
 /// Orbit camera for 3D view (Houdini-style controls)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrbitCamera {
     /// Horizontal rotation angle (radians)
     pub yaw: f32,

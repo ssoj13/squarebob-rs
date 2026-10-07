@@ -77,52 +77,61 @@ impl App {
 
     /// Capture and validate viewport pixels for screenshots and image sequences.
     pub(super) fn capture_viewport(&mut self, w: u32, h: u32) -> Result<Vec<u8>, String> {
-        let pixels = match self.render_mode {
-            RenderMode::Mode2D => match self.render_backend {
+        let mode = self.render_mode_for_frame();
+        let backend = self.render_backend_for_frame();
+        let viewport = self.viewport_for_frame().clone();
+        let options = self.treemap_options_for_frame().clone();
+        let camera = self.render_camera_for_frame().clone();
+        let render_options = self.render_options_snapshot();
+        let mut selected_ids = self.encode_render_session.as_ref().map_or_else(
+            || self.selected_3d_ids.clone(),
+            |session| session.selected_ids.clone(),
+        );
+        let pixels = match mode {
+            RenderMode::Mode2D => match backend {
                 RenderBackend::Cpu => {
                     let root_ptr = self
-                        .display_root()
+                        .render_root()
                         .ok_or("No display tree available for CPU capture")?
                         as *const _;
                     // SAFETY: root_ptr aliases self.tree, which remains owned and unchanged
                     // for the duration of this render call.
                     let root = unsafe { &*root_ptr };
-                    renderer::cpu::render(root, &self.viewport, &self.opts)
+                    renderer::cpu::render(root, &viewport, &options)
                         .map_err(|error| format!("CPU capture render failed: {error}"))?
                 }
                 RenderBackend::Gpu => {
                     let root_ptr = self
-                        .display_root()
+                        .render_root()
                         .ok_or("No display tree available for GPU capture")?
                         as *const _;
-                    let mut renderer = self.renderer_2d_gpu.take();
+                    let mut renderer = self.take_frame_renderer_2d();
                     let result = if let Some(r) = &mut renderer {
                         // SAFETY: root_ptr aliases self.tree; rendering does not mutate it.
                         let root = unsafe { &*root_ptr };
-                        r.render(root, &self.viewport, &self.opts)
+                        r.render(root, &viewport, &options)
                             .map_err(|error| format!("GPU 2D capture readback failed: {error}"))
                     } else {
                         Err("GPU 2D renderer is unavailable".to_owned())
                     };
-                    self.renderer_2d_gpu = renderer;
+                    self.set_frame_renderer_2d(renderer);
                     result?
                 }
             },
             RenderMode::Mode3D => {
                 if self.last_render_frame_3d == self.frame_count
-                    && let Some(renderer) = &mut self.renderer_3d
+                    && let Some(renderer) = self.renderer_3d_for_frame_mut()
                 {
                     renderer
-                        .readback_render_texture()
+                        .readback_render_texture(false)
                         .map_err(|error| format!("3D capture readback failed: {error}"))?
                 } else {
                     let root_ptr = self
-                        .display_root()
+                        .render_root()
                         .ok_or("No display tree available for 3D capture")?
                         as *const _;
                     let renderer = self
-                        .renderer_3d
-                        .as_mut()
+                        .renderer_3d_for_frame_mut()
                         .ok_or("3D renderer is unavailable")?;
                     // SAFETY: root_ptr aliases self.tree; rendering reads it without mutation.
                     let root = unsafe { &*root_ptr };
@@ -131,16 +140,17 @@ impl App {
                             root,
                             w,
                             h,
-                            &self.orbit_camera,
-                            &self.render_3d_opts,
-                            &self.opts,
-                            Some(&mut self.selected_3d_ids),
+                            &camera,
+                            &render_options,
+                            &options,
+                            Some(&mut selected_ids),
                         )
                         .map_err(|error| format!("3D capture render failed: {error}"))?;
+                    let pixels = renderer
+                        .readback_render_texture(false)
+                        .map_err(|error| format!("3D capture readback failed: {error}"))?;
                     self.last_render_frame_3d = self.frame_count;
-                    renderer
-                        .readback_render_texture()
-                        .map_err(|error| format!("3D capture readback failed: {error}"))?
+                    pixels
                 }
             }
         };

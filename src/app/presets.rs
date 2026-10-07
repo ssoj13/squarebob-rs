@@ -15,6 +15,7 @@ use directories::BaseDirs;
 use render_shared::Render3DOptions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -191,20 +192,21 @@ pub fn save_all_presets(presets: &HashMap<String, RenderPreset>) -> std::io::Res
         )
     })?;
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    save_presets_at(&path, presets)?;
+    log::info!("Saved {} presets to {}", presets.len(), path.display());
+    Ok(path)
+}
 
+fn save_presets_at(path: &Path, presets: &HashMap<String, RenderPreset>) -> std::io::Result<()> {
     let mut list: Vec<RenderPreset> = presets.values().cloned().collect();
     list.sort_by(|a, b| a.name.cmp(&b.name));
     let file = PresetsFile { presets: list };
 
     let json = serde_json::to_string_pretty(&file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, json)?;
-
-    log::info!("Saved {} presets to {}", file.presets.len(), path.display());
-    Ok(path)
+    let mut output = av_util_core::outfile::AtomicOut::create(path, true)?;
+    output.file()?.write_all(json.as_bytes())?;
+    output.commit()
 }
 
 /// Create a preset from current render settings
@@ -215,9 +217,214 @@ pub fn create_preset(name: &str, render_3d: &Render3DOptions) -> RenderPreset {
     }
 }
 
+pub(super) enum PresetChange<'a> {
+    Save { name: &'a str, create: bool },
+    Rename { from: &'a str, to: &'a str },
+    Delete(&'a str),
+}
+
+pub(super) fn change_presets(
+    presets: &mut HashMap<String, RenderPreset>,
+    change: PresetChange<'_>,
+    current: &Render3DOptions,
+    persist: impl FnOnce(&HashMap<String, RenderPreset>) -> Result<(), String>,
+) -> Result<String, String> {
+    let mut next = presets.clone();
+    let name = match change {
+        PresetChange::Save { name, create } => {
+            let name = checked_name(name)?;
+            if create && next.contains_key(name) {
+                return Err(format!("Preset '{name}' already exists."));
+            }
+            next.insert(name.to_owned(), create_preset(name, current));
+            name.to_owned()
+        }
+        PresetChange::Rename { from, to } => {
+            let to = checked_name(to)?;
+            if from != to && next.contains_key(to) {
+                return Err(format!("Preset '{to}' already exists."));
+            }
+            let mut preset = next
+                .remove(from)
+                .ok_or_else(|| format!("Preset '{from}' no longer exists."))?;
+            preset.name = to.to_owned();
+            next.insert(to.to_owned(), preset);
+            to.to_owned()
+        }
+        PresetChange::Delete(name) => {
+            next.remove(name)
+                .ok_or_else(|| format!("Preset '{name}' no longer exists."))?;
+            name.to_owned()
+        }
+    };
+    persist(&next)?;
+    *presets = next;
+    Ok(name)
+}
+
+fn checked_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err("Enter a preset name.".into())
+    } else {
+        Ok(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_presets_atomic_file_roundtrip_replaces_previous_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        std::fs::write(&path, b"old preset bytes").unwrap();
+        let settings = factory_render_3d_options();
+        let presets = HashMap::from([("Cinema".into(), create_preset("Cinema", &settings))]);
+        save_presets_at(&path, &presets).unwrap();
+        let file: PresetsFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(file.presets.len(), 1);
+        assert_eq!(file.presets[0].name, "Cinema");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_atomic_preset_publish_preserves_previous_file_and_cleans_temp() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        let old = b"old preset bytes must survive a failed replacement";
+        std::fs::write(&path, old).unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let settings = factory_render_3d_options();
+        let mut presets =
+            HashMap::from([("Original".into(), create_preset("Original", &settings))]);
+        assert!(
+            change_presets(
+                &mut presets,
+                PresetChange::Save {
+                    name: "New",
+                    create: true
+                },
+                &settings,
+                |candidate| {
+                    save_presets_at(&path, candidate).map_err(|error| error.to_string())
+                }
+            )
+            .is_err()
+        );
+        drop(lock);
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        assert_eq!(presets.len(), 1);
+        assert!(presets.contains_key("Original"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn named_preset_changes_preserve_payload_and_serialized_identity() {
+        let mut presets = HashMap::new();
+        let mut settings = factory_render_3d_options();
+        settings.animate = true;
+        assert_eq!(
+            change_presets(
+                &mut presets,
+                PresetChange::Save {
+                    name: "  Cinema  ",
+                    create: true
+                },
+                &settings,
+                |_| Ok(())
+            )
+            .unwrap(),
+            "Cinema"
+        );
+        change_presets(
+            &mut presets,
+            PresetChange::Rename {
+                from: "Cinema",
+                to: "  Final  ",
+            },
+            &factory_render_3d_options(),
+            |candidate| {
+                let json = serde_json::to_string(&PresetsFile {
+                    presets: candidate.values().cloned().collect(),
+                })
+                .unwrap();
+                let decoded: PresetsFile = serde_json::from_str(&json).unwrap();
+                assert_eq!(decoded.presets[0].name, "Final");
+                assert!(decoded.presets[0].render_3d.animate);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!presets.contains_key("Cinema"));
+        assert!(presets["Final"].render_3d.animate);
+    }
+
+    #[test]
+    fn failed_preset_persistence_preserves_map_and_reports_error() {
+        let settings = factory_render_3d_options();
+        let mut presets =
+            HashMap::from([("Original".into(), create_preset("Original", &settings))]);
+        for change in [
+            PresetChange::Save {
+                name: "New",
+                create: true,
+            },
+            PresetChange::Rename {
+                from: "Original",
+                to: "New",
+            },
+            PresetChange::Delete("Original"),
+        ] {
+            assert_eq!(
+                change_presets(&mut presets, change, &settings, |_| Err(
+                    "read-only destination".into()
+                ))
+                .unwrap_err(),
+                "read-only destination"
+            );
+            assert_eq!(presets.len(), 1);
+            assert_eq!(presets["Original"].name, "Original");
+        }
+    }
+
+    #[test]
+    fn preset_name_collisions_and_empty_names_do_not_overwrite() {
+        let settings = factory_render_3d_options();
+        let mut presets = HashMap::from([
+            ("One".into(), create_preset("One", &settings)),
+            ("Two".into(), create_preset("Two", &settings)),
+        ]);
+        for change in [
+            PresetChange::Save {
+                name: " One ",
+                create: true,
+            },
+            PresetChange::Save {
+                name: "  ",
+                create: true,
+            },
+            PresetChange::Rename {
+                from: "One",
+                to: " Two ",
+            },
+        ] {
+            assert!(
+                change_presets(&mut presets, change, &settings, |_| panic!(
+                    "invalid changes must not reach disk"
+                ))
+                .is_err()
+            );
+            assert_eq!(presets.len(), 2);
+        }
+    }
 
     #[test]
     fn factory_render_json_parses_and_matches_motion_flags() {

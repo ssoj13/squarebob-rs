@@ -5,7 +5,7 @@ use egui_dock::DockState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 
 use super::DockTab;
 
@@ -17,28 +17,6 @@ use crate::path_key::ScanRoot;
 use crate::renderer::{OrbitCamera, Render3DOptions, RenderBackend, RenderMode};
 use crate::scanner::ScanSession;
 
-/// Snapshot of camera framing + depth-of-field parameters held by a
-/// single bookmark slot under Presets → Views. LMB save populates all
-/// four fields from current state; RMB recall pushes them back into
-/// the live [`State::orbit_camera`] and [`Render3DOptions`].
-#[derive(Debug, Clone)]
-pub(super) struct CameraBookmark {
-    pub camera: OrbitCamera,
-    pub dof_enabled: bool,
-    pub aperture: f32,
-    pub focus_distance: f32,
-}
-
-impl Default for CameraBookmark {
-    fn default() -> Self {
-        Self {
-            camera: OrbitCamera::default(),
-            dof_enabled: false,
-            aperture: 0.0,
-            focus_distance: 1.0,
-        }
-    }
-}
 use render_3d::Renderer3D;
 use render_core::Viewport;
 use render_core::gpu::GpuContext;
@@ -93,6 +71,8 @@ pub(super) struct PersistState {
     pub render_mode: RenderMode,
     #[serde(default)]
     pub render_3d_opts: Render3DOptions,
+    pub camera_slots: super::camera_slots::CameraSlots,
+    pub viewport_toolbar: egui_viewport_toolbar::ToolbarState,
     #[serde(default = "crate::app::dock::default_dock_state")]
     pub dock_state: DockState<DockTab>,
     /// Persistent "memory" layout that always holds every tab in its
@@ -140,12 +120,9 @@ pub(super) struct PersistState {
 }
 
 impl PersistState {
-    /// RON preserves egui's nonfinite rectangle sentinels; accept valid legacy JSON.
+    /// Decode the current RON schema, preserving egui's rectangle sentinels.
     pub(super) fn decode(text: &str) -> Result<Self, String> {
-        ron::from_str(text).or_else(|ron_error| {
-            serde_json::from_str(text)
-                .map_err(|json_error| format!("RON: {ron_error}; JSON: {json_error}"))
-        })
+        ron::from_str(text).map_err(|error| error.to_string())
     }
 }
 
@@ -340,22 +317,15 @@ pub struct App {
     // Presets
     pub(super) presets: std::collections::HashMap<String, RenderPreset>,
     pub(super) preset_name: String,
-    pub(super) preset_dropdown_open: bool,
     pub(super) preset_autosave: bool,
     pub(super) autosave_interval_secs: f32,
     pub(super) preset_dirty: bool,
     pub(super) preset_last_save: std::time::Instant,
     pub(super) orbit_camera: OrbitCamera,
-    /// In-memory camera-view bookmark slots, exposed under the Presets
-    /// row in Settings. LMB on a slot recalls its stored
-    /// [`OrbitCamera`] state into [`Self::orbit_camera`]; RMB saves the
-    /// current view into the slot. Slots default to
-    /// [`OrbitCamera::default`] (origin, distance 500, identity
-    /// rotation) so an un-set slot reads as "reset to origin" — that's
-    /// the "по дефолту 0,0,0" behaviour. Transient — not persisted to
-    /// disk with presets (these are quick view bookmarks, not full
-    /// scene snapshots).
-    pub(super) camera_slots: [CameraBookmark; 6],
+    /// Persistent camera clipboard shared by viewport and Settings.
+    pub(super) camera_slots: super::camera_slots::CameraSlots,
+    pub(super) viewport_toolbar: egui_viewport_toolbar::ToolbarState,
+    pub(super) viewport_toolbar_rect: egui::Rect,
     pub(super) gpu_context: Option<Arc<GpuContext>>,
     /// Lazy-built OIDN denoiser. Replaces the previous à-trous filter.
     /// Materialised the first time the render loop sees a non-`Off` mode
@@ -452,7 +422,8 @@ pub struct App {
     /// status-bar frame.
     pub(super) gpu_info_rx: Option<crossbeam_channel::Receiver<gpu_mem::GpuMemInfo>>,
     pub(super) gpu_info_thread: Option<std::thread::JoinHandle<()>>,
-    pub(super) wgpu_error_flag: Arc<AtomicBool>,
+    pub(super) wgpu_error_tx: crossbeam_channel::Sender<String>,
+    pub(super) wgpu_error_rx: crossbeam_channel::Receiver<String>,
     pub(super) pt_auto_spp_tick: std::time::Instant,
     pub(super) show_encode_panel: bool,
     pub(super) encode_dialog: media_encoder::EncodeDialog,
@@ -461,12 +432,7 @@ pub struct App {
         Option<Arc<crate::app::image_sequence::SquarebobEncodeSource>>,
     pub(super) encode_source_size: (u32, u32),
     pub(super) encode_active_frame: Option<crate::app::image_sequence::EncodeFrameRequest>,
-    pub(super) encode_render_state_active: bool,
-    pub(super) encode_restore_render_mode: RenderMode,
-    pub(super) encode_base_animation_time: f32,
-    pub(super) encode_base_env_time: f32,
-    pub(super) encode_restore_animate: bool,
-    pub(super) encode_restore_env_animate: bool,
+    pub(super) encode_render_session: Option<super::image_sequence::FrozenRenderSession>,
     /// Wall-clock anchor for advancing `animation_time` / `env_time`.
     /// Set to `None` after a long idle (or first launch) so the next
     /// frame produces `dt = 0` instead of catching up on lost time. Each
@@ -498,6 +464,7 @@ pub(super) struct HoverInfo {
 
 impl Default for App {
     fn default() -> Self {
+        let (wgpu_error_tx, wgpu_error_rx) = crossbeam_channel::unbounded();
         Self {
             events: EventBus::new(),
             scan_path: String::new(),
@@ -580,13 +547,14 @@ impl Default for App {
             render_3d_opts: super::presets::factory_render_3d_options(),
             presets: super::presets::load_all_presets(),
             preset_name: super::presets::DEFAULT_PRESET_NAME.to_string(),
-            preset_dropdown_open: false,
             preset_autosave: false,
             autosave_interval_secs: default_autosave_interval(),
             preset_dirty: false,
             preset_last_save: std::time::Instant::now(),
             orbit_camera: OrbitCamera::default(),
-            camera_slots: core::array::from_fn(|_| CameraBookmark::default()),
+            camera_slots: Default::default(),
+            viewport_toolbar: Default::default(),
+            viewport_toolbar_rect: egui::Rect::NOTHING,
             gpu_context: None,
             oidn_denoiser: None,
             oidn_run_requested: false,
@@ -642,7 +610,8 @@ impl Default for App {
             vram_unified: false,
             gpu_info_rx: None,
             gpu_info_thread: None,
-            wgpu_error_flag: Arc::new(AtomicBool::new(false)),
+            wgpu_error_tx,
+            wgpu_error_rx,
             pt_auto_spp_tick: std::time::Instant::now(),
             show_encode_panel: false,
             encode_dialog: media_encoder::EncodeDialog::load_from_settings(
@@ -652,12 +621,7 @@ impl Default for App {
             encode_sequence_source: None,
             encode_source_size: (0, 0),
             encode_active_frame: None,
-            encode_render_state_active: false,
-            encode_restore_render_mode: RenderMode::default(),
-            encode_base_animation_time: 0.0,
-            encode_base_env_time: 0.0,
-            encode_restore_animate: false,
-            encode_restore_env_animate: false,
+            encode_render_session: None,
             last_anim_tick: None,
         }
     }

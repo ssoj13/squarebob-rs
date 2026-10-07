@@ -75,9 +75,10 @@ egui = "0.36"
 egui-wgpu = "0.36"
 egui_extras = "0.36"
 egui_dock = { version = "0.21", features = ["serde"] }
-egui-phosphor = "0.14"
 # Shared phosphor icon vocabulary (`icons::*`) + `add_icon_font`, from the same egui-widgets-rs as egui-display.
 egui-widgets-config = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
+egui-display = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
+egui-viewport-toolbar = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
 
 # OIDN denoiser Burn stack — GIT deps (a [patch] can't cross 0.21->0.22). Same revs
 # oidn-rs/render-rs/gsplat-rs pin. pt-denoise-oidn uses burn's wgpu backend +
@@ -174,6 +175,8 @@ egui-colorpicker = { path = "crates/egui-colorpicker" }
 color-pipeline = { path = "crates/color-pipeline" }
 
 [dependencies]
+av-util-core = { workspace = true }
+egui-viewport-toolbar = { workspace = true }
 # https://dev.to/yeauty/double-your-performance-with-one-line-of-code-the-memory-superpower-every-rust-developer-should-1g93
 auto-allocator = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "persistence", "wgpu", "x11", "wayland"] }
@@ -184,9 +187,9 @@ egui-wgpu = { workspace = true }
 egui-winit = { version = "0.36", features = ["serde", "accesskit"] }
 winit = "0.30"
 ron = "0.12"
-egui-display = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
+egui-display = { workspace = true }
 egui_dock = { workspace = true }
-fscan-rs = { git = "ssh://git@github.com/ssoj13/fscan-rs.git", rev = "5f57af677f902522e52977e07e1acd88661339aa" }
+fscan-rs = { git = "ssh://git@github.com/ssoj13/fscan-rs.git", rev = "94dd173e1222d89356eab5c02b84815d9c04359f" }
 rayon = { workspace = true }
 crossbeam-channel = { workspace = true }
 anyhow = { workspace = true }
@@ -223,7 +226,6 @@ color-pipeline = { workspace = true }
 uuid = { workspace = true }
 pt-denoise-oidn = { workspace = true }
 sysinfo = { workspace = true }
-egui-phosphor = { workspace = true } # raw MOON / SUN / FLOPPY_DISK until icons::* has them
 egui-widgets-config = { workspace = true }
 gpu-mem = { workspace = true }
 

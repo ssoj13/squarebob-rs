@@ -8,7 +8,7 @@ use glam::{Mat4, Vec3};
 use log::debug;
 
 use pt_mats::{
-    MaterialDistribution, MaterializeMode, Palette, hierarchical_path_value, sample_palette,
+    MaterialDistribution, MaterialSource, Palette, hierarchical_path_value, sample_palette,
 };
 use render_shared::{
     ColorMode, FolderColorMode, HoverMode, RampParams, Render3DOptions, hash_transform, name_hash,
@@ -293,7 +293,7 @@ impl Renderer3D {
                 // the cache internally. Shader handles albedo blending via
                 // `mat_global.materialize_mix` so instances stay stable across
                 // slider changes — the slider itself just rewrites the UBO.
-                let material_id = if opts.materialize_mode != MaterializeMode::None && allow_dirs {
+                let material_id = if opts.mat_source != MaterialSource::None && allow_dirs {
                     self.mat_cache.classify_or_get(
                         &node.path,
                         node.size,

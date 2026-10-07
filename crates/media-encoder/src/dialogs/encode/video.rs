@@ -11,8 +11,8 @@ use av_codec::{
     annexb_to_length_prefixed, av1c_from_au, avcodec_find_encoder_by_name, hvcc_from_au,
 };
 use av_codec_core::{
-    AV_CODEC_FLAG_QSCALE, AV_PKT_FLAG_KEY, AV_PROFILE_UNKNOWN, AVCodecContext, AVPacket,
-    FF_QP2LAMBDA, avcodec_alloc_context3,
+    AV_CODEC_FLAG_QSCALE, AV_PKT_FLAG_KEY, AV_PROFILE_UNKNOWN, AVCodecColorMetadata,
+    AVCodecContext, AVPacket, FF_QP2LAMBDA, avcodec_alloc_context3,
 };
 use av_format::{Codec as MuxCodec, MovWriter};
 use av_swscale::{SwsContext, sws_alloc_context, sws_init_context, sws_scale_frame};
@@ -29,9 +29,10 @@ use openh264::formats::YUVBuffer;
 use super::encode::{
     Container, EncodeError, EncoderSettings, ProResProfile, QualityMode, VideoCodec,
 };
-use crate::frame::{Frame, FrameConversion, PixelBuffer};
+use crate::frame::{Frame, PixelBuffer};
 
 const EAGAIN: i32 = 11;
+const SDR_VIDEO_COLOUR: AVCodecColorMetadata = AVCodecColorMetadata::bt709_limited();
 const UNITY_MATRIX: [u8; 36] = [
     0x00, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x01, 0x00, 0x00, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x00, 0x00, 0x00,
@@ -289,6 +290,11 @@ impl VideoEncoder {
         ctx.height = i32::try_from(height)
             .map_err(|_| EncodeError::OutputCreateFailed("height exceeds i32".to_string()))?;
         ctx.pix_fmt = pix_fmt;
+        ctx.set_color_metadata(SDR_VIDEO_COLOUR);
+        ctx.set_cfr_timing(timescale, sample_duration)
+            .map_err(|error| {
+                EncodeError::OutputCreateFailed(format!("invalid encoder frame rate: {error}"))
+            })?;
         ctx.profile = match kind {
             CodecKind::ProRes => {
                 prores_profile_index(settings.prores_profile.unwrap_or(ProResProfile::Standard))
@@ -350,6 +356,7 @@ impl VideoEncoder {
                 .map_err(|e| {
                     EncodeError::OutputCreateFailed(format!("ProRes track creation failed: {e}"))
                 })?;
+            set_sdr_track_colour(&mut writer)?;
             header_written = true;
         }
 
@@ -373,11 +380,6 @@ impl VideoEncoder {
         })
     }
 
-    /// True when the selected codec is 8-bit and HDR input must be tone-mapped first.
-    pub(super) fn requires_ldr(&self) -> bool {
-        matches!(self.input, PackedInput::Rgb24)
-    }
-
     pub(super) fn push(&mut self, frame: &Frame) -> Result<(), EncodeError> {
         let (frame_width, frame_height) = frame.resolution();
         if frame_width != self.width as usize || frame_height != self.height as usize {
@@ -387,27 +389,28 @@ impl VideoEncoder {
             )));
         }
 
-        let mut encoded_frame = match self.input {
-            PackedInput::Rgb24 => {
-                let data = frame.to_rgb24().map_err(EncodeError::EncodeFrameFailed)?;
-                self.convert_packed(AVPixelFormat::RGB24, &data, 3)?
-            }
-            PackedInput::Rgb48 => {
-                let data = frame.to_rgb48().map_err(EncodeError::EncodeFrameFailed)?;
-                let bytes = u16s_to_le_bytes(&data);
-                self.convert_packed(AVPixelFormat::RGB48LE, &bytes, 6)?
-            }
-            PackedInput::Rgba64 => {
-                let data = frame_to_rgba64(frame)?;
-                let bytes = u16s_to_le_bytes(&data);
-                self.convert_packed(AVPixelFormat::RGBA64LE, &bytes, 8)?
-            }
+        let (format, pixel_bytes) = match self.input {
+            PackedInput::Rgb24 => (AVPixelFormat::RGB24, 3),
+            PackedInput::Rgb48 => (AVPixelFormat::RGB48LE, 6),
+            PackedInput::Rgba64 => (AVPixelFormat::RGBA64LE, 8),
         };
-        encoded_frame.pts = self
-            .frames_fed
-            .checked_mul(i64::from(self.sample_duration))
-            .ok_or_else(|| EncodeError::EncodeFrameFailed("frame PTS overflow".to_string()))?;
-        encoded_frame.duration = i64::from(self.sample_duration);
+        let data = video_pixels(frame, self.input)?;
+        let mut encoded_frame = self.convert_packed(format, &data, pixel_bytes)?;
+        match &self.backend {
+            Backend::AvCodec { ctx, .. } => {
+                encoded_frame.pts = ctx.cfr_pts(self.frames_fed);
+                encoded_frame.duration = ctx.cfr_duration();
+            }
+            Backend::H264 { .. } => {
+                encoded_frame.pts = self
+                    .frames_fed
+                    .checked_mul(i64::from(self.sample_duration))
+                    .ok_or_else(|| {
+                        EncodeError::EncodeFrameFailed("frame PTS overflow".to_string())
+                    })?;
+                encoded_frame.duration = i64::from(self.sample_duration);
+            }
+        }
 
         match &mut self.backend {
             Backend::H264 { encoder, .. } => {
@@ -475,8 +478,7 @@ impl VideoEncoder {
             Backend::H264 { sws, .. } | Backend::AvCodec { sws, .. } => sws.dst_format,
         };
         let mut dst = alloc_frame(dst_fmt, self.width, self.height)?;
-        dst.color_range = AVColorRange::AVCOL_RANGE_MPEG;
-        dst.colorspace = AVColorSpace::AVCOL_SPC_BT709;
+        SDR_VIDEO_COLOUR.apply_to_frame(&mut dst);
         let sws = match &self.backend {
             Backend::H264 { sws, .. } | Backend::AvCodec { sws, .. } => sws,
         };
@@ -508,8 +510,12 @@ impl VideoEncoder {
     }
 
     fn write_av_packet(&mut self, packet: &AVPacket) -> Result<(), EncodeError> {
+        let (packet_cts, packet_sync) = match &self.backend {
+            Backend::AvCodec { ctx, .. } => packet_timing(packet, ctx)?,
+            Backend::H264 { .. } => unreachable!("OpenH264 does not use AVPacket"),
+        };
         let (sample, cts_offset, is_sync): (Cow<'_, [u8]>, i32, bool) = match self.kind {
-            CodecKind::ProRes => (Cow::Borrowed(packet.data()), 0, true),
+            CodecKind::ProRes => (Cow::Borrowed(packet.data()), packet_cts, packet_sync),
             CodecKind::Hevc => {
                 if !self.header_written {
                     let config = hvcc_from_au(packet.data()).map_err(|e| {
@@ -517,11 +523,10 @@ impl VideoEncoder {
                     })?;
                     self.add_compressed_track(MuxCodec::Hevc, &config)?;
                 }
-                let (cts, sync) = packet_timing(packet)?;
                 (
                     Cow::Owned(annexb_to_length_prefixed(packet.data())),
-                    cts,
-                    sync,
+                    packet_cts,
+                    packet_sync,
                 )
             }
             CodecKind::Av1 => {
@@ -531,8 +536,7 @@ impl VideoEncoder {
                     })?;
                     self.add_compressed_track(MuxCodec::Av1, &config)?;
                 }
-                let (cts, sync) = packet_timing(packet)?;
-                (Cow::Borrowed(packet.data()), cts, sync)
+                (Cow::Borrowed(packet.data()), packet_cts, packet_sync)
             }
             CodecKind::H264 => unreachable!("H.264 has a dedicated packet path"),
         };
@@ -564,6 +568,7 @@ impl VideoEncoder {
             .map_err(|e| {
                 EncodeError::OutputCreateFailed(format!("video track creation failed: {e}"))
             })?;
+        set_sdr_track_colour(self.writer_mut()?)?;
         self.header_written = true;
         Ok(())
     }
@@ -762,44 +767,89 @@ fn compact_i420(frame: &AVFrame) -> Result<Vec<u8>, EncodeError> {
     Ok(output)
 }
 
-fn frame_to_rgba64(frame: &Frame) -> Result<Vec<u16>, EncodeError> {
-    let (width, height) = frame.resolution();
-    let expected = width
-        .checked_mul(height)
-        .and_then(|n| n.checked_mul(4))
-        .ok_or_else(|| EncodeError::EncodeFrameFailed("RGBA64 size overflow".to_string()))?;
+/// One colour conversion for every native SDR codec: display light → BT.1886.
+/// The 256-entry sRGB lookup avoids per-pixel powers for viewport RGBA8 capture.
+fn video_pixels(frame: &Frame, input: PackedInput) -> Result<Vec<u8>, EncodeError> {
+    static SRGB_TO_VIDEO: std::sync::LazyLock<[u16; 256]> = std::sync::LazyLock::new(|| {
+        std::array::from_fn(|code| {
+            let light =
+                crate::hdr::display_encoded_to_linear([code as f32 / 255.0, 0.0, 0.0, 1.0])[0];
+            float_to_u16(crate::hdr::bt1886_code(light))
+        })
+    });
+    let pixel_bytes = match input {
+        PackedInput::Rgb24 => 3,
+        PackedInput::Rgb48 => 6,
+        PackedInput::Rgba64 => 8,
+    };
+    let capacity = frame
+        .layout()
+        .elements_for(pixel_bytes, 1)
+        .map_err(|e| EncodeError::EncodeFrameFailed(e.to_string()))?;
+    let mut output = Vec::with_capacity(capacity);
+    let mut write = |rgba: [u16; 4]| match input {
+        PackedInput::Rgb24 => output.extend(
+            rgba[..3]
+                .iter()
+                .map(|&v| ((u32::from(v) + 128) / 257) as u8),
+        ),
+        PackedInput::Rgb48 => {
+            for value in &rgba[..3] {
+                output.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        PackedInput::Rgba64 => {
+            for value in rgba {
+                output.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    };
     let buffer = frame.buffer();
-    let actual = match buffer.as_ref() {
-        PixelBuffer::U8(data) => data.len(),
-        PixelBuffer::F16(data) => data.len(),
-        PixelBuffer::F32(data) => data.len(),
-    };
-    if actual != expected {
-        return Err(EncodeError::EncodeFrameFailed(format!(
-            "invalid RGBA buffer size: expected {expected}, got {actual}"
-        )));
+    match buffer.as_ref() {
+        PixelBuffer::U8(data) => {
+            for p in data.chunks_exact(4) {
+                write([
+                    SRGB_TO_VIDEO[p[0] as usize],
+                    SRGB_TO_VIDEO[p[1] as usize],
+                    SRGB_TO_VIDEO[p[2] as usize],
+                    u16::from(p[3]) * 257,
+                ]);
+            }
+        }
+        PixelBuffer::F16(_) | PixelBuffer::F32(_) => {
+            let (light, kind, _) = frame.hdr_light().map_err(EncodeError::EncodeFrameFailed)?;
+            if kind != crate::hdr::DisplayLight::Relative {
+                return Err(EncodeError::EncodeFrameFailed(
+                    "SDR video requires an SDR display view".into(),
+                ));
+            }
+            for p in light.chunks_exact(4) {
+                write([
+                    float_to_u16(crate::hdr::bt1886_code(p[0])),
+                    float_to_u16(crate::hdr::bt1886_code(p[1])),
+                    float_to_u16(crate::hdr::bt1886_code(p[2])),
+                    float_to_u16(p[3]),
+                ]);
+            }
+        }
     }
-    let values = match buffer.as_ref() {
-        PixelBuffer::U8(data) => data.iter().map(|&v| u16::from(v) * 257).collect(),
-        PixelBuffer::F16(data) => data.iter().map(|v| float_to_u16(v.to_f32())).collect(),
-        PixelBuffer::F32(data) => data.iter().map(|&v| float_to_u16(v)).collect(),
-    };
-    Ok(values)
+    Ok(output)
+}
+
+fn set_sdr_track_colour(writer: &mut MovWriter<File>) -> Result<(), EncodeError> {
+    let nclx = av_format::video_colr_nclx(SDR_VIDEO_COLOUR).map_err(|e| {
+        EncodeError::OutputCreateFailed(format!("video colour metadata failed: {e}"))
+    })?;
+    writer
+        .set_video_colr(&nclx)
+        .map_err(|e| EncodeError::OutputCreateFailed(format!("video colour metadata failed: {e}")))
 }
 
 fn float_to_u16(value: f32) -> u16 {
     (value.clamp(0.0, 1.0) * 65535.0).round() as u16
 }
 
-fn u16s_to_le_bytes(values: &[u16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(values.len() * 2);
-    for value in values {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
-}
-
-fn packet_timing(packet: &AVPacket) -> Result<(i32, bool), EncodeError> {
+fn packet_timing(packet: &AVPacket, ctx: &AVCodecContext) -> Result<(i32, bool), EncodeError> {
     let delta = packet.pts.checked_sub(packet.dts).ok_or_else(|| {
         EncodeError::EncodeFrameFailed("encoded packet timestamp overflow".to_string())
     })?;
@@ -809,8 +859,9 @@ fn packet_timing(packet: &AVPacket) -> Result<(i32, bool), EncodeError> {
             packet.pts, packet.dts
         )));
     }
-    let cts_offset = i32::try_from(delta).map_err(|_| {
-        EncodeError::EncodeFrameFailed(format!("composition offset {delta} exceeds i32"))
+    let media_delta = ctx.to_media_ticks(delta);
+    let cts_offset = i32::try_from(media_delta).map_err(|_| {
+        EncodeError::EncodeFrameFailed(format!("composition offset {media_delta} exceeds i32"))
     })?;
     Ok((cts_offset, packet.flags & AV_PKT_FLAG_KEY != 0))
 }
@@ -1029,6 +1080,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_sdr_metadata_matches_shared_video_signal() {
+        use av_util_pixfmt::{
+            av_color_primaries_name, av_color_space_name, av_color_transfer_name,
+        };
+        let [primaries, transfer, matrix] = crate::hdr::video_tags(crate::hdr::PngEncoding::Sdr8);
+        assert_eq!(
+            av_color_primaries_name(SDR_VIDEO_COLOUR.primaries),
+            Some(primaries)
+        );
+        assert_eq!(
+            av_color_transfer_name(SDR_VIDEO_COLOUR.transfer),
+            Some(transfer)
+        );
+        assert_eq!(av_color_space_name(SDR_VIDEO_COLOUR.matrix), Some(matrix));
+    }
+
+    #[test]
+    fn video_pixels_convert_srgb_to_bt1886_and_keep_alpha_linear() {
+        let bytes = Frame::rgba8(1, 1, vec![30, 30, 30, 128]).unwrap();
+        let light = crate::hdr::display_encoded_to_linear([
+            30.0 / 255.0,
+            30.0 / 255.0,
+            30.0 / 255.0,
+            128.0 / 255.0,
+        ]);
+        let float = Frame::display_light(
+            1,
+            1,
+            light.to_vec(),
+            crate::hdr::DisplayLight::Relative,
+            203.0,
+        )
+        .unwrap();
+        for input in [PackedInput::Rgb24, PackedInput::Rgb48, PackedInput::Rgba64] {
+            assert_eq!(
+                video_pixels(&bytes, input).unwrap(),
+                video_pixels(&float, input).unwrap()
+            );
+        }
+        assert_eq!(video_pixels(&bytes, PackedInput::Rgb24).unwrap(), [42; 3]);
+        let words: Vec<u16> = video_pixels(&bytes, PackedInput::Rgba64)
+            .unwrap()
+            .chunks_exact(2)
+            .map(|v| u16::from_le_bytes([v[0], v[1]]))
+            .collect();
+        // Independent sRGB EOTF followed by gamma 2.4: byte 30 becomes 10725/65535.
+        assert_eq!(words, [10725, 10725, 10725, 128 * 257]);
+    }
+
+    #[test]
+    fn video_pixels_reject_unlabelled_scene_and_absolute_hdr_light() {
+        let scene = Frame::rgba_f32(1, 1, vec![1.0; 4]).unwrap();
+        assert!(video_pixels(&scene, PackedInput::Rgb48).is_err());
+        let absolute = Frame::display_light(
+            1,
+            1,
+            vec![1.0; 4],
+            crate::hdr::DisplayLight::Absolute { peak_nits: 1000.0 },
+            203.0,
+        )
+        .unwrap();
+        assert!(video_pixels(&absolute, PackedInput::Rgb48).is_err());
+    }
+
+    #[test]
     fn h264_annexb_builds_avcc_and_strips_parameter_sets() {
         let au = [
             0, 0, 0, 1, 0x67, 100, 0, 40, 1, 2, 0, 0, 1, 0x68, 3, 4, 0, 0, 1, 0x65, 9, 8, 7,
@@ -1043,10 +1159,14 @@ mod tests {
 
     #[test]
     fn packet_timing_rejects_negative_composition_offset() {
+        let mut ctx = avcodec_alloc_context3();
+        ctx.set_cfr_timing(30000, 1001).expect("fractional CFR");
         let mut packet = AVPacket::new();
         packet.pts = 9;
         packet.dts = 10;
-        assert!(packet_timing(&packet).is_err());
+        assert!(packet_timing(&packet, &ctx).is_err());
+        packet.pts = 12;
+        assert_eq!(packet_timing(&packet, &ctx).unwrap().0, 2002);
     }
 
     #[test]
@@ -1127,6 +1247,8 @@ mod tests {
                     VideoCodec::ProRes => 0,
                 },
                 fps: 24.0,
+                output_encoding: crate::hdr::PngEncoding::Sdr8,
+                white_nits: 203.0,
                 preset: preset.map(str::to_owned),
                 profile: profile.map(str::to_owned),
                 prores_profile,

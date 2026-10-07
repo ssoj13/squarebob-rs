@@ -212,7 +212,6 @@
   "xray_alpha": 1.0,
   "flat_shading": false,
   "double_sided": false,
-  "materialize_mode": "ByAge",
   "mat_source": "Depth",
   "mat_distribution": "Gradient",
   "mat_quant_levels": 2,

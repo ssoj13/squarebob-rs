@@ -2,14 +2,12 @@
 //!
 //! Extracted from `mod.rs` for review/merge sanity. No behaviour change.
 
-use std::sync::atomic::Ordering;
-
 use eframe::egui;
 use egui_dock::DockArea;
 
 use crate::events::{
-    LayoutDirtyEvent, MaterialsChangedEvent, NavigateIntoEvent, NavigateUpEvent, RenderTick3DEvent,
-    SelectPathEvent, ZoomResetEvent, downcast,
+    LayoutDirtyEvent, MaterialsChangedEvent, NavigateIntoEvent, NavigateUpEvent, OpenSettingsEvent,
+    RenderTick3DEvent, SelectPathEvent, ZoomResetEvent, downcast,
 };
 use crate::renderer::{HashTransformEffect, RenderMode};
 
@@ -31,6 +29,19 @@ impl App {
                 self.zoom_up();
             } else if downcast::<ZoomResetEvent>(&event).is_some() {
                 self.zoom_reset();
+            } else if downcast::<OpenSettingsEvent>(&event).is_some() {
+                self.show_settings = true;
+                self.settings_tab = super::state::SettingsTab::Rendering;
+                self.sync_dock_tabs_visibility();
+                if let Some(path) = self.dock_state.find_tab(&dock::DockTab::Settings) {
+                    match self.dock_state.set_active_tab(path) {
+                        Ok(()) => self
+                            .dock_state
+                            .set_focused_node_and_surface(path.node_path()),
+                        Err(error) => log::error!("Cannot activate Settings tab: {error}"),
+                    }
+                }
+                ctx.request_repaint();
             } else if let Some(e) = downcast::<SelectPathEvent>(&event) {
                 self.select(e.0.clone());
             } else if downcast::<MaterialsChangedEvent>(&event).is_some() {
@@ -106,12 +117,17 @@ impl App {
         }
     }
 
-    pub(super) fn run_frame(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        self.sync_display(&ctx);
-        self.frame_count = self.frame_count.saturating_add(1);
-        if self.wgpu_error_flag.swap(false, Ordering::SeqCst) {
-            log::warn!("wgpu error flagged; resetting GPU renderers and textures");
+    pub(super) fn handle_gpu_errors(&mut self) {
+        let errors: Vec<_> = self.wgpu_error_rx.try_iter().collect();
+        if !errors.is_empty() {
+            if self.encode_render_session.is_some() {
+                self.fail_encode_render(errors.join("\n"));
+                return;
+            }
+            log::warn!(
+                "GPU errors: {}; resetting preview GPU resources",
+                errors.join("\n")
+            );
             if let Some(r3d) = &mut self.renderer_3d {
                 r3d.reset_render_targets();
                 r3d.reset_path_tracer();
@@ -128,6 +144,13 @@ impl App {
             self.needs_layout = true;
             self.last_render_size = (0, 0);
         }
+    }
+
+    pub(super) fn run_frame(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        self.sync_display(&ctx);
+        self.frame_count = self.frame_count.saturating_add(1);
+        self.handle_gpu_errors();
 
         // Force theme and font size on first frame
         if self.frame_count == 1 {
@@ -152,7 +175,8 @@ impl App {
             let elapsed = self.preset_last_save.elapsed().as_secs_f32();
             if elapsed >= self.autosave_interval_secs {
                 self.save_current_preset();
-                self.preset_dirty = false;
+                // The save adapter clears dirty only after the atomic commit.
+                // Keep this retry interval even when persistence fails.
                 self.preset_last_save = std::time::Instant::now();
             }
         }
@@ -209,7 +233,7 @@ impl App {
         // bookkeeping the old toolbar "E" button did on open.
         if ctx.input(|i| i.key_pressed(egui::Key::F12)) {
             self.show_encode_panel = !self.show_encode_panel;
-            if self.show_encode_panel {
+            if self.show_encode_panel && !self.encode_dialog.is_encoding() {
                 self.encode_source = None;
                 self.encode_sequence_source = None;
                 self.encode_source_size = (0, 0);
@@ -253,7 +277,7 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
         // Animation time for 3D
-        if self.render_mode == RenderMode::Mode3D {
+        if self.render_mode == RenderMode::Mode3D && self.encode_render_session.is_none() {
             let menu_open = self.ctx_menu_path.is_some();
             // Wall-clock-based dt for animation accumulation. Using
             // `stable_dt` from egui lets long idles between frames (e.g.
@@ -366,5 +390,39 @@ impl App {
         // Screenshot handling
         self.handle_screenshot(&ctx);
         self.handle_image_sequence(&ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_event_reveals_hidden_panel_and_activates_it_over_other_tabs() {
+        for hidden in [false, true] {
+            let mut app = App::default();
+            app.show_ae = true;
+            app.dock_state = dock::build_dock_state(true, true);
+            let other = app
+                .dock_state
+                .find_tab(&dock::DockTab::AttributeEditor)
+                .unwrap();
+            app.dock_state.set_active_tab(other).unwrap();
+            app.show_settings = !hidden;
+            app.sync_dock_tabs_visibility();
+            app.settings_tab = super::super::state::SettingsTab::Extensions;
+            app.events.emit(OpenSettingsEvent);
+            app.handle_events(&egui::Context::default());
+            assert!(app.show_settings);
+            assert_eq!(
+                app.settings_tab,
+                super::super::state::SettingsTab::Rendering
+            );
+            let settings = app.dock_state.find_tab(&dock::DockTab::Settings).unwrap();
+            assert_eq!(
+                app.dock_state.leaf(settings.node_path()).unwrap().active,
+                settings.tab
+            );
+        }
     }
 }

@@ -8,6 +8,7 @@ mod exclusions;
 pub(super) mod material_presets;
 pub(super) mod materials;
 mod output;
+mod preset_buttons;
 mod ramp_widget;
 mod renderer;
 mod scanner;
@@ -17,7 +18,6 @@ pub(super) use dirty::SettingsDirty;
 pub(super) use ramp_widget::{RampUiCtx, curve_rows, ramp_section};
 
 use super::App;
-use egui_widgets_config::icons;
 use super::state::SettingsTab;
 use crate::renderer::OrbitCamera;
 use eframe::egui;
@@ -168,42 +168,17 @@ impl App {
 
     /// Render presets UI (save/load render presets)
     fn ui_presets(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Preset:");
-
-            // Dropdown button (left of text input)
-            let dropdown_resp = ui
-                .small_button(icons::CARET_DOWN)
-                .on_hover_text("Load preset");
-            if dropdown_resp.clicked() {
-                self.preset_dropdown_open = !self.preset_dropdown_open;
+        let mut names: Vec<_> = self.presets.keys().cloned().collect();
+        names.sort();
+        if let Some(action) = preset_buttons::show(ui, &names, &self.preset_name, self.preset_dirty)
+        {
+            let result = self.apply_preset_action(action);
+            if let Err(error) = &result {
+                log::error!("Preset change failed: {error}");
             }
-
-            // Text input for preset name
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.preset_name)
-                    .desired_width(120.0)
-                    .hint_text("name..."),
-            );
-
-            // Save on Enter
-            if resp.lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                && !self.preset_name.is_empty()
-            {
-                self.save_current_preset();
-            }
-
-            // Save button
-            if ui
-                .small_button(egui_phosphor::regular::FLOPPY_DISK)
-                .on_hover_text("Save preset")
-                .clicked()
-                && !self.preset_name.is_empty()
-            {
-                self.save_current_preset();
-            }
-
+            preset_buttons::finish(ui.ctx(), result);
+        }
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .small_button("Reset")
                 .on_hover_text(
@@ -213,104 +188,18 @@ impl App {
                 .clicked()
             {
                 self.apply_factory_render_defaults();
-                self.preset_dropdown_open = false;
             }
-
-            // Autosave checkbox
-            ui.checkbox(&mut self.preset_autosave, "Auto")
-                .on_hover_text(format!(
-                    "Auto-save preset every {:.0}s when changed",
-                    self.autosave_interval_secs
-                ));
-
-            // Delete sits at the far-right edge so it's spatially
-            // separate from the constructive buttons (save / reset).
-            // `right_to_left` consumes the remaining row width and
-            // anchors the trash icon to the trailing edge regardless
-            // of label/text-input width.
-            if self.presets.contains_key(&self.preset_name) {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .small_button(icons::TRASH)
-                        .on_hover_text("Delete preset")
-                        .clicked()
-                    {
-                        self.delete_current_preset();
-                    }
-                });
-            }
+            ui.add_enabled(
+                self.presets.contains_key(&self.preset_name),
+                egui::Checkbox::new(&mut self.preset_autosave, "Auto"),
+            )
+            .on_hover_text(format!(
+                "Auto-save the selected preset every {:.0}s when changed",
+                self.autosave_interval_secs
+            ));
         });
 
-        // Camera view bookmarks: six in-memory slots. LMB stores the
-        // current orbit-camera state into the slot; RMB recalls the
-        // stored state into the live camera. Empty slots default to
-        // `OrbitCamera::default()`, so an un-set slot effectively
-        // "reset to origin" on recall. Bookmarks are transient (not
-        // serialised with presets) — they're quick scratch buffers
-        // for camera framing.
-        ui.horizontal(|ui| {
-            ui.label("Views:");
-            for i in 0..self.camera_slots.len() {
-                let resp = ui.small_button(format!("{}", i + 1)).on_hover_text(format!(
-                    "Camera view {}\nLeft-click: save current view  Right-click: recall",
-                    i + 1
-                ));
-                if resp.clicked() {
-                    // Save: snapshot camera + DoF triple
-                    self.camera_slots[i] = super::state::CameraBookmark {
-                        camera: self.orbit_camera.clone(),
-                        dof_enabled: self.render_3d_opts.pt_dof_enabled,
-                        aperture: self.render_3d_opts.pt_aperture,
-                        focus_distance: self.render_3d_opts.pt_focus_distance,
-                    };
-                }
-                if resp.secondary_clicked() {
-                    // Recall: restore camera + DoF triple. DoF affects
-                    // ray gen, so reset PT accumulation to avoid mixing
-                    // pre/post-recall samples.
-                    let bm = self.camera_slots[i].clone();
-                    self.orbit_camera = bm.camera;
-                    self.orbit_camera.cancel_animation();
-                    self.render_3d_opts.pt_dof_enabled = bm.dof_enabled;
-                    self.render_3d_opts.pt_aperture = bm.aperture;
-                    self.render_3d_opts.pt_focus_distance = bm.focus_distance;
-                    if let Some(r) = &mut self.renderer_3d {
-                        r.reset_pt_accumulation();
-                    }
-                    self.needs_layout = true;
-                }
-            }
-        });
-
-        // Dropdown popup: list every preset from the map (the built-in
-        // "defaults" is always present after `load_all_presets`, so no
-        // separate row is needed).
-        if self.preset_dropdown_open {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let mut selected_user: Option<String> = None;
-
-                let mut names: Vec<_> = self.presets.keys().cloned().collect();
-                names.sort();
-                for name in &names {
-                    if ui
-                        .selectable_label(self.preset_name == *name, name)
-                        .clicked()
-                    {
-                        selected_user = Some(name.clone());
-                    }
-                }
-
-                if let Some(name) = selected_user {
-                    self.load_preset(&name);
-                    self.preset_dropdown_open = false;
-                }
-            });
-        }
-
-        // Close dropdown on click outside
-        if self.preset_dropdown_open && ui.input(|i| i.pointer.any_click()) {
-            // Will close on next frame if clicked outside popup
-        }
+        ui.horizontal(|ui| self.ui_camera_slots(ui));
     }
 
     /// Save current render settings as preset.
@@ -319,23 +208,56 @@ impl App {
     /// allowed (including "defaults" — the embedded copy will be
     /// re-injected on next load only if the user later removes it).
     pub(super) fn save_current_preset(&mut self) {
-        let name = self.preset_name.trim().to_string();
-        if name.is_empty() {
-            log::info!("Refusing to save preset with empty name");
-            return;
+        let result =
+            self.apply_preset_action(preset_buttons::Action::Save(self.preset_name.clone()));
+        if let Err(error) = &result {
+            log::error!("Failed to save preset: {error}");
         }
-        let preset = super::presets::create_preset(&name, &self.render_3d_opts);
-        self.presets.insert(name.clone(), preset);
-        match super::presets::save_all_presets(&self.presets) {
-            Ok(_) => {
+    }
+
+    fn apply_preset_action(&mut self, action: preset_buttons::Action) -> Result<(), String> {
+        use super::presets::PresetChange;
+        use preset_buttons::Action;
+        match &action {
+            Action::Load(name) => {
+                if !self.presets.contains_key(name) {
+                    return Err(format!("Preset '{name}' no longer exists."));
+                }
+                self.load_preset(name);
+                return Ok(());
+            }
+            Action::Delete(name) => return self.delete_current_preset(name),
+            _ => {}
+        }
+        let change = match &action {
+            Action::Save(name) => PresetChange::Save {
+                name,
+                create: false,
+            },
+            Action::Create(name) => PresetChange::Save { name, create: true },
+            Action::Rename { from, to } => PresetChange::Rename { from, to },
+            Action::Load(_) | Action::Delete(_) => unreachable!(),
+        };
+        let name = super::presets::change_presets(
+            &mut self.presets,
+            change,
+            &self.render_3d_opts,
+            |next| {
+                super::presets::save_all_presets(next)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+        )?;
+        match action {
+            Action::Save(_) | Action::Create(_) => {
+                self.preset_name = name;
                 self.preset_dirty = false;
                 self.preset_last_save = std::time::Instant::now();
-                log::info!("Saved preset: {}", name);
             }
-            Err(e) => {
-                log::error!("Failed to save preset: {}", e);
-            }
+            Action::Rename { from, .. } if self.preset_name == from => self.preset_name = name,
+            _ => {}
         }
+        Ok(())
     }
 
     /// Load a preset by name from the in-memory map (which already
@@ -345,6 +267,11 @@ impl App {
             self.render_3d_opts = preset.render_3d;
             self.preset_name = name.to_string();
             self.needs_layout = true;
+            self.needs_render_3d = true;
+            if let Some(renderer) = &mut self.renderer_3d {
+                renderer.mark_pt_scene_dirty();
+                renderer.reset_pt_accumulation();
+            }
             self.preset_dirty = false;
             self.preset_last_save = std::time::Instant::now();
             log::info!("Loaded preset: {}", name);
@@ -354,23 +281,22 @@ impl App {
     /// Delete current preset from the map and persist. Deleting the
     /// built-in "defaults" preset is allowed: it will be re-injected
     /// from the embedded copy on next launch.
-    fn delete_current_preset(&mut self) {
-        let name = self.preset_name.trim().to_string();
-        if name.is_empty() {
-            return;
+    fn delete_current_preset(&mut self, name: &str) -> Result<(), String> {
+        super::presets::change_presets(
+            &mut self.presets,
+            super::presets::PresetChange::Delete(name),
+            &self.render_3d_opts,
+            |next| {
+                super::presets::save_all_presets(next)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+        )?;
+        if self.preset_name == name {
+            self.preset_name.clear();
+            self.preset_dirty = false;
         }
-        if self.presets.remove(&name).is_none() {
-            return;
-        }
-        match super::presets::save_all_presets(&self.presets) {
-            Ok(_) => {
-                self.preset_name.clear();
-                log::info!("Deleted preset: {}", name);
-            }
-            Err(e) => {
-                log::error!("Failed to persist presets after delete: {}", e);
-            }
-        }
+        Ok(())
     }
 
     /// Render the settings panel contents

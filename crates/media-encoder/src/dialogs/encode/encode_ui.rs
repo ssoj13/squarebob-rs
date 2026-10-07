@@ -17,6 +17,7 @@ use crate::dialogs::encode::{
     EncoderSettings, ExportMode, ExrCompression, OutputBitDepth, ProResProfile, SequenceFormat,
     SequenceSettings, TiffCompression, VideoCodec, encode_comp, encode_image_sequence,
 };
+use crate::hdr::PngEncoding;
 use crate::progress::ProgressBar;
 use crate::source::{Comp, Project};
 
@@ -86,6 +87,8 @@ pub struct EncodeDialog {
     pub output_path: PathBuf,
     pub container: Container,
     pub fps: f32,
+    pub output_encoding: PngEncoding,
+    pub white_nits: f32,
     pub frame_start: i32,
     pub frame_end: i32,
 
@@ -112,6 +115,40 @@ pub struct EncodeDialog {
 
     /// Image sequence settings
     pub sequence_settings: SequenceSettings,
+}
+
+/// One immutable launch event, captured after the dialog's controls are edited.
+/// The host constructs a frame source from this event before starting its worker.
+pub struct EncodeLaunchRequest {
+    pub frame_start: i32,
+    pub frame_end: i32,
+    pub fps: f32,
+    pub output_encoding: PngEncoding,
+    pub white_nits: f32,
+    token: EncodeSessionToken,
+    output: EncodeLaunchOutput,
+}
+
+enum EncodeLaunchOutput {
+    Video(EncoderSettings),
+    Sequence {
+        path: PathBuf,
+        settings: SequenceSettings,
+    },
+}
+
+impl EncodeLaunchRequest {
+    /// Cancellation identity for the new host frame source.
+    pub fn session_token(&self) -> EncodeSessionToken {
+        self.token.clone()
+    }
+}
+
+/// Actions emitted by either presentation of the encoder controls.
+#[derive(Default)]
+pub struct EncodeUiResponse {
+    pub close: bool,
+    pub launch: Option<EncodeLaunchRequest>,
 }
 
 impl EncodeDialog {
@@ -238,6 +275,8 @@ impl EncodeDialog {
             output_path: settings.output_path.clone(),
             container: settings.container,
             fps: settings.fps,
+            output_encoding: settings.output_encoding,
+            white_nits: settings.white_nits,
             frame_start: settings.frame_start,
             frame_end: settings.frame_end.max(settings.frame_start),
             selected_codec: settings.selected_codec,
@@ -294,6 +333,8 @@ impl EncodeDialog {
             output_path: self.output_path.clone(),
             container: self.container,
             fps: self.fps,
+            output_encoding: self.output_encoding,
+            white_nits: self.white_nits,
             frame_start: self.frame_start,
             frame_end: self.frame_end.max(self.frame_start),
             selected_codec: self.selected_codec,
@@ -346,11 +387,27 @@ impl EncodeDialog {
             quality_mode,
             quality_value,
             fps: self.fps,
+            output_encoding: self.output_encoding,
+            white_nits: self.white_nits,
             preset,
             profile,
             prores_profile,
             tonemap_mode: self.tonemap_mode,
         }
+    }
+
+    fn output_error(&self) -> Option<String> {
+        if !self.output_encoding.hdr() {
+            return None;
+        }
+        match self.export_mode {
+            ExportMode::Video => self.build_encoder_settings().png_video().map(|_| ()),
+            ExportMode::Sequence => self
+                .sequence_settings
+                .validate_output(self.output_encoding, self.white_nits),
+        }
+        .err()
+        .map(|e| e.to_string())
     }
 
     /// True until the active generation has terminated and been joined.
@@ -375,31 +432,23 @@ impl EncodeDialog {
 
     /// Render the encode dialog
     ///
-    /// Returns: true if dialog should remain open, false if closed
-    pub fn render(
-        &mut self,
-        ctx: &egui::Context,
-        project: &Project,
-        active_comp: Option<&Comp>,
-    ) -> bool {
+    /// Emits host actions after all controls have been edited.
+    pub fn render(&mut self, ctx: &egui::Context, active_comp: Option<&Comp>) -> EncodeUiResponse {
         let window_title = match self.export_mode {
             ExportMode::Video => "Video Encoder",
             ExportMode::Sequence => "Image Sequence Export",
         };
-        let mut should_close = false;
+        let mut response = EncodeUiResponse::default();
         egui::Window::new(window_title)
             .id(egui::Id::new("encode_dialog"))
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.set_width(600.0);
-                if self.render_inline(ui, project, active_comp, true) {
-                    should_close = true;
-                }
+                response = self.render_inline(ui, active_comp, true);
             });
 
-        // Return true if window should stay open
-        !should_close
+        response
     }
 
     /// Drain progress and reap a finished worker without blocking the UI.
@@ -508,17 +557,15 @@ impl EncodeDialog {
     /// * `false` (inline mode): suppresses Close (the section has its
     ///   own collapse) and stretches Encode/Stop to fill the row width.
     ///
-    /// Returns `true` if the user requested a close (only meaningful
-    /// when `with_close_button` is `true`). Width is not forced here —
+    /// Emits a close or immutable launch request. Width is not forced here —
     /// the inline section uses whatever width the parent `Ui` provides.
     pub fn render_inline(
         &mut self,
         ui: &mut egui::Ui,
-        project: &Project,
         active_comp: Option<&Comp>,
         with_close_button: bool,
-    ) -> bool {
-        let mut should_close = false;
+    ) -> EncodeUiResponse {
+        let mut response = EncodeUiResponse::default();
         {
             // === Output Path ===
             ui.horizontal(|ui| {
@@ -562,6 +609,33 @@ impl EncodeDialog {
             ui.separator();
 
             // === Export Mode Tabs (Video / Sequence) ===
+            ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Output colour:");
+                    egui::ComboBox::from_id_salt("export_colour")
+                        .selected_text(self.output_encoding.signal_label())
+                        .show_ui(ui, |ui| {
+                            for encoding in PngEncoding::ALL {
+                                ui.selectable_value(
+                                    &mut self.output_encoding,
+                                    encoding,
+                                    encoding.signal_label(),
+                                );
+                            }
+                        });
+                });
+                if self.output_encoding.hdr() {
+                    ui.horizontal(|ui| {
+                        ui.label("Reference white:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.white_nits)
+                                .range(80.0..=1000.0)
+                                .suffix(" nits"),
+                        );
+                    });
+                    ui.label("HDR output: 16-bit PNG, HEVC Main10, or ProRes 4444 XQ.");
+                }
+            });
             //
             // Smart-rename rules — keep the user from manually
             // adding / removing the `####` frame token every
@@ -658,7 +732,7 @@ impl EncodeDialog {
                     let caps = self.sequence_settings.format.capabilities();
 
                     // === Common settings (above format buttons) ===
-                    ui.add_enabled_ui(!self.is_encoding(), |ui| {
+                    ui.add_enabled_ui(!self.is_encoding() && !self.output_encoding.hdr(), |ui| {
                             // Channels (RGB/RGBA)
                             ui.horizontal(|ui| {
                                 ui.label("Channels:");
@@ -728,6 +802,10 @@ impl EncodeDialog {
                                 }
                             });
                         });
+
+                    if self.output_encoding.hdr() {
+                        ui.label("16-bit RGBA · display transform baked in · alpha kept linear");
+                    }
 
                     ui.add_space(8.0);
 
@@ -817,13 +895,17 @@ impl EncodeDialog {
             ui.separator();
 
             // === Readiness check ===
-            let ready_to_encode = active_comp.is_some();
+            let output_error = self.output_error();
+            let ready_to_encode = active_comp.is_some() && output_error.is_none();
 
-            if !ready_to_encode {
+            if active_comp.is_none() {
                 ui.colored_label(
                     egui::Color32::from_rgb(200, 150, 0),
                     "No active comp to encode",
                 );
+            }
+            if let Some(error) = &output_error {
+                ui.colored_label(egui::Color32::from_rgb(200, 150, 0), error);
             }
 
             // === Buttons ===
@@ -836,7 +918,7 @@ impl EncodeDialog {
                         if self.is_encoding() {
                             self.stop_encoding_and_close();
                         }
-                        should_close = true;
+                        response.close = true;
                     }
 
                     if self.is_encoding() {
@@ -849,12 +931,12 @@ impl EncodeDialog {
                         ui.add_enabled_ui(ready_to_encode, |ui| {
                             let mut button = ui.button("Encode");
                             if !ready_to_encode {
-                                button = button.on_disabled_hover_text("No active comp");
+                                button = button.on_disabled_hover_text(
+                                    output_error.as_deref().unwrap_or("No active comp"),
+                                );
                             }
-                            if button.clicked()
-                                && let Some(comp) = active_comp
-                            {
-                                self.start_encoding(comp, project);
+                            if button.clicked() {
+                                response.launch = Some(self.launch_request());
                             }
                         });
                     }
@@ -883,29 +965,58 @@ impl EncodeDialog {
                             egui::Button::new("Encode").min_size(egui::vec2(row_w, 0.0));
                         let mut resp = ui.add(encode_btn);
                         if !ready_to_encode {
-                            resp = resp.on_disabled_hover_text("No active comp");
+                            resp = resp.on_disabled_hover_text(
+                                output_error.as_deref().unwrap_or("No active comp"),
+                            );
                         }
-                        if resp.clicked()
-                            && let Some(comp) = active_comp
-                        {
-                            self.start_encoding(comp, project);
+                        if resp.clicked() {
+                            response.launch = Some(self.launch_request());
                         }
                     });
                 }
             }
         }
-        should_close
+        response
+    }
+
+    fn launch_request(&self) -> EncodeLaunchRequest {
+        EncodeLaunchRequest {
+            frame_start: self.frame_start,
+            frame_end: self.frame_end.max(self.frame_start),
+            fps: self.fps,
+            output_encoding: self.output_encoding,
+            white_nits: self.white_nits,
+            token: self.session_token(),
+            output: match self.export_mode {
+                ExportMode::Video => EncodeLaunchOutput::Video(self.build_encoder_settings()),
+                ExportMode::Sequence => EncodeLaunchOutput::Sequence {
+                    path: self.output_path.clone(),
+                    settings: self.sequence_settings.clone(),
+                },
+            },
+        }
     }
 
     /// Start one generation. A second generation cannot start until this worker is joined.
-    fn start_encoding(&mut self, comp: &Comp, project: &Project) {
+    pub fn start_encoding(
+        &mut self,
+        comp: &Comp,
+        project: &Project,
+        request: EncodeLaunchRequest,
+    ) -> bool {
         let token = match &self.lifecycle {
-            EncodeLifecycle::Idle(token) if token.generation() < u64::MAX => token.clone(),
-            EncodeLifecycle::Idle(_) => {
-                self.set_terminal_error("Encoder generation counter exhausted".into());
-                return;
+            EncodeLifecycle::Idle(token)
+                if token.generation() < u64::MAX
+                    && token.generation() == request.token.generation()
+                    && !token.is_cancelled() =>
+            {
+                token.clone()
             }
-            _ => return,
+            EncodeLifecycle::Idle(_) => {
+                self.set_terminal_error("Encoder launch identity is no longer available".into());
+                return false;
+            }
+            _ => return false,
         };
 
         info!(
@@ -920,18 +1031,16 @@ impl EncodeDialog {
         let comp = comp.clone();
         let project = project.clone();
 
-        let worker = match self.export_mode {
-            ExportMode::Video => {
-                let settings = self.build_encoder_settings();
-                std::thread::Builder::new()
-                    .name(format!("encode-video-{}", token.generation()))
-                    .spawn(move || {
-                        encode_comp(&comp, &project, &settings, progress_tx, cancel_flag)
-                    })
-            }
-            ExportMode::Sequence => {
-                let settings = self.sequence_settings.clone();
-                let output_path = self.output_path.clone();
+        let worker = match request.output {
+            EncodeLaunchOutput::Video(settings) => std::thread::Builder::new()
+                .name(format!("encode-video-{}", token.generation()))
+                .spawn(move || encode_comp(&comp, &project, &settings, progress_tx, cancel_flag)),
+            EncodeLaunchOutput::Sequence {
+                path: output_path,
+                settings,
+            } => {
+                let output_encoding = request.output_encoding;
+                let white_nits = request.white_nits;
                 std::thread::Builder::new()
                     .name(format!("encode-sequence-{}", token.generation()))
                     .spawn(move || {
@@ -940,6 +1049,8 @@ impl EncodeDialog {
                             &project,
                             &output_path,
                             &settings,
+                            output_encoding,
+                            white_nits,
                             progress_tx,
                             cancel_flag,
                         )
@@ -954,9 +1065,11 @@ impl EncodeDialog {
                     progress_rx,
                     worker,
                 });
+                true
             }
             Err(error) => {
                 self.set_terminal_error(format!("Failed to start encoder worker: {}", error));
+                false
             }
         }
     }
@@ -1009,6 +1122,14 @@ impl EncodeDialog {
     }
 
     fn render_h265_settings(&mut self, ui: &mut egui::Ui) {
+        if self.output_encoding.hdr() {
+            ui.label("HEVC Main10 · 4:2:0 · 10-bit");
+            ui.add(
+                egui::Slider::new(&mut self.codec_settings.h265.quality_value, 0..=51).text("CRF"),
+            );
+            ui.label("Measured mastering peak and clip content light levels");
+            return;
+        }
         let profiles: &[&str] = &["main", "main10"];
         render_h26x_settings(
             ui,
@@ -1033,6 +1154,11 @@ impl EncodeDialog {
 
     /// Render ProRes settings
     fn render_prores_settings(&mut self, ui: &mut egui::Ui) {
+        if self.output_encoding.hdr() {
+            ui.label("ProRes 4444 XQ · 4:4:4 · 10-bit");
+            ui.label("BT.2020 · selected PQ / HLG transfer");
+            return;
+        }
         ui.label("Profile:");
         ui.horizontal(|ui| {
             for profile in ProResProfile::all() {
@@ -1191,6 +1317,10 @@ impl EncodeDialog {
                 }
             }
             SequenceFormat::Png => {
+                if self.output_encoding.hdr() {
+                    ui.label("Lossless 16-bit · cICP · mastering display metadata");
+                    return;
+                }
                 ui.horizontal(|ui| {
                     ui.label("Compression:");
                     ui.add(
@@ -1495,6 +1625,35 @@ fn rebuild_path(parent: Option<&std::path::Path>, stem: &str, ext: &str) -> Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_event_uses_post_edit_timing_and_retains_its_own_settings() {
+        let mut dialog = EncodeDialog::load_from_settings(&Default::default());
+        dialog.frame_start = 41;
+        dialog.frame_end = 44;
+        dialog.fps = 24000.0 / 1001.0;
+        dialog.output_encoding = PngEncoding::Hdr10;
+        dialog.white_nits = 250.0;
+        dialog.output_path = PathBuf::from("frozen.mp4");
+        let request = dialog.launch_request();
+        dialog.frame_start = 0;
+        dialog.frame_end = 99;
+        dialog.fps = 60.0;
+        dialog.white_nits = 100.0;
+        dialog.output_encoding = PngEncoding::Sdr8;
+        dialog.output_path = PathBuf::from("later.mp4");
+        assert_eq!((request.frame_start, request.frame_end), (41, 44));
+        assert_eq!(request.fps, 24000.0 / 1001.0);
+        assert_eq!(request.white_nits, 250.0);
+        assert_eq!(request.output_encoding, PngEncoding::Hdr10);
+        let EncodeLaunchOutput::Video(settings) = request.output else {
+            panic!("Video event expected");
+        };
+        assert_eq!(settings.fps, request.fps);
+        assert_eq!(settings.white_nits, request.white_nits);
+        assert_eq!(settings.output_encoding, request.output_encoding);
+        assert_eq!(settings.output_path, PathBuf::from("frozen.mp4"));
+    }
 
     #[test]
     fn strip_hash() {

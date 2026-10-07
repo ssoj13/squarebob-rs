@@ -121,7 +121,7 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
         opts.double_sided = double_sided;
     }
     if let Some(mode) = cli.materialize_mode {
-        opts.materialize_mode = mode;
+        opts.mat_source = mode;
     }
     if let Some(intensity) = cli.env_map_intensity {
         opts.env_map_intensity = intensity;
@@ -240,7 +240,7 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
 mod tests {
     use super::*;
     use crate::CliOptions;
-    use pt_mats::MaterializeMode;
+    use pt_mats::MaterialSource;
     use render_shared::{
         ColorMode, CubeHeightMode, HashTransformEffect, HoverMode, Render3DOptions, SpectralMode,
     };
@@ -285,7 +285,7 @@ mod tests {
             xray_alpha: Some(0.25),
             flat_shading: Some(true),
             double_sided: Some(true),
-            materialize_mode: Some(MaterializeMode::ByExtension),
+            materialize_mode: Some(MaterialSource::Depth),
             env_map_intensity: Some(2.0),
             env_map_rotation: Some(180.0),
             env_map_enabled: Some(true),
@@ -386,10 +386,7 @@ mod tests {
         assert_eq!(opts.xray_alpha, 0.25);
         assert!(opts.flat_shading);
         assert!(opts.double_sided);
-        assert!(matches!(
-            opts.materialize_mode,
-            MaterializeMode::ByExtension
-        ));
+        assert!(matches!(opts.mat_source, MaterialSource::Depth));
         assert_eq!(opts.env_map_intensity, 2.0);
         // env_map_rotation is converted from degrees → radians.
         assert!((opts.env_map_rotation - 180.0_f32.to_radians()).abs() < 1e-6);

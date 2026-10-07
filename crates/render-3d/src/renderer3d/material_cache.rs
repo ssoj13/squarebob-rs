@@ -20,7 +20,7 @@ use glam::Mat4;
 use pt_core::{GpuMaterial, Instance};
 use pt_material::{MaterialLibrary, StandardSurfaceParams};
 use pt_mats::{
-    MaterialInput, MaterializeMode, MaterializeSettings, classify_to_index, hierarchical_path_value,
+    MaterialInput, MaterialSource, MaterializeSettings, classify_to_index, hierarchical_path_value,
 };
 use render_shared::{Render3DOptions, name_hash};
 
@@ -155,7 +155,7 @@ impl MaterialCache {
         let cap = MAX_MATERIAL_SLOTS as usize;
         let raw_lib = &opts.material_library;
         let lib_len = raw_lib.len().min(cap);
-        if lib_len == 0 || opts.materialize_mode == MaterializeMode::None {
+        if lib_len == 0 || opts.mat_source == MaterialSource::None {
             return 0;
         }
         let path_str = path.to_string_lossy();
@@ -169,10 +169,7 @@ impl MaterialCache {
         // path.
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext_key = name_hash(ext);
-        let mut settings = settings_from_opts(opts, is_pt);
-        // Sync legacy `materialize_mode` → `source` so classify_to_index
-        // sees the right source even if callers updated only the legacy field.
-        settings.source = opts.materialize_mode.to_source();
+        let settings = settings_from_opts(opts, is_pt);
         // Position-dependent distributions can't use the per-path
         // cache: re-layout changes positions while leaving paths
         // intact, and we'd return stale slot picks. Recompute on
@@ -266,7 +263,6 @@ impl MaterialCache {
 pub(crate) fn mat_settings_hash(opts: &Render3DOptions) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (opts.materialize_mode as u8).hash(&mut h);
     opts.mat_seed.hash(&mut h);
     (opts.mat_source as u8).hash(&mut h);
     (opts.mat_distribution as u8).hash(&mut h);
@@ -374,7 +370,7 @@ pub(crate) fn pt_expand_cache_key(
         for c in &inst.color {
             c.to_bits().hash(&mut h);
         }
-        if opts.materialize_mode == MaterializeMode::None {
+        if opts.mat_source == MaterialSource::None {
             0xF0u8.hash(&mut h);
         } else if let Some(path) = picking.path_for_id(inst.object_id) {
             let is_dir = picking.is_dir_for_id(inst.object_id).unwrap_or(false);
@@ -413,7 +409,7 @@ pub(crate) fn expand_pt_materials_and_ids(
     let mut material_ids = Vec::with_capacity(instances.len());
 
     for inst in instances {
-        let lib_idx = if lib_size > 0 && opts.materialize_mode != MaterializeMode::None {
+        let lib_idx = if lib_size > 0 && opts.mat_source != MaterialSource::None {
             let path_opt = picking.path_for_id(inst.object_id);
             let is_dir = picking.is_dir_for_id(inst.object_id).unwrap_or(false);
             let size = picking.size_for_id(inst.object_id).unwrap_or(0);

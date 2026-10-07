@@ -7,7 +7,6 @@
 //! interrupts a running export.
 
 use eframe::egui;
-use media_encoder::Project;
 
 use super::{SettingsDirty, tinted_section};
 use crate::app::App;
@@ -47,14 +46,16 @@ impl App {
                     ui.set_max_width(inner_w);
                     ui.set_min_width(inner_w);
 
-                    let project = Project;
                     let active_comp = self.encode_source.clone();
                     // `with_close_button = false`: inline mode suppresses
                     // Close (section is collapsible via header chevron)
                     // and stretches Encode/Stop full-width.
-                    let _close_requested =
+                    let response =
                         self.encode_dialog
-                            .render_inline(ui, &project, active_comp.as_ref(), false);
+                            .render_inline(ui, active_comp.as_ref(), false);
+                    if let Some(request) = response.launch {
+                        self.launch_encode(request);
+                    }
                 });
             },
         );

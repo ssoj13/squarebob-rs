@@ -4,9 +4,9 @@ use eframe::egui;
 
 use super::App;
 use super::helpers::rfd_pick_folder;
-use egui_widgets_config::icons;
 use crate::events::{NavigateUpEvent, ZoomResetEvent};
 use crate::renderer::{RenderBackend, RenderMode};
+use egui_widgets_config::icons;
 
 impl App {
     /// Render top toolbar panel
@@ -123,9 +123,9 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Dark/Light toggle
                     let theme_label = if self.dark_mode {
-                        egui_phosphor::regular::MOON
+                        icons::THEME_DARK
                     } else {
-                        egui_phosphor::regular::SUN
+                        icons::THEME_LIGHT
                     };
                     let theme_hover = if self.dark_mode {
                         "Switch to Light"
@@ -222,6 +222,10 @@ impl App {
 
     /// Handle render mode change side-effects
     pub(super) fn on_render_mode_changed(&mut self, old_mode: RenderMode) {
+        if self.encode_render_session.is_some() {
+            self.needs_layout = true;
+            return;
+        }
         if self.render_mode == old_mode {
             return;
         }

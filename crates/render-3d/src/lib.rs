@@ -20,7 +20,7 @@ use log::{debug, info, trace, warn};
 use std::sync::Arc;
 
 use pt_material::StandardSurfaceParams;
-use pt_mats::MaterializeMode;
+use pt_mats::MaterialSource;
 use render_core::gpu::{self, GpuContext};
 use render_shared::{
     CameraUniform, CubeHeightMode, EnvParamsUniform, HoverMode, HoverParamsUniform,
@@ -792,7 +792,7 @@ impl Renderer3D {
 
         // Per-frame mat-global update. Cheap (16 bytes); enables live materialize_mix
         // slider without rebuilding cube instances.
-        let mat_mix = if opts.materialize_mode != MaterializeMode::None {
+        let mat_mix = if opts.mat_source != MaterialSource::None {
             opts.materialize_mix.clamp(0.0, 1.0)
         } else {
             0.0
@@ -1280,8 +1280,12 @@ impl Renderer3D {
             .unwrap_or(0)
     }
 
-    /// Read back current render texture pixels (for screenshots).
-    pub fn readback_render_texture(&mut self) -> Result<Vec<u8>, render_core::ReadbackError> {
+    /// Read the existing display canvas once. `raw_float` retains packed RGBA16Float
+    /// for HDR export; otherwise the shared helper produces SDR screenshot bytes.
+    pub fn readback_render_texture(
+        &mut self,
+        raw_float: bool,
+    ) -> Result<Vec<u8>, render_core::ReadbackError> {
         let state = self
             .render_state
             .as_ref()
@@ -1295,14 +1299,31 @@ impl Renderer3D {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Readback Encoder"),
             });
-        gpu::readback_texture(
-            &self.ctx,
-            &mut encoder,
-            &targets.render_texture,
-            width,
-            height,
-            &mut self.readback,
-        )?;
+        if raw_float {
+            let format = targets.render_texture.format();
+            if format != wgpu::TextureFormat::Rgba16Float {
+                return Err(render_core::ReadbackError::UnsupportedFormat(format));
+            }
+            gpu::readback_texture_bytes(
+                &self.ctx,
+                &mut encoder,
+                &targets.render_texture,
+                width,
+                height,
+                8,
+                "HDR Display Readback",
+                &mut self.readback,
+            )?;
+        } else {
+            gpu::readback_texture(
+                &self.ctx,
+                &mut encoder,
+                &targets.render_texture,
+                width,
+                height,
+                &mut self.readback,
+            )?;
+        }
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
         gpu::map_readback(&self.ctx, &self.readback)
     }

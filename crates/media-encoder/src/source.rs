@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::EncodeError;
 use crate::frame::Frame;
 
 #[derive(Clone, Debug)]
@@ -19,7 +20,8 @@ pub struct ExrSourceInfo {
 
 pub trait FrameSource: Send + Sync + std::fmt::Display {
     fn play_range(&self, clamp_to_available: bool) -> (i32, i32);
-    fn get_frame(&self, frame_idx: i32, blocking: bool) -> Option<Frame>;
+    /// Retrieve a frame or preserve the source's concrete failure/cancellation.
+    fn get_frame(&self, frame_idx: i32, blocking: bool) -> Result<Frame, EncodeError>;
 
     fn exr_source_path(&self, _frame_idx: i32) -> Option<PathBuf> {
         None

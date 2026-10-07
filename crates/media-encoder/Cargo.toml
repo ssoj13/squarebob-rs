@@ -23,6 +23,7 @@ exr = ["dep:vfx-core", "dep:vfx-io"]
 bytemuck = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+egui-display = { workspace = true }
 egui-widgets-config = { workspace = true }
 egui_dock = { workspace = true }
 half = { workspace = true, features = ["bytemuck", "serde"] }
@@ -40,6 +41,7 @@ openh264 = { workspace = true, optional = true }
 rfd = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+tempfile = "3"
 vfx-core = { workspace = true, optional = true }
 vfx-io = { workspace = true, optional = true }
 

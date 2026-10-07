@@ -1,5 +1,6 @@
 pub mod dialogs;
 pub mod frame;
+pub use egui_display::export as hdr;
 pub mod io;
 pub mod progress;
 pub mod source;

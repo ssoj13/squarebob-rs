@@ -251,6 +251,8 @@ pub struct Frame {
     buffer: Arc<PixelBuffer>,
     layout: PixelLayout,
     file: Option<PathBuf>,
+    /// Present only for display-linear Rec.709 capture, never for scene radiance.
+    display: Option<(crate::hdr::DisplayLight, f32)>,
 }
 
 impl Frame {
@@ -278,7 +280,72 @@ impl Frame {
             buffer: Arc::new(buffer),
             layout,
             file,
+            display: None,
         })
+    }
+
+    /// Capture linear Rec.709 display light without SDR quantization. Relative
+    /// light uses `white_nits` per unit; absolute HDR views use 100 nits per unit.
+    /// Reference white identifies the capture job; alpha stays linear coverage.
+    pub fn display_light(
+        width: usize,
+        height: usize,
+        light: Vec<f32>,
+        kind: crate::hdr::DisplayLight,
+        white_nits: f32,
+    ) -> Result<Self, String> {
+        if !white_nits.is_finite() || white_nits <= 0.0 || !light.iter().all(|v| v.is_finite()) {
+            return Err(
+                "Display light and reference white must be finite; white must be positive".into(),
+            );
+        }
+        let mut frame = Self::rgba_f32(width, height, light).map_err(|e| e.to_string())?;
+        frame.display = Some((kind, white_nits));
+        Ok(frame)
+    }
+
+    /// Explicit display-light contract required by the WarpBro HDR PNG writer.
+    /// Generic floating-point media frames cannot silently acquire display tags.
+    pub fn hdr_light(&self) -> Result<(&[f32], crate::hdr::DisplayLight, f32), String> {
+        let (kind, white) = self
+            .display
+            .ok_or("HDR export requires display-linear Rec.709 capture")?;
+        match self.buffer.as_ref() {
+            PixelBuffer::F32(light) => Ok((light, kind, white)),
+            _ => Err("Display-light capture must retain floating-point pixels".into()),
+        }
+    }
+
+    /// Thin host adapter to the shared WarpBro display-light PNG exporter.
+    /// SDR format-specific compression/channels remain in the image-sequence writer.
+    pub fn save_png(
+        &self,
+        path: &std::path::Path,
+        encoding: crate::hdr::PngEncoding,
+        white_nits: f32,
+    ) -> Result<Option<crate::hdr::HdrLevels>, String> {
+        if !encoding.hdr() {
+            return Err(
+                "Use the SDR image writer for configurable PNG channels and compression".into(),
+            );
+        }
+        let (light, kind, source_white) = self.hdr_light()?;
+        if source_white != white_nits {
+            return Err("Capture reference white changed during export".into());
+        }
+        let light: &[[f32; 4]] = bytemuck::try_cast_slice(light)
+            .map_err(|e| format!("Invalid display-light pixel layout: {e}"))?;
+        let scale = crate::hdr::hdr_scale(kind, light, white_nits, encoding);
+        crate::hdr::write_png(
+            path,
+            self.layout.width(),
+            self.layout.height(),
+            light,
+            Vec::new,
+            encoding,
+            scale,
+            true,
+        )
     }
 
     pub fn file(&self) -> Option<&PathBuf> {
@@ -325,7 +392,7 @@ impl Frame {
             align,
         );
 
-        match self.buffer.as_ref() {
+        let mut cropped = match self.buffer.as_ref() {
             PixelBuffer::U8(src) => {
                 let mut dst = vec![0u8; dst_layout.element_count()];
                 copy_rows(
@@ -374,7 +441,9 @@ impl Frame {
                 )?;
                 Frame::rgba_f32(new_w, new_h, dst)
             }
-        }
+        }?;
+        cropped.display = self.display;
+        Ok(cropped)
     }
 }
 
@@ -388,6 +457,9 @@ pub trait FrameConversion {
 impl FrameConversion for Frame {
     fn tonemap(&self, mode: TonemapMode, output_format: PixelFormat) -> Result<Frame, String> {
         let (width, height) = self.resolution();
+        if self.display.is_some_and(|(kind, _)| kind.hdr()) {
+            return Err("Absolute HDR display light requires HDR delivery".into());
+        }
         if matches!(
             (self.buffer.as_ref(), output_format),
             (PixelBuffer::U8(_), PixelFormat::Rgba8)
@@ -401,6 +473,10 @@ impl FrameConversion for Frame {
                 value.clamp(0.0, 1.0)
             } else if source_is_u8 {
                 value
+            } else if self.display.is_some() {
+                // A display transform has already been applied. Only encode its
+                // linear Rec.709 light for an SDR image; never tone map it twice.
+                egui_display::transfer::oetf(value)
             } else {
                 tonemap_value(value, mode)
             }
@@ -412,6 +488,9 @@ impl FrameConversion for Frame {
             PixelBuffer::F16(data) => Cow::Owned(data.iter().map(|value| value.to_f32()).collect()),
             PixelBuffer::F32(data) => Cow::Borrowed(data.as_slice()),
         };
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err("Tone mapping requires finite RGB and alpha".into());
+        }
 
         match output_format {
             PixelFormat::Rgba8 => Frame::rgba8(
@@ -576,12 +655,13 @@ fn tonemap_value(value: f32, mode: TonemapMode) -> f32 {
         TonemapMode::Clamp => x.clamp(0.0, 1.0),
         TonemapMode::Reinhard => (x / (1.0 + x)).clamp(0.0, 1.0),
         TonemapMode::ACES => {
+            let x = f64::from(x);
             let a = 2.51;
             let b = 0.03;
             let c = 2.43;
             let d = 0.59;
             let e = 0.14;
-            ((x * (a * x + b)) / (x * (c * x + d) + e)).clamp(0.0, 1.0)
+            ((x * (a * x + b)) / (x * (c * x + d) + e)).clamp(0.0, 1.0) as f32
         }
     }
 }
@@ -589,6 +669,123 @@ fn tonemap_value(value: f32, mode: TonemapMode) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_light_sdr_conversion_applies_transfer_once_and_preserves_alpha() {
+        let frame = Frame::display_light(
+            1,
+            1,
+            vec![0.18, 0.003, 4.0, 0.5],
+            crate::hdr::DisplayLight::Relative,
+            203.0,
+        )
+        .unwrap();
+        let coded = frame
+            .tonemap(TonemapMode::ACES, PixelFormat::RgbaF32)
+            .unwrap();
+        let PixelBuffer::F32(values) = coded.buffer.as_ref() else {
+            panic!("Float output expected")
+        };
+        assert_eq!(values[0], egui_display::transfer::oetf(0.18));
+        assert_eq!(values[1], egui_display::transfer::oetf(0.003));
+        assert_eq!(values[2], egui_display::transfer::oetf(4.0));
+        assert_eq!(values[3], 0.5);
+        let bytes = frame
+            .tonemap(TonemapMode::ACES, PixelFormat::Rgba8)
+            .unwrap();
+        let PixelBuffer::U8(values) = bytes.buffer.as_ref() else {
+            panic!("U8 output expected")
+        };
+        assert_eq!(values.as_slice(), &[118, 10, 255, 128]);
+    }
+
+    #[test]
+    fn tonemap_rejects_nonfinite_input_and_retains_finite_highlights() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for channel in 0..4 {
+                let mut pixels = vec![1.0; 4];
+                pixels[channel] = value;
+                let frame = Frame::rgba_f32(1, 1, pixels).unwrap();
+                assert!(
+                    frame
+                        .tonemap(TonemapMode::ACES, PixelFormat::Rgba8)
+                        .is_err()
+                );
+                assert!(
+                    frame
+                        .tonemap(TonemapMode::Clamp, PixelFormat::RgbaF32)
+                        .is_err()
+                );
+            }
+        }
+        let frame = Frame::rgba_f32(1, 1, vec![f32::MAX, f32::MAX, f32::MAX, 0.5]).unwrap();
+        let mapped = frame
+            .tonemap(TonemapMode::ACES, PixelFormat::RgbaF32)
+            .unwrap();
+        let buffer = mapped.buffer();
+        let PixelBuffer::F32(pixels) = buffer.as_ref() else {
+            panic!("float output");
+        };
+        assert_eq!(pixels, &[1.0, 1.0, 1.0, 0.5]);
+    }
+
+    #[test]
+    fn display_capture_keeps_highlights_alpha_and_colour_contract_after_crop() {
+        let capture = Frame::display_light(
+            2,
+            1,
+            vec![4.0, 2.0, 1.0, 0.5, 0.0, 0.0, 0.0, 1.0],
+            crate::hdr::DisplayLight::Relative,
+            203.0,
+        )
+        .unwrap();
+        let cropped = capture.crop_copy(1, 1, CropAlign::LeftTop).unwrap();
+        let (light, kind, white) = cropped.hdr_light().unwrap();
+        assert_eq!(kind, crate::hdr::DisplayLight::Relative);
+        assert_eq!(light, &[4.0, 2.0, 1.0, 0.5]);
+        assert_eq!(white, 203.0);
+        let scene = Frame::rgba_f32(1, 1, vec![4.0, 2.0, 1.0, 0.5]).unwrap();
+        assert!(
+            scene.hdr_light().is_err(),
+            "scene radiance cannot acquire display metadata"
+        );
+    }
+
+    #[test]
+    fn display_capture_rejects_invalid_light_or_reference_white() {
+        for white in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(
+                Frame::display_light(
+                    1,
+                    1,
+                    vec![1.0; 4],
+                    crate::hdr::DisplayLight::Relative,
+                    white
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            Frame::display_light(
+                1,
+                1,
+                vec![f32::INFINITY; 4],
+                crate::hdr::DisplayLight::Relative,
+                203.0
+            )
+            .is_err()
+        );
+        assert!(
+            Frame::display_light(
+                2,
+                1,
+                vec![1.0; 4],
+                crate::hdr::DisplayLight::Relative,
+                203.0
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn rejects_malformed_buffer() {

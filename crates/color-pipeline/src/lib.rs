@@ -831,28 +831,14 @@ impl ColorPipeline {
         // Bake over a logarithmic scene-linear domain. A plain [0,1]³
         // LUT clips every HDR highlight before the display transform.
         let shaper = LutShaper::default();
-        let baked = match bake_shaped_lut(
+        let baked = bake_shaped_lut(
             &proc,
             DEFAULT_LUT_SIZE,
             shaper,
             decode_code_values_for_transport,
             output_scale,
-        ) {
-            Ok(baked) => baked,
-            Err(error) => {
-                log::warn!(
-                    "color-pipeline: shaped {DEFAULT_LUT_SIZE}³ bake failed: {error}; \
-                     uploading a shaped identity LUT instead of retaining stale data"
-                );
-                identity_lut(DEFAULT_LUT_SIZE, shaper).map_err(|fallback_error| {
-                    log::error!(
-                        "color-pipeline: identity LUT construction failed after bake error: \
-                         {fallback_error}"
-                    );
-                    ColorPipelineError::Lut(fallback_error)
-                })?
-            }
-        };
+        )
+        .map_err(ColorPipelineError::Lut)?;
         self.processor = Some(proc);
         self.decode_code_values_for_transport = decode_code_values_for_transport;
         self.output_scale = output_scale;
@@ -913,6 +899,26 @@ impl ColorPipeline {
     /// Hard failure from the most recent settings rebuild.
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    /// Reject preview fallbacks when an export requires the requested transform.
+    pub fn validate_for_export(&self, settings: &ColorPipelineSettings) -> Result<(), String> {
+        if settings.mode == ColorMode::BuiltIn {
+            return Ok(());
+        }
+        if self.active_config_source() != &settings.ocio_config {
+            return Err(format!(
+                "Requested OCIO config {:?} could not be loaded",
+                settings.ocio_config
+            ));
+        }
+        if let CustomLutStatus::Failed { path, error } = self.custom_lut_status() {
+            return Err(format!("Custom LUT {} failed: {error}", path.display()));
+        }
+        if let Some(error) = self.last_error() {
+            return Err(format!("Colour transform failed: {error}"));
+        }
+        Ok(())
     }
 
     /// Cached 3D LUT for the GPU codepath. `None` when the

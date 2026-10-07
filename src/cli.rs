@@ -4,7 +4,7 @@
 //! The struct `CliOptions`, the parser `parse_args`, the help text
 //! `print_help`, and the per-field `parse_*` helpers all live here.
 
-use pt_mats::MaterializeMode;
+use pt_mats::MaterialSource;
 use render_shared::{OidnModeOption, OidnQualityOption};
 
 use crate::renderer::{self, RenderBackend, RenderMode};
@@ -52,7 +52,7 @@ pub struct CliOptions {
     pub xray_alpha: Option<f32>,
     pub flat_shading: Option<bool>,
     pub double_sided: Option<bool>,
-    pub materialize_mode: Option<MaterializeMode>,
+    pub materialize_mode: Option<MaterialSource>,
     pub env_map_intensity: Option<f32>,
     pub env_map_rotation: Option<f32>,
     pub env_map_enabled: Option<bool>,
@@ -226,7 +226,7 @@ RENDER SETTINGS (3D, overrides saved config):
     --no-flat-shading            Disable flat shading
     --double-sided               Enable double-sided
     --no-double-sided            Disable double-sided
-    --materialize <MODE>         Materialize mode (none|byextension|bypath|bysize|byage|random)
+    --materialize <SOURCE>       Material source (none|extension|path|size|age|depth|random)
     --slice                       Enable slice plane
     --no-slice                    Disable slice plane
     --slice-axis <N>              Slice axis (0=X,1=Y,2=Z)
@@ -326,14 +326,15 @@ fn parse_hover_mode(input: &str) -> Option<renderer::HoverMode> {
     }
 }
 
-fn parse_materialize_mode(input: &str) -> Option<MaterializeMode> {
+fn parse_materialize_mode(input: &str) -> Option<MaterialSource> {
     match input.to_lowercase().as_str() {
-        "none" => Some(MaterializeMode::None),
-        "byextension" | "by_extension" => Some(MaterializeMode::ByExtension),
-        "bypath" | "by_path" => Some(MaterializeMode::ByPath),
-        "bysize" | "by_size" => Some(MaterializeMode::BySize),
-        "byage" | "by_age" => Some(MaterializeMode::ByAge),
-        "random" => Some(MaterializeMode::Random),
+        "none" => Some(MaterialSource::None),
+        "extension" => Some(MaterialSource::Extension),
+        "path" => Some(MaterialSource::Path),
+        "size" => Some(MaterialSource::Size),
+        "age" => Some(MaterialSource::Age),
+        "depth" => Some(MaterialSource::Depth),
+        "random" => Some(MaterialSource::Random),
         _ => None,
     }
 }

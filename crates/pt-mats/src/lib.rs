@@ -11,7 +11,6 @@
 //! - [`MaterialDistribution`] — how the seeded source value is
 //!   reshaped before the weighted CDF lookup (Direct / Stratified /
 //!   Spatial / Perlin / Gradient).
-//! - [`MaterializeMode`] — preset shortcut for `MaterialSource`.
 //! - [`MaterializeSettings`] — full classification knob bundle.
 //! - [`MaterialInput`] — per-cube inputs handed to [`classify_to_index`].
 //! - [`classify_to_index`] — pick one `material_index` in `0..weights.len()`.
@@ -72,22 +71,16 @@ impl MaterialSource {
 /// the weighted CDF lookup. Each mode preserves the per-slot weight
 /// ratio (slot `i` still gets `weight[i] / total` of cubes globally),
 /// but rearranges *which* cube lands on which slot.
-///
-/// Serde aliases keep older presets parseable:
-/// * `"Quantized"` → [`Direct`](Self::Direct)
-/// * `"Bands"`     → [`Stratified`](Self::Stratified)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
 pub enum MaterialDistribution {
     /// Raw seeded source → weighted CDF. Standard weighted picking.
     #[default]
-    #[serde(alias = "Quantized")]
     Direct,
     /// Partition the source axis into `band_count` bands. Inside each
     /// band the picker walks the full `[0, 1)` range, so the weighted
     /// CDF still hits every slot proportionally — every band sees a
     /// fresh draw of the whole library. Effect: clean per-band
     /// material zoning without starving narrow weight slots.
-    #[serde(alias = "Bands")]
     Stratified,
     /// 3D cellular (Voronoi-style) noise from cube position. All
     /// cubes inside the same `spatial_scale`-sized cell share the
@@ -123,56 +116,6 @@ impl MaterialDistribution {
             MaterialDistribution::Perlin,
             MaterialDistribution::Gradient,
         ]
-    }
-}
-
-// ============================================================================
-// MaterializeMode (legacy preset -> MaterialSource)
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MaterializeMode {
-    None,
-    ByExtension,
-    ByPath,
-    BySize,
-    ByAge,
-    Random,
-}
-
-impl MaterializeMode {
-    pub fn name(self) -> &'static str {
-        match self {
-            MaterializeMode::None => "None",
-            MaterializeMode::ByExtension => "By Extension",
-            MaterializeMode::ByPath => "By Path",
-            MaterializeMode::BySize => "By Size",
-            MaterializeMode::ByAge => "By Age",
-            MaterializeMode::Random => "Random",
-        }
-    }
-
-    pub fn all() -> &'static [MaterializeMode] {
-        &[
-            MaterializeMode::None,
-            MaterializeMode::ByExtension,
-            MaterializeMode::ByPath,
-            MaterializeMode::BySize,
-            MaterializeMode::ByAge,
-            MaterializeMode::Random,
-        ]
-    }
-
-    /// Convert legacy mode to new source enum.
-    pub fn to_source(self) -> MaterialSource {
-        match self {
-            MaterializeMode::None => MaterialSource::None,
-            MaterializeMode::ByExtension => MaterialSource::Extension,
-            MaterializeMode::ByPath => MaterialSource::Path,
-            MaterializeMode::BySize => MaterialSource::Size,
-            MaterializeMode::ByAge => MaterialSource::Age,
-            MaterializeMode::Random => MaterialSource::Random,
-        }
     }
 }
 
@@ -700,13 +643,15 @@ mod tests {
 
     #[test]
     fn legacy_quantized_deserializes_as_direct() {
-        let d: MaterialDistribution = serde_json::from_str("\"Quantized\"").unwrap();
+        assert!(serde_json::from_str::<MaterialDistribution>("\"Quantized\"").is_err());
+        let d: MaterialDistribution = serde_json::from_str("\"Direct\"").unwrap();
         assert_eq!(d, MaterialDistribution::Direct);
     }
 
     #[test]
     fn legacy_bands_deserializes_as_stratified() {
-        let d: MaterialDistribution = serde_json::from_str("\"Bands\"").unwrap();
+        assert!(serde_json::from_str::<MaterialDistribution>("\"Bands\"").is_err());
+        let d: MaterialDistribution = serde_json::from_str("\"Stratified\"").unwrap();
         assert_eq!(d, MaterialDistribution::Stratified);
     }
 }

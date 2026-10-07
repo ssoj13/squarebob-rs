@@ -19,8 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 #[cfg(feature = "video")]
-use crate::frame::CropAlign;
 use crate::frame::{FrameConversion, PixelBuffer, PixelFormat, TonemapMode};
+use crate::hdr::PngEncoding;
 use crate::source::Comp;
 
 /// Export mode - video or image sequence
@@ -39,6 +39,10 @@ pub struct EncodeDialogSettings {
     pub output_path: PathBuf,
     pub container: Container,
     pub fps: f32,
+    /// Output transfer independent of the negotiated viewport signal.
+    pub output_encoding: PngEncoding,
+    /// Reference white of relative display light, as in WarpBro exports.
+    pub white_nits: f32,
     #[serde(default)]
     pub frame_start: i32,
     #[serde(default = "default_frame_end")]
@@ -68,6 +72,8 @@ impl Default for EncodeDialogSettings {
             output_path: PathBuf::from("output.mp4"),
             container: Container::MP4,
             fps: 24.0,
+            output_encoding: PngEncoding::Sdr8,
+            white_nits: 203.0,
             frame_start: 0,
             frame_end: default_frame_end(),
             selected_codec: VideoCodec::H264,
@@ -97,6 +103,8 @@ pub struct EncoderSettings {
     pub quality_mode: QualityMode,
     pub quality_value: u32, // CRF 18-28 or bitrate in kbps
     pub fps: f32,           // Output framerate (frames per second)
+    pub output_encoding: PngEncoding,
+    pub white_nits: f32,
 
     // Per-codec optional settings
     #[serde(default)]
@@ -120,10 +128,34 @@ impl Default for EncoderSettings {
             quality_mode: QualityMode::CRF,
             quality_value: 23, // Default CRF for H.264
             fps: 24.0,         // Default framerate
+            output_encoding: PngEncoding::Sdr8,
+            white_nits: 203.0,
             preset: Some("medium".to_string()),
             profile: Some("high".to_string()), // H.264: "high", H.265: "main" or "main10"
             prores_profile: Some(ProResProfile::Standard),
             tonemap_mode: TonemapMode::default(), // ACES by default
+        }
+    }
+}
+
+impl EncoderSettings {
+    /// Validate the same PNG-video delivery modes exposed by WarpBro.
+    pub fn png_video(&self) -> Result<crate::hdr::PngVideo, EncodeError> {
+        use crate::hdr::PngVideo;
+        if !self.white_nits.is_finite() || !(80.0..=1000.0).contains(&self.white_nits) {
+            return Err(EncodeError::OutputCreateFailed(
+                "Reference white must be 80–1000 nits".into(),
+            ));
+        }
+        match (self.codec, self.container) {
+            (VideoCodec::H265, Container::MP4) if self.quality_value <= 51 => Ok(PngVideo::Hevc),
+            (VideoCodec::ProRes, Container::MOV) => Ok(PngVideo::ProRes),
+            (VideoCodec::H265, Container::MP4) => Err(EncodeError::OutputCreateFailed(
+                "HEVC CRF must be 0–51".into(),
+            )),
+            _ => Err(EncodeError::OutputCreateFailed(
+                "HDR video requires HEVC / MP4 or ProRes / MOV".into(),
+            )),
         }
     }
 }
@@ -922,6 +954,24 @@ impl Default for SequenceSettings {
 }
 
 impl SequenceSettings {
+    /// Validate delivery independently of image storage precision and the viewport.
+    pub fn validate_output(
+        &self,
+        encoding: PngEncoding,
+        white_nits: f32,
+    ) -> Result<(), EncodeError> {
+        if encoding.hdr() && self.format != SequenceFormat::Png {
+            return Err(EncodeError::OutputCreateFailed(
+                "HDR transfer requires PNG output; EXR stores linear light".into(),
+            ));
+        }
+        if encoding.hdr() && (!white_nits.is_finite() || !(80.0..=1000.0).contains(&white_nits)) {
+            return Err(EncodeError::OutputCreateFailed(
+                "Reference white must be 80–1000 nits".into(),
+            ));
+        }
+        Ok(())
+    }
     /// Validate settings against format capabilities and fix if needed
     pub fn validate(&mut self) {
         self.format
@@ -1174,9 +1224,7 @@ pub fn encode_sequence_from_comp(
         })
         .map_err(|_| EncodeError::Cancelled)?;
 
-    let first_frame = comp.get_frame(play_range.0, true).ok_or_else(|| {
-        EncodeError::EncodeFrameFailed(format!("first frame {} is unavailable", play_range.0))
-    })?;
+    let first_frame = comp.get_frame(play_range.0, true)?;
     let (width, height) = first_frame.resolution();
     let width = u32::try_from(width)
         .map_err(|_| EncodeError::EncodeFrameFailed("frame width exceeds u32".to_string()))?;
@@ -1210,21 +1258,14 @@ pub fn encode_sequence_from_comp(
             return Err(EncodeError::Cancelled);
         }
 
-        let frame = comp.get_frame(frame_idx, true).ok_or_else(|| {
-            EncodeError::EncodeFrameFailed(format!("frame {frame_idx} is unavailable"))
-        })?;
+        let frame = comp.get_frame(frame_idx, true)?;
         let (frame_width, frame_height) = frame.resolution();
-        let cropped = if frame_width != width as usize || frame_height != height as usize {
-            frame
-                .crop_copy(width as usize, height as usize, CropAlign::Center)
-                .map_err(|error| {
-                    EncodeError::EncodeFrameFailed(format!(
-                        "frame {frame_idx} crop {frame_width}x{frame_height} -> {width}x{height} failed: {error}"
-                    ))
-                })?
-        } else {
-            frame.clone()
-        };
+        if frame_width != width as usize || frame_height != height as usize {
+            return Err(EncodeError::EncodeFrameFailed(format!(
+                "Frame {frame_idx} size changed: {frame_width}x{frame_height}, expected {width}x{height}"
+            )));
+        }
+        let cropped = frame;
 
         if cancel_flag.load(Ordering::Relaxed) {
             return Err(EncodeError::Cancelled);
@@ -1233,14 +1274,29 @@ pub fn encode_sequence_from_comp(
             cropped.pixel_format(),
             PixelFormat::RgbaF16 | PixelFormat::RgbaF32
         );
-        let frame_for_encode = if encoder.requires_ldr() && source_is_hdr {
-            cropped
-                .tonemap(settings.tonemap_mode, PixelFormat::Rgba8)
+        let frame_for_encode = if source_is_hdr && cropped.hdr_light().is_err() {
+            let mapped = cropped
+                .tonemap(settings.tonemap_mode, PixelFormat::RgbaF32)
                 .map_err(|error| {
                     EncodeError::EncodeFrameFailed(format!(
                         "frame {frame_idx} tonemapping failed: {error}"
                     ))
-                })?
+                })?;
+            let buffer = mapped.buffer();
+            let PixelBuffer::F32(light) = buffer.as_ref() else {
+                return Err(EncodeError::EncodeFrameFailed(
+                    "Tone mapper did not return floating-point display light".into(),
+                ));
+            };
+            let (w, h) = mapped.resolution();
+            crate::frame::Frame::display_light(
+                w,
+                h,
+                light.clone(),
+                crate::hdr::DisplayLight::Relative,
+                settings.white_nits,
+            )
+            .map_err(EncodeError::EncodeFrameFailed)?
         } else {
             cropped
         };
@@ -1297,7 +1353,11 @@ pub fn encode_comp(
 ) -> Result<(), EncodeError> {
     #[cfg(feature = "video")]
     {
-        encode_sequence_from_comp(comp, project, settings, progress_tx, cancel_flag)
+        if settings.output_encoding.hdr() {
+            encode_hdr_sequence(comp, settings, progress_tx, cancel_flag)
+        } else {
+            encode_sequence_from_comp(comp, project, settings, progress_tx, cancel_flag)
+        }
     }
 
     #[cfg(not(feature = "video"))]
@@ -1305,6 +1365,124 @@ pub fn encode_comp(
         let _ = (comp, project, settings, progress_tx, cancel_flag);
         Err(EncodeError::BackendUnavailable("video"))
     }
+}
+
+/// Adapt the composition worker to WarpBro's canonical finished-PNG video path.
+/// Its private sequence is scoped to this job; a cancelled or failed child never
+/// publishes a partial video over a completed destination.
+#[cfg(feature = "video")]
+fn encode_hdr_sequence(
+    comp: &Comp,
+    settings: &EncoderSettings,
+    progress_tx: Sender<EncodeProgress>,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), EncodeError> {
+    let codec = settings.png_video()?;
+    let (fps_num, fps_den) = fps_to_rational(settings.fps)?;
+    let (first, last) = comp.play_range(true);
+    let total = last
+        .checked_sub(first)
+        .and_then(|n| n.checked_add(1))
+        .filter(|&n| n > 0 && n <= 100_001)
+        .ok_or_else(|| {
+            EncodeError::OutputCreateFailed("Frame range must contain 1–100001 frames".into())
+        })?;
+    let send = |current_frame, stage| {
+        progress_tx
+            .send(EncodeProgress {
+                current_frame,
+                total_frames: total,
+                stage,
+            })
+            .map_err(|_| EncodeError::Cancelled)
+    };
+    send(0, EncodeStage::Validating)?;
+    let parent = settings
+        .output_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| EncodeError::OutputCreateFailed(e.to_string()))?;
+    let sequence = tempfile::Builder::new()
+        .prefix(".squarebob-hdr-")
+        .tempdir_in(parent)
+        .map_err(|e| EncodeError::OutputCreateFailed(e.to_string()))?;
+    let mut levels: Option<crate::hdr::HdrLevels> = None;
+    let mut size = None;
+    for (number, frame_idx) in (first..=last).enumerate() {
+        if cancel.load(Ordering::Acquire) {
+            return Err(EncodeError::Cancelled);
+        }
+        let frame = comp.get_frame(frame_idx, true)?;
+        let resolution = frame.resolution();
+        if size.is_some_and(|s| s != resolution) {
+            return Err(EncodeError::EncodeFrameFailed(
+                "Frame size changed during HDR export".into(),
+            ));
+        }
+        size = Some(resolution);
+        if codec == crate::hdr::PngVideo::Hevc
+            && (!resolution.0.is_multiple_of(2) || !resolution.1.is_multiple_of(2))
+        {
+            return Err(EncodeError::EncodeFrameFailed(
+                "HEVC 4:2:0 requires even width and height".into(),
+            ));
+        }
+        let path = sequence.path().join(format!(
+            "frame.{number:06}.{}",
+            settings.output_encoding.suffix()
+        ));
+        let frame_levels = frame
+            .save_png(&path, settings.output_encoding, settings.white_nits)
+            .map_err(EncodeError::EncodeFrameFailed)?;
+        levels = match (levels, frame_levels) {
+            (Some(a), Some(b)) => Some(a.merge(b)),
+            (a, b) => a.or(b),
+        };
+        send(number as i32 + 1, EncodeStage::Encoding)?;
+    }
+    let input = if total == 1 {
+        sequence.path().join(format!(
+            "frame.000000.{}",
+            settings.output_encoding.suffix()
+        ))
+    } else {
+        let dir = sequence.path().to_str().ok_or_else(|| {
+            EncodeError::OutputCreateFailed("FFmpeg sequence directory must be Unicode".into())
+        })?;
+        std::path::Path::new(&dir.replace('%', "%%"))
+            .join(format!("frame.%06d.{}", settings.output_encoding.suffix()))
+    };
+    let options = crate::hdr::PngVideoOptions {
+        codec,
+        encoding: settings.output_encoding,
+        input: &input,
+        start_number: 0,
+        frame_count: total as u32,
+        fps_num: fps_num as u32,
+        fps_den: fps_den as u32,
+        qp: settings.quality_value,
+    };
+    send(0, EncodeStage::Flushing)?;
+    let completed = crate::hdr::encode_video(
+        &options,
+        levels,
+        &settings.output_path,
+        true,
+        &cancel,
+        |count| {
+            if send(count.min(total as u32) as i32, EncodeStage::Flushing).is_err() {
+                cancel.store(true, Ordering::Release);
+            }
+        },
+    )
+    .map_err(EncodeError::EncodeFrameFailed)?;
+    if !completed {
+        return Err(EncodeError::Cancelled);
+    }
+    // Publication is committed. Losing the observer cannot undo that outcome.
+    let _ = send(total, EncodeStage::Complete);
+    Ok(())
 }
 
 /// Strip alpha channel from RGBA interleaved data.
@@ -1762,9 +1940,12 @@ pub fn encode_image_sequence(
     _project: &crate::source::Project,
     output_path: &std::path::Path,
     settings: &SequenceSettings,
+    output_encoding: PngEncoding,
+    white_nits: f32,
     progress_tx: Sender<EncodeProgress>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Result<(), EncodeError> {
+    settings.validate_output(output_encoding, white_nits)?;
     let start_time = std::time::Instant::now();
     info!(
         "========== encode_image_sequence() ENTERED at {:?} ==========",
@@ -1838,13 +2019,41 @@ pub fn encode_image_sequence(
         let current_frame = frame_idx - play_range.0 + 1;
 
         // Get frame from comp
-        let frame = comp.get_frame(frame_idx, true).ok_or_else(|| {
-            EncodeError::EncodeFrameFailed(format!("Frame {} not available", frame_idx))
-        })?;
+        let frame = comp.get_frame(frame_idx, true)?;
+
+        if output_encoding.hdr() {
+            let frame_path = build_frame_path(base_dir, &prefix, &pattern, &suffix, frame_idx);
+            frame
+                .save_png(&frame_path, output_encoding, white_nits)
+                .map_err(EncodeError::EncodeFrameFailed)?;
+            if progress_tx
+                .send(EncodeProgress {
+                    current_frame,
+                    total_frames,
+                    stage: EncodeStage::Encoding,
+                })
+                .is_err()
+            {
+                return Err(EncodeError::Cancelled);
+            }
+            continue;
+        }
 
         // Keep floating-point precision until the U16 PNG/TIFF writer quantizes it.
-        let frame_to_write = if settings.apply_tonemap
-            || (!settings.format.is_hdr() && frame.pixel_format() != PixelFormat::Rgba8)
+        let frame_to_write = if frame.hdr_light().is_ok() && !settings.format.is_hdr() {
+            frame
+                .tonemap(
+                    TonemapMode::Clamp,
+                    if settings.bit_depth == OutputBitDepth::U16 {
+                        PixelFormat::RgbaF32
+                    } else {
+                        PixelFormat::Rgba8
+                    },
+                )
+                .map_err(EncodeError::EncodeFrameFailed)?
+        } else if frame.hdr_light().is_err()
+            && (settings.apply_tonemap
+                || (!settings.format.is_hdr() && frame.pixel_format() != PixelFormat::Rgba8))
         {
             let output_format = if settings.bit_depth == OutputBitDepth::U16 {
                 PixelFormat::RgbaF32

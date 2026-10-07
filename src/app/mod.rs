@@ -12,6 +12,7 @@
 //! - shell.rs: OS shell operations
 //! - helpers.rs: utility functions
 
+mod camera_slots;
 mod cli_apply;
 mod dock;
 mod ext_panel;
@@ -31,11 +32,11 @@ mod status_bar;
 mod toolbar;
 mod tree_panel;
 mod treemap_view;
+mod viewport_toolbar;
 // render_callback module removed - using egui native texture display
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use eframe::egui;
 
@@ -59,15 +60,156 @@ use state::{PersistState, SavedOpts};
 
 impl App {
     pub(super) fn sync_display(&mut self, ctx: &egui::Context) {
-        if let Some(state) =
-            ctx.data(|d| d.get_temp::<egui_display::DisplayState>(egui_display::state_id()))
-        {
+        let output = ctx
+            .data(|d| d.get_temp::<egui_display::DisplayState>(egui_display::state_id()))
+            .map(|state| (state.target.hdr, state.target.white));
+        if let Some((hdr, white)) = output {
             let cp = &mut self.render_3d_opts.color_pipeline;
-            if cp.output_hdr != state.target.hdr || cp.reference_white_nits != state.target.white {
+            if cp.output_hdr != hdr || cp.reference_white_nits != white {
                 self.needs_render_3d = true;
             }
-            cp.output_hdr = state.target.hdr;
-            cp.reference_white_nits = state.target.white;
+            cp.output_hdr = hdr;
+            cp.reference_white_nits = white;
+        }
+    }
+
+    pub(super) fn render_root(&self) -> Option<&DirEntry> {
+        self.encode_render_session
+            .as_ref()
+            .map(|session| &session.root)
+            .or_else(|| self.display_root())
+    }
+
+    pub(super) fn render_mode_for_frame(&self) -> RenderMode {
+        self.encode_render_session
+            .as_ref()
+            .map_or(self.render_mode, |session| session.mode)
+    }
+
+    pub(super) fn render_backend_for_frame(&self) -> RenderBackend {
+        self.encode_render_session
+            .as_ref()
+            .map_or(self.render_backend, |session| session.backend)
+    }
+
+    pub(super) fn render_options_for_frame(&self) -> &renderer::Render3DOptions {
+        self.encode_render_session
+            .as_ref()
+            .map_or(&self.render_3d_opts, |session| {
+                session.render_options.as_ref()
+            })
+    }
+
+    pub(super) fn render_options_snapshot(&self) -> Arc<renderer::Render3DOptions> {
+        self.encode_render_session.as_ref().map_or_else(
+            || Arc::new(self.render_3d_opts.clone()),
+            |session| session.render_options.clone(),
+        )
+    }
+
+    pub(super) fn render_camera_for_frame(&self) -> &renderer::OrbitCamera {
+        self.encode_render_session
+            .as_ref()
+            .map_or(&self.orbit_camera, |session| &session.camera)
+    }
+
+    pub(super) fn treemap_options_for_frame(&self) -> &treemap::TreeMapOptions {
+        self.encode_render_session
+            .as_ref()
+            .map_or(&self.opts, |session| &session.options)
+    }
+
+    pub(super) fn viewport_for_frame(&self) -> &render_core::Viewport {
+        self.encode_render_session
+            .as_ref()
+            .map_or(&self.viewport, |session| &session.viewport)
+    }
+
+    pub(super) fn layout_dirty_for_frame(&self) -> bool {
+        self.encode_render_session
+            .as_ref()
+            .map_or(self.needs_layout, |session| session.layout_dirty)
+    }
+
+    pub(super) fn render_dirty_for_frame(&self) -> bool {
+        self.encode_render_session
+            .as_ref()
+            .map_or(self.needs_render_3d, |session| session.render_dirty)
+    }
+
+    pub(super) fn finish_render_input_frame(&mut self) {
+        if let Some(session) = &mut self.encode_render_session {
+            session.layout_dirty = false;
+            session.render_dirty = false;
+        } else {
+            self.needs_layout = false;
+            self.needs_render_3d = false;
+        }
+    }
+
+    pub(super) fn renderer_3d_for_frame(&self) -> Option<&Renderer3D> {
+        match &self.encode_render_session {
+            Some(session) => session.renderer_3d.as_ref(),
+            None => self.renderer_3d.as_ref(),
+        }
+    }
+
+    pub(super) fn renderer_3d_for_frame_mut(&mut self) -> Option<&mut Renderer3D> {
+        match &mut self.encode_render_session {
+            Some(session) => session.renderer_3d.as_mut(),
+            None => self.renderer_3d.as_mut(),
+        }
+    }
+
+    pub(super) fn render_3d_resources_mut(
+        &mut self,
+    ) -> (Option<&mut Renderer3D>, &mut color_pipeline::ColorPipeline) {
+        match &mut self.encode_render_session {
+            Some(session) => (session.renderer_3d.as_mut(), &mut session.pipeline),
+            None => (self.renderer_3d.as_mut(), &mut self.color_pipeline),
+        }
+    }
+
+    pub(super) fn take_frame_renderer_3d(&mut self) -> Option<Renderer3D> {
+        match &mut self.encode_render_session {
+            Some(session) => session.renderer_3d.take(),
+            None => self.renderer_3d.take(),
+        }
+    }
+
+    pub(super) fn set_frame_renderer_3d(&mut self, renderer: Option<Renderer3D>) {
+        match &mut self.encode_render_session {
+            Some(session) => session.renderer_3d = renderer,
+            None => self.renderer_3d = renderer,
+        }
+    }
+
+    pub(super) fn take_frame_renderer_2d(&mut self) -> Option<GpuRenderer2D> {
+        match &mut self.encode_render_session {
+            Some(session) => session.renderer_2d.take(),
+            None => self.renderer_2d_gpu.take(),
+        }
+    }
+
+    pub(super) fn set_frame_renderer_2d(&mut self, renderer: Option<GpuRenderer2D>) {
+        match &mut self.encode_render_session {
+            Some(session) => session.renderer_2d = renderer,
+            None => self.renderer_2d_gpu = renderer,
+        }
+    }
+
+    pub(super) fn invalidate_encode_preview(&mut self) {
+        self.needs_layout = true;
+        self.needs_render_3d = true;
+        self.last_anim_tick = None;
+        self.oidn_display_is_denoised = false;
+        self.oidn_denoised_this_accumulation = false;
+        self.oidn_last_frame_count = 0;
+        self.last_render_frame_3d = 0;
+        if let Some(renderer) = self.renderer_3d_for_frame_mut() {
+            renderer.invalidate_instances();
+            renderer.mark_pt_scene_dirty();
+            renderer.reset_pt_accumulation();
         }
     }
 
@@ -109,6 +251,8 @@ impl App {
             app.render_backend = s.render_backend;
             app.render_mode = s.render_mode;
             app.render_3d_opts = s.render_3d_opts;
+            app.camera_slots = s.camera_slots;
+            app.viewport_toolbar = s.viewport_toolbar;
             app.dock_state = s.dock_state;
             app.dock_layout = s.dock_layout;
             // Migration: older persisted layouts predate
@@ -234,10 +378,10 @@ impl App {
             app.wgpu_render_state = Some(render_state.clone());
         }
 
-        let error_flag = app.wgpu_error_flag.clone();
+        let error_tx = app.wgpu_error_tx.clone();
         gpu_ctx.device.on_uncaptured_error(Arc::new(move |err| {
             log::error!("wgpu uncaptured error: {:?}", err);
-            error_flag.store(true, Ordering::SeqCst);
+            let _ = error_tx.send(format!("wgpu uncaptured error: {err}"));
         }));
         let limits = gpu_ctx.device.limits();
         log::info!(
@@ -585,37 +729,47 @@ impl App {
 
     fn render_treemap(&mut self, ctx: &egui::Context, size: (u32, u32)) {
         let (w, h) = size;
+        let mode = self.render_mode_for_frame();
+        let backend = self.render_backend_for_frame();
+        let options = self.render_options_snapshot();
+        let camera = self.render_camera_for_frame().clone();
+        let treemap_options = self.treemap_options_for_frame().clone();
+        let mut viewport = self.viewport_for_frame().clone();
+        viewport.width = w;
+        viewport.height = h;
         if w == 0 || h == 0 {
             return;
         }
 
         let t0 = std::time::Instant::now();
 
-        self.viewport.width = w;
-        self.viewport.height = h;
+        if self.encode_render_session.is_none() {
+            self.viewport.width = w;
+            self.viewport.height = h;
+        }
 
         // GPU context is always populated by App::new from main.rs's shared
         // setup — no per-mode fallback creation needed.
         let _ = (RenderMode::Mode3D, RenderBackend::Gpu); // explicit: paths used elsewhere
 
-        if self.render_mode == RenderMode::Mode3D {
-            if self.renderer_3d.is_none()
+        if mode == RenderMode::Mode3D {
+            if self.renderer_3d_for_frame().is_none()
                 && let Some(gpu_ctx) = &self.gpu_context
             {
                 let mut r3d = Renderer3D::new(gpu_ctx.clone());
-                if self.render_3d_opts.env_map_enabled
-                    && let Some(ref path) = self.render_3d_opts.env_map_path
+                if options.env_map_enabled
+                    && let Some(ref path) = options.env_map_path
                     && path.exists()
                     && let Err(e) = r3d.load_env_map(path)
                 {
                     log::error!("Auto-load env map failed: {e}");
                 }
-                self.renderer_3d = Some(r3d);
+                self.set_frame_renderer_3d(Some(r3d));
             }
-            if self.orbit_camera.target == glam::Vec3::ZERO {
+            if self.encode_render_session.is_none() && self.orbit_camera.target == glam::Vec3::ZERO
+            {
                 let (scene_w, scene_h) = self
-                    .renderer_3d
-                    .as_ref()
+                    .renderer_3d_for_frame()
                     .map(|r| r.current_scene_layout_size())
                     .unwrap_or((w, h));
                 self.orbit_camera.set_front_view_for_viewport(
@@ -626,12 +780,17 @@ impl App {
             }
         }
 
-        if self.render_mode == RenderMode::Mode2D
-            && self.render_backend == RenderBackend::Gpu
-            && self.renderer_2d_gpu.is_none()
+        if mode == RenderMode::Mode2D
+            && backend == RenderBackend::Gpu
+            && self
+                .encode_render_session
+                .as_ref()
+                .map_or(self.renderer_2d_gpu.is_none(), |session| {
+                    session.renderer_2d.is_none()
+                })
             && let Some(gpu_ctx) = &self.gpu_context
         {
-            self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
+            self.set_frame_renderer_2d(Some(GpuRenderer2D::new(gpu_ctx.clone())));
         }
 
         // CPU-readback fallback path. The zero-copy path lives in
@@ -646,13 +805,13 @@ impl App {
         //     sample, or
         //   - the caller is `capture_viewport` for screenshots, which
         //     always wants pixels in CPU memory.
-        let pixels = match self.render_mode {
-            RenderMode::Mode2D => match self.render_backend {
+        let pixels = match mode {
+            RenderMode::Mode2D => match backend {
                 RenderBackend::Cpu => {
-                    let Some(root) = self.display_root() else {
+                    let Some(root) = self.render_root() else {
                         return;
                     };
-                    match renderer::cpu::render(root, &self.viewport, &self.opts) {
+                    match renderer::cpu::render(root, &viewport, &treemap_options) {
                         Ok(pixels) => pixels,
                         Err(error) => {
                             log::error!("CPU treemap render rejected: {error}");
@@ -661,17 +820,17 @@ impl App {
                     }
                 }
                 RenderBackend::Gpu => {
-                    let mut renderer_2d = self.renderer_2d_gpu.take();
+                    let mut renderer_2d = self.take_frame_renderer_2d();
                     let gpu_result = if let Some(r) = &mut renderer_2d {
-                        let Some(root) = self.display_root() else {
-                            self.renderer_2d_gpu = renderer_2d;
+                        let Some(root) = self.render_root() else {
+                            self.set_frame_renderer_2d(renderer_2d);
                             return;
                         };
-                        Some(r.render(root, &self.viewport, &self.opts))
+                        Some(r.render(root, &viewport, &treemap_options))
                     } else {
                         None
                     };
-                    self.renderer_2d_gpu = renderer_2d;
+                    self.set_frame_renderer_2d(renderer_2d);
 
                     if let Some(result) = gpu_result {
                         match result {
@@ -682,10 +841,10 @@ impl App {
                             }
                         }
                     } else {
-                        let Some(root) = self.display_root() else {
+                        let Some(root) = self.render_root() else {
                             return;
                         };
-                        match renderer::cpu::render(root, &self.viewport, &self.opts) {
+                        match renderer::cpu::render(root, &viewport, &treemap_options) {
                             Ok(pixels) => pixels,
                             Err(error) => {
                                 log::error!("CPU treemap render rejected: {error}");
@@ -700,24 +859,17 @@ impl App {
                 // treemap_view::render_3d_callback). This branch is hit
                 // for screenshot capture or when the GpuContext is on a
                 // foreign device (no POLYGON_MODE_LINE on eframe's device).
-                let mut renderer_3d = self.renderer_3d.take();
+                let mut renderer_3d = self.take_frame_renderer_3d();
                 let gpu_result = if let Some(r) = &mut renderer_3d {
-                    let Some(root) = self.display_root() else {
-                        self.renderer_3d = renderer_3d;
+                    let Some(root) = self.render_root() else {
+                        self.set_frame_renderer_3d(renderer_3d);
                         return;
                     };
-                    Some(r.render(
-                        root,
-                        w,
-                        h,
-                        &self.orbit_camera,
-                        &self.render_3d_opts,
-                        &self.opts,
-                    ))
+                    Some(r.render(root, w, h, &camera, &options, &treemap_options))
                 } else {
                     None
                 };
-                self.renderer_3d = renderer_3d;
+                self.set_frame_renderer_3d(renderer_3d);
 
                 if let Some(result) = gpu_result {
                     match result {
@@ -728,10 +880,10 @@ impl App {
                         }
                     }
                 } else {
-                    let Some(root) = self.display_root() else {
+                    let Some(root) = self.render_root() else {
                         return;
                     };
-                    match renderer::cpu::render(root, &self.viewport, &self.opts) {
+                    match renderer::cpu::render(root, &viewport, &treemap_options) {
                         Ok(pixels) => pixels,
                         Err(error) => {
                             log::error!("CPU treemap render rejected: {error}");
@@ -745,12 +897,11 @@ impl App {
         let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &pixels);
         self.treemap_tex = Some(ctx.load_texture("treemap", image, egui::TextureOptions::NEAREST));
         self.last_render_size = size;
-        self.needs_layout = false;
+        self.finish_render_input_frame();
 
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
-        let samples_per_frame = if self.render_3d_opts.path_tracing {
-            self.renderer_3d
-                .as_ref()
+        let samples_per_frame = if options.path_tracing {
+            self.renderer_3d_for_frame()
                 .map(|r| r.pt_samples_per_update())
                 .unwrap_or(0)
         } else {
@@ -808,6 +959,8 @@ impl eframe::App for App {
             render_backend: self.render_backend,
             render_mode: self.render_mode,
             render_3d_opts: self.render_3d_opts.clone(),
+            camera_slots: self.camera_slots.clone(),
+            viewport_toolbar: self.viewport_toolbar,
             dock_state: self.dock_state.clone(),
             dock_layout: self.dock_layout.clone(),
             font_size: self.font_size,

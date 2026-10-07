@@ -1,7 +1,6 @@
 //! Central treemap panel: rendering, hover, selection, context menu, camera controls.
 
 use eframe::egui;
-use std::sync::atomic::Ordering;
 
 use crate::events::{NavigateUpEvent, SelectPathEvent};
 use crate::renderer::{RenderBackend, RenderMode};
@@ -9,48 +8,60 @@ use treemap::GpuRenderer2D;
 
 use super::App;
 use super::helpers::{find_node_by_path, fmt_size, path_to_dir};
-use egui_widgets_config::icons;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::shell::{properties_label, shell_properties};
 use super::shell::{reveal_label, shell_open, shell_open_terminal, shell_reveal, trash_label};
 use super::state::HoverInfo;
+use egui_widgets_config::icons;
 
 impl App {
     /// Render the central treemap/3D panel
     pub(super) fn ui_treemap(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.sync_display(&ctx);
-        if self.display_root().is_some() {
+        let viewport_rect = ui.available_rect_before_wrap();
+        self.viewport_toolbar(ui, viewport_rect);
+        if self
+            .encode_render_session
+            .as_ref()
+            .is_some_and(|session| session.error.is_some())
+        {
+            return;
+        }
+        if self.render_root().is_some() {
             let available = ui.available_size();
-            let w = available.x.max(1.0) as u32;
-            let h = available.y.max(1.0) as u32;
+            let (w, h) = self.encode_render_session.as_ref().map_or(
+                (available.x.max(1.0) as u32, available.y.max(1.0) as u32),
+                |session| session.extent,
+            );
 
             // Zero-copy rendering paths (use eframe's wgpu device so egui
             // can sample the texture without a CPU readback round-trip).
             // Both 3D and 2D-GPU benefit; 2D-CPU remains the legacy path.
             let use_callback = self.wgpu_render_state.is_some()
                 && self.gpu_context.is_some()
-                && (self.render_mode == RenderMode::Mode3D
-                    || (self.render_mode == RenderMode::Mode2D
-                        && self.render_backend == RenderBackend::Gpu));
+                && (self.render_mode_for_frame() == RenderMode::Mode3D
+                    || (self.render_mode_for_frame() == RenderMode::Mode2D
+                        && self.render_backend_for_frame() == RenderBackend::Gpu));
 
             if use_callback {
-                if self.render_mode == RenderMode::Mode3D {
+                if self.render_mode_for_frame() == RenderMode::Mode3D {
                     self.render_3d_callback(ui, w, h);
                 } else {
                     self.render_2d_callback(ui, w, h);
                 }
             } else {
                 // Legacy path: render to texture, then display
-                if self.needs_layout
+                if self.layout_dirty_for_frame()
                     || self.last_render_size != (w, h)
-                    || (self.render_mode == RenderMode::Mode2D && self.treemap_tex.is_none())
+                    || (self.render_mode_for_frame() == RenderMode::Mode2D
+                        && self.treemap_tex.is_none())
                 {
                     self.render_treemap(&ctx, (w, h));
                 }
 
                 // Use zero-copy texture if available, fallback to CPU texture
-                let tex_id = if self.render_mode == RenderMode::Mode3D {
+                let tex_id = if self.render_mode_for_frame() == RenderMode::Mode3D {
                     self.render_texture_id
                         .or_else(|| self.treemap_tex.as_ref().map(|t| t.id()))
                 } else {
@@ -68,13 +79,13 @@ impl App {
                     );
 
                     // 3D Camera Controls
-                    if self.render_mode == RenderMode::Mode3D {
+                    if self.render_mode_for_frame() == RenderMode::Mode3D {
                         self.handle_3d_camera(&resp, &ctx);
                         self.draw_marquee_overlay(ui, &resp, &ctx);
                     }
 
                     // 2D Mode interactions
-                    if self.render_mode == RenderMode::Mode2D {
+                    if self.render_mode_for_frame() == RenderMode::Mode2D {
                         self.handle_2d_interactions(ui, &resp, &ctx);
                     }
 
@@ -100,6 +111,9 @@ impl App {
 
     /// 3D camera controls (Houdini-style) + hover picking
     fn handle_3d_camera(&mut self, resp: &egui::Response, ctx: &egui::Context) {
+        if self.pointer_over_viewport_toolbar(ctx) || self.encode_dialog.is_encoding() {
+            return;
+        }
         let is_pt = self.render_3d_opts.path_tracing;
         let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
         let shift_held = ctx.input(|i| i.modifiers.shift);
@@ -806,6 +820,9 @@ impl App {
         }
 
         // Hover + highlight
+        if self.pointer_over_viewport_toolbar(ctx) || self.encode_dialog.is_encoding() {
+            return;
+        }
         if let Some(pos) = resp.hover_pos() {
             let lx = pos.x - resp.rect.left();
             let ly = pos.y - resp.rect.top();
@@ -1038,58 +1055,71 @@ impl App {
     /// Zero-copy 3D rendering via register_native_texture
     fn render_3d_callback(&mut self, ui: &mut egui::Ui, w: u32, h: u32) {
         let ctx = ui.ctx().clone();
+        let layout_dirty = self.layout_dirty_for_frame();
+        let render_dirty = self.render_dirty_for_frame();
+        let exporting = self.encode_render_session.is_some();
+        let options = self.render_options_snapshot();
+        let mut camera = self.render_camera_for_frame().clone();
+        let treemap_options = self.treemap_options_for_frame().clone();
+        let mut selected_ids = self.encode_render_session.as_ref().map_or_else(
+            || self.selected_3d_ids.clone(),
+            |session| session.selected_ids.clone(),
+        );
 
         // Ensure renderer exists
-        if self.renderer_3d.is_none()
+        if self.renderer_3d_for_frame().is_none()
             && let Some(gpu_ctx) = &self.gpu_context
         {
             let mut r3d = render_3d::Renderer3D::new(gpu_ctx.clone());
-            if self.render_3d_opts.env_map_enabled
-                && let Some(ref path) = self.render_3d_opts.env_map_path
+            if options.env_map_enabled
+                && let Some(ref path) = options.env_map_path
                 && path.exists()
                 && let Err(e) = r3d.load_env_map(path)
             {
                 log::error!("Auto-load env map failed: {e}");
             }
-            self.renderer_3d = Some(r3d);
+            self.set_frame_renderer_3d(Some(r3d));
         }
 
         // Initialize camera to view center if not set
-        if self.orbit_camera.target == glam::Vec3::ZERO && w > 0 && h > 0 {
+        if self.encode_render_session.is_none()
+            && self.orbit_camera.target == glam::Vec3::ZERO
+            && w > 0
+            && h > 0
+        {
             let (scene_w, scene_h) = self.scene_layout_size_or_viewport(w, h);
             self.orbit_camera.set_front_view_for_viewport(
                 scene_w,
                 scene_h,
                 w as f32 / h.max(1) as f32,
             );
+            camera = self.orbit_camera.clone();
         }
 
         // Check if we need to render
         let size_changed = self.last_render_size != (w, h);
         // Hover pick: pending pick but scene unchanged — fast readback from existing texture
-        let hover_needs_pick = !self.render_3d_opts.path_tracing
-            && self.render_3d_opts.hover_mode != crate::renderer::HoverMode::None
+        let hover_needs_pick = !options.path_tracing
+            && options.hover_mode != crate::renderer::HoverMode::None
             && self
-                .renderer_3d
-                .as_ref()
+                .renderer_3d_for_frame()
                 .is_some_and(|r| r.has_pending_pick());
-        let pt_throttled = self.render_3d_opts.path_tracing
-            && (self.render_3d_opts.pt_auto_spp || self.render_3d_opts.pt_camera_snap);
+        let pt_throttled = self.encode_render_session.is_none()
+            && options.path_tracing
+            && (options.pt_auto_spp || options.pt_camera_snap);
         let pt_tick_ready = !pt_throttled || self.render_tick_3d;
-        let need_render = self.needs_layout
-            || self.needs_render_3d
-            || size_changed
-            || (self.render_3d_opts.path_tracing && pt_tick_ready);
+        let need_render =
+            layout_dirty || render_dirty || size_changed || (options.path_tracing && pt_tick_ready);
 
         if !need_render && hover_needs_pick {
             // Fast path: readback updates hovered_id (tooltip), but outline/hover uniforms only refresh
             // in render_to_view — schedule a full pass when the hovered object changes.
-            if let Some(r) = &mut self.renderer_3d {
+            if let Some(r) = self.renderer_3d_for_frame_mut() {
                 let id_before = r.hovered_id();
                 match r.pick_from_existing() {
                     Ok(()) => {
                         let id_after = r.hovered_id();
-                        if self.render_3d_opts.hover_mode != crate::renderer::HoverMode::None
+                        if options.hover_mode != crate::renderer::HoverMode::None
                             && id_after != id_before
                         {
                             self.needs_render_3d = true;
@@ -1101,7 +1131,7 @@ impl App {
                     }
                 }
             }
-            if !self.render_3d_opts.path_tracing {
+            if !options.path_tracing {
                 self.sync_treemap_hover_from_3d_gpu();
             }
         }
@@ -1116,7 +1146,7 @@ impl App {
             let render_state = self.wgpu_render_state.clone().unwrap();
             // Resolve non-GPU prerequisites before opening the validation scope.
             // Every path after push_error_scope must reach pop().
-            let root_ptr = match self.display_root() {
+            let root_ptr = match self.render_root() {
                 Some(root) => root as *const _,
                 None => return,
             };
@@ -1127,30 +1157,37 @@ impl App {
 
             let render_result = (|| -> Result<std::time::Duration, render_core::ReadbackError> {
                 // When layout changes, invalidate instances and mark PT scene dirty
-                if self.needs_layout
-                    && let Some(r) = &mut self.renderer_3d
-                {
+                if layout_dirty && let Some(r) = self.renderer_3d_for_frame_mut() {
                     r.invalidate_instances();
                     r.mark_pt_scene_dirty();
                 }
 
                 // Render to texture (root_ptr valid for this scope; see SAFETY below)
-                if let Some(r) = &mut self.renderer_3d {
+                let (renderer, pipeline) = self.render_3d_resources_mut();
+                if let Some(r) = renderer {
                     // Sync selected IDs for outline rendering
-                    r.set_selected_ids(&self.selected_3d_ids);
+                    r.set_selected_ids(&selected_ids);
                     // Make sure the OCIO `Processor` + baked 3D LUT are
                     // in sync with the live settings BEFORE blitting.
                     // `ensure` is a hash-compare noop when nothing
                     // changed; `sync_color_lut` early-returns when the
                     // pending flag is clear. Both calls are cheap on
                     // the steady-state path.
-                    if let Err(error) = self
-                        .color_pipeline
-                        .ensure(&self.render_3d_opts.color_pipeline)
-                    {
+                    if let Err(error) = pipeline.ensure(&options.color_pipeline) {
+                        if exporting {
+                            return Err(render_core::ReadbackError::SceneBuild(error.to_string()));
+                        }
                         log::error!("color pipeline rebuild rejected: {error}");
                     }
-                    if let Err(error) = r.sync_color_lut(&mut self.color_pipeline) {
+                    if exporting {
+                        pipeline
+                            .validate_for_export(&options.color_pipeline)
+                            .map_err(render_core::ReadbackError::SceneBuild)?;
+                    }
+                    if let Err(error) = r.sync_color_lut(pipeline) {
+                        if exporting {
+                            return Err(render_core::ReadbackError::SceneBuild(error.to_string()));
+                        }
                         log::error!("color LUT upload rejected: {error}");
                     }
                     // SAFETY: `root_ptr` aliases self.tree (DirEntry storage owned by
@@ -1161,20 +1198,20 @@ impl App {
                         root,
                         w,
                         h,
-                        &self.orbit_camera,
-                        &self.render_3d_opts,
-                        &self.opts,
-                        Some(&mut self.selected_3d_ids),
+                        &camera,
+                        &options,
+                        &treemap_options,
+                        Some(&mut selected_ids),
                     )?;
                     let empty_scene = r.cached_instances().is_some_and(Vec::is_empty);
                     if empty_scene {
-                        self.selected_3d_ids.clear();
+                        selected_ids.clear();
                         self.sticky_hover = None;
                         self.oidn_display_is_denoised = false;
                     }
                 }
                 self.last_render_frame_3d = self.frame_count;
-                self.needs_render_3d = false;
+                // Input dirty flags are cleared after the complete render.
                 let t_render = t0.elapsed();
 
                 // OIDN denoise pass. Fires only when PT is active, mode != Off,
@@ -1182,8 +1219,7 @@ impl App {
                 // and we've reached the sample target for the current
                 // accumulation (and haven't denoised it yet).
                 if self
-                    .renderer_3d
-                    .as_ref()
+                    .renderer_3d_for_frame()
                     .and_then(|renderer| renderer.cached_instances())
                     .is_some_and(|instances| !instances.is_empty())
                 {
@@ -1192,9 +1228,10 @@ impl App {
 
                 // Raw and denoised PT sources use the same display-only color path.
                 // CPU OCIO must never replace the raw accumulator consumed by OIDN.
-                if self.render_3d_opts.path_tracing
-                    && let Some(r) = self.renderer_3d.as_mut()
-                    && r.cached_instances()
+                if options.path_tracing
+                    && self
+                        .renderer_3d_for_frame()
+                        .and_then(|r| r.cached_instances())
                         .is_some_and(|instances| !instances.is_empty())
                 {
                     let source = if self.oidn_display_is_denoised {
@@ -1202,7 +1239,13 @@ impl App {
                     } else {
                         None
                     };
-                    r.composite_overlay(source, &self.render_3d_opts, &self.color_pipeline)?;
+                    let (renderer, pipeline) = match &mut self.encode_render_session {
+                        Some(session) => (session.renderer_3d.as_mut(), &session.pipeline),
+                        None => (self.renderer_3d.as_mut(), &self.color_pipeline),
+                    };
+                    if let Some(r) = renderer {
+                        r.composite_overlay(source, &options, pipeline)?;
+                    }
                 }
                 self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
 
@@ -1210,8 +1253,10 @@ impl App {
                 // texture every frame regardless of denoise state — display
                 // target contains the selected source processed by the shared
                 // display color path above; raw PT input remains untouched.
-                if let Some(r) = &self.renderer_3d
-                    && let Some(texture) = r.get_render_texture()
+                if let Some(texture) = self
+                    .renderer_3d_for_frame()
+                    .and_then(|r| r.get_render_texture())
+                    .cloned()
                 {
                     if let Some(tex_id) = self.render_texture_id {
                         if size_changed {
@@ -1239,14 +1284,32 @@ impl App {
             #[cfg(debug_assertions)]
             if let Some(err) = pollster::block_on(error_scope.pop()) {
                 log::error!("wgpu validation error after 3D render: {:?}", err);
-                self.wgpu_error_flag.store(true, Ordering::SeqCst);
+                let message = format!("wgpu validation error after 3D render: {err}");
+                if self.encode_render_session.is_some() {
+                    self.fail_encode_render(message);
+                } else {
+                    let _ = self.wgpu_error_tx.send(message);
+                }
+            }
+            if self
+                .encode_render_session
+                .as_ref()
+                .is_some_and(|session| session.error.is_some())
+            {
+                ctx.request_repaint();
+                return;
             }
 
             let t_render = match render_result {
                 Ok(duration) => duration,
                 Err(error) => {
                     log::error!("3D render failed: {error}");
-                    self.wgpu_error_flag.store(true, Ordering::SeqCst);
+                    let message = format!("3D render failed: {error}");
+                    if self.encode_render_session.is_some() {
+                        self.fail_encode_render(message);
+                    } else {
+                        let _ = self.wgpu_error_tx.send(message);
+                    }
                     ctx.request_repaint();
                     return;
                 }
@@ -1254,9 +1317,8 @@ impl App {
             let t_tex = t0.elapsed();
 
             let total_ms = t_tex.as_secs_f64() * 1000.0;
-            let samples_per_frame = if self.render_3d_opts.path_tracing {
-                self.renderer_3d
-                    .as_ref()
+            let samples_per_frame = if options.path_tracing {
+                self.renderer_3d_for_frame()
                     .map(|r| r.pt_samples_per_update())
                     .unwrap_or(0)
             } else {
@@ -1310,14 +1372,19 @@ impl App {
                 total_ms
             );
 
-            if !self.render_3d_opts.path_tracing {
+            if !options.path_tracing {
                 self.sync_treemap_hover_from_3d_gpu();
             }
 
-            self.viewport.width = w;
-            self.viewport.height = h;
+            if self.encode_render_session.is_none() {
+                self.viewport.width = w;
+                self.viewport.height = h;
+                self.selected_3d_ids = selected_ids;
+            } else if let Some(session) = &mut self.encode_render_session {
+                session.selected_ids = selected_ids;
+            }
             self.last_render_size = (w, h);
-            self.needs_layout = false;
+            self.finish_render_input_frame();
         }
 
         // Display the texture (always, even if we didn't render this frame)
@@ -1344,7 +1411,7 @@ impl App {
         }
 
         // Request repaint only for continuous modes
-        if self.render_3d_opts.path_tracing && !pt_throttled {
+        if options.path_tracing && !pt_throttled {
             // PT: repaint continuously only when not throttled
             ctx.request_repaint();
         }
@@ -1362,30 +1429,42 @@ impl App {
     /// switches clear this field so a stale TextureId doesn't display.
     fn render_2d_callback(&mut self, ui: &mut egui::Ui, w: u32, h: u32) {
         let ctx = ui.ctx().clone();
+        let mut viewport = self.viewport_for_frame().clone();
+        viewport.width = w;
+        viewport.height = h;
+        let options = self.treemap_options_for_frame().clone();
 
         // Lazy-init the GPU 2D renderer with the (eframe-backed) GpuContext.
-        if self.renderer_2d_gpu.is_none()
+        if self
+            .encode_render_session
+            .as_ref()
+            .map_or(self.renderer_2d_gpu.is_none(), |session| {
+                session.renderer_2d.is_none()
+            })
             && let Some(gpu_ctx) = &self.gpu_context
         {
-            self.renderer_2d_gpu = Some(GpuRenderer2D::new(gpu_ctx.clone()));
+            self.set_frame_renderer_2d(Some(GpuRenderer2D::new(gpu_ctx.clone())));
         }
 
         let size_changed = self.last_render_size != (w, h);
-        let need_render = self.needs_layout || size_changed || self.render_texture_id.is_none();
+        let need_render =
+            self.layout_dirty_for_frame() || size_changed || self.render_texture_id.is_none();
 
         if need_render {
-            self.viewport.width = w;
-            self.viewport.height = h;
-            let render_state = self.wgpu_render_state.as_ref().unwrap();
+            if self.encode_render_session.is_none() {
+                self.viewport.width = w;
+                self.viewport.height = h;
+            }
+            let render_state = self.wgpu_render_state.clone().unwrap();
 
             // Render into the renderer's internal texture (no readback).
-            let mut renderer = self.renderer_2d_gpu.take();
+            let mut renderer = self.take_frame_renderer_2d();
             let drew = if let Some(r) = &mut renderer {
-                let Some(root) = self.display_root() else {
-                    self.renderer_2d_gpu = renderer;
+                let Some(root) = self.render_root() else {
+                    self.set_frame_renderer_2d(renderer);
                     return;
                 };
-                r.render_to_texture(root, &self.viewport, &self.opts)
+                r.render_to_texture(root, &viewport, &options)
             } else {
                 false
             };
@@ -1414,10 +1493,10 @@ impl App {
                     ));
                 }
             }
-            self.renderer_2d_gpu = renderer;
+            self.set_frame_renderer_2d(renderer);
 
             self.last_render_size = (w, h);
-            self.needs_layout = false;
+            self.finish_render_input_frame();
         }
 
         // Display the texture + 2D interactions
@@ -1453,27 +1532,28 @@ impl App {
     pub(super) fn maybe_run_oidn_denoise(&mut self, w: u32, h: u32) {
         use pt_denoise_oidn::OidnDenoiser;
         use render_shared::OidnModeOption;
+        let options = self.render_options_snapshot();
 
         // PT must be running and OIDN enabled, otherwise force raw display.
-        let mode_opt = self.render_3d_opts.pt_oidn_mode;
+        let mode_opt = options.pt_oidn_mode;
         log::trace!(
             "maybe_run_oidn_denoise enter: path_tracing={} mode={:?} run_requested={} auto={}",
-            self.render_3d_opts.path_tracing,
+            options.path_tracing,
             mode_opt,
             self.oidn_run_requested,
-            self.render_3d_opts.pt_oidn_auto,
+            options.pt_oidn_auto,
         );
-        if !self.render_3d_opts.path_tracing || mode_opt == OidnModeOption::Off {
+        if !options.path_tracing || mode_opt == OidnModeOption::Off {
             self.oidn_display_is_denoised = false;
             // Honor any pending manual click only when PT comes back up.
-            if !self.render_3d_opts.path_tracing {
+            if !options.path_tracing {
                 self.oidn_run_requested = false;
             }
             log::trace!("OIDN: skip (PT off or mode=Off)");
             return;
         }
 
-        let Some(r) = self.renderer_3d.as_ref() else {
+        let Some(r) = self.renderer_3d_for_frame() else {
             self.oidn_display_is_denoised = false;
             log::trace!("OIDN: skip (renderer_3d=None)");
             return;
@@ -1496,8 +1576,8 @@ impl App {
         }
         self.oidn_last_frame_count = current_spp;
 
-        let manual = self.oidn_run_requested;
-        let auto_final = self.render_3d_opts.pt_oidn_auto
+        let manual = self.encode_render_session.is_none() && self.oidn_run_requested;
+        let auto_final = options.pt_oidn_auto
             && target_spp > 0
             && current_spp >= target_spp
             && !self.oidn_denoised_this_accumulation;
@@ -1505,8 +1585,8 @@ impl App {
         // hasn't yet reached the final target (otherwise `auto_final` will
         // handle it). `current_spp - last_interval >= interval` keeps us
         // from re-firing on every frame past a multiple of interval.
-        let interval = self.render_3d_opts.pt_oidn_interval;
-        let auto_interval = self.render_3d_opts.pt_oidn_auto
+        let interval = options.pt_oidn_interval;
+        let auto_interval = options.pt_oidn_auto
             && interval > 0
             && current_spp >= interval
             && current_spp.saturating_sub(self.oidn_last_interval_spp) >= interval;
@@ -1523,6 +1603,9 @@ impl App {
         }
 
         let Some(gpu_ctx) = self.gpu_context.clone() else {
+            return;
+        };
+        let Some(r) = self.renderer_3d_for_frame() else {
             return;
         };
         let Some(output_tex_view) = r.pt_output_texture() else {
@@ -1565,19 +1648,17 @@ impl App {
         };
         denoiser.resize(&gpu_ctx, pt_w, pt_h);
         denoiser.set_mode(map_mode(mode_opt));
-        denoiser.set_quality(map_quality(self.render_3d_opts.pt_oidn_quality));
-        denoiser.set_input_clamp(self.render_3d_opts.pt_oidn_clamp);
-        denoiser.set_nan_protect(self.render_3d_opts.pt_oidn_nan_protect);
-        denoiser.set_adaptive_clamp(self.render_3d_opts.pt_oidn_adaptive_clamp);
+        denoiser.set_quality(map_quality(options.pt_oidn_quality));
+        denoiser.set_input_clamp(options.pt_oidn_clamp);
+        denoiser.set_nan_protect(options.pt_oidn_nan_protect);
+        denoiser.set_adaptive_clamp(options.pt_oidn_adaptive_clamp);
         // Physical-camera exposure: when in `Physical` mode we pin
         // OIDN's input_scale to the same multiplier the display
         // shader will apply, so OIDN's internal PU transfer is
         // calibrated to the post-exposure intensity. `Manual` mode
         // passes `None` → OIDN's autoexposure runs as before.
-        denoiser.set_external_input_scale(match self.render_3d_opts.pt_camera_type {
-            render_shared::CameraType::Physical => {
-                Some(self.render_3d_opts.effective_exposure_multiplier())
-            }
+        denoiser.set_external_input_scale(match options.pt_camera_type {
+            render_shared::CameraType::Physical => Some(options.effective_exposure_multiplier()),
             render_shared::CameraType::Manual => None,
         });
 
@@ -1603,6 +1684,9 @@ impl App {
             }
             Err(e) => {
                 log::warn!("OIDN denoise failed: {e}");
+                if let Some(session) = &mut self.encode_render_session {
+                    session.error = Some(format!("OIDN denoise failed: {e}"));
+                }
                 self.oidn_run_requested = false;
                 self.oidn_display_is_denoised = false;
             }
@@ -1628,5 +1712,77 @@ fn map_quality(q: render_shared::OidnQualityOption) -> pt_denoise_oidn::Quality 
         OidnQualityOption::Large => Quality::High,
         OidnQualityOption::Base => Quality::Balanced,
         OidnQualityOption::Small => Quality::Fast,
+    }
+}
+
+#[cfg(test)]
+mod toolbar_tests {
+    use super::*;
+
+    #[test]
+    fn wheel_over_toolbar_neither_zooms_camera_nor_navigates_2d() {
+        for mode in [RenderMode::Mode3D, RenderMode::Mode2D] {
+            for over_toolbar in [true, false] {
+                let ctx = egui::Context::default();
+                let mut app = App::default();
+                app.render_mode = mode;
+                app.render_3d_opts.inertia_enabled = false;
+                app.viewport_toolbar_rect =
+                    egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 34.0));
+                app.last_wheel_zoom = std::time::Instant::now() - std::time::Duration::from_secs(1);
+                let before = app.orbit_camera.distance;
+                let _ = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(400.0, 200.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            ui.allocate_rect(ui.available_rect_before_wrap(), egui::Sense::hover());
+                        });
+                    },
+                );
+                let pointer = egui::pos2(50.0, if over_toolbar { 35.0 } else { 90.0 });
+                let _ = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(400.0, 200.0),
+                        )),
+                        events: vec![
+                            egui::Event::PointerMoved(pointer),
+                            egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                delta: egui::vec2(0.0, -120.0),
+                                phase: egui::TouchPhase::Move,
+                                modifiers: Default::default(),
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    |root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            let response = ui.allocate_rect(
+                                ui.available_rect_before_wrap(),
+                                egui::Sense::hover(),
+                            );
+                            if mode == RenderMode::Mode3D {
+                                app.handle_3d_camera(&response, &ctx);
+                            } else {
+                                app.handle_2d_interactions(ui, &response, &ctx);
+                            }
+                        });
+                    },
+                );
+                if mode == RenderMode::Mode3D {
+                    assert_eq!(app.orbit_camera.distance == before, over_toolbar);
+                } else {
+                    assert_eq!(app.events.has_pending(), !over_toolbar);
+                }
+            }
+        }
     }
 }
