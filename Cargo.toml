@@ -26,7 +26,6 @@ members = [
     "crates/media-encoder",
     "crates/xtask",
     "crates/treemap",
-    "crates/pt-denoise-oidn",
     "crates/gpu-mem",
     "crates/standard-surface",
     "crates/squarebob-widgets",
@@ -80,16 +79,10 @@ egui-widgets-config = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git",
 egui-display = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
 egui-viewport-toolbar = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
 
-# OIDN denoiser Burn stack — GIT deps (a [patch] can't cross 0.21->0.22). Same revs
-# oidn-rs/render-rs/gsplat-rs pin. pt-denoise-oidn uses burn's wgpu backend +
-# `try_into_primitive`, so burn carries wgpu+extension. Keep every burn-wgpu edge
-# default-features=false so `fusion` stays OFF (the `try_into_primitive::<Wgpu>()`
-# -> CubeTensor downcast requires it). Consolidated here (was raw pins in
-# pt-denoise-oidn) so a future bump touches only this block. See
-# colmap-rs/docs/egui-wgpu-bump.md.
-burn = { git = "https://github.com/tracel-ai/burn", rev = "93e63e8e9cf215ffb870ed62132961588a774096", default-features = false, features = ["std", "ndarray", "wgpu", "extension"] }
-burn-wgpu = { git = "https://github.com/tracel-ai/burn", rev = "93e63e8e9cf215ffb870ed62132961588a774096", default-features = false }
-cubecl-wgpu = { git = "https://github.com/tracel-ai/cubecl", rev = "31c5506cfc1dd9d350124910fb51cee8b54a31e1" }
+# The OIDN denoiser is render-rs `pt-denoise-oidn` (the one implementation; squarebob's copy was removed): it brings
+# its burn / cubecl stack and the process's one burn device (`burn-device::shared`). `embed-all` keeps every Intel
+# weight variant baked in, as squarebob shipped before.
+pt-denoise-oidn = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main", features = ["embed-all"] }
 
 # Imaging. `image` formats come from exr-image (image's default set minus `exr`); EXR is decoded by
 # exr-core through exr-image's hooks, never by crates.io `exr`.
@@ -164,7 +157,6 @@ pt-mats = { path = "crates/pt-mats" }
 pt-material = { path = "crates/pt-material" }
 pt-megakernel = { path = "crates/pt-megakernel" }
 pt-wavefront = { path = "crates/pt-wavefront" }
-pt-denoise-oidn = { path = "crates/pt-denoise-oidn" }
 bvh-gpu = { path = "crates/bvh-gpu" }
 gpu-mem = { path = "crates/gpu-mem" }
 media-encoder = { path = "crates/media-encoder" }

@@ -323,7 +323,7 @@ mod tests {
             pt_path_guiding: Some(true),
             pt_svo_resolution: Some(128),
             pt_oidn_mode: Some(render_shared::OidnModeOption::ColorAlbedoNormal),
-            pt_oidn_quality: Some(render_shared::OidnQualityOption::Large),
+            pt_oidn_quality: Some(render_shared::OidnQualityOption::Small),
             pt_oidn_auto: Some(true),
             slice_enabled: Some(true),
             slice_axis: Some(2),
@@ -359,7 +359,7 @@ mod tests {
         );
         assert_eq!(
             opts.pt_oidn_quality,
-            render_shared::OidnQualityOption::Large
+            render_shared::OidnQualityOption::Small
         );
         assert!(opts.pt_oidn_auto);
         assert!(opts.pt_restir_di);

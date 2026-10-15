@@ -234,7 +234,14 @@ fn main() -> Result<()> {
             contents: bytemuck::cast_slice(&normal_data),
             usage: wgpu::BufferUsages::COPY_SRC,
         });
-    let mut denoiser = OidnDenoiser::new(&ctx, W, H, None);
+    // render-rs's denoiser runs on its own context type over the same wgpu handles.
+    let oidn = pt_denoise_oidn::GpuContext {
+        instance: ctx.instance.clone(),
+        adapter: ctx.adapter.clone(),
+        device: ctx.device.clone(),
+        queue: ctx.queue.clone(),
+    };
+    let mut denoiser = OidnDenoiser::new(&oidn, W, H, None);
     denoiser.set_mode(OidnMode::ColorAlbedoNormal);
     denoiser.set_quality(Quality::Balanced);
     denoiser.set_external_input_scale(Some(0.02));
@@ -255,7 +262,7 @@ fn main() -> Result<()> {
     ] {
         denoiser.set_adaptive_clamp(adaptive);
         let encoder = ctx.device.create_command_encoder(&Default::default());
-        denoiser.denoise(&ctx, encoder, &color, Some(&albedo), Some(&normal), spp)?;
+        denoiser.denoise(&oidn, encoder, &color, Some(&albedo), Some(&normal), spp)?;
         let output = capture(&ctx, denoiser.result_view())?;
         ensure!(output.iter().all(|x| x.is_finite()), "nonfinite output");
         let (mean, sd, max) = region_stats(&output, true);
@@ -288,7 +295,7 @@ fn main() -> Result<()> {
     let mut repeated_max = 0.0_f32;
     for _ in 0..32 {
         let encoder = ctx.device.create_command_encoder(&Default::default());
-        denoiser.denoise(&ctx, encoder, &color, Some(&albedo), Some(&normal), 256)?;
+        denoiser.denoise(&oidn, encoder, &color, Some(&albedo), Some(&normal), 256)?;
         let output = capture(&ctx, denoiser.result_view())?;
         ensure!(
             output.iter().all(|x| x.is_finite()),

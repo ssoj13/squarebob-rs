@@ -1618,6 +1618,8 @@ impl App {
         let (pt_w, pt_h) = r.pt_dimensions().unwrap_or((w, h));
         let albedo = r.pt_albedo_buffer().cloned();
         let normal = r.pt_normal_buffer().cloned();
+        // render-rs's denoiser takes its own (burn-device) context over the same Arc'd wgpu handles.
+        let gpu_ctx = oidn_context(&gpu_ctx);
 
         // Lazy build (or rebuild on resize).
         let need_new = match &self.oidn_denoiser {
@@ -1647,7 +1649,13 @@ impl App {
             return;
         };
         denoiser.resize(&gpu_ctx, pt_w, pt_h);
-        denoiser.set_mode(map_mode(mode_opt));
+        // The denoiser is strict (a mode whose guides are missing is an error); the app chooses the richest mode its
+        // buffers support, as its default preset (full AOVs with the wavefront PT off) has always behaved.
+        let mode = effective_mode(map_mode(mode_opt), albedo.is_some(), normal.is_some());
+        if mode != map_mode(mode_opt) {
+            log::debug!("OIDN: {:?} needs guides this frame lacks; running {mode:?}", map_mode(mode_opt));
+        }
+        denoiser.set_mode(mode);
         denoiser.set_quality(map_quality(options.pt_oidn_quality));
         denoiser.set_input_clamp(options.pt_oidn_clamp);
         denoiser.set_nan_protect(options.pt_oidn_nan_protect);
@@ -1709,9 +1717,31 @@ fn map_quality(q: render_shared::OidnQualityOption) -> pt_denoise_oidn::Quality 
     use pt_denoise_oidn::Quality;
     use render_shared::OidnQualityOption;
     match q {
-        OidnQualityOption::Large => Quality::High,
         OidnQualityOption::Base => Quality::Balanced,
         OidnQualityOption::Small => Quality::Fast,
+    }
+}
+
+/// The richest mode the supplied guides support, at most `wanted` (albedo and normal buffers come from the wavefront
+/// PT only).
+fn effective_mode(wanted: pt_denoise_oidn::OidnMode, albedo: bool, normal: bool) -> pt_denoise_oidn::OidnMode {
+    use pt_denoise_oidn::OidnMode;
+    match wanted {
+        OidnMode::ColorAlbedoNormal if albedo && normal => OidnMode::ColorAlbedoNormal,
+        OidnMode::ColorAlbedoNormal | OidnMode::ColorAlbedo if albedo => OidnMode::ColorAlbedo,
+        OidnMode::Off => OidnMode::Off,
+        _ => OidnMode::Color,
+    }
+}
+
+/// render-rs `pt-denoise-oidn`'s context (`burn_device::GpuContext`) over the app's wgpu handles (the same Arcs: the
+/// denoiser runs on the renderer's device and queue, zero-copy).
+fn oidn_context(gpu: &render_core::gpu::GpuContext) -> pt_denoise_oidn::GpuContext {
+    pt_denoise_oidn::GpuContext {
+        instance: gpu.instance.clone(),
+        adapter: gpu.adapter.clone(),
+        device: gpu.device.clone(),
+        queue: gpu.queue.clone(),
     }
 }
 

@@ -865,18 +865,14 @@ pub enum OidnModeOption {
     ColorAlbedoNormal,
 }
 
-/// Model-size selector for OIDN. Maps onto `oidn_rs::Quality` internally:
-/// - `Large`  → `Quality::High`  → try `_large` weights, fallback to base
-/// - `Base`   → `Quality::Balanced` → base weights only
-/// - `Small`  → `Quality::Fast`  → try `_small` weights, fallback to base
+/// Model-size selector for OIDN, mapped onto render-rs `pt_denoise_oidn::Quality`:
+/// - `Base`   → `Quality::Balanced` → the base HDR network
+/// - `Small`  → `Quality::Fast`     → the `_small` HDR network (half the parameters)
 ///
-/// Names match what the user actually controls (which TZA size to load),
-/// not abstract "quality". `Large` only matters for prefilter / clean-aux
-/// models (Intel doesn't ship `_large` variants of the main color-denoise
-/// network); `Small` halves params on the main network.
+/// Names match what the user actually controls (which TZA size to load). There is no `Large`: Intel ships no `_large`
+/// HDR colour network, so it could only run Base under another name (render-rs's denoiser does not express it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OidnQualityOption {
-    Large,
     #[default]
     Base,
     Small,
