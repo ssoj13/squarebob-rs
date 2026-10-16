@@ -206,6 +206,7 @@ pub(super) mod tests {
             contains_pointer: false,
             toggled: false,
             moved: false,
+            layer: egui::LayerId::background(),
         };
         let output = ctx.run_ui(
             egui::RawInput {

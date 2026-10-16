@@ -6,6 +6,13 @@ egui-display export module and thin application adapters. Keep existing formats/
 UI behavior. This document describes the current path and its open gates; it does not certify
 unfinished consumer code.
 
+> **2026-10-15 (MIG1):** the export moved out of egui-display into the non-egui crate
+> `video-io` (`ssoj13/video-io-rs`, W1B-08). SquareBob now uses `video_io::{color, export,
+> output_view, video}`; the HDR video is a non-blocking `video_io::video::Ticket` held by the
+> encode dialog as `media_encoder::VideoJob` (polled per UI frame, cancel kills ffmpeg). The view
+> signal (PQ/HLG) is classified by the host (`image_sequence::view_signal`). Paths below that
+> name `egui-display export.rs` / `encode_video` are historical.
+
 ## One shared implementation
 
 The export extraction was published in `3443b6f46a2a72526c9542b1e7d8e528c88142bc`;

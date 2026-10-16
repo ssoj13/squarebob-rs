@@ -373,7 +373,10 @@ mod tests {
             egui_display::Output::Sdr8,
         );
         present.dither = false;
-        let canvas = present.canvas(&gpu.device, size[0], size[1]).clone();
+        let canvas = present
+            .canvas(&gpu.device, size[0], size[1])
+            .expect("reference canvas")
+            .clone();
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         let commands =
             renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &jobs, &screen);

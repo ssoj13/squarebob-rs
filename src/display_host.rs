@@ -38,7 +38,7 @@ pub(crate) fn settings_ui(ui: &mut egui::Ui) {
         .ctx()
         .data(|d| d.get_temp::<egui_display::DisplayPrefs>(prefs_id()))
         .unwrap_or_default();
-    if egui_display::settings_ui(ui, &mut prefs, state.as_ref()) {
+    if egui_display::settings_ui(ui, "squarebob.display", &mut prefs, state.as_ref()) {
         ui.ctx().data_mut(|d| d.insert_temp(prefs_id(), prefs));
         ui.ctx().request_repaint();
     }
@@ -542,7 +542,7 @@ impl<A: NativeApp> Live<A> {
         let mut renderer = rs.renderer.write();
         let commands = renderer.update_buffers(&rs.device, &rs.queue, &mut encoder, jobs, &screen);
         {
-            let canvas = self.present.canvas(&rs.device, size.width, size.height);
+            let canvas = self.present.canvas(&rs.device, size.width, size.height)?;
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("squarebob.egui.float"),
