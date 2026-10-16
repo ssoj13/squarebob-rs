@@ -1,8 +1,9 @@
 //! End-to-end delivery oracles for the host adapter and the shared WarpBro exporter.
 use media_encoder::{
     Comp, Container, EncodeProgress, EncoderSettings, Frame, FrameSource, Project, VideoCodec,
-    encode_comp, hdr::PngEncoding,
+    encode_comp,
 };
+use video_io::export::PngEncoding;
 use std::{
     fmt,
     process::Command,
@@ -64,6 +65,8 @@ fn native_prores_4444_alpha_stays_linear() {
             tx,
             Arc::new(AtomicBool::new(false)),
         )
+        .unwrap()
+        .wait()
         .unwrap();
         let decoded = Command::new("ffmpeg")
             .args(["-v", "error", "-i"])
@@ -256,6 +259,8 @@ fn native_sdr_delivery_decodes_bt1886_in_all_video_backends() {
             tx,
             Arc::new(AtomicBool::new(false)),
         )
+        .unwrap()
+        .wait()
         .unwrap();
         let probe = Command::new("ffprobe")
             .args([
@@ -365,7 +370,7 @@ fn native_hdr_delivery_retains_light_and_fractional_frame_rate() {
                         64,
                         64,
                         pixels,
-                        media_encoder::hdr::DisplayLight::Relative,
+                        video_io::export::DisplayLight::Relative,
                         203.0,
                     )
                     .unwrap(),
@@ -391,10 +396,13 @@ fn native_hdr_delivery_retains_light_and_fractional_frame_rate() {
                 tx,
                 Arc::new(AtomicBool::new(false)),
             )
+            .unwrap()
+            .wait()
             .unwrap();
+            // The worker hands the written sequence to the video stage; `wait` saw it published.
             assert!(
                 rx.try_iter()
-                    .any(|p| p.stage == media_encoder::EncodeStage::Complete)
+                    .any(|p| p.stage == media_encoder::EncodeStage::Flushing)
             );
             let probe = Command::new("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-count_frames",
                 "-show_entries", "stream=avg_frame_rate,nb_read_frames,color_primaries,color_transfer,color_space",
@@ -433,9 +441,9 @@ fn native_hdr_delivery_retains_light_and_fractional_frame_rate() {
             for (frame, relative) in [1.0, 4.0, 2.0].into_iter().enumerate() {
                 let nits = relative * 203.0;
                 let expected = if encoding == PngEncoding::Hdr10 {
-                    egui_display::pq(nits)
+                    video_io::color::pq(nits)
                 } else {
-                    egui_display::hlg([nits; 3], 1000.0)[0]
+                    video_io::color::hlg([nits; 3], 1000.0)[0]
                 };
                 let pixel = frame * 64 * 64 * 6 + (32 * 64 + 32) * 6;
                 for channel in 0..3 {

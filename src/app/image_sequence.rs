@@ -28,7 +28,7 @@ pub(super) struct FrozenRenderSession {
     pub(super) render_options: Arc<Render3DOptions>,
     pub(super) selected_ids: std::collections::HashSet<u32>,
     pub(super) pipeline: color_pipeline::ColorPipeline,
-    pub(super) display_light: media_encoder::hdr::DisplayLight,
+    pub(super) display_light: video_io::export::DisplayLight,
     pub(super) extent: (u32, u32),
     base_animation_time: f32,
     base_env_time: f32,
@@ -65,7 +65,7 @@ pub(super) struct SquarebobEncodeSource {
     frame_start: i32,
     frame_end: i32,
     fps: f32,
-    output_encoding: media_encoder::hdr::PngEncoding,
+    output_encoding: video_io::export::PngEncoding,
     white_nits: f32,
     request_tx: Sender<EncodeFrameRequest>,
     request_rx: Receiver<EncodeFrameRequest>,
@@ -88,7 +88,7 @@ impl SquarebobEncodeSource {
             frame_start,
             frame_end: frame_end.max(frame_start),
             fps: fps.max(1.0),
-            output_encoding: media_encoder::hdr::PngEncoding::Sdr8,
+            output_encoding: video_io::export::PngEncoding::Sdr8,
             white_nits: 203.0,
             request_tx,
             request_rx,
@@ -219,7 +219,7 @@ impl App {
 
     fn freeze_encode_render_session(
         &self,
-        encoding: media_encoder::hdr::PngEncoding,
+        encoding: video_io::export::PngEncoding,
         white_nits: f32,
     ) -> Result<FrozenRenderSession, String> {
         let root = self
@@ -708,7 +708,7 @@ fn display_canvas_frame(
     width: u32,
     height: u32,
     encoded: &[f32],
-    kind: media_encoder::hdr::DisplayLight,
+    kind: video_io::export::DisplayLight,
     white_nits: f32,
 ) -> Result<Frame, String> {
     let expected = (width as usize)
@@ -724,10 +724,10 @@ fn display_canvas_frame(
     let mut light: Vec<f32> = encoded
         .chunks_exact(4)
         .flat_map(|pixel| {
-            media_encoder::hdr::display_encoded_to_linear([pixel[0], pixel[1], pixel[2], pixel[3]])
+            video_io::color::display_encoded_to_linear([pixel[0], pixel[1], pixel[2], pixel[3]])
         })
         .collect();
-    if matches!(kind, media_encoder::hdr::DisplayLight::Absolute { .. }) {
+    if matches!(kind, video_io::export::DisplayLight::Absolute { .. }) {
         for pixel in light.chunks_exact_mut(4) {
             for channel in &mut pixel[..3] {
                 *channel *= white_nits / 100.0;
@@ -739,18 +739,18 @@ fn display_canvas_frame(
 
 fn freeze_output_pipeline(
     settings: &mut color_pipeline::ColorPipelineSettings,
-    encoding: media_encoder::hdr::PngEncoding,
+    encoding: video_io::export::PngEncoding,
     white_nits: f32,
 ) -> Result<
     (
         color_pipeline::ColorPipeline,
-        media_encoder::hdr::DisplayLight,
+        video_io::export::DisplayLight,
     ),
     String,
 > {
     use color_pipeline::vfx_ocio::Encoding;
     use color_pipeline::{ColorMode, ColorPipeline};
-    use egui_display::export::{OutputKind, OutputView, OutputViewEncoding, resolve_output_view};
+    use video_io::output_view::{OutputKind, OutputView, resolve_output_view};
     if !white_nits.is_finite() || white_nits <= 0.0 {
         return Err("Output reference white must be finite and positive".into());
     }
@@ -764,7 +764,8 @@ fn freeze_output_pipeline(
                 settings.ocio_config
             ));
         }
-        let names: Vec<_> = pipeline
+        // Every display/view with the OCIO encoding of its colour space, in config order.
+        let views: Vec<_> = pipeline
             .available_displays()
             .into_iter()
             .flat_map(|display| {
@@ -773,41 +774,36 @@ fn freeze_output_pipeline(
                     .into_iter()
                     .map(move |view| (display.clone(), view))
             })
+            .map(|(display, view)| {
+                let ocio = pipeline.output_encoding(&display, &view);
+                (display, view, ocio)
+            })
             .collect();
-        let candidates: Vec<_> = names
+        let candidates: Vec<_> = views
             .iter()
-            .map(|(display, view)| OutputView {
+            .map(|(display, view, ocio)| OutputView {
                 display,
                 view,
-                encoding: match pipeline.output_encoding(display, view) {
-                    Encoding::Hdr => OutputViewEncoding::Hdr,
-                    Encoding::Data => OutputViewEncoding::Data,
-                    _ => OutputViewEncoding::Picture,
-                },
+                signal: view_signal(*ocio, display),
             })
             .collect();
         // Normalize empty OCIO selectors against the config's offered names,
         // matching WarpBro's Ocio::resolve before applying its shared output policy.
+        let offered = |ocio: Encoding| encoding.hdr() || ocio != Encoding::Hdr;
         let current_display = if settings.ocio_display.is_empty() {
-            candidates
+            views
                 .iter()
-                .find(|candidate| {
-                    candidate.encoding != OutputViewEncoding::Data
-                        && (encoding.hdr() || candidate.encoding != OutputViewEncoding::Hdr)
-                })
-                .map(|candidate| candidate.display)
+                .find(|(_, _, ocio)| *ocio != Encoding::Data && offered(*ocio))
+                .map(|(display, _, _)| display.as_str())
         } else {
             Some(settings.ocio_display.as_str())
         };
         let current = current_display.and_then(|display| {
             let view = if settings.ocio_view.is_empty() {
-                candidates
+                views
                     .iter()
-                    .find(|candidate| {
-                        candidate.display == display
-                            && (encoding.hdr() || candidate.encoding != OutputViewEncoding::Hdr)
-                    })
-                    .map(|candidate| candidate.view)
+                    .find(|(d, _, ocio)| d == display && offered(*ocio))
+                    .map(|(_, view, _)| view.as_str())
             } else {
                 Some(settings.ocio_view.as_str())
             };
@@ -824,13 +820,14 @@ fn freeze_output_pipeline(
                 probe_settings.ocio_view = view.to_owned();
                 let probe = ColorPipeline::new(&probe_settings);
                 probe.validate_for_export(&probe_settings).ok()?;
-                media_encoder::hdr::measure_display_peak(
+                video_io::export::measure_display_peak(
                     |pixels| probe.apply_cpu_to_surface_linear(pixels),
                     white_nits,
                 )
                 .ok()
             },
-        )?;
+        )
+        .map_err(|e| e.to_string())?;
         settings.ocio_display = selected.display.to_owned();
         settings.ocio_view = selected.view.to_owned();
         pipeline = ColorPipeline::new(settings);
@@ -839,22 +836,49 @@ fn freeze_output_pipeline(
     let kind = if settings.mode == ColorMode::Ocio
         && pipeline.output_encoding(&settings.ocio_display, &settings.ocio_view) == Encoding::Hdr
     {
-        media_encoder::hdr::DisplayLight::Absolute {
-            peak_nits: media_encoder::hdr::measure_display_peak(
+        video_io::export::DisplayLight::Absolute {
+            peak_nits: video_io::export::measure_display_peak(
                 |pixels| pipeline.apply_cpu_to_surface_linear(pixels),
                 white_nits,
-            )?,
+            )
+            .map_err(|e| e.to_string())?,
         }
     } else {
-        media_encoder::hdr::DisplayLight::Relative
+        video_io::export::DisplayLight::Relative
     };
     Ok((pipeline, kind))
+}
+
+/// The output signal of an OCIO view, for `video_io`'s output-view choice: this host's OCIO
+/// adapter classifies it, because OCIO declares HDR views without telling PQ from HLG. An HDR view
+/// is PQ or HLG by its display's name (the ACES naming WarpBro follows: "PQ" / "ST2084" /
+/// "ST-2084", "HLG"); an HDR view on a display named neither is never chosen (`Data`).
+fn view_signal(
+    ocio: color_pipeline::vfx_ocio::Encoding,
+    display: &str,
+) -> video_io::output_view::ViewSignal {
+    use color_pipeline::vfx_ocio::Encoding;
+    use video_io::output_view::ViewSignal;
+    match ocio {
+        Encoding::Data => ViewSignal::Data,
+        Encoding::Hdr => {
+            let name = display.to_ascii_uppercase();
+            if name.contains("PQ") || name.contains("ST2084") || name.contains("ST-2084") {
+                ViewSignal::Pq
+            } else if name.contains("HLG") {
+                ViewSignal::Hlg
+            } else {
+                ViewSignal::Data
+            }
+        }
+        _ => ViewSignal::Sdr,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use media_encoder::hdr::{DisplayLight, PngEncoding};
+    use video_io::export::{DisplayLight, PngEncoding};
 
     fn author_scene() -> App {
         let mut app = App::default();

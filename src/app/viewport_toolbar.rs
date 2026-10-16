@@ -93,6 +93,7 @@ impl App {
                         .data_mut(|data| data.get_temp::<f32>(hold_id).unwrap_or(0.0));
                     let mut exposure_changed = false;
                     ui.add_enabled_ui(physical, |ui| {
+                        // Live, Done and a cancel (value restored) all change the render.
                         exposure_changed = egui_viewport_toolbar::exposure_control(
                             ui,
                             &mut self
@@ -101,7 +102,10 @@ impl App {
                                 .exposure_compensation_ev,
                             &mut hold,
                             -8.0..=8.0,
-                        );
+                            None,
+                        )
+                        .phase
+                            != egui_widgets_config::edit::EditPhase::Idle;
                     })
                     .response
                     .on_disabled_hover_text("Exposure compensation requires a physical 3D camera.");

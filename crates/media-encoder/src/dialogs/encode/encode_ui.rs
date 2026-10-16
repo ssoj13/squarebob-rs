@@ -12,14 +12,16 @@ use eframe::egui;
 use egui_widgets_config::icons;
 use log::info;
 
+#[cfg(feature = "video")]
+use crate::dialogs::encode::VideoJob;
 use crate::dialogs::encode::{
-    ChannelMode, CodecSettings, Container, EncodeError, EncodeProgress, EncodeStage,
+    ChannelMode, CodecSettings, Container, EncodeError, EncodeProgress, EncodeStage, Encoded,
     EncoderSettings, ExportMode, ExrCompression, OutputBitDepth, ProResProfile, SequenceFormat,
     SequenceSettings, TiffCompression, VideoCodec, encode_comp, encode_image_sequence,
 };
-use crate::hdr::PngEncoding;
 use crate::progress::ProgressBar;
 use crate::source::{Comp, Project};
+use video_io::export::PngEncoding;
 
 /// Cancellation identity shared by one encoder worker and its frame source.
 #[derive(Clone)]
@@ -53,10 +55,30 @@ impl EncodeSessionToken {
     }
 }
 
+/// What an encode session waits on.
+enum EncodeWork {
+    /// The frame worker: renders and writes the output (for an HDR delivery, its PNG sequence).
+    Worker(JoinHandle<Result<Encoded, EncodeError>>),
+    /// An HDR delivery's video, encoding on `video_io`'s own thread; polled once per UI frame.
+    #[cfg(feature = "video")]
+    Video(VideoJob),
+}
+
 struct EncodeSession {
     token: EncodeSessionToken,
     progress_rx: Receiver<EncodeProgress>,
-    worker: JoinHandle<Result<(), EncodeError>>,
+    work: EncodeWork,
+}
+
+impl EncodeSession {
+    /// Signal the frame source and worker; a running video encode is stopped at once.
+    fn cancel(&self) {
+        self.token.cancel();
+        #[cfg(feature = "video")]
+        if let EncodeWork::Video(job) = &self.work {
+            job.cancel();
+        }
+    }
 }
 
 enum EncodeLifecycle {
@@ -461,6 +483,8 @@ impl EncodeDialog {
         for progress in updates {
             self.progress = Some(progress);
         }
+        #[cfg(feature = "video")]
+        self.poll_video();
 
         let terminal_progress = matches!(
             self.progress.as_ref().map(|progress| &progress.stage),
@@ -477,7 +501,11 @@ impl EncodeDialog {
         let worker_finished = self
             .lifecycle
             .session()
-            .is_some_and(|session| session.worker.is_finished());
+            .is_some_and(|session| match &session.work {
+                EncodeWork::Worker(worker) => worker.is_finished(),
+                #[cfg(feature = "video")]
+                EncodeWork::Video(_) => false,
+            });
         if worker_finished {
             self.reap_finished_session();
         }
@@ -485,6 +513,33 @@ impl EncodeDialog {
         if self.is_encoding() {
             ctx.request_repaint();
         }
+    }
+
+    /// Drive an HDR delivery's video job: its progress, and its outcome once finished.
+    #[cfg(feature = "video")]
+    fn poll_video(&mut self) {
+        let (EncodeLifecycle::Running(session)
+        | EncodeLifecycle::Cancelling(session)
+        | EncodeLifecycle::Finishing(session)) = &mut self.lifecycle
+        else {
+            return;
+        };
+        let EncodeWork::Video(job) = &mut session.work else {
+            return;
+        };
+        let mut progress = job.progress();
+        let Some(result) = job.try_finish() else {
+            self.progress = Some(progress);
+            return;
+        };
+        let generation = session.token.generation();
+        if result.is_ok() {
+            progress.current_frame = progress.total_frames;
+            progress.stage = EncodeStage::Complete;
+        }
+        self.progress = Some(progress);
+        let was_cancelling = self.lifecycle.is_cancelling();
+        self.finish_session(generation, was_cancelling, Ok(result));
     }
 
     fn take_lifecycle(&mut self) -> EncodeLifecycle {
@@ -505,8 +560,49 @@ impl EncodeDialog {
             }
         };
 
-        let generation = session.token.generation();
-        let result = session.worker.join();
+        let EncodeSession {
+            token,
+            progress_rx,
+            work,
+        } = session;
+        let generation = token.generation();
+        let result = match work {
+            EncodeWork::Worker(worker) => worker.join(),
+            // Not reaped (it ends in `poll_video`): keep it running.
+            #[cfg(feature = "video")]
+            EncodeWork::Video(job) => Ok(Ok(Encoded::Video(job))),
+        };
+        match result {
+            // The worker wrote an HDR delivery's PNG sequence: its video encode runs on.
+            #[cfg(feature = "video")]
+            Ok(Ok(Encoded::Video(job))) if !was_cancelling => {
+                self.progress = Some(job.progress());
+                self.lifecycle = EncodeLifecycle::Running(EncodeSession {
+                    token,
+                    progress_rx,
+                    work: EncodeWork::Video(job),
+                });
+            }
+            // A cancel raced the video's start: dropping the job cancels it.
+            #[cfg(feature = "video")]
+            Ok(Ok(Encoded::Video(_))) => {
+                self.finish_session(generation, true, Ok(Err(EncodeError::Cancelled)))
+            }
+            result => self.finish_session(
+                generation,
+                was_cancelling,
+                result.map(|r| r.map(|_| ())),
+            ),
+        }
+    }
+
+    /// End a generation: the next one gets a fresh token; a failure becomes the terminal error.
+    fn finish_session(
+        &mut self,
+        generation: u64,
+        was_cancelling: bool,
+        result: std::thread::Result<Result<(), EncodeError>>,
+    ) {
         let next_generation = generation.saturating_add(1);
         self.lifecycle = EncodeLifecycle::Idle(EncodeSessionToken::new(next_generation));
 
@@ -1054,6 +1150,7 @@ impl EncodeDialog {
                             progress_tx,
                             cancel_flag,
                         )
+                        .map(|()| Encoded::Done)
                     })
             }
         };
@@ -1063,7 +1160,7 @@ impl EncodeDialog {
                 self.lifecycle = EncodeLifecycle::Running(EncodeSession {
                     token,
                     progress_rx,
-                    worker,
+                    work: EncodeWork::Worker(worker),
                 });
                 true
             }
@@ -1091,7 +1188,7 @@ impl EncodeDialog {
         let state = self.take_lifecycle();
         self.lifecycle = match state {
             EncodeLifecycle::Running(session) | EncodeLifecycle::Finishing(session) => {
-                session.token.cancel();
+                session.cancel();
                 EncodeLifecycle::Cancelling(session)
             }
             EncodeLifecycle::Cancelling(session) => EncodeLifecycle::Cancelling(session),
@@ -1431,9 +1528,17 @@ impl Drop for EncodeDialog {
             }
         };
 
-        session.token.cancel();
-        if let Err(payload) = session.worker.join() {
-            info!("Encoder worker panicked during shutdown: {:?}", payload);
+        session.cancel();
+        match session.work {
+            // A video job the worker returned is dropped with its result: that cancels it.
+            EncodeWork::Worker(worker) => {
+                if let Err(payload) = worker.join() {
+                    info!("Encoder worker panicked during shutdown: {:?}", payload);
+                }
+            }
+            // Dropping the job cancels the encode and joins its thread.
+            #[cfg(feature = "video")]
+            EncodeWork::Video(job) => drop(job),
         }
     }
 }

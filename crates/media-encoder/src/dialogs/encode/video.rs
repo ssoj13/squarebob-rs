@@ -773,8 +773,8 @@ fn video_pixels(frame: &Frame, input: PackedInput) -> Result<Vec<u8>, EncodeErro
     static SRGB_TO_VIDEO: std::sync::LazyLock<[u16; 256]> = std::sync::LazyLock::new(|| {
         std::array::from_fn(|code| {
             let light =
-                crate::hdr::display_encoded_to_linear([code as f32 / 255.0, 0.0, 0.0, 1.0])[0];
-            float_to_u16(crate::hdr::bt1886_code(light))
+                video_io::color::display_encoded_to_linear([code as f32 / 255.0, 0.0, 0.0, 1.0])[0];
+            float_to_u16(video_io::color::bt1886_code(light))
         })
     });
     let pixel_bytes = match input {
@@ -818,16 +818,16 @@ fn video_pixels(frame: &Frame, input: PackedInput) -> Result<Vec<u8>, EncodeErro
         }
         PixelBuffer::F16(_) | PixelBuffer::F32(_) => {
             let (light, kind, _) = frame.hdr_light().map_err(EncodeError::EncodeFrameFailed)?;
-            if kind != crate::hdr::DisplayLight::Relative {
+            if kind != video_io::export::DisplayLight::Relative {
                 return Err(EncodeError::EncodeFrameFailed(
                     "SDR video requires an SDR display view".into(),
                 ));
             }
             for p in light.chunks_exact(4) {
                 write([
-                    float_to_u16(crate::hdr::bt1886_code(p[0])),
-                    float_to_u16(crate::hdr::bt1886_code(p[1])),
-                    float_to_u16(crate::hdr::bt1886_code(p[2])),
+                    float_to_u16(video_io::color::bt1886_code(p[0])),
+                    float_to_u16(video_io::color::bt1886_code(p[1])),
+                    float_to_u16(video_io::color::bt1886_code(p[2])),
                     float_to_u16(p[3]),
                 ]);
             }
@@ -1084,7 +1084,7 @@ mod tests {
         use av_util_pixfmt::{
             av_color_primaries_name, av_color_space_name, av_color_transfer_name,
         };
-        let [primaries, transfer, matrix] = crate::hdr::video_tags(crate::hdr::PngEncoding::Sdr8);
+        let [primaries, transfer, matrix] = video_io::video::video_tags(video_io::export::PngEncoding::Sdr8);
         assert_eq!(
             av_color_primaries_name(SDR_VIDEO_COLOUR.primaries),
             Some(primaries)
@@ -1099,7 +1099,7 @@ mod tests {
     #[test]
     fn video_pixels_convert_srgb_to_bt1886_and_keep_alpha_linear() {
         let bytes = Frame::rgba8(1, 1, vec![30, 30, 30, 128]).unwrap();
-        let light = crate::hdr::display_encoded_to_linear([
+        let light = video_io::color::display_encoded_to_linear([
             30.0 / 255.0,
             30.0 / 255.0,
             30.0 / 255.0,
@@ -1109,7 +1109,7 @@ mod tests {
             1,
             1,
             light.to_vec(),
-            crate::hdr::DisplayLight::Relative,
+            video_io::export::DisplayLight::Relative,
             203.0,
         )
         .unwrap();
@@ -1137,7 +1137,7 @@ mod tests {
             1,
             1,
             vec![1.0; 4],
-            crate::hdr::DisplayLight::Absolute { peak_nits: 1000.0 },
+            video_io::export::DisplayLight::Absolute { peak_nits: 1000.0 },
             203.0,
         )
         .unwrap();
@@ -1247,7 +1247,7 @@ mod tests {
                     VideoCodec::ProRes => 0,
                 },
                 fps: 24.0,
-                output_encoding: crate::hdr::PngEncoding::Sdr8,
+                output_encoding: video_io::export::PngEncoding::Sdr8,
                 white_nits: 203.0,
                 preset: preset.map(str::to_owned),
                 profile: profile.map(str::to_owned),

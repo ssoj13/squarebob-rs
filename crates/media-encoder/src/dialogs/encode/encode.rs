@@ -20,7 +20,7 @@ use std::sync::mpsc::Sender;
 
 #[cfg(feature = "video")]
 use crate::frame::{FrameConversion, PixelBuffer, PixelFormat, TonemapMode};
-use crate::hdr::PngEncoding;
+use video_io::export::PngEncoding;
 use crate::source::Comp;
 
 /// Export mode - video or image sequence
@@ -140,8 +140,8 @@ impl Default for EncoderSettings {
 
 impl EncoderSettings {
     /// Validate the same PNG-video delivery modes exposed by WarpBro.
-    pub fn png_video(&self) -> Result<crate::hdr::PngVideo, EncodeError> {
-        use crate::hdr::PngVideo;
+    pub fn png_video(&self) -> Result<video_io::video::PngVideo, EncodeError> {
+        use video_io::video::PngVideo;
         if !self.white_nits.is_finite() || !(80.0..=1000.0).contains(&self.white_nits) {
             return Err(EncodeError::OutputCreateFailed(
                 "Reference white must be 80–1000 nits".into(),
@@ -1130,7 +1130,15 @@ pub enum EncodeError {
     EncoderNotFound,
     OutputCreateFailed(String),
     EncodeFrameFailed(String),
+    /// The shared PNG / PNG-sequence video exporter (`video_io`) failed.
+    Export(video_io::Error),
     Cancelled,
+}
+
+impl From<video_io::Error> for EncodeError {
+    fn from(error: video_io::Error) -> Self {
+        Self::Export(error)
+    }
 }
 
 impl std::fmt::Display for EncodeError {
@@ -1146,12 +1154,20 @@ impl std::fmt::Display for EncodeError {
             EncodeError::EncodeFrameFailed(msg) => {
                 write!(f, "Frame encoding failed: {}", msg)
             }
+            EncodeError::Export(error) => write!(f, "Video export failed: {error}"),
             EncodeError::Cancelled => write!(f, "Encoding cancelled by user"),
         }
     }
 }
 
-impl std::error::Error for EncodeError {}
+impl std::error::Error for EncodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            EncodeError::Export(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// Convert f32 fps to a stable rational (numerator, denominator).
 #[cfg(feature = "video")]
@@ -1293,7 +1309,7 @@ pub fn encode_sequence_from_comp(
                 w,
                 h,
                 light.clone(),
-                crate::hdr::DisplayLight::Relative,
+                video_io::export::DisplayLight::Relative,
                 settings.white_nits,
             )
             .map_err(EncodeError::EncodeFrameFailed)?
@@ -1341,22 +1357,113 @@ pub fn encode_sequence_from_comp(
     Ok(())
 }
 
+/// What [`encode_comp`] leaves running when it returns.
+#[must_use = "an HDR delivery's video is cancelled when its job is dropped"]
+pub enum Encoded {
+    /// The output is published.
+    Done,
+    /// HDR: the PNG sequence is written and `video_io` is encoding it on its own thread.
+    #[cfg(feature = "video")]
+    Video(VideoJob),
+}
+
+impl std::fmt::Debug for Encoded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Done => f.write_str("Done"),
+            #[cfg(feature = "video")]
+            Self::Video(job) => {
+                let progress = job.progress();
+                write!(
+                    f,
+                    "Video({}/{})",
+                    progress.current_frame, progress.total_frames
+                )
+            }
+        }
+    }
+}
+
+impl Encoded {
+    /// Block until the output is published (worker threads and tests, never the UI thread).
+    pub fn wait(self) -> Result<(), EncodeError> {
+        match self {
+            Self::Done => Ok(()),
+            #[cfg(feature = "video")]
+            Self::Video(job) => job.wait(),
+        }
+    }
+}
+
+/// The video stage of an HDR delivery: a [`video_io::video::Ticket`] over the job's private PNG
+/// sequence. Non-blocking, so the dialog drives it once per UI frame (`progress`, `cancel`,
+/// `try_finish`); dropping it cancels the encode and removes the sequence.
+#[cfg(feature = "video")]
+pub struct VideoJob {
+    // Declared before `_sequence`: the ticket (ffmpeg reading the PNGs) drops first, then the
+    // directory is removed.
+    ticket: video_io::video::Ticket,
+    total: i32,
+    _sequence: tempfile::TempDir,
+}
+
+#[cfg(feature = "video")]
+impl VideoJob {
+    /// Frames of the sequence encoded into the video so far.
+    pub fn progress(&self) -> EncodeProgress {
+        EncodeProgress {
+            current_frame: self.ticket.progress() as i32,
+            total_frames: self.total,
+            stage: EncodeStage::Flushing,
+        }
+    }
+
+    /// Stop the encode now; the destination is left as it was.
+    pub fn cancel(&self) {
+        self.ticket.cancel();
+    }
+
+    /// The outcome once the video is finished, else `None` (never blocks; handed out once).
+    pub fn try_finish(&mut self) -> Option<Result<(), EncodeError>> {
+        self.ticket.try_finish().map(Self::outcome)
+    }
+
+    /// Block until the video is finished.
+    pub fn wait(self) -> Result<(), EncodeError> {
+        let Self {
+            ticket, _sequence, ..
+        } = self;
+        Self::outcome(ticket.wait())
+    }
+
+    fn outcome(
+        result: Result<video_io::video::Outcome, video_io::Error>,
+    ) -> Result<(), EncodeError> {
+        match result? {
+            video_io::video::Outcome::Published => Ok(()),
+            video_io::video::Outcome::Cancelled => Err(EncodeError::Cancelled),
+        }
+    }
+}
+
 /// High-level encoding entry point: encodes a Comp.
 ///
-/// Comp is the single source of truth for play range and fps.
+/// Comp is the single source of truth for play range and fps. SDR video is published before
+/// this returns; HDR video returns [`Encoded::Video`], still encoding.
 pub fn encode_comp(
     comp: &Comp,
     project: &crate::source::Project,
     settings: &EncoderSettings,
     progress_tx: Sender<EncodeProgress>,
     cancel_flag: Arc<AtomicBool>,
-) -> Result<(), EncodeError> {
+) -> Result<Encoded, EncodeError> {
     #[cfg(feature = "video")]
     {
         if settings.output_encoding.hdr() {
-            encode_hdr_sequence(comp, settings, progress_tx, cancel_flag)
+            encode_hdr_sequence(comp, settings, progress_tx, cancel_flag).map(Encoded::Video)
         } else {
             encode_sequence_from_comp(comp, project, settings, progress_tx, cancel_flag)
+                .map(|()| Encoded::Done)
         }
     }
 
@@ -1367,16 +1474,16 @@ pub fn encode_comp(
     }
 }
 
-/// Adapt the composition worker to WarpBro's canonical finished-PNG video path.
-/// Its private sequence is scoped to this job; a cancelled or failed child never
-/// publishes a partial video over a completed destination.
+/// Adapt the composition worker to WarpBro's canonical finished-PNG video path (`video_io`).
+/// Writes the job's private PNG sequence, then starts its video encode and returns it running.
+/// A cancelled or failed encode never publishes a partial video over a completed destination.
 #[cfg(feature = "video")]
 fn encode_hdr_sequence(
     comp: &Comp,
     settings: &EncoderSettings,
     progress_tx: Sender<EncodeProgress>,
     cancel: Arc<AtomicBool>,
-) -> Result<(), EncodeError> {
+) -> Result<VideoJob, EncodeError> {
     let codec = settings.png_video()?;
     let (fps_num, fps_den) = fps_to_rational(settings.fps)?;
     let (first, last) = comp.play_range(true);
@@ -1407,7 +1514,7 @@ fn encode_hdr_sequence(
         .prefix(".squarebob-hdr-")
         .tempdir_in(parent)
         .map_err(|e| EncodeError::OutputCreateFailed(e.to_string()))?;
-    let mut levels: Option<crate::hdr::HdrLevels> = None;
+    let mut levels: Option<video_io::export::HdrLevels> = None;
     let mut size = None;
     for (number, frame_idx) in (first..=last).enumerate() {
         if cancel.load(Ordering::Acquire) {
@@ -1421,7 +1528,7 @@ fn encode_hdr_sequence(
             ));
         }
         size = Some(resolution);
-        if codec == crate::hdr::PngVideo::Hevc
+        if codec == video_io::video::PngVideo::Hevc
             && (!resolution.0.is_multiple_of(2) || !resolution.1.is_multiple_of(2))
         {
             return Err(EncodeError::EncodeFrameFailed(
@@ -1453,7 +1560,7 @@ fn encode_hdr_sequence(
         std::path::Path::new(&dir.replace('%', "%%"))
             .join(format!("frame.%06d.{}", settings.output_encoding.suffix()))
     };
-    let options = crate::hdr::PngVideoOptions {
+    let options = video_io::video::PngVideoOptions {
         codec,
         encoding: settings.output_encoding,
         input: &input,
@@ -1463,26 +1570,16 @@ fn encode_hdr_sequence(
         fps_den: fps_den as u32,
         qp: settings.quality_value,
     };
-    send(0, EncodeStage::Flushing)?;
-    let completed = crate::hdr::encode_video(
-        &options,
-        levels,
-        &settings.output_path,
-        true,
-        &cancel,
-        |count| {
-            if send(count.min(total as u32) as i32, EncodeStage::Flushing).is_err() {
-                cancel.store(true, Ordering::Release);
-            }
-        },
-    )
-    .map_err(EncodeError::EncodeFrameFailed)?;
-    if !completed {
+    if cancel.load(Ordering::Acquire) {
         return Err(EncodeError::Cancelled);
     }
-    // Publication is committed. Losing the observer cannot undo that outcome.
-    let _ = send(total, EncodeStage::Complete);
-    Ok(())
+    send(0, EncodeStage::Flushing)?;
+    let ticket = video_io::video::encode(&options, levels, &settings.output_path, true)?;
+    Ok(VideoJob {
+        ticket,
+        total,
+        _sequence: sequence,
+    })
 }
 
 /// Strip alpha channel from RGBA interleaved data.

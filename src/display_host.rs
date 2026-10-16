@@ -248,6 +248,9 @@ impl<A: NativeApp> Host<A> {
             .get_default_config(&rs.adapter, size.width.max(1), size.height.max(1))
             .ok_or("Shared GPU cannot present to this window")?;
         let present = PresentPass::new(&rs.device, config.format, Output::Sdr8);
+        // egui draws into the PresentPass canvas: `show_backdrop` clears it there (the pass
+        // composites the backdrop under it) instead of painting the SDR fallback.
+        egui_display::set_renderer_target(&self.ctx, egui_display::RendererTarget::CANVAS);
         let state = DisplayState {
             output: Output::Sdr8,
             target: Target::default(),
@@ -325,9 +328,9 @@ impl<A: NativeApp> Host<A> {
             .insert(egui::ViewportId::ROOT, live.viewport.clone());
         live.app.raw_input_hook(&self.ctx, &mut input);
         let output = self.ctx.run_ui(input, |ui| live.app.ui_native(ui));
-        // The viewer backdrop the viewport published this frame (none when it showed no
-        // picture); the present pass composites the canvas over it.
-        live.present.backdrop = egui_display::take_backdrop(&self.ctx);
+        // The viewer backdrops the root viewport published this frame (none when it showed no
+        // picture); the present pass composites the canvas over them.
+        live.present.backdrops = egui_display::take_backdrops(&self.ctx, egui::ViewportId::ROOT);
         live.viewport.events.clear();
         live.input.handle_platform_output_with_event_loop(
             &live.window,

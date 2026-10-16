@@ -252,7 +252,7 @@ pub struct Frame {
     layout: PixelLayout,
     file: Option<PathBuf>,
     /// Present only for display-linear Rec.709 capture, never for scene radiance.
-    display: Option<(crate::hdr::DisplayLight, f32)>,
+    display: Option<(video_io::export::DisplayLight, f32)>,
 }
 
 impl Frame {
@@ -291,7 +291,7 @@ impl Frame {
         width: usize,
         height: usize,
         light: Vec<f32>,
-        kind: crate::hdr::DisplayLight,
+        kind: video_io::export::DisplayLight,
         white_nits: f32,
     ) -> Result<Self, String> {
         if !white_nits.is_finite() || white_nits <= 0.0 || !light.iter().all(|v| v.is_finite()) {
@@ -306,7 +306,7 @@ impl Frame {
 
     /// Explicit display-light contract required by the WarpBro HDR PNG writer.
     /// Generic floating-point media frames cannot silently acquire display tags.
-    pub fn hdr_light(&self) -> Result<(&[f32], crate::hdr::DisplayLight, f32), String> {
+    pub fn hdr_light(&self) -> Result<(&[f32], video_io::export::DisplayLight, f32), String> {
         let (kind, white) = self
             .display
             .ok_or("HDR export requires display-linear Rec.709 capture")?;
@@ -321,9 +321,9 @@ impl Frame {
     pub fn save_png(
         &self,
         path: &std::path::Path,
-        encoding: crate::hdr::PngEncoding,
+        encoding: video_io::export::PngEncoding,
         white_nits: f32,
-    ) -> Result<Option<crate::hdr::HdrLevels>, String> {
+    ) -> Result<Option<video_io::export::HdrLevels>, String> {
         if !encoding.hdr() {
             return Err(
                 "Use the SDR image writer for configurable PNG channels and compression".into(),
@@ -335,8 +335,8 @@ impl Frame {
         }
         let light: &[[f32; 4]] = bytemuck::try_cast_slice(light)
             .map_err(|e| format!("Invalid display-light pixel layout: {e}"))?;
-        let scale = crate::hdr::hdr_scale(kind, light, white_nits, encoding);
-        crate::hdr::write_png(
+        let scale = video_io::export::hdr_scale(kind, light, white_nits, encoding);
+        video_io::export::write_png(
             path,
             self.layout.width(),
             self.layout.height(),
@@ -346,6 +346,7 @@ impl Frame {
             scale,
             true,
         )
+        .map_err(|e| e.to_string())
     }
 
     pub fn file(&self) -> Option<&PathBuf> {
@@ -476,7 +477,7 @@ impl FrameConversion for Frame {
             } else if self.display.is_some() {
                 // A display transform has already been applied. Only encode its
                 // linear Rec.709 light for an SDR image; never tone map it twice.
-                egui_display::transfer::oetf(value)
+                video_io::color::oetf(value)
             } else {
                 tonemap_value(value, mode)
             }
@@ -676,7 +677,7 @@ mod tests {
             1,
             1,
             vec![0.18, 0.003, 4.0, 0.5],
-            crate::hdr::DisplayLight::Relative,
+            video_io::export::DisplayLight::Relative,
             203.0,
         )
         .unwrap();
@@ -686,9 +687,9 @@ mod tests {
         let PixelBuffer::F32(values) = coded.buffer.as_ref() else {
             panic!("Float output expected")
         };
-        assert_eq!(values[0], egui_display::transfer::oetf(0.18));
-        assert_eq!(values[1], egui_display::transfer::oetf(0.003));
-        assert_eq!(values[2], egui_display::transfer::oetf(4.0));
+        assert_eq!(values[0], video_io::color::oetf(0.18));
+        assert_eq!(values[1], video_io::color::oetf(0.003));
+        assert_eq!(values[2], video_io::color::oetf(4.0));
         assert_eq!(values[3], 0.5);
         let bytes = frame
             .tonemap(TonemapMode::ACES, PixelFormat::Rgba8)
@@ -735,13 +736,13 @@ mod tests {
             2,
             1,
             vec![4.0, 2.0, 1.0, 0.5, 0.0, 0.0, 0.0, 1.0],
-            crate::hdr::DisplayLight::Relative,
+            video_io::export::DisplayLight::Relative,
             203.0,
         )
         .unwrap();
         let cropped = capture.crop_copy(1, 1, CropAlign::LeftTop).unwrap();
         let (light, kind, white) = cropped.hdr_light().unwrap();
-        assert_eq!(kind, crate::hdr::DisplayLight::Relative);
+        assert_eq!(kind, video_io::export::DisplayLight::Relative);
         assert_eq!(light, &[4.0, 2.0, 1.0, 0.5]);
         assert_eq!(white, 203.0);
         let scene = Frame::rgba_f32(1, 1, vec![4.0, 2.0, 1.0, 0.5]).unwrap();
@@ -759,7 +760,7 @@ mod tests {
                     1,
                     1,
                     vec![1.0; 4],
-                    crate::hdr::DisplayLight::Relative,
+                    video_io::export::DisplayLight::Relative,
                     white
                 )
                 .is_err()
@@ -770,7 +771,7 @@ mod tests {
                 1,
                 1,
                 vec![f32::INFINITY; 4],
-                crate::hdr::DisplayLight::Relative,
+                video_io::export::DisplayLight::Relative,
                 203.0
             )
             .is_err()
@@ -780,7 +781,7 @@ mod tests {
                 2,
                 1,
                 vec![1.0; 4],
-                crate::hdr::DisplayLight::Relative,
+                video_io::export::DisplayLight::Relative,
                 203.0
             )
             .is_err()

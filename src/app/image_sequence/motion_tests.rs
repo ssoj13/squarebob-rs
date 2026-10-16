@@ -9,8 +9,8 @@ use std::sync::{Arc, atomic::AtomicBool, mpsc};
 use media_encoder::{
     Comp, Container, EncodeError, EncoderSettings, Frame, FrameSource, Project, VideoCodec,
     encode_comp,
-    hdr::{DisplayLight, PngEncoding},
 };
+use video_io::export::{DisplayLight, PngEncoding};
 use render_shared::{ColorMode, CubeHeightMode, HashTransformEffect, OrbitCamera, Render3DOptions};
 use squarebob_core::DirEntry;
 
@@ -253,6 +253,8 @@ fn retained_squarebob_pbr_motion_movies_sdr_pq_hlg() {
             sender,
             Arc::new(AtomicBool::new(false)),
         )
+        .unwrap()
+        .wait()
         .unwrap();
         let probe = verify_motion_video(&path);
         println!("Verified SquareBob PBR motion movie: {}", path.display());
