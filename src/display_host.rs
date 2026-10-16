@@ -529,7 +529,7 @@ impl<A: NativeApp> Live<A> {
         };
         let rs = &self.rs;
         self.present
-            .prepare_canvas(&rs.device, &rs.queue, size.width, size.height);
+            .prepare_canvas(&rs.device, &rs.queue, size.width, size.height)?;
         let mut encoder = rs
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {

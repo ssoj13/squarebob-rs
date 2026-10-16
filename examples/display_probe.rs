@@ -7,8 +7,10 @@ use render_core::gpu::GpuContext;
 
 fn canvas(ctx: &GpuContext, present: &mut PresentPass, linear: [f32; 3]) -> [f32; 3] {
     let gamma = linear.map(transfer::oetf);
-    present.prepare_canvas(&ctx.device, &ctx.queue, 8, 8);
-    let view = present.canvas(&ctx.device, 8, 8);
+    present
+        .prepare_canvas(&ctx.device, &ctx.queue, 8, 8)
+        .expect("probe canvas");
+    let view = present.canvas(&ctx.device, 8, 8).expect("probe canvas");
     let mut encoder = ctx
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
