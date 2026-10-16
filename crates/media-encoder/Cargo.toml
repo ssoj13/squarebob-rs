@@ -16,6 +16,7 @@ video = [
     "dep:av-util-frame",
     "dep:av-util-pixfmt",
     "dep:openh264",
+    "video-io/cli",
 ]
 exr = ["dep:vfx-core", "dep:vfx-io"]
 
@@ -23,7 +24,7 @@ exr = ["dep:vfx-core", "dep:vfx-io"]
 bytemuck = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
-egui-display = { workspace = true }
+video-io = { workspace = true }
 egui-widgets-config = { workspace = true }
 egui_dock = { workspace = true }
 half = { workspace = true, features = ["bytemuck", "serde"] }

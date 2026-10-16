@@ -79,6 +79,9 @@ egui_dock = { version = "0.21", features = ["serde"] }
 egui-widgets-config = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
 egui-display = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
 egui-viewport-toolbar = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
+# Display-referred PNG / PNG-sequence video export + transfer maths (moved out of egui-display).
+# `export` = PNG files, output-view choice, video options; media-encoder's `video` adds `cli`.
+video-io = { git = "ssh://git@github.com/ssoj13/video-io-rs.git", branch = "main", default-features = false, features = ["export"] }
 
 # OIDN denoiser Burn stack — GIT deps (a [patch] can't cross 0.21->0.22). Same revs
 # oidn-rs/render-rs/gsplat-rs pin. pt-denoise-oidn uses burn's wgpu backend +
@@ -188,6 +191,7 @@ egui-winit = { version = "0.36", features = ["serde", "accesskit"] }
 winit = "0.30"
 ron = "0.12"
 egui-display = { workspace = true }
+video-io = { workspace = true }
 egui_dock = { workspace = true }
 fscan-rs = { git = "ssh://git@github.com/ssoj13/fscan-rs.git", rev = "94dd173e1222d89356eab5c02b84815d9c04359f" }
 rayon = { workspace = true }
