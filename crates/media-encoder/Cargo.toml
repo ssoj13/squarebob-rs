@@ -7,17 +7,7 @@ license.workspace = true
 
 [features]
 default = ["video", "exr"]
-video = [
-    "dep:av-codec",
-    "dep:av-codec-core",
-    "dep:av-format",
-    "dep:av-swscale",
-    "dep:av-util-core",
-    "dep:av-util-frame",
-    "dep:av-util-pixfmt",
-    "dep:openh264",
-    "video-io/cli",
-]
+video = ["video-io/cli", "video-io/native"]
 exr = ["dep:vfx-core", "dep:vfx-io"]
 
 [dependencies]
@@ -31,20 +21,9 @@ half = { workspace = true, features = ["bytemuck", "serde"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "tga", "hdr"] }
 tiff = "0.11.3"
 log = { workspace = true }
-av-codec = { workspace = true, optional = true }
-av-codec-core = { workspace = true, optional = true }
-av-format = { workspace = true, optional = true }
-av-swscale = { workspace = true, optional = true }
-av-util-core = { workspace = true, optional = true }
-av-util-frame = { workspace = true, optional = true }
-av-util-pixfmt = { workspace = true, optional = true }
-openh264 = { workspace = true, optional = true }
 rfd = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tempfile = "3"
 vfx-core = { workspace = true, optional = true }
 vfx-io = { workspace = true, optional = true }
-
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true }

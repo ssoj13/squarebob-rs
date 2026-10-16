@@ -126,22 +126,8 @@ windows = { version = "0.62", features = [
 ] }
 libc = "0.2"
 
-# External git deps
-#
-# ffmpeg-rs on `branch = "main"`, like every other cross-repo dep here. The old
-# `rev = "c0a8e10b…"` pin had stopped existing: ffmpeg-rs rewrote its history, so
-# that commit is on no branch and is not an ancestor of main. GitHub will not
-# serve an unreachable SHA, so the pin failed with "upload-pack: not our ref" for
-# anyone resolving from a clean state — it only kept working here because a stale
-# object sat in the local cargo git db.
-av-codec = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main", features = ["enc-hevc", "enc-av1"] }
-av-codec-core = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
-av-format = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
-av-swscale = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
+#Display-referred PNG / PNG-sequence video export + native ffmpeg-rs encoder (`video-io`).
 av-util-core = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
-av-util-frame = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
-av-util-pixfmt = { git = "ssh://git@github.com/ssoj13/ffmpeg-rs.git", branch = "main" }
-openh264 = { version = "=0.9.8", features = ["source"] }
 vfx-core = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main" }
 vfx-io = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main", default-features = false, features = ["exr", "htj2k", "png", "jpeg", "tiff", "dpx", "hdr"] }
 # Full OCIO-compatible colour management. Replaces the hand-rolled

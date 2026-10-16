@@ -140,8 +140,8 @@ impl Default for EncoderSettings {
 
 impl EncoderSettings {
     /// Validate the same PNG-video delivery modes exposed by WarpBro.
-    pub fn png_video(&self) -> Result<video_io::video::PngVideo, EncodeError> {
-        use video_io::video::PngVideo;
+    pub fn png_video(&self) -> Result<video_io::catalog::PngVideo, EncodeError> {
+        use video_io::catalog::PngVideo;
         if !self.white_nits.is_finite() || !(80.0..=1000.0).contains(&self.white_nits) {
             return Err(EncodeError::OutputCreateFailed(
                 "Reference white must be 80–1000 nits".into(),
@@ -1528,7 +1528,7 @@ fn encode_hdr_sequence(
             ));
         }
         size = Some(resolution);
-        if codec == video_io::video::PngVideo::Hevc
+        if codec == video_io::catalog::PngVideo::Hevc
             && (!resolution.0.is_multiple_of(2) || !resolution.1.is_multiple_of(2))
         {
             return Err(EncodeError::EncodeFrameFailed(
@@ -1560,21 +1560,29 @@ fn encode_hdr_sequence(
         std::path::Path::new(&dir.replace('%', "%%"))
             .join(format!("frame.%06d.{}", settings.output_encoding.suffix()))
     };
-    let options = video_io::video::PngVideoOptions {
-        codec,
-        encoding: settings.output_encoding,
+    let job = video_io::video::SequenceJob {
         input: &input,
         start_number: 0,
         frame_count: total as u32,
         fps_num: fps_num as u32,
         fps_den: fps_den as u32,
-        qp: settings.quality_value,
+        encoding: settings.output_encoding,
     };
+    let video = codec
+        .settings(settings.quality_value)
+        .ok_or_else(|| EncodeError::OutputCreateFailed("PNG video is off".into()))?;
     if cancel.load(Ordering::Acquire) {
         return Err(EncodeError::Cancelled);
     }
     send(0, EncodeStage::Flushing)?;
-    let ticket = video_io::video::encode(&options, levels, &settings.output_path, true)?;
+    let ticket = video_io::video::encode(
+        &job,
+        &video,
+        video_io::video::Backend::Cli,
+        levels,
+        &settings.output_path,
+        true,
+    )?;
     Ok(VideoJob {
         ticket,
         total,
