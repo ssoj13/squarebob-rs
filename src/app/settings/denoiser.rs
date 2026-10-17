@@ -65,11 +65,7 @@ impl App {
                         .width(220.0)
                         .selected_text(quality_label(*q))
                         .show_ui(ui, |ui| {
-                            for opt in [
-                                OidnQualityOption::Small,
-                                OidnQualityOption::Base,
-                                OidnQualityOption::Large,
-                            ] {
+                            for opt in [OidnQualityOption::Small, OidnQualityOption::Base] {
                                 if ui
                                     .selectable_label(*q == opt, quality_label(opt))
                                     .on_hover_text(quality_hover(opt))
@@ -278,7 +274,6 @@ fn mode_hover(m: OidnModeOption) -> &'static str {
 
 fn quality_label(q: OidnQualityOption) -> &'static str {
     match q {
-        OidnQualityOption::Large => "Large",
         OidnQualityOption::Base => "Base",
         OidnQualityOption::Small => "Small",
     }
@@ -286,11 +281,6 @@ fn quality_label(q: OidnQualityOption) -> &'static str {
 
 fn quality_hover(q: OidnQualityOption) -> &'static str {
     match q {
-        OidnQualityOption::Large => {
-            "Load `_large` model where it exists (prefilter and clean-aux \
-             variants ship _large). Color-denoise main models have no _large \
-             — silently falls back to Base."
-        }
         OidnQualityOption::Base => "Default base model. ~1.8 MB per variant.",
         OidnQualityOption::Small => {
             "Load `_small` model — half the parameters, ~600 KB per variant, \

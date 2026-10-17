@@ -183,6 +183,13 @@ get_resource flush/pin -> buffer-to-result_texture copy -> device.poll
 result_view -> composite_overlay -> render_view -> display
 ```
 
+**The bridge is render-rs `pt-denoise-oidn` since 2026-10-15** (squarebob's copy and its `make_burn_device` were
+deleted; the burn device is `burn_device::shared`, the process's one registration). The app converts its
+`render_core::gpu::GpuContext` into the denoiser's (`treemap_view::oidn_context`, the same Arcs), picks the richest mode
+its guides support itself (`effective_mode`: render-rs's denoiser refuses a mode whose guides are missing), and has no
+`Large` model size (no `_large` HDR network exists). The line anchors below into `crates/pt-denoise-oidn` refer to the
+deleted copy (history); the same code now lives in render-rs `crates/pt-denoise-oidn/src/lib.rs`.
+
 Checked bridge invariants:
 
 - Input and output share the renderer GPU device/queue in the normal path (`crates/pt-denoise-oidn/src/lib.rs:715-727`). Result goes to a separate texture (`:649-656`); display composition targets `render_view` (`crates/render-3d/src/lib.rs:1217-1222`). The inspected bridge contains no output-to-raw feedback.

@@ -160,7 +160,7 @@ RENDER SETTINGS (3D, overrides saved config):
     --pt-path-guiding            Enable path guiding
     --no-pt-path-guiding         Disable path guiding
     --oidn-mode <MODE>            OIDN mode (off|color|color_albedo|color_albedo_normal)
-    --oidn-quality <QUALITY>      OIDN model size (small|base|large)
+    --oidn-quality <QUALITY>      OIDN model size (small|base)
     --oidn-auto                   Enable automatic OIDN
     --no-oidn-auto                Disable automatic OIDN
     --pt-restir-di               Enable ReSTIR DI
@@ -519,7 +519,6 @@ pub fn parse_args() -> Result<CliOptions, String> {
             "--oidn-quality" => {
                 let raw = value(&args, &mut i, arg)?;
                 opts.pt_oidn_quality = Some(match raw.to_ascii_lowercase().as_str() {
-                    "large" | "high" => OidnQualityOption::Large,
                     "base" | "balanced" => OidnQualityOption::Base,
                     "small" | "fast" => OidnQualityOption::Small,
                     _ => return Err(format!("Invalid value '{raw}' for {arg}")),
