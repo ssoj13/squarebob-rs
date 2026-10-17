@@ -16,7 +16,7 @@
 //! widget so collapse state survives across frames.
 
 use eframe::egui::{self, Color32, Response, Ui, Widget};
-use egui_widgets_config::icons;
+use soluwell_config::icons;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::RangeInclusive;

@@ -9,7 +9,7 @@
 use super::{SettingsDirty, control_label, settings_grid, tinted_section};
 use crate::app::App;
 use eframe::egui;
-use egui_widgets_config::icons;
+use soluwell_config::icons;
 use render_shared::{OidnModeOption, OidnQualityOption};
 
 impl App {

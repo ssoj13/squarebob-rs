@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui_widgets_config::icons;
+use soluwell_config::icons;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Action {
@@ -192,10 +192,10 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let gpu = render_core::gpu::GpuContext::new().expect("GPU adapter");
         let ctx = egui::Context::default();
-        egui_widgets_config::ensure_icon_font(&ctx);
+        soluwell_config::ensure_icon_font(&ctx);
         let mut renderer = egui_wgpu::Renderer::new(
             &gpu.device,
-            egui_display::CANVAS_FORMAT,
+            soluwell_viewport::display::CANVAS_FORMAT,
             egui_wgpu::RendererOptions {
                 dithering: false,
                 ..Default::default()
@@ -275,7 +275,7 @@ mod tests {
             (1000, false, "viewport-toolbar-collapsed.png"),
         ] {
             let ctx = egui::Context::default();
-            egui_widgets_config::ensure_icon_font(&ctx);
+            soluwell_config::ensure_icon_font(&ctx);
             let mut app = crate::app::App::default();
             app.render_mode = render_shared::RenderMode::Mode3D;
             app.viewport_toolbar.expanded = expanded;
@@ -367,10 +367,10 @@ mod tests {
             size_in_pixels: size,
             pixels_per_point: 1.0,
         };
-        let mut present = egui_display::PresentPass::new(
+        let mut present = soluwell_viewport::display::PresentPass::new(
             &gpu.device,
             wgpu::TextureFormat::Rgba8Unorm,
-            egui_display::Output::Sdr8,
+            soluwell_viewport::display::Output::Sdr8,
         );
         present.dither = false;
         let canvas = present
@@ -404,8 +404,8 @@ mod tests {
             .capture(
                 &gpu.device,
                 &gpu.queue,
-                egui_display::Output::Sdr8,
-                egui_display::Target {
+                soluwell_viewport::display::Output::Sdr8,
+                soluwell_viewport::display::Target {
                     hdr: false,
                     white: 203.0,
                     peak: 1000.0,

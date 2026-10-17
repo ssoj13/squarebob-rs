@@ -10,7 +10,7 @@ use super::{SettingsDirty, settings_grid, tinted_section};
 use crate::app::App;
 use color_pipeline::{BuiltInTonemap, ColorCodepath, ColorMode, ConfigSource, vfx_ocio::Encoding};
 use eframe::egui;
-use egui_widgets_config::icons;
+use soluwell_config::icons;
 
 impl App {
     /// Colour pipeline section. Every control here is a display-side

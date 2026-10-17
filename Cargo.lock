@@ -2741,6 +2741,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "curves"
+version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/curves-rs.git?branch=main#2d82329ad7a98b173f364ad829c25c949d36ada4"
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3204,55 +3209,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui-colorpicker"
-version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#c79f986a4da45151dbd5ed49d45d4247cf4bf694"
-dependencies = [
- "egui",
- "egui-widgets-config",
- "serde",
-]
-
-[[package]]
-name = "egui-display"
-version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#c79f986a4da45151dbd5ed49d45d4247cf4bf694"
-dependencies = [
- "bytemuck",
- "egui",
- "egui-wgpu",
- "egui-widgets-config",
- "gpu-info-rs",
- "half",
- "log",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "video-io",
- "wgpu",
-]
-
-[[package]]
-name = "egui-phosphor"
-version = "0.14.0"
-source = "git+ssh://git@github.com/ssoj13/egui-phosphor.git?branch=main#21aeabe699eea6f8dee740580097c4e920df1702"
-dependencies = [
- "egui",
-]
-
-[[package]]
-name = "egui-viewport-toolbar"
-version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#c79f986a4da45151dbd5ed49d45d4247cf4bf694"
-dependencies = [
- "egui",
- "egui-colorpicker 0.1.0 (git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main)",
- "egui-display",
- "egui-widgets-config",
- "serde",
-]
-
-[[package]]
 name = "egui-wgpu"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3270,17 +3226,6 @@ dependencies = [
  "web-time",
  "wgpu",
  "winit",
-]
-
-[[package]]
-name = "egui-widgets-config"
-version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#c79f986a4da45151dbd5ed49d45d4247cf4bf694"
-dependencies = [
- "egui",
- "egui-phosphor",
- "serde",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -4343,7 +4288,7 @@ dependencies = [
 [[package]]
 name = "h264-enc"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/h264-rs.git?branch=main#8b9842a00cfde34f27d13571cb64f62914131970"
+source = "git+ssh://git@github.com/ssoj13/h264-rs.git?branch=main#52e036b7955d709a356140dd05b8c3b4eab6d0e0"
 dependencies = [
  "cabac",
  "h264-rs",
@@ -4352,7 +4297,7 @@ dependencies = [
 [[package]]
 name = "h264-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/h264-rs.git?branch=main#8b9842a00cfde34f27d13571cb64f62914131970"
+source = "git+ssh://git@github.com/ssoj13/h264-rs.git?branch=main#52e036b7955d709a356140dd05b8c3b4eab6d0e0"
 dependencies = [
  "cabac",
 ]
@@ -5479,13 +5424,13 @@ dependencies = [
  "bytemuck",
  "eframe",
  "egui",
- "egui-widgets-config",
  "egui_dock",
  "half",
  "image",
  "log",
  "rfd",
  "serde",
+ "soluwell-config",
  "tempfile",
  "thiserror 2.0.21",
  "tiff",
@@ -6592,11 +6537,11 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
- "egui-colorpicker 0.1.0",
- "egui-widgets-config",
+ "egui-colorpicker",
  "egui_extras",
  "serde",
  "serde_json",
+ "soluwell-config",
  "uuid",
 ]
 
@@ -7976,6 +7921,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "soluwell-config"
+version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#4338de33475858d59524b876d3d6e572e1d48530"
+dependencies = [
+ "egui",
+ "serde",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "soluwell-controls"
+version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#4338de33475858d59524b876d3d6e572e1d48530"
+dependencies = [
+ "curves",
+ "egui",
+ "serde",
+ "soluwell-config",
+]
+
+[[package]]
+name = "soluwell-viewport"
+version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/egui-widgets-rs.git?branch=main#4338de33475858d59524b876d3d6e572e1d48530"
+dependencies = [
+ "bytemuck",
+ "egui",
+ "egui-wgpu",
+ "enumset",
+ "glam",
+ "gpu-info-rs",
+ "half",
+ "log",
+ "serde",
+ "serde_json",
+ "soluwell-config",
+ "soluwell-controls",
+ "thiserror 2.0.21",
+ "video-io",
+ "wgpu",
+]
+
+[[package]]
 name = "spin"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8016,11 +8004,8 @@ dependencies = [
  "directories",
  "eframe",
  "egui",
- "egui-colorpicker 0.1.0",
- "egui-display",
- "egui-viewport-toolbar",
+ "egui-colorpicker",
  "egui-wgpu",
- "egui-widgets-config",
  "egui-winit",
  "egui_dock",
  "env_logger",
@@ -8050,6 +8035,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "soluwell-config",
+ "soluwell-viewport",
  "squarebob-core",
  "squarebob-widgets",
  "sysinfo 0.39.6",
@@ -8069,10 +8056,10 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
- "egui-widgets-config",
  "egui_extras",
  "serde",
  "serde_json",
+ "soluwell-config",
  "uuid",
 ]
 
@@ -9085,7 +9072,7 @@ dependencies = [
 [[package]]
 name = "video-io"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/video-io-rs.git?branch=main#a9edb0d1c7e55f5bb3eb0eca72168cd6aaf859b9"
+source = "git+ssh://git@github.com/ssoj13/video-io-rs.git?branch=main#b11e17dd465aeb1def786712cfa12c8902577e9b"
 dependencies = [
  "av-codec",
  "av-codec-core",

@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::App;
 use super::helpers::fmt_size;
-use egui_widgets_config::icons;
+use soluwell_config::icons;
 
 impl App {
     pub(super) fn ui_ext_stats(&mut self, ui: &mut egui::Ui) {

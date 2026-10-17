@@ -12,7 +12,7 @@ description = "Generic Attribute Editor widget for egui. Extracted from Playa: a
 [dependencies]
 eframe = { workspace = true }
 egui = { workspace = true }
-egui-widgets-config = { workspace = true }
+soluwell-config = { workspace = true }
 egui_extras = { workspace = true }
 egui-colorpicker = { workspace = true }
 serde = { workspace = true }

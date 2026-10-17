@@ -15,7 +15,7 @@ bytemuck = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 video-io = { workspace = true }
-egui-widgets-config = { workspace = true }
+soluwell-config = { workspace = true }
 egui_dock = { workspace = true }
 half = { workspace = true, features = ["bytemuck", "serde"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "tga", "hdr"] }

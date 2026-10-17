@@ -75,9 +75,8 @@ egui-wgpu = "0.36"
 egui_extras = "0.36"
 egui_dock = { version = "0.21", features = ["serde"] }
 # Shared phosphor icon vocabulary (`icons::*`) + `add_icon_font`, from the same egui-widgets-rs as egui-display.
-egui-widgets-config = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
-egui-display = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
-egui-viewport-toolbar = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
+soluwell-config = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
+soluwell-viewport = { git = "ssh://git@github.com/ssoj13/egui-widgets-rs.git", branch = "main" }
 # Display-referred PNG / PNG-sequence video export + transfer maths (moved out of egui-display).
 # `export` = PNG files, output-view choice, video options; media-encoder's `video` adds `cli`.
 video-io = { git = "ssh://git@github.com/ssoj13/video-io-rs.git", branch = "main", default-features = false, features = ["export"] }
@@ -157,7 +156,7 @@ color-pipeline = { path = "crates/color-pipeline" }
 
 [dependencies]
 av-util-core = { workspace = true }
-egui-viewport-toolbar = { workspace = true }
+soluwell-viewport = { workspace = true }
 # https://dev.to/yeauty/double-your-performance-with-one-line-of-code-the-memory-superpower-every-rust-developer-should-1g93
 auto-allocator = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "persistence", "wgpu", "x11", "wayland"] }
@@ -168,7 +167,6 @@ egui-wgpu = { workspace = true }
 egui-winit = { version = "0.36", features = ["serde", "accesskit"] }
 winit = "0.30"
 ron = "0.12"
-egui-display = { workspace = true }
 video-io = { workspace = true }
 egui_dock = { workspace = true }
 fscan-rs = { git = "ssh://git@github.com/ssoj13/fscan-rs.git", rev = "94dd173e1222d89356eab5c02b84815d9c04359f" }
@@ -208,7 +206,7 @@ color-pipeline = { workspace = true }
 uuid = { workspace = true }
 pt-denoise-oidn = { workspace = true }
 sysinfo = { workspace = true }
-egui-widgets-config = { workspace = true }
+soluwell-config = { workspace = true }
 gpu-mem = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

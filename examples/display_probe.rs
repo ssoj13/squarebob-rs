@@ -2,7 +2,7 @@
 //! Run: cargo run --locked --example display_probe
 //! This verifies signal encoding, not monitor capability negotiation or perception.
 use anyhow::{Context, Result, ensure};
-use egui_display::{Output, PresentPass, Target, screenshot::Pixels, transfer};
+use soluwell_viewport::display::{Output, PresentPass, Target, screenshot::Pixels, transfer};
 use render_core::gpu::GpuContext;
 
 fn canvas(ctx: &GpuContext, present: &mut PresentPass, linear: [f32; 3]) -> [f32; 3] {
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     let ctx = GpuContext::new().context("No GPU available for display probe")?;
     println!("adapter={:?}", ctx.adapter.get_info());
     ensure!(
-        render_core::DISPLAY_TEXTURE_FORMAT == egui_display::CANVAS_FORMAT,
+        render_core::DISPLAY_TEXTURE_FORMAT == soluwell_viewport::display::CANVAS_FORMAT,
         "Renderer and compositor canvas formats differ"
     );
     let mut present = PresentPass::new(
@@ -75,7 +75,7 @@ fn main() -> Result<()> {
         let Pixels::Rgba16(pq_pixels) = capture.pixels else {
             anyhow::bail!("PQ capture is not 10-bit codes");
         };
-        let expected_pq = egui_display::pq(stored_linear * target.white);
+        let expected_pq = soluwell_viewport::display::pq(stored_linear * target.white);
         let mut max_pq_error = 0.0_f32;
         for pixel in pq_pixels.chunks_exact(4) {
             ensure!(pixel[3] == u16::MAX, "PQ alpha changed");
@@ -127,7 +127,7 @@ fn main() -> Result<()> {
         let Pixels::RgbaF16(scrgb_pixels) = scrgb.pixels else {
             anyhow::bail!("scRGB capture is not f16");
         };
-        let expected_scrgb = stored_linear * target.white / egui_display::SCRGB_NITS;
+        let expected_scrgb = stored_linear * target.white / soluwell_viewport::display::SCRGB_NITS;
         let max_scrgb_error = scrgb_pixels
             .chunks_exact(4)
             .flat_map(|pixel| pixel[..3].iter())
@@ -150,7 +150,7 @@ fn main() -> Result<()> {
             let linear = primary.map(|channel| channel * peak / target.white);
             let stored_linear = canvas(&ctx, &mut present, linear);
             let expected =
-                egui_display::rec2020_nits(stored_linear, target.white).map(egui_display::pq);
+                soluwell_viewport::display::rec2020_nits(stored_linear, target.white).map(soluwell_viewport::display::pq);
             let capture = present
                 .capture(&ctx.device, &ctx.queue, Output::Hdr10, target)?
                 .wait(&ctx.device)?;

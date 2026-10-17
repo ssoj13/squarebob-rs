@@ -61,7 +61,7 @@ use state::{PersistState, SavedOpts};
 impl App {
     pub(super) fn sync_display(&mut self, ctx: &egui::Context) {
         let output = ctx
-            .data(|d| d.get_temp::<egui_display::DisplayState>(egui_display::state_id()))
+            .data(|d| d.get_temp::<soluwell_viewport::display::DisplayState>(soluwell_viewport::display::state_id()))
             .map(|state| (state.target.hdr, state.target.white));
         if let Some((hdr, white)) = output {
             let cp = &mut self.render_3d_opts.color_pipeline;
@@ -360,7 +360,7 @@ impl App {
         }
 
         let mut fonts = egui::FontDefinitions::default();
-        egui_widgets_config::add_icon_font(&mut fonts);
+        soluwell_config::add_icon_font(&mut fonts);
         cc.egui_ctx.set_fonts(fonts);
 
         // Apply theme

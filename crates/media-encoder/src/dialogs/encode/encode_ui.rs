@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::thread::JoinHandle;
 
 use eframe::egui;
-use egui_widgets_config::icons;
+use soluwell_config::icons;
 use log::info;
 
 #[cfg(feature = "video")]

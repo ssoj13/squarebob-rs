@@ -72,7 +72,7 @@ pub(super) struct PersistState {
     #[serde(default)]
     pub render_3d_opts: Render3DOptions,
     pub camera_slots: super::camera_slots::CameraSlots,
-    pub viewport_toolbar: egui_viewport_toolbar::ToolbarState,
+    pub viewport_toolbar: soluwell_viewport::toolbar::ToolbarState,
     #[serde(default = "crate::app::dock::default_dock_state")]
     pub dock_state: DockState<DockTab>,
     /// Persistent "memory" layout that always holds every tab in its
@@ -324,7 +324,7 @@ pub struct App {
     pub(super) orbit_camera: OrbitCamera,
     /// Persistent camera clipboard shared by viewport and Settings.
     pub(super) camera_slots: super::camera_slots::CameraSlots,
-    pub(super) viewport_toolbar: egui_viewport_toolbar::ToolbarState,
+    pub(super) viewport_toolbar: soluwell_viewport::toolbar::ToolbarState,
     pub(super) viewport_toolbar_rect: egui::Rect,
     pub(super) gpu_context: Option<Arc<GpuContext>>,
     /// Lazy-built OIDN denoiser. Replaces the previous à-trous filter.

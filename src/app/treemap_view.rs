@@ -12,7 +12,7 @@ use super::helpers::{find_node_by_path, fmt_size, path_to_dir};
 use super::shell::{properties_label, shell_properties};
 use super::shell::{reveal_label, shell_open, shell_open_terminal, shell_reveal, trash_label};
 use super::state::HoverInfo;
-use egui_widgets_config::icons;
+use soluwell_config::icons;
 
 impl App {
     /// Render the central treemap/3D panel

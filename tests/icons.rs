@@ -1,4 +1,4 @@
-//! Icons are egui-phosphor through `egui_widgets_config::icons`, never raw Unicode glyphs: the
+//! Icons are egui-phosphor through `soluwell_config::icons`, never raw Unicode glyphs: the
 //! default fonts miss most of them, so they render as tofu squares. This scans the UI sources
 //! (the app and the egui widget crates) for symbol-block characters in code (comments are free).
 //! Terminal output lives in `xtask` and is out of scope.
@@ -126,7 +126,7 @@ fn no_raw_unicode_icon_literals_in_any_crate() {
     }
     assert!(
         bad.is_empty(),
-        "raw Unicode icons (use egui_widgets_config::icons):\n{}",
+        "raw Unicode icons (use soluwell_config::icons):\n{}",
         bad.join("\n")
     );
 }

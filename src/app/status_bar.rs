@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::App;
 use super::helpers::{disk_free_info, fmt_size};
-use egui_widgets_config::icons;
+use soluwell_config::icons;
 use crate::cache;
 
 impl App {
@@ -13,7 +13,7 @@ impl App {
         egui::Panel::bottom("status").show(ui, |ui| {
             if let Some(state) = ui
                 .ctx()
-                .data(|d| d.get_temp::<egui_display::DisplayState>(egui_display::state_id()))
+                .data(|d| d.get_temp::<soluwell_viewport::display::DisplayState>(soluwell_viewport::display::state_id()))
             {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!(
