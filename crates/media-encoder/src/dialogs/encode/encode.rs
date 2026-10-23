@@ -2160,13 +2160,12 @@ pub fn encode_image_sequence(
             && (settings.apply_tonemap
                 || (!settings.format.is_hdr() && frame.pixel_format() != PixelFormat::Rgba8))
         {
-            let output_format = if settings.bit_depth == OutputBitDepth::U16 {
-                PixelFormat::RgbaF32
-            } else if settings.format.is_hdr() {
-                PixelFormat::RgbaF32
-            } else {
-                PixelFormat::Rgba8
-            };
+            let output_format =
+                if settings.bit_depth == OutputBitDepth::U16 || settings.format.is_hdr() {
+                    PixelFormat::RgbaF32
+                } else {
+                    PixelFormat::Rgba8
+                };
             frame
                 .tonemap(settings.tonemap_mode, output_format)
                 .map_err(|e| EncodeError::EncodeFrameFailed(format!("Tonemapping failed: {}", e)))?

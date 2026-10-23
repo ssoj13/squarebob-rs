@@ -72,8 +72,11 @@ pub(super) fn render_path_traced_frame(
             );
         }
         renderer.pt.path_tracer = Some(pt);
+        renderer.pt.display_key = None;
         renderer.pt.pt_scene_dirty = true;
         renderer.pt.pt_env_dirty = false;
+        // A new blit starts without a display transform; give it the synced one now.
+        renderer.install_display_transform();
     }
 
     let pt = renderer
@@ -497,6 +500,7 @@ pub(super) fn render_path_traced_frame(
     // the PT accumulator; if OIDN is active, the app blits its result texture
     // separately on top.
     pt.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
+    pt.set_blit_source_encoded(&renderer.ctx.queue, false);
     // Phase 11 deletion — see render-3d/src/lib.rs for context.
     let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
     pt.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);

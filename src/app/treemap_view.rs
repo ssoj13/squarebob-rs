@@ -715,13 +715,10 @@ impl App {
             } else {
                 None
             };
-            if let Some(r) = self.renderer_3d.as_mut() {
-                if let Err(error) =
-                    r.composite_overlay(source, &self.render_3d_opts, &self.color_pipeline)
-                {
+            if let Some(r) = self.renderer_3d.as_mut()
+                && let Err(error) = r.composite_overlay(source, &self.render_3d_opts) {
                     log::error!("PT display composite failed: {error}");
                 }
-            }
             ctx.request_repaint();
         } else {
             // PBR/wireframe: cube colours come from a full rasterisation
@@ -1167,28 +1164,19 @@ impl App {
                 if let Some(r) = renderer {
                     // Sync selected IDs for outline rendering
                     r.set_selected_ids(&selected_ids);
-                    // Make sure the OCIO `Processor` + baked 3D LUT are
-                    // in sync with the live settings BEFORE blitting.
-                    // `ensure` is a hash-compare noop when nothing
-                    // changed; `sync_color_lut` early-returns when the
-                    // pending flag is clear. Both calls are cheap on
-                    // the steady-state path.
-                    if let Err(error) = pipeline.ensure(&options.color_pipeline) {
-                        if exporting {
-                            return Err(render_core::ReadbackError::SceneBuild(error.to_string()));
-                        }
-                        log::error!("color pipeline rebuild rejected: {error}");
-                    }
+                    // Make sure the OCIO `Processor` and the blit's exact display transform
+                    // are in sync with the live settings BEFORE blitting. Both are a compare
+                    // and return on a steady frame. A failure is logged once where it happens
+                    // and shown in the Color settings (`ColorPipeline::error`,
+                    // `Renderer3D::color_error`); the viewport keeps drawing, an export stops.
+                    let built = pipeline.ensure(&options.color_pipeline);
+                    let synced = r.sync_color(pipeline, &options);
                     if exporting {
+                        built.map_err(|e| render_core::ReadbackError::SceneBuild(e.to_string()))?;
                         pipeline
                             .validate_for_export(&options.color_pipeline)
                             .map_err(render_core::ReadbackError::SceneBuild)?;
-                    }
-                    if let Err(error) = r.sync_color_lut(pipeline) {
-                        if exporting {
-                            return Err(render_core::ReadbackError::SceneBuild(error.to_string()));
-                        }
-                        log::error!("color LUT upload rejected: {error}");
+                        synced.map_err(render_core::ReadbackError::SceneBuild)?;
                     }
                     // SAFETY: `root_ptr` aliases self.tree (DirEntry storage owned by
                     // `self`) and is not invalidated for this scope — `set_selected_ids`
@@ -1239,12 +1227,12 @@ impl App {
                     } else {
                         None
                     };
-                    let (renderer, pipeline) = match &mut self.encode_render_session {
-                        Some(session) => (session.renderer_3d.as_mut(), &session.pipeline),
-                        None => (self.renderer_3d.as_mut(), &self.color_pipeline),
+                    let renderer = match &mut self.encode_render_session {
+                        Some(session) => session.renderer_3d.as_mut(),
+                        None => self.renderer_3d.as_mut(),
                     };
                     if let Some(r) = renderer {
-                        r.composite_overlay(source, &options, pipeline)?;
+                        r.composite_overlay(source, &options)?;
                     }
                 }
                 self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
@@ -1754,14 +1742,21 @@ mod toolbar_tests {
         for mode in [RenderMode::Mode3D, RenderMode::Mode2D] {
             for over_toolbar in [true, false] {
                 let ctx = egui::Context::default();
-                let mut app = App::default();
-                app.render_mode = mode;
+                let mut app = App {
+                    render_mode: mode,
+                    viewport_toolbar_rect: egui::Rect::from_min_size(
+                        egui::pos2(10.0, 20.0),
+                        egui::vec2(300.0, 34.0),
+                    ),
+                    last_wheel_zoom: std::time::Instant::now()
+                        - std::time::Duration::from_secs(1),
+                    ..App::default()
+                };
                 app.render_3d_opts.inertia_enabled = false;
-                app.viewport_toolbar_rect =
-                    egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 34.0));
-                app.last_wheel_zoom = std::time::Instant::now() - std::time::Duration::from_secs(1);
                 let before = app.orbit_camera.distance;
-                let _ = ctx.run_ui(
+                // Headless frames: their texture deltas are discarded explicitly (epaint asserts
+                // that every delta was handled).
+                ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -1774,9 +1769,11 @@ mod toolbar_tests {
                             ui.allocate_rect(ui.available_rect_before_wrap(), egui::Sense::hover());
                         });
                     },
-                );
+                )
+                .textures_delta
+                .clear();
                 let pointer = egui::pos2(50.0, if over_toolbar { 35.0 } else { 90.0 });
-                let _ = ctx.run_ui(
+                ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -1806,7 +1803,9 @@ mod toolbar_tests {
                             }
                         });
                     },
-                );
+                )
+                .textures_delta
+                .clear();
                 if mode == RenderMode::Mode3D {
                     assert_eq!(app.orbit_camera.distance == before, over_toolbar);
                 } else {

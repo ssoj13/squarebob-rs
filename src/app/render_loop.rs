@@ -400,9 +400,11 @@ mod tests {
     #[test]
     fn settings_event_reveals_hidden_panel_and_activates_it_over_other_tabs() {
         for hidden in [false, true] {
-            let mut app = App::default();
-            app.show_ae = true;
-            app.dock_state = dock::build_dock_state(true, true);
+            let mut app = App {
+                show_ae: true,
+                dock_state: dock::build_dock_state(true, true),
+                ..App::default()
+            };
             let other = app
                 .dock_state
                 .find_tab(&dock::DockTab::AttributeEditor)

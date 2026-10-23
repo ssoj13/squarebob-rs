@@ -72,7 +72,9 @@ pub enum CacheEvent {
     Loaded {
         generation: u64,
         root_id: String,
-        result: Result<Option<PreparedCache>, String>,
+        /// Boxed: a prepared cache is hundreds of bytes, the other events a few words, and every
+        /// event travels through the same channel.
+        result: Result<Option<Box<PreparedCache>>, String>,
     },
     Stored {
         generation: u64,
@@ -208,7 +210,9 @@ fn cache_worker(command_rx: Receiver<CacheCommand>, event_tx: Sender<CacheEvent>
             CacheCommand::Load { generation, root } => Some(CacheEvent::Loaded {
                 generation,
                 root_id: root.id().to_owned(),
-                result: load_cache(&root).map_err(|e| format!("{e:#}")),
+                result: load_cache(&root)
+                    .map(|prepared| prepared.map(Box::new))
+                    .map_err(|e| format!("{e:#}")),
             }),
             CacheCommand::Store {
                 generation,

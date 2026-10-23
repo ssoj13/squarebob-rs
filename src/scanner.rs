@@ -71,7 +71,9 @@ pub struct ScanProgressUpdate {
 #[derive(Debug)]
 pub enum ScanMsg {
     Progress(ScanProgressUpdate),
-    Terminal(ScanOutcome),
+    /// Boxed: the outcome carries the scanned tree header (hundreds of bytes) and travels the
+    /// same channel type as the frequent small `Progress` updates.
+    Terminal(Box<ScanOutcome>),
     #[cfg(windows)]
     NtfsFallback(String),
 }
@@ -181,7 +183,7 @@ fn run_standard(
             ScanOutcome::Failed(format!("{error:#}"))
         }
     };
-    let _ = terminal_tx.send(ScanMsg::Terminal(outcome));
+    let _ = terminal_tx.send(ScanMsg::Terminal(Box::new(outcome)));
 }
 
 pub(crate) struct ScanBuild {
@@ -578,7 +580,7 @@ mod tests {
         let (terminal_tx, terminal_receiver) = crossbeam_channel::bounded(1);
         let worker = std::thread::spawn(move || {
             terminal_tx
-                .send(ScanMsg::Terminal(ScanOutcome::Cancelled))
+                .send(ScanMsg::Terminal(Box::new(ScanOutcome::Cancelled)))
                 .expect("terminal channel remains independent");
         });
         let session = ScanSession {

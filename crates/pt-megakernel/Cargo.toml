@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 bytemuck = { workspace = true }
-half = { workspace = true }
 log = { workspace = true }
 wgpu = { workspace = true }
 glam = { workspace = true }
@@ -15,4 +14,5 @@ pt-core = { workspace = true }
 bvh-gpu = { workspace = true }
 pt-wavefront = { workspace = true }
 render-core = { workspace = true }
-thiserror = { workspace = true }
+# `OcioShader`: the display blit runs the OCIO processor as exact WGSL (no baked LUT).
+render-color-gpu = { workspace = true }

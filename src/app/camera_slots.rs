@@ -165,7 +165,7 @@ mod tests {
         events: Vec<egui::Event>,
     ) -> (egui::FullOutput, Option<SlotAction>) {
         let mut action = None;
-        let output = ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -189,6 +189,9 @@ mod tests {
                 });
             },
         );
+        // Headless: no renderer uploads the frame's textures; discard the deltas explicitly
+        // (epaint asserts that every delta was handled).
+        output.textures_delta.clear();
         (output, action)
     }
 
@@ -313,30 +316,34 @@ mod tests {
         camera.target = glam::vec3(3.0, 4.0, 5.0);
         camera.near = 0.025;
         camera.far = 2000.0;
-        let mut options = Render3DOptions::default();
-        options.pt_camera_type = CameraType::Physical;
-        options.pt_physical_camera = PhysicalCamera {
-            focal_length_mm: 135.0,
-            sensor_width_mm: 24.0,
-            f_number: 2.8,
-            iso: 800.0,
-            shutter_seconds: 1.0 / 60.0,
-            exposure_compensation_ev: 1.5,
-            vignetting: 0.3,
-            chromatic_aberration: 0.2,
-            bokeh_blades: 6,
-            bokeh_anamorphic: 1.4,
-            lens_distortion: -0.1,
+        let options = Render3DOptions {
+            pt_camera_type: CameraType::Physical,
+            pt_physical_camera: PhysicalCamera {
+                focal_length_mm: 135.0,
+                sensor_width_mm: 24.0,
+                f_number: 2.8,
+                iso: 800.0,
+                shutter_seconds: 1.0 / 60.0,
+                exposure_compensation_ev: 1.5,
+                vignetting: 0.3,
+                chromatic_aberration: 0.2,
+                bokeh_blades: 6,
+                bokeh_anamorphic: 1.4,
+                lens_distortion: -0.1,
+            },
+            pt_dof_enabled: true,
+            pt_aperture: 0.2,
+            pt_focus_distance: 123.0,
+            ..Render3DOptions::default()
         };
-        options.pt_dof_enabled = true;
-        options.pt_aperture = 0.2;
-        options.pt_focus_distance = 123.0;
         assert!(slots.store(4, &camera, &options));
         let encoded = ron::to_string(&slots).unwrap();
         let restored: CameraSlots = ron::from_str(&encoded).unwrap();
         let mut other_camera = OrbitCamera::default();
-        let mut other_options = Render3DOptions::default();
-        other_options.pt_samples = 17;
+        let mut other_options = Render3DOptions {
+            pt_samples: 17,
+            ..Render3DOptions::default()
+        };
         assert!(restored.restore(4, &mut other_camera, &mut other_options));
         assert_eq!(other_camera.target, camera.target);
         assert_eq!(other_camera.yaw, camera.yaw);

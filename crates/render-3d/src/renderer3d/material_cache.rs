@@ -475,12 +475,11 @@ pub(crate) fn prepare_pt_expanded_materials(
         mat_cache.scene_meta(),
         picking,
     );
-    if let Some(entry) = cache_slot {
-        if entry.key == key && entry.material_ids.len() == instances.len() {
+    if let Some(entry) = cache_slot
+        && entry.key == key && entry.material_ids.len() == instances.len() {
             let pt_instances = build_pt_instances(instances, &entry.material_ids);
             return (Arc::clone(&entry.materials), pt_instances);
         }
-    }
     let (materials, material_ids) =
         expand_pt_materials_and_ids(library, mat_cache, picking, instances, opts);
     let arc = Arc::new(materials);

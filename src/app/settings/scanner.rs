@@ -38,13 +38,12 @@ impl App {
                     ui.label("Disk cache:");
                     if ui.button("Clear cache for current path").on_hover_text(
                         "Removes the saved scan snapshot from disk for this root. Rescan to rebuild."
-                    ).clicked() {
-                        if let Err(error) = self.clear_current_cache() {
+                    ).clicked()
+                        && let Err(error) = self.clear_current_cache() {
                             log::warn!("Failed to delete cache: {error}");
                             self.progress.warning =
                                 Some(format!("Cache delete failed: {error}"));
                         }
-                    }
                     ui.end_row();
                 });
         });

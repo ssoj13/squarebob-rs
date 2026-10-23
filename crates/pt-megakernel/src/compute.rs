@@ -4,7 +4,7 @@
 //! Progressive accumulation, HDR env map, tone-mapped blit.
 
 use bytemuck::{Pod, Zeroable};
-use half::f16;
+use render_color_gpu::OcioShader;
 
 use crate::adaptive::{AdaptiveConfig, AdaptivePipeline, VARIANCE_DATA_WGSL, VarianceData};
 use crate::pathguide::{PG_SAMPLE_PARAMS_SIZE, PathGuideConfig, PathGuidePipeline};
@@ -266,78 +266,94 @@ pub struct PtCameraUniform {
 
 const WG_SIZE: u32 = 8;
 
-/// Side length of the baked OCIO display LUT bound to the blit shader.
-/// Matches `color_pipeline::DEFAULT_LUT_SIZE` and the .cube standard.
-/// The shader reads this value from `BlitParams::lut_shaper.x`; no duplicate
-/// WGSL literal exists.
-pub const BLIT_LUT_SIZE: u32 = 33;
-/// Lowest non-zero exposure represented by the default logarithmic LUT shaper.
-pub const BLIT_LUT_MIN_EV: f32 = -12.0;
-/// Highest exposure represented by the default logarithmic LUT shaper.
-pub const BLIT_LUT_MAX_EV: f32 = 15.0;
+/// The OCIO lane of `blit.wgsl` when no processor is installed (`BuiltIn` mode, or a selection
+/// the window output cannot show): the canvas encoding alone, no colour management — an honest
+/// "no transform" picture, never a stale one. Same signature as the WGSL `OcioShader` emits.
+const NO_OCIO_WGSL: &str =
+    "fn ocio_transform(c: vec4<f32>) -> vec4<f32> { return vec4<f32>(display_encode(c.rgb), c.a); }\n";
 
-#[derive(Debug, thiserror::Error)]
-pub enum BlitLutUploadError {
-    #[error("LUT side mismatch: got {actual}, expected {expected}")]
-    SideMismatch { actual: usize, expected: usize },
-    #[error("LUT data length mismatch: got {actual}, expected {expected}")]
-    DataLength { actual: usize, expected: usize },
-    #[error("invalid LUT shaper [{min_ev}, {max_ev}]")]
-    InvalidShaper { min_ev: f32, max_ev: f32 },
-    #[error("LUT layout arithmetic overflow for side {size}")]
-    LayoutOverflow { size: usize },
-    #[error("cannot allocate LUT upload: {0}")]
-    Allocation(#[from] std::collections::TryReserveError),
+/// Bytes of the blit uniform block (`BlitParams` in `blit.wgsl`).
+const BLIT_PARAMS_BYTES: u64 = 128;
+
+/// Compile the display blit: `blit.wgsl` behind the canvas transfer and the OCIO lane's
+/// `ocio_transform` — `ocio`'s exact WGSL, or [`NO_OCIO_WGSL`]. Group 0 is the blit's own;
+/// OCIO's groups 1/2 come from `ocio` (absent slots when it binds nothing).
+fn make_blit_pipeline(
+    device: &wgpu::Device,
+    blit_bgl: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+    ocio: Option<&OcioShader>,
+) -> wgpu::RenderPipeline {
+    let source = format!(
+        "{}\n{}\n{}",
+        render_core::DISPLAY_TRANSFER_WGSL,
+        ocio.map_or(NO_OCIO_WGSL, OcioShader::wgsl),
+        BLIT_WGSL
+    );
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("pt_blit_shader"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let [g1, g2] = ocio.map_or([None, None], OcioShader::layouts);
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("pt_blit_pl"),
+        bind_group_layouts: &[Some(blit_bgl), g1, g2],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("pt_blit_pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
-fn default_lut_shaper_decode(index: u32, size: u32) -> f32 {
-    if index == 0 {
-        return 0.0;
-    }
-    let log_steps = size.saturating_sub(2).max(1);
-    let t = (index - 1) as f32 / log_steps as f32;
-    (BLIT_LUT_MIN_EV + t * (BLIT_LUT_MAX_EV - BLIT_LUT_MIN_EV)).exp2()
-}
-
-/// Build the default shaped identity LUT as `Rgba16Float`. Used at PT init
-/// so binding @3 has the same scene-linear domain as later OCIO uploads.
-fn identity_blit_lut_rgba16f(size: u32) -> Result<Vec<[u16; 4]>, render_core::GpuLayoutError> {
-    let n = usize::try_from(size).map_err(|_| render_core::GpuLayoutError::ValueTooLarge {
-        context: "identity blit LUT side",
-        value: u64::from(size),
-        target: "usize",
-    })?;
-    let texel_count = n
-        .checked_mul(n)
-        .and_then(|value| value.checked_mul(n))
-        .ok_or(render_core::GpuLayoutError::ValueTooLarge {
-            context: "identity blit LUT",
-            value: u64::from(size),
-            target: "usize texel count",
-        })?;
-    let mut out = Vec::new();
-    out.try_reserve_exact(texel_count).map_err(|_| {
-        render_core::GpuLayoutError::HostAllocation {
-            context: "identity blit LUT",
-            elements: texel_count,
-        }
-    })?;
-    for b in 0..size {
-        for g in 0..size {
-            for r in 0..size {
-                let rf = default_lut_shaper_decode(r, size);
-                let gf = default_lut_shaper_decode(g, size);
-                let bf = default_lut_shaper_decode(b, size);
-                out.push([
-                    f16::from_f32(rf).to_bits(),
-                    f16::from_f32(gf).to_bits(),
-                    f16::from_f32(bf).to_bits(),
-                    f16::from_f32(1.0).to_bits(),
-                ]);
-            }
-        }
-    }
-    Ok(out)
+/// The blit's group-0 bind group for one `source` view (the PT accumulator, the OIDN result or
+/// the CPU colour scratch).
+fn make_blit_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    source: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    params: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("pt_blit_bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(source),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: params.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 /// Environment uniform for path tracer.
@@ -697,21 +713,13 @@ pub struct PathTraceCompute {
     blit_bind_group_layout: wgpu::BindGroupLayout,
     blit_bind_group: Option<wgpu::BindGroup>,
     blit_sampler: wgpu::Sampler,
-    /// 16-byte uniform buffer feeding the blit shader.
-    /// Layout (vec4<f32>): `[exposure_multiplier, _, _, _]`. The last
-    /// three lanes are reserved for upcoming display knobs
-    /// (vignette / chromatic aberration / tonemap selector).
+    /// The blit uniform block (`BlitParams` in `blit.wgsl`, [`BLIT_PARAMS_BYTES`]).
     blit_uniform_buffer: wgpu::Buffer,
-    /// Baked OCIO display LUT (Rgba16Float, `BLIT_LUT_SIZE`³).
-    /// Bound at `@group(0) @binding(3)` of the blit pipeline; sampled
-    /// by `case 6u` in `blit.wgsl` when the host runs in OCIO mode.
-    /// Re-uploaded via [`Self::set_blit_lut_3d`] whenever the
-    /// `color-pipeline` rebuilds. Starts as an identity LUT so a
-    /// pre-OCIO startup frame is a no-op even before the host
-    /// pushes the first bake.
-    color_lut_texture: wgpu::Texture,
-    color_lut_view: wgpu::TextureView,
-    color_lut_sampler: wgpu::Sampler,
+    /// The blit target format, kept to recompile the pipeline when the display transform changes.
+    blit_format: wgpu::TextureFormat,
+    /// The OCIO processor the blit's OCIO lane runs exactly ([`Self::set_display_transform`]);
+    /// `None` = [`NO_OCIO_WGSL`]. Owns the bind groups 1/2 the pipeline was compiled against.
+    display_ocio: Option<OcioShader>,
     cpu_color_readback: render_core::gpu::TextureReadback,
     /// Display-light scratch; raw PT and denoiser textures are never color-transformed.
     cpu_color_output: Option<wgpu::Texture>,
@@ -1213,28 +1221,16 @@ impl PathTraceCompute {
         let normal_aov_buffer = Self::create_aov_buffer(device, "pt_normal_aov", &frame_layout);
 
         // Blit pipeline
-        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("pt_blit_shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                format!("{}\n{}", render_core::DISPLAY_TRANSFER_WGSL, BLIT_WGSL).into(),
-            ),
-        });
-
         // Blit-time uniforms. Layout mirrors `BlitParams` in blit.wgsl:
-        //   0..16   exposure lane (.x = camera exposure, yzw = reserved)
+        //   0..16   exposure lane (.x = camera exposure, .y = ODT tag, .z = RRT tag,
+        //                          .w = 1 when the source is already canvas-encoded)
         //   16..32  colour lane (.x = tonemap_tag, .y = display EV,
         //                        .z = WB norm, .w = gamut compress)
         //   32..80  ACES pre-matrix (3× vec4 std140 columns, IDT∘LMT)
         //   80..128 ACES post-matrix (3× vec4 std140 columns, ODT)
-        //   128..144 LUT shaper (side, min EV, max EV, reserved)
-        // Total 144 bytes. The pre/post matrices only matter when
-        // `tonemap_tag == 4`; the shaper only matters for OCIO tag 6.
-        let blit_uniform_buffer = make_buffer(
-            device,
-            "pt_blit_uniforms",
-            144, // 3× vec4 + 2× mat3 (std140-padded)
-            uniform,
-        );
+        // The pre/post matrices only matter when `tonemap_tag == 4`.
+        let blit_uniform_buffer =
+            make_buffer(device, "pt_blit_uniforms", BLIT_PARAMS_BYTES, uniform);
         // Initialise to identity:
         //   exposure lane = [1.0, 0, 0, 0]      → bit-exact passthrough
         //   colour lane   = [3.0, 0, 1.0, 0]    → tonemap = AcesFilmic
@@ -1283,11 +1279,6 @@ impl PathTraceCompute {
                 0.0,
                 1.0,
                 0.0,
-                // LUT shaper: side, minimum EV, maximum EV, reserved
-                BLIT_LUT_SIZE as f32,
-                BLIT_LUT_MIN_EV,
-                BLIT_LUT_MAX_EV,
-                0.0,
             ]),
         );
 
@@ -1321,62 +1312,12 @@ impl PathTraceCompute {
                         },
                         count: None,
                     },
-                    // @binding(3) baked OCIO display LUT (Rgba16Float D3,
-                    // filterable). `case 6u` in blit.wgsl reads it; other
-                    // tonemap branches ignore the binding but its data
-                    // stays bound (identity by default) so the bind group
-                    // is always complete.
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    // @binding(4) trilinear sampler for the 3D LUT.
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
                 ],
             });
 
-        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("pt_blit_pl"),
-            bind_group_layouts: &[Some(&blit_bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("pt_blit_pipeline"),
-            layout: Some(&blit_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &blit_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &blit_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        // No display transform yet: the host installs one via `set_display_transform`.
+        let blit_pipeline =
+            make_blit_pipeline(device, &blit_bind_group_layout, surface_format, None);
 
         let blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("pt_blit_sampler"),
@@ -1384,63 +1325,6 @@ impl PathTraceCompute {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-
-        // Blit-side OCIO 3D LUT. Created with the default identity
-        // payload — `blit.wgsl @ case 6u` sampling it before the host
-        // pushes a real bake produces the input colour back unchanged,
-        // so a startup frame in OCIO mode is safe even with the
-        // pipeline still warming up.
-        let color_lut_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("pt_blit_color_lut_3d"),
-            size: wgpu::Extent3d {
-                width: BLIT_LUT_SIZE,
-                height: BLIT_LUT_SIZE,
-                depth_or_array_layers: BLIT_LUT_SIZE,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let color_lut_view = color_lut_texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D3),
-            ..Default::default()
-        });
-        let color_lut_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("pt_blit_color_lut_sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        {
-            let identity = identity_blit_lut_rgba16f(BLIT_LUT_SIZE)?;
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &color_lut_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                bytemuck::cast_slice(&identity),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    // RGBA16Float = 8 B/texel.
-                    bytes_per_row: Some(BLIT_LUT_SIZE * 8),
-                    rows_per_image: Some(BLIT_LUT_SIZE),
-                },
-                wgpu::Extent3d {
-                    width: BLIT_LUT_SIZE,
-                    height: BLIT_LUT_SIZE,
-                    depth_or_array_layers: BLIT_LUT_SIZE,
-                },
-            );
-        }
 
         let (sample_map_fallback, sample_map_upload) =
             Self::create_sample_map_fallback(device, &frame_layout)?;
@@ -1450,32 +1334,13 @@ impl PathTraceCompute {
 
         let guide_buffer = Self::create_guide_buffer(device, &frame_layout);
 
-        let blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("pt_blit_bg"),
-            layout: &blit_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&output_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&blit_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: blit_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&color_lut_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&color_lut_sampler),
-                },
-            ],
-        }));
+        let blit_bind_group = Some(make_blit_bind_group(
+            device,
+            &blit_bind_group_layout,
+            &output_view,
+            &blit_sampler,
+            &blit_uniform_buffer,
+        ));
 
         // Default 1x1 black environment texture
         let (env_texture, env_view) = Self::create_default_env_texture(device, queue);
@@ -1581,9 +1446,8 @@ impl PathTraceCompute {
             blit_bind_group,
             blit_sampler,
             blit_uniform_buffer,
-            color_lut_texture,
-            color_lut_view,
-            color_lut_sampler,
+            blit_format: surface_format,
+            display_ocio: None,
             cpu_color_readback: render_core::gpu::TextureReadback::default(),
             cpu_color_output: None,
             bvh_builder: GpuBvhBuilder::new(device),
@@ -3265,8 +3129,8 @@ impl PathTraceCompute {
             && self.restir.is_some()
             && self.restir_bind_groups.is_some()
             && self.gbuffer_stack.is_some();
-        if restir_active {
-            if let Some(restir_bgs) = self.restir_bind_groups.as_ref() {
+        if restir_active
+            && let Some(restir_bgs) = self.restir_bind_groups.as_ref() {
                 let frame = self.frame_count;
                 let curr_vp = self.last_view_proj.unwrap_or([[0.0; 4]; 4]);
                 // Fall back to current frame for the very first frame, when
@@ -3418,7 +3282,6 @@ impl PathTraceCompute {
                     },
                 );
             }
-        }
 
         // Resolve wavefront + bind groups once; both proven Some by the entry
         // check. Pairing the let-elses preserves the "they move as a unit"
@@ -3559,8 +3422,8 @@ impl PathTraceCompute {
                 // Path guiding: sample guided directions from previous SVO.
                 // Per-tile params were pre-packed before the tile loop; the
                 // bind group uses dynamic offset to address this tile's slot.
-                if pathguide_enabled && !restir_enabled {
-                    if let (Some(pg), Some(pg_bgs)) = (&self.pathguide, &self.pathguide_bind_groups)
+                if pathguide_enabled && !restir_enabled
+                    && let (Some(pg), Some(pg_bgs)) = (&self.pathguide, &self.pathguide_bind_groups)
                     {
                         let (_, sample_pl) = pg.pipelines();
                         let wg = tile_pixels.max(1).div_ceil(64);
@@ -3573,7 +3436,6 @@ impl PathTraceCompute {
                         pass.dispatch_workgroups(wg, 1, 1);
                         log::trace!("WF pathguide sample: wg={}", wg);
                     }
-                }
 
                 // (count_in/count_out reset is via reset_tile_count above —
                 //  encoder-ordered, so the dispatch will see fresh values.)
@@ -3748,8 +3610,8 @@ impl PathTraceCompute {
                     }
 
                     // Path guiding: update SVO with latest samples
-                    if pathguide_enabled {
-                        if let (Some(pg), Some(pg_bgs)) =
+                    if pathguide_enabled
+                        && let (Some(pg), Some(pg_bgs)) =
                             (&self.pathguide, &self.pathguide_bind_groups)
                         {
                             let update_params = PathGuideUpdateParams {
@@ -3786,7 +3648,6 @@ impl PathTraceCompute {
                             pass.dispatch_workgroups(wg, 1, 1);
                             log::trace!("WF pathguide update: wg={}", wg);
                         }
-                    }
                 }
 
                 tile_idx += 1;
@@ -3815,8 +3676,8 @@ impl PathTraceCompute {
         //  - after both loops, do the cur→prev / depth history copies on the
         //    full image (the previous in-loop copies used tile_pixels offsets
         //    that were tile-incorrect in tiled mode).
-        if restir_enabled {
-            if let (Some(rs), Some(restir_bgs)) = (&self.restir, &self.restir_bind_groups) {
+        if restir_enabled
+            && let (Some(rs), Some(restir_bgs)) = (&self.restir, &self.restir_bind_groups) {
                 let (_, _, spatial_pl, shade_pl) = rs.pipelines();
                 let raygen_pl = wf.pipelines().0;
                 let intersect_pl = wf.pipelines().1;
@@ -3975,8 +3836,8 @@ impl PathTraceCompute {
                         }
 
                         // Path-guide SVO update (mirrors the non-restir branch).
-                        if pathguide_enabled {
-                            if let (Some(pg), Some(pg_bgs)) =
+                        if pathguide_enabled
+                            && let (Some(pg), Some(pg_bgs)) =
                                 (&self.pathguide, &self.pathguide_bind_groups)
                             {
                                 let update_params = PathGuideUpdateParams {
@@ -4012,7 +3873,6 @@ impl PathTraceCompute {
                                 pass.set_bind_group(0, &pg_bgs.update_bg, &[]);
                                 pass.dispatch_workgroups(wg, 1, 1);
                             }
-                        }
 
                         tile_idx += 1;
                         if !use_tiling {
@@ -4043,7 +3903,6 @@ impl PathTraceCompute {
                     depth_size,
                 );
             }
-        }
 
         // Pass 4: Finalize - copy accum to output texture
         {
@@ -4073,8 +3932,8 @@ impl PathTraceCompute {
 
         // Wavefront paths write cumulative radiance, so update the shared
         // Welford state after every dispatch. Allocation may run less often.
-        if adaptive_enabled {
-            if let (Some(ad), Some(ad_bgs)) = (&self.adaptive, &self.adaptive_bind_groups) {
+        if adaptive_enabled
+            && let (Some(ad), Some(ad_bgs)) = (&self.adaptive, &self.adaptive_bind_groups) {
                 #[repr(C)]
                 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
                 struct VarianceParams {
@@ -4146,7 +4005,6 @@ impl PathTraceCompute {
                     log::trace!("Adaptive: variance updated; sample map allocated");
                 }
             }
-        }
 
         let wf_ms = wf_start.elapsed().as_secs_f64() * 1000.0;
         // Per-frame summary. Fires at info when slow (>16 ms = below 60 fps CPU
@@ -4857,32 +4715,13 @@ impl PathTraceCompute {
         }));
 
         // Rebuild blit bind group
-        self.blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("pt_blit_bg"),
-            layout: &self.blit_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&self.output_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.blit_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.color_lut_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&self.color_lut_sampler),
-                },
-            ],
-        }));
+        self.blit_bind_group = Some(make_blit_bind_group(
+            device,
+            &self.blit_bind_group_layout,
+            &self.output_view,
+            &self.blit_sampler,
+            &self.blit_uniform_buffer,
+        ));
 
         // Rebuild wavefront bind groups if enabled
         self.rebuild_wavefront_bind_groups(device);
@@ -5184,8 +5023,8 @@ impl PathTraceCompute {
     /// behaviour (manual / no physical-camera scaling).
     pub fn set_blit_exposure(&self, queue: &wgpu::Queue, exposure: f32) {
         // Only writes `exposure.x` (offset 0..4) so the rest of the
-        // first vec4 (ODT tag at .y, reserved .z/.w) stays whatever
-        // `set_blit_odt_tag` last wrote. Decoupled lanes keep per-frame
+        // first vec4 (ODT tag at .y, RRT tag at .z, source-encoded flag at .w)
+        // stays whatever its own setter last wrote. Decoupled lanes keep per-frame
         // exposure updates from churning the colour state.
         let params: [f32; 1] = [exposure];
         queue.write_buffer(&self.blit_uniform_buffer, 0, bytemuck::cast_slice(&params));
@@ -5259,115 +5098,32 @@ impl PathTraceCompute {
         queue.write_buffer(&self.blit_uniform_buffer, 80, bytemuck::cast_slice(post));
     }
 
-    /// Upload a freshly baked OCIO display LUT into the blit shader's
-    /// `texture_3d` binding (`@group(0) @binding(3)`).
-    ///
-    /// `rgb` is a flat array of RGB triples in scan order
-    /// `r + g * size + b * size²` (the layout
-    /// `color_pipeline::BakedLut3D` already produces). `size` is
-    /// validated against [`BLIT_LUT_SIZE`]; any mismatch or layout failure
-    /// is returned to the host. The previous valid LUT stays bound.
-    ///
-    /// The texture is `Rgba16Float`, so each RGB triple is converted
-    /// to half-float on upload (deterministic — no rounding mode
-    /// surprises across backends) and the alpha lane is filled with
-    /// 1.0. 33³ × 8 B = 287 KB per call; cheap enough to invoke on
-    /// every `ColorPipeline::ensure` rebuild without batching.
-    pub fn set_blit_lut_3d(
-        &self,
-        queue: &wgpu::Queue,
-        rgb: &[f32],
-        size: usize,
-        min_ev: f32,
-        max_ev: f32,
-    ) -> Result<(), BlitLutUploadError> {
-        let expected_size = BLIT_LUT_SIZE as usize;
-        if size != expected_size {
-            return Err(BlitLutUploadError::SideMismatch {
-                actual: size,
-                expected: expected_size,
-            });
-        }
-        let size_u32 =
-            u32::try_from(size).map_err(|_| BlitLutUploadError::LayoutOverflow { size })?;
-        if !min_ev.is_finite() || !max_ev.is_finite() || min_ev >= max_ev {
-            return Err(BlitLutUploadError::InvalidShaper { min_ev, max_ev });
-        }
-        let n = size;
-        let texel_count = n
-            .checked_pow(3)
-            .ok_or(BlitLutUploadError::LayoutOverflow { size })?;
-        let expected = texel_count
-            .checked_mul(3)
-            .ok_or(BlitLutUploadError::LayoutOverflow { size })?;
-        if rgb.len() != expected {
-            return Err(BlitLutUploadError::DataLength {
-                actual: rgb.len(),
-                expected,
-            });
-        }
-        // vfx_ocio's `BakedLut3D::as_slice` stores triples in the
-        // OCIO canonical order `idx = r*N² + g*N + b` — **B varies
-        // fastest, R slowest** (baker.rs:237). `wgpu::write_texture`
-        // on a 3D texture expects the upload buffer in **X-fastest**
-        // order, where X is the dimension the WGSL `textureSample`
-        // call indexes with `uvw.x` — and `blit.wgsl @ case 6u` puts
-        // R into `uvw.x`. Streaming the slice through `chunks_exact`
-        // would map B into the X dim instead, silently swapping R↔B
-        // in the texture and producing a hue rotation that looks
-        // like cyan→yellow.
-        //
-        // Transpose on upload so the texture layout matches the
-        // shader's sampling convention.
-        let one = f16::from_f32(1.0).to_bits();
-        let mut texels: Vec<[u16; 4]> = Vec::new();
-        texels.try_reserve_exact(texel_count)?;
-        for bi in 0..n {
-            for gi in 0..n {
-                for ri in 0..n {
-                    let src = (ri * n * n + gi * n + bi) * 3;
-                    texels.push([
-                        f16::from_f32(rgb[src]).to_bits(),
-                        f16::from_f32(rgb[src + 1]).to_bits(),
-                        f16::from_f32(rgb[src + 2]).to_bits(),
-                        one,
-                    ]);
-                }
-            }
-        }
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.color_lut_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            bytemuck::cast_slice(&texels),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(
-                    size_u32
-                        .checked_mul(8)
-                        .ok_or(BlitLutUploadError::LayoutOverflow { size })?,
-                ),
-                rows_per_image: Some(size_u32),
-            },
-            wgpu::Extent3d {
-                width: size_u32,
-                height: size_u32,
-                depth_or_array_layers: size_u32,
-            },
+    /// Install the display transform the blit's OCIO lane (tonemap tag 6) runs: `ocio` is the
+    /// processor compiled for the FRAGMENT stage ([`OcioShader`], vfx-ocio's exact WGSL — no baked
+    /// LUT, so no interpolation error, no domain clamp, black exact); `None` installs
+    /// [`NO_OCIO_WGSL`] (canvas encoding only). Recompiles the blit pipeline, so call it when the
+    /// processor changes, not per frame.
+    pub fn set_display_transform(&mut self, device: &wgpu::Device, ocio: Option<OcioShader>) {
+        self.blit_pipeline = make_blit_pipeline(
+            device,
+            &self.blit_bind_group_layout,
+            self.blit_format,
+            ocio.as_ref(),
         );
-        queue.write_buffer(
-            &self.blit_uniform_buffer,
-            128,
-            bytemuck::cast_slice(&[size_u32 as f32, min_ev, max_ev, 0.0_f32]),
-        );
-        Ok(())
+        self.display_ocio = ocio;
+    }
+
+    /// Say whether the next blit's source already holds canvas-encoded values (the OCIO CPU
+    /// codepath writes them via [`Self::apply_cpu_color_in_place`]): the blit then passes them
+    /// through untouched instead of exposing, tonemapping and encoding them again. Writes
+    /// `exposure.w` (offset 12) only.
+    pub fn set_blit_source_encoded(&self, queue: &wgpu::Queue, encoded: bool) {
+        let params: [f32; 1] = [if encoded { 1.0 } else { 0.0 }];
+        queue.write_buffer(&self.blit_uniform_buffer, 12, bytemuck::cast_slice(&params));
     }
 
     /// Read a raw PT or denoiser source, transform RGB in host staging in place,
-    /// and upload to a separate display-light scratch texture. Preserve raw sources.
+    /// and upload to a separate display scratch texture. Preserve raw sources.
     ///
     /// Uses the shared checked, reusable readback path. Layout, device polling,
     /// callback delivery, mapping, and host allocation failures stay recoverable.
@@ -5413,10 +5169,7 @@ impl PathTraceCompute {
             ctx,
             &mut encoder,
             source,
-            self.width,
-            self.height,
-            BYTES_PER_PIXEL,
-            LABEL,
+            layout,
             &mut self.cpu_color_readback,
         )?;
         ctx.queue.submit(std::iter::once(encoder.finish()));
@@ -5452,7 +5205,7 @@ impl PathTraceCompute {
             .is_none_or(|texture| texture.width() != self.width || texture.height() != self.height)
         {
             self.cpu_color_output = Some(ctx.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("PT CPU display-light scratch"),
+                label: Some("PT CPU display scratch"),
                 size: wgpu::Extent3d {
                     width: self.width,
                     height: self.height,
@@ -5517,32 +5270,13 @@ impl PathTraceCompute {
         let owned_bg;
         let bg = match source_override {
             Some(view) => {
-                owned_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("pt_blit_bg_override"),
-                    layout: &self.blit_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: self.blit_uniform_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(&self.color_lut_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::Sampler(&self.color_lut_sampler),
-                        },
-                    ],
-                });
+                owned_bg = make_blit_bind_group(
+                    device,
+                    &self.blit_bind_group_layout,
+                    view,
+                    &self.blit_sampler,
+                    &self.blit_uniform_buffer,
+                );
                 &owned_bg
             }
             None => {
@@ -5579,6 +5313,9 @@ impl PathTraceCompute {
         });
         pass.set_pipeline(&self.blit_pipeline);
         pass.set_bind_group(0, bg, &[]);
+        for (group, _, ocio_bg) in self.display_ocio.iter().flat_map(OcioShader::groups) {
+            pass.set_bind_group(group, ocio_bg, &[]);
+        }
         pass.draw(0..3, 0..1);
     }
 }

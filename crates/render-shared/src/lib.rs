@@ -511,6 +511,28 @@ impl Default for MaterialOverride {
     }
 }
 
+/// The negotiated window output the path-tracer display is adapted to: the arguments of
+/// `render_color::ColorPipeline::canvas_processor`. Set from the display host every frame (or
+/// frozen by an export to its file's encoding).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CanvasOutput {
+    /// HDR output (PQ / HLG / scRGB): HDR views are shown, as absolute light normalised to
+    /// `white_nits`. SDR keeps the chosen SDR view's code values.
+    pub hdr: bool,
+    /// SDR reference white of the output, in nits.
+    pub white_nits: f32,
+}
+
+impl Default for CanvasOutput {
+    fn default() -> Self {
+        Self {
+            hdr: false,
+            // ITU-R BT.2408 reference white.
+            white_nits: 203.0,
+        }
+    }
+}
+
 /// Options for 3D rendering
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -773,12 +795,17 @@ pub struct Render3DOptions {
     /// through presets immediately so saved configs survive across the
     /// later phases that actually wire them to the GPU.
     /// See `docs/aces-color-pipeline-plan.md`.
-    /// OCIO-backed colour pipeline. Replaces the legacy
-    /// `color_idt/lmt/rrt/odt/working/tonemap/exposure/wb/gamut`
-    /// cascade that lived here before phase 11. See
-    /// `crates/color-pipeline/src/lib.rs` for the data model.
+    /// OCIO-backed colour pipeline: the cglibs' shared `render_color` policy (config / input /
+    /// display / view / look / custom LUT / built-in tonemaps). Replaces the legacy
+    /// `color_idt/lmt/rrt/odt/working/tonemap/exposure/wb/gamut` cascade.
     #[serde(default)]
-    pub color_pipeline: color_pipeline::ColorPipelineSettings,
+    pub color_pipeline: render_color::ColorPipelineSettings,
+
+    /// The window output the display canvas is adapted to (`ColorPipeline::canvas_processor`).
+    /// Runtime state from the display host, never a preset value: a preset is portable between
+    /// an SDR and an HDR monitor.
+    #[serde(skip)]
+    pub canvas: CanvasOutput,
 
     /// Per-scene material library — the single source of truth for
     /// cube materials. Cubes get a `material_index` chosen by
@@ -1133,7 +1160,8 @@ impl Default for Render3DOptions {
             // user actually flips a control. Other lanes are seeded with
             // production-grade values so flipping to `AcesFull` lands on
             // a sensible sRGB / 100 nits view without further setup.
-            color_pipeline: color_pipeline::ColorPipelineSettings::default(),
+            color_pipeline: render_color::ColorPipelineSettings::default(),
+            canvas: CanvasOutput::default(),
             material_library: pt_material::MaterialLibrary::default(),
         }
     }
@@ -1146,8 +1174,8 @@ mod tests {
 
     // Phase 11d removed every legacy ACES matrix-bake test that
     // referenced the deleted IDT/LMT/RRT/ODT enums and matrix
-    // constants. The new colour pipeline ships its own unit tests
-    // in `crates/color-pipeline`; the only surviving tests in
+    // constants. The colour pipeline (render-rs `render-color`)
+    // ships its own unit tests; the only surviving tests in
     // this module are pure `Render3DOptions` round-trips.
 
     #[test]

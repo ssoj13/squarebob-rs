@@ -4,7 +4,7 @@ use eframe::{App as _, Storage as _};
 #[test]
 fn typed_state_preserves_dock_sentinels_and_all_settings() {
     let mut app = App::default();
-    app.render_3d_opts.color_pipeline.codepath = color_pipeline::ColorCodepath::Cpu;
+    app.render_3d_opts.color_pipeline.codepath = render_color::ColorCodepath::Cpu;
     app.render_3d_opts.pt_physical_camera.iso = 240.0;
     app.render_3d_opts.pt_physical_camera.f_number = 1.0;
     app.orbit_camera.yaw = 0.75;
@@ -32,7 +32,7 @@ fn typed_state_preserves_dock_sentinels_and_all_settings() {
     ));
     assert_eq!(
         restored.render_3d_opts.color_pipeline.codepath,
-        color_pipeline::ColorCodepath::Cpu
+        render_color::ColorCodepath::Cpu
     );
     assert_eq!(restored.render_3d_opts.pt_physical_camera.iso, 240.0);
     assert_eq!(restored.render_3d_opts.pt_physical_camera.f_number, 1.0);

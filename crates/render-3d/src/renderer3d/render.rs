@@ -68,13 +68,12 @@ impl Renderer3D {
         // at pending pixel before encoding (full render still ends with readback from *this* frame).
         // PT mode skips this path — it uses CPU ray pick (`pt_pick`) driven from the UI thread,
         // not the GPU readback used by PBR/wireframe.
-        if !opts.path_tracing && cache_valid && self.instance_count > 0 {
-            if let Some((px, py)) = self.picking.pending_pick {
+        if !opts.path_tracing && cache_valid && self.instance_count > 0
+            && let Some((px, py)) = self.picking.pending_pick {
                 self.picking.ensure_readback(&self.ctx.device, width)?;
                 self.pick_from_existing()?;
                 self.picking.request_pick(px, py);
             }
-        }
 
         let hovered_id = self.picking.hovered_id;
 

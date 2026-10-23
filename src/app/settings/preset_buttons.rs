@@ -202,12 +202,8 @@ mod tests {
             },
         );
         let mut next = |events| {
-            let (output, _) = frame(&ctx, events);
-            for (id, deltas) in &output.textures_delta.set {
-                for delta in deltas {
-                    renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
-                }
-            }
+            let (mut output, _) = run_frame(&ctx, events);
+            upload(&mut renderer, &gpu, &mut output.textures_delta);
             output
         };
         next(vec![]);
@@ -252,7 +248,6 @@ mod tests {
             next(vec![]);
         }
         let edit = next(vec![]);
-        drop(next);
         for (name, output) in [
             ("preset-buttons.png", buttons),
             ("preset-context-menu.png", menu),
@@ -268,7 +263,7 @@ mod tests {
                 name,
             );
         }
-        use crate::app::viewport_toolbar::tests::{toolbar_frame, visible_text};
+        use crate::app::viewport_toolbar::tests::{toolbar_frame_raw, visible_text};
         for (width, expanded, filename) in [
             (1000, true, "viewport-toolbar-wide.png"),
             (280, true, "viewport-toolbar-narrow-left.png"),
@@ -276,18 +271,17 @@ mod tests {
         ] {
             let ctx = egui::Context::default();
             soluwell_config::ensure_icon_font(&ctx);
-            let mut app = crate::app::App::default();
-            app.render_mode = render_shared::RenderMode::Mode3D;
+            let mut app = crate::app::App {
+                render_mode: render_shared::RenderMode::Mode3D,
+                ..crate::app::App::default()
+            };
             app.viewport_toolbar.expanded = expanded;
             app.camera_slots
                 .store(0, &app.orbit_camera, &app.render_3d_opts);
             let mut next = |events| {
-                let (output, response) = toolbar_frame(&ctx, &mut app, width as f32, events);
-                for (id, deltas) in &output.textures_delta.set {
-                    for delta in deltas {
-                        renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
-                    }
-                }
+                let (mut output, response) =
+                    toolbar_frame_raw(&ctx, &mut app, width as f32, events);
+                upload(&mut renderer, &gpu, &mut output.textures_delta);
                 (output, response)
             };
             for _ in 0..20 {
@@ -304,7 +298,6 @@ mod tests {
                 assert!(!visible_text(&output, "2D"));
                 assert!(response.rect.width() < 30.0);
             }
-            drop(next);
             write_gpu_frame(
                 &ctx,
                 &mut renderer,
@@ -316,12 +309,9 @@ mod tests {
             );
             if width == 280 {
                 let mut next = |events| {
-                    let (output, response) = toolbar_frame(&ctx, &mut app, width as f32, events);
-                    for (id, deltas) in &output.textures_delta.set {
-                        for delta in deltas {
-                            renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
-                        }
-                    }
+                    let (mut output, response) =
+                        toolbar_frame_raw(&ctx, &mut app, width as f32, events);
+                    upload(&mut renderer, &gpu, &mut output.textures_delta);
                     (output, response)
                 };
                 next(vec![egui::Event::PointerMoved(pointer)]);
@@ -339,7 +329,6 @@ mod tests {
                 let (output, _) = next(vec![]);
                 assert!(visible_text(&output, "CamClip:"));
                 assert!(visible_text(&output, "5"));
-                drop(next);
                 write_gpu_frame(
                     &ctx,
                     &mut renderer,
@@ -351,6 +340,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Apply a frame's texture deltas to the screenshot renderer (uploads, then frees) and mark
+    /// them handled, as a real host does every frame.
+    fn upload(
+        renderer: &mut egui_wgpu::Renderer,
+        gpu: &render_core::gpu::GpuContext,
+        delta: &mut egui::TexturesDelta,
+    ) {
+        for (id, images) in &delta.set {
+            for image in images {
+                renderer.update_texture(&gpu.device, &gpu.queue, *id, image);
+            }
+        }
+        for id in &delta.free {
+            renderer.free_texture(id);
+        }
+        delta.clear();
     }
 
     fn write_gpu_frame(
@@ -419,7 +426,19 @@ mod tests {
             .unwrap();
     }
 
+    /// A headless frame: no renderer uploads its textures, so its texture deltas are discarded
+    /// explicitly (epaint asserts that every delta was handled).
     fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> (egui::FullOutput, Option<Action>) {
+        let (mut output, action) = run_frame(ctx, events);
+        output.textures_delta.clear();
+        (output, action)
+    }
+
+    /// One UI frame with its texture deltas still pending (the screenshot test uploads them).
+    fn run_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, Option<Action>) {
         let mut action = None;
         let output = ctx.run_ui(
             egui::RawInput {

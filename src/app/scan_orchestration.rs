@@ -421,7 +421,7 @@ impl App {
                         continue;
                     }
                     match result {
-                        Ok(Some(prepared)) => self.install_cache_preview(generation, prepared),
+                        Ok(Some(prepared)) => self.install_cache_preview(generation, *prepared),
                         Ok(None) => {}
                         Err(error) => {
                             warn!("cache load failed for generation {generation}: {error}");
@@ -482,11 +482,8 @@ impl App {
             let generation = session.generation;
             let root = session.root.clone();
             let mut messages = Vec::new();
-            loop {
-                match session.receiver.try_recv() {
-                    Ok(message) => messages.push(message),
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-                }
+            while let Ok(message) = session.receiver.try_recv() {
+                messages.push(message);
             }
             let disconnected = loop {
                 match session.terminal_receiver.try_recv() {
@@ -521,7 +518,7 @@ impl App {
                 }
                 ScanMsg::Terminal(outcome) => {
                     terminal_received = true;
-                    self.handle_terminal(generation, root.clone(), outcome);
+                    self.handle_terminal(generation, root.clone(), *outcome);
                 }
                 #[cfg(windows)]
                 ScanMsg::NtfsFallback(error) => {

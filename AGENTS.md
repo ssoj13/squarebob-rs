@@ -18,7 +18,7 @@ Primary constraints for future agents:
 
 ## Workspace inventory
 
-`Cargo.toml:15-37` lists 20 members: `squarebob-core`, `pt-core`, `bvh-gpu`, `pt-megakernel`, `pt-wavefront`, `pt-mats`, `render-core`, `render-shared`, `render-3d`, `media-encoder`, `xtask`, `treemap`, `pt-denoise-oidn`, `gpu-mem`, `standard-surface`, `squarebob-widgets`, `pt-material`, `playa-ae`, `egui-colorpicker`, and `color-pipeline`. Earlier file counts and bug-hunt artifact claims were historical snapshots.
+`Cargo.toml:15-37` lists 19 members: `squarebob-core`, `pt-core`, `bvh-gpu`, `pt-megakernel`, `pt-wavefront`, `pt-mats`, `render-core`, `render-shared`, `render-3d`, `media-encoder`, `xtask`, `treemap`, `pt-denoise-oidn`, `gpu-mem`, `standard-surface`, `squarebob-widgets`, `pt-material`, `playa-ae` and `egui-colorpicker` (`color-pipeline` was removed 2026-10-23 for render-rs `render-color`). Earlier file counts and bug-hunt artifact claims were historical snapshots.
 
 ## Application dataflow
 
@@ -226,7 +226,7 @@ scene-linear renderer / OIDN result
  -> negotiated SDR/PQ/HLG/scRGB surface
 ```
 
-Anchors in Squarebob: `src/main.rs:187`, `src/display_host.rs:212-231,309-310,389-455,520-584`, `src/app/mod.rs:59-64`, `crates/color-pipeline/src/lib.rs:193-198,772-808,875-887`. Canonical presenter anchors: `egui-widgets-rs/crates/egui-display/src/present.rs:25,127-149,202-215,612,766`. Compilation and float readback do not certify an actual HDR monitor surface or physical luminance.
+Anchors in Squarebob: `src/main.rs:187`, `src/display_host.rs:212-231,309-310,389-455,520-584`, `src/app/mod.rs` `sync_display` (writes `Render3DOptions::canvas`), `crates/render-3d/src/lib.rs` `Renderer3D::sync_color` (render-rs `ColorPipeline::canvas_processor(hdr, white)` = the display-reference decode above, compiled exact into the PT blit via `render_color_gpu::OcioShader`; no baked LUT since 2026-10-23, `crates/color-pipeline` removed). Canonical presenter anchors: `egui-widgets-rs/crates/egui-display/src/present.rs:25,127-149,202-215,612,766`. Compilation and float readback do not certify an actual HDR monitor surface or physical luminance.
 
 ## CPU/PQ verification closure — 2026-10-02
 

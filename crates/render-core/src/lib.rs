@@ -231,7 +231,7 @@ pub fn checked_storage_buffer_size(
             limit_name: "max_buffer_size",
         });
     }
-    let max_binding_size = u64::from(limits.max_storage_buffer_binding_size);
+    let max_binding_size = limits.max_storage_buffer_binding_size;
     if size > max_binding_size {
         return Err(GpuLayoutError::LimitExceeded {
             context,
@@ -545,8 +545,12 @@ pub mod gpu {
         })
     }
 
+    /// One texture copy's geometry: the size, the row padding wgpu requires and the label the
+    /// copy's errors and staging buffer carry. Built once, then handed to
+    /// [`readback_texture_bytes`] whole.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct TextureReadbackLayout {
+        label: &'static str,
         width: u32,
         height: u32,
         row_bytes: u32,
@@ -600,6 +604,7 @@ pub mod gpu {
                 })?;
 
             Ok(Self {
+                label: context,
                 width,
                 height,
                 row_bytes,
@@ -653,17 +658,13 @@ pub mod gpu {
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
         texture: &wgpu::Texture,
-        width: u32,
-        height: u32,
-        bytes_per_pixel: u32,
-        label: &'static str,
+        layout: TextureReadbackLayout,
         staging: &mut TextureReadback,
     ) -> Result<(), ReadbackError> {
-        let layout = TextureReadbackLayout::new(label, width, height, bytes_per_pixel)?;
         if staging.buffer.is_none() || staging.capacity < layout.buffer_size {
             staging.buffer = Some(make_buffer(
                 &ctx.device,
-                label,
+                layout.label,
                 layout.buffer_size,
                 wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             ));
@@ -719,10 +720,7 @@ pub mod gpu {
             ctx,
             encoder,
             texture,
-            width,
-            height,
-            bytes_per_pixel,
-            "SDR Readback",
+            TextureReadbackLayout::new("SDR Readback", width, height, bytes_per_pixel)?,
             staging,
         )?;
         staging.format = Some(format);
@@ -946,10 +944,7 @@ mod tests {
             &ctx,
             &mut encoder,
             &texture,
-            width,
-            height,
-            8,
-            "raw regression",
+            gpu::TextureReadbackLayout::new("raw regression", width, height, 8).unwrap(),
             &mut raw_staging,
         )
         .unwrap();
@@ -963,10 +958,7 @@ mod tests {
             &ctx,
             &mut encoder,
             &texture,
-            width,
-            height,
-            8,
-            "reused raw regression",
+            gpu::TextureReadbackLayout::new("reused raw regression", width, height, 8).unwrap(),
             &mut staging,
         )
         .unwrap();

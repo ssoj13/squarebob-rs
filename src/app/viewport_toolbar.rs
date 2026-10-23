@@ -195,7 +195,21 @@ impl App {
 pub(super) mod tests {
     use super::*;
 
+    /// A headless toolbar frame: no renderer uploads its textures, so its texture deltas are
+    /// discarded explicitly (epaint asserts that every delta was handled).
     pub(crate) fn toolbar_frame(
+        ctx: &egui::Context,
+        app: &mut App,
+        width: f32,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, ToolbarResponse) {
+        let (mut output, response) = toolbar_frame_raw(ctx, app, width, events);
+        output.textures_delta.clear();
+        (output, response)
+    }
+
+    /// One toolbar frame with its texture deltas still pending (the screenshot test uploads them).
+    pub(crate) fn toolbar_frame_raw(
         ctx: &egui::Context,
         app: &mut App,
         width: f32,
@@ -242,8 +256,10 @@ pub(super) mod tests {
     fn narrow_viewport_toolbar_horizontal_scroll_reaches_camera_slots() {
         let ctx = egui::Context::default();
         soluwell_config::ensure_icon_font(&ctx);
-        let mut app = App::default();
-        app.render_mode = RenderMode::Mode3D;
+        let mut app = App {
+            render_mode: RenderMode::Mode3D,
+            ..App::default()
+        };
         let text_rect = |output: &egui::FullOutput, predicate: fn(&str) -> bool| {
             output
                 .shapes
@@ -322,24 +338,33 @@ pub(super) mod tests {
     #[test]
     fn viewport_toolbar_pointer_guard_only_claims_painted_strip() {
         let ctx = egui::Context::default();
-        let mut app = App::default();
-        app.viewport_toolbar_rect =
-            egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 34.0));
-        let _ = ctx.run_ui(
+        let mut app = App {
+            viewport_toolbar_rect: egui::Rect::from_min_size(
+                egui::pos2(10.0, 20.0),
+                egui::vec2(300.0, 34.0),
+            ),
+            ..App::default()
+        };
+        // Headless: the frames' texture deltas are discarded explicitly (epaint asserts on drop).
+        ctx.run_ui(
             egui::RawInput {
                 events: vec![egui::Event::PointerMoved(egui::pos2(50.0, 35.0))],
                 ..Default::default()
             },
             |_| {},
-        );
+        )
+        .textures_delta
+        .clear();
         assert!(app.pointer_over_viewport_toolbar(&ctx));
-        let _ = ctx.run_ui(
+        ctx.run_ui(
             egui::RawInput {
                 events: vec![egui::Event::PointerMoved(egui::pos2(50.0, 60.0))],
                 ..Default::default()
             },
             |_| {},
-        );
+        )
+        .textures_delta
+        .clear();
         assert!(!app.pointer_over_viewport_toolbar(&ctx));
         app.viewport_toolbar_rect = egui::Rect::NOTHING;
         assert!(!app.pointer_over_viewport_toolbar(&ctx));

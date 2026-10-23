@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, ensure};
 use render_core::{
     DISPLAY_TEXTURE_FORMAT,
-    gpu::{GpuContext, TextureReadback, map_readback, readback_texture_bytes},
+    gpu::{GpuContext, TextureReadback, TextureReadbackLayout, map_readback, readback_texture_bytes},
 };
 
 fn main() -> Result<()> {
@@ -81,10 +81,7 @@ fn main() -> Result<()> {
             &ctx,
             &mut encoder,
             &target,
-            4,
-            1,
-            8,
-            "float display blit capture",
+            TextureReadbackLayout::new("float display blit capture", 4, 1, 8)?,
             &mut staging,
         )?;
         ctx.queue.submit([encoder.finish()]);
@@ -110,18 +107,71 @@ fn main() -> Result<()> {
             },
             source.size(),
         );
-        let settings = color_pipeline::ColorPipelineSettings {
-            mode: color_pipeline::ColorMode::Ocio,
-            output_hdr: true,
+        // The OCIO lane: the window-canvas processor (HDR canvas, 203-nit white) as the oracle.
+        let settings = render_color::ColorPipelineSettings {
+            mode: render_color::ColorMode::Ocio,
             ..Default::default()
         };
-        let pipeline = color_pipeline::ColorPipeline::new(&settings);
-        ensure!(pipeline.last_error().is_none(), "CPU OCIO processor failed");
+        let pipeline = render_color::ColorPipeline::new(&settings);
+        ensure!(pipeline.error().is_none(), "OCIO processor failed");
+        let canvas = pipeline.canvas_processor(true, 203.0)?;
         let mut expected: Vec<[f32; 3]> = input
             .chunks_exact(4)
             .map(|pixel| [pixel[0] * 2.0, pixel[1] * 2.0, pixel[2] * 2.0])
             .collect();
-        pipeline.apply_cpu_to_surface_linear(&mut expected);
+        canvas.apply_rgb(&mut expected);
+        // Canvas-encoded values come out of the blit as they are: compare them directly.
+        let check = |bytes: &[u8], what: &str| -> Result<()> {
+            for (pixel, expected) in bytes.chunks_exact(8).zip(&expected) {
+                for channel in 0..3 {
+                    let actual = half::f16::from_bits(u16::from_le_bytes([
+                        pixel[channel * 2],
+                        pixel[channel * 2 + 1],
+                    ]))
+                    .to_f32();
+                    let want = expected[channel];
+                    ensure!(
+                        (actual - want).abs() < 0.002 * want.abs().max(1.0),
+                        "{what}: actual {actual}, CPU oracle {want}"
+                    );
+                }
+            }
+            Ok(())
+        };
+
+        // GPU: the exact OCIO WGSL in the blit (tag 6), camera exposure 2 applied in the shader.
+        let shader = render_color_gpu::OcioShader::new(
+            &ctx.device,
+            &ctx.queue,
+            &canvas,
+            wgpu::ShaderStages::FRAGMENT,
+        )?;
+        tracer.set_display_transform(&ctx.device, Some(shader));
+        tracer.set_blit_exposure(&ctx.queue, 2.0);
+        tracer.set_blit_color(&ctx.queue, render_color::OCIO_TAG, 0.0, 1.0, 0.0);
+        tracer.set_blit_source_encoded(&ctx.queue, false);
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        tracer.blit_with_source(
+            &ctx.device,
+            &mut encoder,
+            &target.create_view(&Default::default()),
+            Some(&source.create_view(&Default::default())),
+        );
+        readback_texture_bytes(
+            &ctx,
+            &mut encoder,
+            &target,
+            TextureReadbackLayout::new("GPU OCIO blit capture", 4, 1, 8)?,
+            &mut staging,
+        )?;
+        ctx.queue.submit([encoder.finish()]);
+        check(&map_readback(&ctx, &staging)?, "GPU OCIO lane vs CPU processor")?;
+        println!("gpu_ocio_lane_matches_cpu=true");
+
+        // CPU: the same processor applied after readback; the blit passes its codes through.
+        tracer.set_blit_exposure(&ctx.queue, 1.0);
+        tracer.set_blit_color(&ctx.queue, 0, 0.0, 1.0, 0.0);
+        tracer.set_blit_source_encoded(&ctx.queue, true);
         let mut cpu_reference = None;
         for external in [true, true, false, false] {
             let scratch =
@@ -129,7 +179,7 @@ fn main() -> Result<()> {
                     for pixel in pixels.iter_mut() {
                         *pixel = pixel.map(|value| value * 2.0);
                     }
-                    pipeline.apply_cpu_to_surface_linear(pixels);
+                    canvas.apply_rgb(pixels);
                 })?;
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
             tracer.blit_with_source(
@@ -142,10 +192,7 @@ fn main() -> Result<()> {
                 &ctx,
                 &mut encoder,
                 &target,
-                4,
-                1,
-                8,
-                "CPU display scratch",
+                TextureReadbackLayout::new("CPU display scratch", 4, 1, 8)?,
                 &mut staging,
             )?;
             ctx.queue.submit([encoder.finish()]);
@@ -158,37 +205,14 @@ fn main() -> Result<()> {
             } else {
                 cpu_reference = Some(cpu_bytes.clone());
             }
-            for (pixel, expected) in cpu_bytes.chunks_exact(8).zip(&expected) {
-                for channel in 0..3 {
-                    let actual = half::f16::from_bits(u16::from_le_bytes([
-                        pixel[channel * 2],
-                        pixel[channel * 2 + 1],
-                    ]))
-                    .to_f32();
-                    let linear = expected[channel];
-                    let magnitude = linear.abs();
-                    let gamma = linear.signum()
-                        * if magnitude <= 0.0031308 {
-                            magnitude * 12.92
-                        } else {
-                            1.055 * magnitude.powf(1.0 / 2.4) - 0.055
-                        };
-                    ensure!(
-                        (actual - gamma).abs() < 0.002 * gamma.abs().max(1.0),
-                        "CPU display light/transport mismatch"
-                    );
-                }
-            }
+            check(&cpu_bytes, "CPU OCIO codepath vs CPU processor")?;
             for raw_source in [&source, tracer.output_texture()] {
                 let mut encoder = ctx.device.create_command_encoder(&Default::default());
                 readback_texture_bytes(
                     &ctx,
                     &mut encoder,
                     raw_source,
-                    4,
-                    1,
-                    16,
-                    "Raw display source preservation",
+                    TextureReadbackLayout::new("Raw display source preservation", 4, 1, 16)?,
                     &mut staging,
                 )?;
                 ctx.queue.submit([encoder.finish()]);

@@ -193,6 +193,8 @@ fn to_video_settings(settings: &EncoderSettings) -> Result<VideoSettings, Encode
         rate,
         preset,
         prores,
+        // Read only for EXV, which this dialog does not offer (H.264 / H.265 / AV1 / ProRes).
+        exv: catalog::ExvProfile::default(),
         encoder: None,
     })
 }

@@ -3,13 +3,16 @@
 //! Drives the new OCIO-backed colour management.
 //! Two modes — BuiltIn (shader-side tonemap: None / Linear /
 //! Reinhard / AgX) or Ocio (full `vfx-ocio` pipeline). State lives
-//! on `Render3DOptions.color_pipeline` as a single
-//! `ColorPipelineSettings` struct and round-trips through presets.
+//! on `Render3DOptions.color_pipeline` as a single render-rs
+//! `render_color::ColorPipelineSettings` struct and round-trips through presets.
 
 use super::{SettingsDirty, settings_grid, tinted_section};
 use crate::app::App;
-use color_pipeline::{BuiltInTonemap, ColorCodepath, ColorMode, ConfigSource, vfx_ocio::Encoding};
 use eframe::egui;
+use render_color::{
+    BuiltInTonemap, ColorCodepath, ColorMode, ConfigSource, CustomLutStatus, vfx_ocio,
+    vfx_ocio::Encoding,
+};
 use soluwell_config::icons;
 
 impl App {
@@ -30,13 +33,11 @@ impl App {
         );
         // Keep the live `ColorPipeline` in sync with the settings
         // BEFORE we sample any dropdown lists from it. `ensure` is
-        // a hash-compare noop when nothing changed.
-        if let Err(error) = self
-            .color_pipeline
+        // a hash-compare noop when nothing changed. A failure is logged once by render-color and
+        // kept in `error()`, shown below — not re-logged here every frame.
+        self.color_pipeline
             .ensure(&self.render_3d_opts.color_pipeline)
-        {
-            log::error!("color settings rebuild rejected: {error}");
-        }
+            .ok();
 
         // Snapshot the dropdown contents up front. This is the
         // only spot we can read `&self.color_pipeline` because the
@@ -61,7 +62,19 @@ impl App {
         // the dropdown lists above — the closure cannot re-borrow
         // `self.color_pipeline` while `cp` is alive.
         let custom_lut_status = self.color_pipeline.custom_lut_status().clone();
-        let pipeline_error = self.color_pipeline.last_error().map(str::to_owned);
+        // A failed build (the previous transform stays on screen) or a display transform the
+        // window output / device cannot run (the canvas encoding alone is shown).
+        let pipeline_error = self
+            .color_pipeline
+            .error()
+            .map(|e| format!("Colour transform failed: {e} \u{2014} showing the last one that built"))
+            .or_else(|| {
+                self.renderer_3d
+                    .as_ref()
+                    .and_then(|r| r.color_error())
+                    .map(|e| format!("No OCIO display transform: {e}"))
+            });
+        let output_hdr = self.render_3d_opts.canvas.hdr;
 
         tinted_section(
             ui,
@@ -102,8 +115,9 @@ impl App {
                     ui.end_row();
 
                     ui.label("Codepath:").on_hover_text(
-                        "OCIO: CPU evaluates the selected view directly after GPU readback (slower).\n\
-                         GPU uses a cached 3D LUT (fast; interpolation approximation).\n\
+                        "OCIO: CPU evaluates the selected view after a GPU readback (slower).\n\
+                         GPU runs the same view as an exact OCIO shader in the display blit\n\
+                         (fast, no baked LUT). Both give the same picture.\n\
                          Built-in tone maps use shaders regardless of this selection.",
                     );
                     ui.horizontal(|ui| {
@@ -126,10 +140,7 @@ impl App {
                 });
 
                 if let Some(error) = &pipeline_error {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(220, 110, 110),
-                        format!("Color pipeline disabled: {error}"),
-                    );
+                    ui.colored_label(egui::Color32::from_rgb(220, 110, 110), error);
                 }
 
                 ui.add_space(4.0);
@@ -177,12 +188,11 @@ impl App {
                             let current_label: String = match &cp.ocio_config {
                                 ConfigSource::BuiltIn => "Default (latest embedded)".into(),
                                 ConfigSource::Embedded(name) => {
-                                    color_pipeline::vfx_ocio::builtin::embedded::find(name)
+                                    vfx_ocio::builtin::embedded::find(name)
                                         .map(|e| format!("{} (embedded)", e.ui_name))
                                         .unwrap_or_else(|| format!("? {name}"))
                                 }
                                 ConfigSource::External(_) => "External…".into(),
-                                ConfigSource::Bundled(_) => "External…".into(),
                             };
                             egui::ComboBox::from_id_salt("color_ocio_config_cb")
                                 .width(288.0)
@@ -202,9 +212,7 @@ impl App {
                                         dirty.preset();
                                     }
                                     // Every embedded release config.
-                                    for entry in
-                                        color_pipeline::vfx_ocio::builtin::embedded::entries()
-                                    {
+                                    for entry in vfx_ocio::builtin::embedded::entries() {
                                         let is_sel = matches!(
                                             &cp.ocio_config,
                                             ConfigSource::Embedded(n) if n == entry.name
@@ -234,14 +242,6 @@ impl App {
                             match &mut cp.ocio_config {
                                 ConfigSource::BuiltIn => {}
                                 ConfigSource::Embedded(_) => {}
-                                ConfigSource::Bundled(_) => {
-                                    // Legacy preset compatibility — silently
-                                    // coerce to External so the user sees a
-                                    // file picker instead of the removed
-                                    // Bundled lane.
-                                    cp.ocio_config = ConfigSource::External(Default::default());
-                                    dirty.preset();
-                                }
                                 ConfigSource::External(path) => {
                                     ui.label("Path:").on_hover_text(
                                         "Path to a .ocio / .ocioz / .json file. \
@@ -324,7 +324,7 @@ impl App {
                                 "color_view_cb",
                                 &mut cp.ocio_view,
                                 &view_options,
-                                cp.output_hdr,
+                                output_hdr,
                                 dirty,
                             );
                             ui.end_row();
@@ -411,10 +411,10 @@ impl App {
                             // requested.
                             ui.label("");
                             match &custom_lut_status {
-                                color_pipeline::CustomLutStatus::NotSet => {
+                                CustomLutStatus::NotSet => {
                                     ui.label("");
                                 }
-                                color_pipeline::CustomLutStatus::Loaded { path } => {
+                                CustomLutStatus::Loaded { path } => {
                                     let name = path
                                         .file_name()
                                         .map(|n| n.to_string_lossy().into_owned())
@@ -425,7 +425,7 @@ impl App {
                                     )
                                     .on_hover_text(path.display().to_string());
                                 }
-                                color_pipeline::CustomLutStatus::Failed { path, error } => {
+                                CustomLutStatus::Failed { path, error } => {
                                     let name = path
                                         .file_name()
                                         .map(|n| n.to_string_lossy().into_owned())

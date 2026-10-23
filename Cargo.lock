@@ -1496,7 +1496,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "burn"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-core",
  "burn-linalg",
@@ -1511,7 +1511,7 @@ dependencies = [
 [[package]]
 name = "burn-autodiff"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-std",
@@ -1526,7 +1526,7 @@ dependencies = [
 [[package]]
 name = "burn-backend"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-std",
  "cubecl",
@@ -1544,7 +1544,7 @@ dependencies = [
 [[package]]
 name = "burn-backend-extension"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1554,7 +1554,7 @@ dependencies = [
 [[package]]
 name = "burn-core"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-backend-extension",
@@ -1582,7 +1582,7 @@ dependencies = [
 [[package]]
 name = "burn-cpu"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -1592,7 +1592,7 @@ dependencies = [
 [[package]]
 name = "burn-cubecl"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-cubecl-fusion",
@@ -1611,7 +1611,7 @@ dependencies = [
 [[package]]
 name = "burn-cubecl-fusion"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-fusion",
@@ -1629,7 +1629,7 @@ dependencies = [
 [[package]]
 name = "burn-cuda"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -1639,7 +1639,7 @@ dependencies = [
 [[package]]
 name = "burn-derive"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-einsum",
  "derive-new",
@@ -1651,7 +1651,7 @@ dependencies = [
 [[package]]
 name = "burn-device"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#bf5934b140a48ed8b1280846a95968c21d7c9c4a"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#8fbc242f6d5d3a1956d0ef0b52b3953a53fb6cc1"
 dependencies = [
  "burn",
  "cubecl-runtime",
@@ -1665,7 +1665,7 @@ dependencies = [
 [[package]]
 name = "burn-dispatch"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-autodiff",
  "burn-backend",
@@ -1679,12 +1679,12 @@ dependencies = [
 [[package]]
 name = "burn-einsum"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 
 [[package]]
 name = "burn-flex"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-ir",
@@ -1701,7 +1701,7 @@ dependencies = [
 [[package]]
 name = "burn-fusion"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-ir",
@@ -1717,7 +1717,7 @@ dependencies = [
 [[package]]
 name = "burn-ir"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-std",
@@ -1728,7 +1728,7 @@ dependencies = [
 [[package]]
 name = "burn-linalg"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-core",
  "burn-cubecl",
@@ -1740,7 +1740,7 @@ dependencies = [
 [[package]]
 name = "burn-nn"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-core",
  "burn-linalg",
@@ -1750,7 +1750,7 @@ dependencies = [
 [[package]]
 name = "burn-optim"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-core",
  "burn-derive",
@@ -1765,7 +1765,7 @@ dependencies = [
 [[package]]
 name = "burn-pack"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-std",
  "byteorder",
@@ -1776,7 +1776,7 @@ dependencies = [
 [[package]]
 name = "burn-rocm"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -1786,7 +1786,7 @@ dependencies = [
 [[package]]
 name = "burn-signal"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-autodiff",
  "burn-core",
@@ -1798,7 +1798,7 @@ dependencies = [
 [[package]]
 name = "burn-std"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1823,7 +1823,7 @@ dependencies = [
 [[package]]
 name = "burn-store"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-core",
  "burn-pack",
@@ -1840,7 +1840,7 @@ dependencies = [
 [[package]]
 name = "burn-tensor"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-derive",
@@ -1856,7 +1856,7 @@ dependencies = [
 [[package]]
 name = "burn-vision"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "aligned-vec",
  "bon",
@@ -1876,7 +1876,7 @@ dependencies = [
 [[package]]
 name = "burn-wgpu"
 version = "0.22.0"
-source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#5057236fb54c0ede4df31e09a6b5f6cdae614b6f"
+source = "git+ssh://git@github.com/ssoj13/burn_b.git?branch=main#8bccfafcb01c5e47b422cdb336f3fa94e9fe5e0e"
 dependencies = [
  "burn-backend",
  "burn-cubecl",
@@ -2210,17 +2210,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "color-pipeline"
-version = "0.1.0"
-dependencies = [
- "log",
- "serde",
- "thiserror 2.0.21",
- "vfx-lut",
- "vfx-ocio",
-]
-
-[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2484,7 +2473,7 @@ dependencies = [
 [[package]]
 name = "cubecl"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "cubecl-core",
  "cubecl-cpu",
@@ -2502,7 +2491,7 @@ dependencies = [
 [[package]]
 name = "cubecl-common"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bytemuck",
  "cfg_aliases",
@@ -2525,7 +2514,7 @@ dependencies = [
 [[package]]
 name = "cubecl-core"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -2554,7 +2543,7 @@ dependencies = [
 [[package]]
 name = "cubecl-cpp"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bytemuck",
  "cubecl-common",
@@ -2577,7 +2566,7 @@ dependencies = [
 [[package]]
 name = "cubecl-cpu"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bytemuck",
  "crossbeam-utils",
@@ -2599,7 +2588,7 @@ dependencies = [
 [[package]]
 name = "cubecl-cuda"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bytemuck",
  "cubecl-common",
@@ -2619,7 +2608,7 @@ dependencies = [
 [[package]]
 name = "cubecl-environment"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "async-channel",
  "backtrace",
@@ -2656,7 +2645,7 @@ dependencies = [
 [[package]]
 name = "cubecl-hip"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bytemuck",
  "cubecl-common",
@@ -2688,7 +2677,7 @@ dependencies = [
 [[package]]
 name = "cubecl-ir"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bumpalo",
  "cubecl-common",
@@ -2719,7 +2708,7 @@ dependencies = [
 [[package]]
 name = "cubecl-llvm"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "cc",
  "cubecl-core",
@@ -2738,7 +2727,7 @@ dependencies = [
 [[package]]
 name = "cubecl-macros"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "darling 0.24.1",
  "derive-new",
@@ -2755,7 +2744,7 @@ dependencies = [
 [[package]]
 name = "cubecl-macros-internal"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "darling 0.24.1",
  "inflections",
@@ -2767,7 +2756,7 @@ dependencies = [
 [[package]]
 name = "cubecl-metal"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "block2 0.6.2",
  "bytemuck",
@@ -2791,7 +2780,7 @@ dependencies = [
 [[package]]
 name = "cubecl-monitoring"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "cfg_aliases",
  "cubecl-ir",
@@ -2804,7 +2793,7 @@ dependencies = [
 [[package]]
 name = "cubecl-opt"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "cubecl-common",
  "cubecl-core",
@@ -2826,7 +2815,7 @@ dependencies = [
 [[package]]
 name = "cubecl-runtime"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "buildid",
  "bytemuck",
@@ -2856,7 +2845,7 @@ dependencies = [
 [[package]]
 name = "cubecl-server"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "buildid",
  "bytemuck",
@@ -2884,7 +2873,7 @@ dependencies = [
 [[package]]
 name = "cubecl-spirv"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bitflags 2.13.2",
  "cubecl-common",
@@ -2907,7 +2896,7 @@ dependencies = [
 [[package]]
 name = "cubecl-std"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "cubecl-common",
  "cubecl-core",
@@ -2924,7 +2913,7 @@ dependencies = [
 [[package]]
 name = "cubecl-wgpu"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -2955,7 +2944,7 @@ dependencies = [
 [[package]]
 name = "cubecl-zspace"
 version = "0.11.0"
-source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#4fc025213910369080d73ec595a322ed3460e99c"
+source = "git+ssh://git@github.com/ssoj13/cubecl_b.git?branch=main#449b5cbcd8dd1d01fd58276354ad0f7be9c1d4f8"
 dependencies = [
  "derive-new",
  "serde",
@@ -2965,7 +2954,7 @@ dependencies = [
 [[package]]
 name = "cubek"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "cubecl",
  "cubek-attention",
@@ -2983,7 +2972,7 @@ dependencies = [
 [[package]]
 name = "cubek-attention"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "bytemuck",
  "cubecl",
@@ -2997,7 +2986,7 @@ dependencies = [
 [[package]]
 name = "cubek-convolution"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "bytemuck",
  "cubecl",
@@ -3013,7 +3002,7 @@ dependencies = [
 [[package]]
 name = "cubek-fft"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "cubecl",
  "thiserror 2.0.21",
@@ -3022,7 +3011,7 @@ dependencies = [
 [[package]]
 name = "cubek-interpolate"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "cubecl",
  "cubecl-common",
@@ -3035,7 +3024,7 @@ dependencies = [
 [[package]]
 name = "cubek-matmul"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "bytemuck",
  "cubecl",
@@ -3049,7 +3038,7 @@ dependencies = [
 [[package]]
 name = "cubek-pool"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "cubecl",
  "cubecl-common",
@@ -3059,7 +3048,7 @@ dependencies = [
 [[package]]
 name = "cubek-quant"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "cubecl",
  "cubecl-common",
@@ -3071,7 +3060,7 @@ dependencies = [
 [[package]]
 name = "cubek-random"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "cubecl",
  "cubecl-common",
@@ -3086,7 +3075,7 @@ dependencies = [
 [[package]]
 name = "cubek-reduce"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "cubecl",
  "cubek-std",
@@ -3099,7 +3088,7 @@ dependencies = [
 [[package]]
 name = "cubek-std"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "cubecl",
  "cubecl-common",
@@ -3109,7 +3098,7 @@ dependencies = [
 [[package]]
 name = "cubek-tile"
 version = "0.3.0"
-source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#48b1284c76c3b7902951b75d722aaffbb13d1b22"
+source = "git+ssh://git@github.com/ssoj13/cubek_b.git?branch=main#28cc326e6819fd6f0a4b29e943c8bae1b0dd844a"
 dependencies = [
  "bytemuck",
  "cubecl",
@@ -4676,7 +4665,7 @@ dependencies = [
 [[package]]
 name = "gpu-info-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/gpu-info-rs.git?branch=main#0c17934bbcbc8b9c6bab8bf3edf8cf5aa611f08b"
+source = "git+ssh://git@github.com/ssoj13/gpu-info-rs.git?branch=main#3daff53069a0adcf034e3f57be3c06ec1355b886"
 dependencies = [
  "ash",
  "bytemuck",
@@ -7365,7 +7354,7 @@ dependencies = [
 [[package]]
 name = "pt-denoise-oidn"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#bf5934b140a48ed8b1280846a95968c21d7c9c4a"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#8fbc242f6d5d3a1956d0ef0b52b3953a53fb6cc1"
 dependencies = [
  "anyhow",
  "burn",
@@ -7407,12 +7396,11 @@ dependencies = [
  "bvh-gpu",
  "bytemuck",
  "glam",
- "half",
  "log",
  "pt-core",
  "pt-wavefront",
+ "render-color-gpu",
  "render-core",
- "thiserror 2.0.21",
  "wgpu",
 ]
 
@@ -7835,7 +7823,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
- "color-pipeline",
  "exr-core",
  "exr-image",
  "glam",
@@ -7847,10 +7834,34 @@ dependencies = [
  "pt-material",
  "pt-mats",
  "pt-megakernel",
+ "render-color",
+ "render-color-gpu",
  "render-core",
  "render-shared",
  "squarebob-core",
  "treemap",
+ "wgpu",
+]
+
+[[package]]
+name = "render-color"
+version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#8fbc242f6d5d3a1956d0ef0b52b3953a53fb6cc1"
+dependencies = [
+ "log",
+ "serde",
+ "vfx-lut",
+ "vfx-ocio",
+]
+
+[[package]]
+name = "render-color-gpu"
+version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#8fbc242f6d5d3a1956d0ef0b52b3953a53fb6cc1"
+dependencies = [
+ "bytemuck",
+ "render-color",
+ "vfx-ocio",
  "wgpu",
 ]
 
@@ -7870,10 +7881,10 @@ name = "render-shared"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "color-pipeline",
  "glam",
  "pt-material",
  "pt-mats",
+ "render-color",
  "serde",
  "serde_json",
  "uuid",
@@ -8596,7 +8607,6 @@ dependencies = [
  "bincode",
  "bvh-gpu",
  "bytemuck",
- "color-pipeline",
  "crossbeam-channel",
  "directories",
  "eframe",
@@ -8625,6 +8635,8 @@ dependencies = [
  "pt-wavefront",
  "rayon",
  "render-3d",
+ "render-color",
+ "render-color-gpu",
  "render-core",
  "render-shared",
  "rfd",
@@ -9703,7 +9715,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vfx-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#302a88d6b4e0994f6e18beeef287931ed6ad1eb8"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#2be72d55c9d708f19c6beb64392f12791ca29c16"
 dependencies = [
  "half",
  "rayon",
@@ -9714,7 +9726,7 @@ dependencies = [
 [[package]]
 name = "vfx-core-math"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#302a88d6b4e0994f6e18beeef287931ed6ad1eb8"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#2be72d55c9d708f19c6beb64392f12791ca29c16"
 dependencies = [
  "libm",
 ]
@@ -9722,7 +9734,7 @@ dependencies = [
 [[package]]
 name = "vfx-icc"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#302a88d6b4e0994f6e18beeef287931ed6ad1eb8"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#2be72d55c9d708f19c6beb64392f12791ca29c16"
 dependencies = [
  "bytemuck",
  "lcms-rs",
@@ -9732,7 +9744,7 @@ dependencies = [
 [[package]]
 name = "vfx-io"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#302a88d6b4e0994f6e18beeef287931ed6ad1eb8"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#2be72d55c9d708f19c6beb64392f12791ca29c16"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -9767,7 +9779,7 @@ dependencies = [
 [[package]]
 name = "vfx-lut"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#302a88d6b4e0994f6e18beeef287931ed6ad1eb8"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#2be72d55c9d708f19c6beb64392f12791ca29c16"
 dependencies = [
  "quick-xml 0.42.0",
  "thiserror 2.0.21",
@@ -9779,7 +9791,7 @@ dependencies = [
 [[package]]
 name = "vfx-math"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#302a88d6b4e0994f6e18beeef287931ed6ad1eb8"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#2be72d55c9d708f19c6beb64392f12791ca29c16"
 dependencies = [
  "glam",
  "vfx-core",
@@ -9789,8 +9801,9 @@ dependencies = [
 [[package]]
 name = "vfx-ocio"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#302a88d6b4e0994f6e18beeef287931ed6ad1eb8"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#2be72d55c9d708f19c6beb64392f12791ca29c16"
 dependencies = [
+ "bytemuck",
  "glam",
  "glob",
  "gpu-info-rs",
@@ -9812,7 +9825,7 @@ dependencies = [
 [[package]]
 name = "vfx-transfer"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#302a88d6b4e0994f6e18beeef287931ed6ad1eb8"
+source = "git+ssh://git@github.com/ssoj13/oiio-rs.git?branch=main#2be72d55c9d708f19c6beb64392f12791ca29c16"
 dependencies = [
  "vfx-core",
 ]

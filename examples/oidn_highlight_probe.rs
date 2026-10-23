@@ -3,7 +3,9 @@
 //! This isolates sample-dependent input clamping; it does not reproduce a scene.
 use anyhow::{Context, Result, ensure};
 use pt_denoise_oidn::{OidnDenoiser, OidnMode, Quality};
-use render_core::gpu::{GpuContext, TextureReadback, map_readback, readback_texture_bytes};
+use render_core::gpu::{
+    GpuContext, TextureReadback, TextureReadbackLayout, map_readback, readback_texture_bytes,
+};
 use wgpu::util::DeviceExt;
 
 const W: u32 = 96;
@@ -114,10 +116,7 @@ fn capture(ctx: &GpuContext, source: &wgpu::TextureView) -> Result<Vec<f32>> {
         ctx,
         &mut encoder,
         &texture,
-        W,
-        H,
-        16,
-        "OIDN probe readback",
+        TextureReadbackLayout::new("OIDN probe readback", W, H, 16)?,
         &mut staging,
     )?;
     ctx.queue.submit([encoder.finish()]);
@@ -140,7 +139,7 @@ fn region_stats(data: &[f32], bright: bool) -> (f32, f32, f32) {
     for y in 0..H {
         for x in 0..W {
             let inside = (20..76).contains(&x) && (20..44).contains(&y);
-            let dark = x < 8 || x >= W - 8;
+            let dark = !(8..W - 8).contains(&x);
             if (bright && !inside) || (!bright && !dark) {
                 continue;
             }

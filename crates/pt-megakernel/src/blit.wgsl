@@ -1,17 +1,13 @@
 // Blit shader: copy path tracer output texture to screen.
 // Uses a fullscreen triangle with tone mapping.
 // Uses textureLoad instead of textureSample (Rgba32Float is non-filterable).
+//
+// Assembled by `compute.rs::make_blit_pipeline` behind `display_encode` and the OCIO lane's
+// `ocio_transform` (vfx-ocio's exact WGSL for the live processor, bound at groups 1/2, or the
+// encode-only stand-in when none is installed). Group 0 is this shader's own.
 
 @group(0) @binding(0) var pt_texture: texture_2d<f32>;
 @group(0) @binding(1) var pt_sampler: sampler;
-
-// Baked OCIO display 3D LUT (33³ Rgba16Float) + filtering sampler.
-// Populated by `PathTraceCompute::set_blit_lut_3d`. Default content is
-// an identity LUT so a passthrough sample of the bind slot never
-// corrupts the image even when ColorMode == BuiltIn (case 6u is the
-// only branch that samples it).
-@group(0) @binding(3) var lut_3d:   texture_3d<f32>;
-@group(0) @binding(4) var lut_samp: sampler;
 
 // Display-pipeline parameters pushed each frame from CPU. Layout
 // mirrors `BlitParamsGpu` on the Rust side (compute.rs).
@@ -23,7 +19,8 @@
 //              0 = Standard (Narkowicz ACES 1.0 fit).
 //              1 = A1.1     (tighter highlight rolloff).
 //              2 = Off      (skip the filmic curve — debug).
-// exposure.w = reserved
+// exposure.w = 1.0 when pt_texture already holds canvas-encoded values (the OCIO CPU
+//              codepath): they are passed through as they are, no exposure/tonemap/encode.
 //
 // color.x = tonemap kind (u32 bitcast into f32; see TonemapKind::gpu_tag):
 //             0=None, 1=Linear, 2=Reinhard, 3=AcesFilmic, 4=AcesFull.
@@ -43,8 +40,6 @@ struct BlitParams {
     color:     vec4<f32>,
     aces_pre:  mat3x3<f32>,
     aces_post: mat3x3<f32>,
-    // x = LUT side, y = minimum EV, z = maximum EV.
-    lut_shaper: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> blit_params: BlitParams;
 
@@ -215,31 +210,14 @@ fn white_balance(color: vec3<f32>, wb_norm: f32) -> vec3<f32> {
     return vec3<f32>(color.r * r_gain, color.g, color.b * b_gain);
 }
 
-// Map non-negative scene-linear radiance to the LUT grid. Index zero is
-// exact black; the remaining cells cover [min_ev, max_ev] logarithmically.
-fn lut_shaper_encode(value: f32) -> f32 {
-    let size = max(blit_params.lut_shaper.x, 3.0);
-    if value <= 0.0 {
-        return 0.0;
-    }
-    let min_ev = blit_params.lut_shaper.y;
-    let max_ev = blit_params.lut_shaper.z;
-    let min_linear = exp2(min_ev);
-    if value < min_linear {
-        // Preserve shadow gradation between exact black (cell 0) and the
-        // first logarithmic sample (cell 1).
-        return (value / min_linear) / (size - 1.0);
-    }
-    let t = clamp((log2(value) - min_ev) / (max_ev - min_ev), 0.0, 1.0);
-    let grid_index = 1.0 + t * (size - 2.0);
-    return grid_index / (size - 1.0);
-}
-
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let dims = textureDimensions(pt_texture);
     let px = vec2<i32>(vec2<f32>(f32(dims.x), f32(dims.y)) * in.uv);
     let raw = textureLoad(pt_texture, px, 0).rgb;
+    if blit_params.exposure.w > 0.5 {
+        return vec4<f32>(raw, 1.0);
+    }
 
     // Stage 1 — physical-camera exposure (legacy lane, untouched). Manual
     // mode writes 1.0 so this is bit-exact passthrough.
@@ -291,16 +269,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             mapped = saturate(agx_filmic(scene));
         }
         case 6u: {
-            // Shaper-aware OCIO LUT contains display-linear Rec.709 light.
-            // The common transport encoding below preserves HDR headroom.
-            let lut_size = blit_params.lut_shaper.x;
-            let shaped = vec3<f32>(
-                lut_shaper_encode(scene.r),
-                lut_shaper_encode(scene.g),
-                lut_shaper_encode(scene.b),
-            );
-            let lut_uvw = (shaped * (lut_size - 1.0) + 0.5) / lut_size;
-            mapped = textureSample(lut_3d, lut_samp, lut_uvw).rgb;
+            // The exact OCIO processor, already adapted to the window canvas
+            // (`ColorPipeline::canvas_processor`): its output IS canvas-encoded,
+            // so it is returned as is — no second encode.
+            return vec4<f32>(ocio_transform(vec4<f32>(scene, 1.0)).rgb, 1.0);
         }
         default: { mapped = aces_filmic(scene); }               // AcesFilmic (default)
     }

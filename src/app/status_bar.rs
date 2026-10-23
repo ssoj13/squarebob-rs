@@ -239,12 +239,11 @@ impl App {
             .name("squarebob-gpu-mem-poller".to_string())
             .spawn(move || {
                 loop {
-                    if let Some(info) = gpu_mem::query() {
-                        if tx.send(info).is_err() {
+                    if let Some(info) = gpu_mem::query()
+                        && tx.send(info).is_err() {
                             // Receiver dropped — app shutting down.
                             break;
                         }
-                    }
                     std::thread::sleep(std::time::Duration::from_secs(2));
                 }
             })

@@ -151,8 +151,10 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
             1,
             0,
         );
-        let mut material = pt_core::GpuMaterial::default();
-        material.emission_color_weight = glam::Vec4::new(4.0, 1.0, 0.25, 1.0);
+        let material = pt_core::GpuMaterial {
+            emission_color_weight: glam::Vec4::new(4.0, 1.0, 0.25, 1.0),
+            ..pt_core::GpuMaterial::default()
+        };
         let instances = [instance];
         let bvh = pt_core::build_instance_bvh(&instances);
         let scene = pt_core::build_instance_gpu_data(&bvh, &instances, &[material]);
@@ -226,10 +228,12 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
             &ctx,
             &mut encoder,
             tracer.output_texture(),
-            WIDTH,
-            HEIGHT,
-            16,
-            "gpu-pt-smoke raw readback",
+            render_core::gpu::TextureReadbackLayout::new(
+                "gpu-pt-smoke raw readback",
+                WIDTH,
+                HEIGHT,
+                16,
+            )?,
             &mut raw_readback,
         )?;
         render_core::gpu::readback_texture(

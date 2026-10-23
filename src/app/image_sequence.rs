@@ -27,7 +27,7 @@ pub(super) struct FrozenRenderSession {
     pub(super) camera: OrbitCamera,
     pub(super) render_options: Arc<Render3DOptions>,
     pub(super) selected_ids: std::collections::HashSet<u32>,
-    pub(super) pipeline: color_pipeline::ColorPipeline,
+    pub(super) pipeline: render_color::ColorPipeline,
     pub(super) display_light: video_io::export::DisplayLight,
     pub(super) extent: (u32, u32),
     base_animation_time: f32,
@@ -229,10 +229,15 @@ impl App {
         let mut options = self.render_3d_opts.clone();
         if self.render_mode != RenderMode::Mode3D || !options.path_tracing {
             // PBR and 2D produce their own display canvas; OCIO is a PT display stage.
-            options.color_pipeline.mode = color_pipeline::ColorMode::BuiltIn;
+            options.color_pipeline.mode = render_color::ColorMode::BuiltIn;
         }
         let (pipeline, display_light) =
             freeze_output_pipeline(&mut options.color_pipeline, encoding, white_nits)?;
+        // The export renders for its FILE's encoding, not the monitor's.
+        options.canvas = render_shared::CanvasOutput {
+            hdr: encoding.hdr(),
+            white_nits,
+        };
         let animate = options.animate;
         let env_animate = options.env_animate;
         options.animate = false;
@@ -515,9 +520,7 @@ impl App {
         session
             .pipeline
             .validate_for_export(&session.render_options.color_pipeline)?;
-        renderer
-            .sync_color_lut(&mut session.pipeline)
-            .map_err(|error| error.to_string())?;
+        renderer.sync_color(&session.pipeline, &session.render_options)?;
         renderer.set_selected_ids(&session.selected_ids);
         renderer
             .render_to_view(
@@ -546,7 +549,7 @@ impl App {
                 .ok_or("Export session ended during render")?;
             if let Some(renderer) = &mut session.renderer_3d {
                 renderer
-                    .composite_overlay(source, &session.render_options, &session.pipeline)
+                    .composite_overlay(source, &session.render_options)
                     .map_err(|error| error.to_string())?;
             }
         }
@@ -680,7 +683,7 @@ impl App {
                 self.last_render_size = (0, 0);
             }
             self.color_pipeline =
-                color_pipeline::ColorPipeline::new(&self.render_3d_opts.color_pipeline);
+                render_color::ColorPipeline::new(&self.render_3d_opts.color_pipeline);
             if let Some(renderer) = &mut self.renderer_3d {
                 if self.render_3d_opts.env_map_enabled
                     && let Some(path) = &self.render_3d_opts.env_map_path
@@ -737,25 +740,37 @@ fn display_canvas_frame(
     Frame::display_light(width as usize, height as usize, light, kind, white_nits)
 }
 
+/// `canvas` (a `ColorPipeline::canvas_processor`) as display light relative to SDR white — what
+/// `measure_display_peak` reads: the processor's extended-sRGB canvas codes decoded exactly
+/// (`video_io::color::eotf`, the shared present pass's decode; no clipping).
+fn canvas_light(canvas: &render_color::vfx_ocio::Processor, pixels: &mut [[f32; 3]]) {
+    canvas.apply_rgb(pixels);
+    for pixel in pixels {
+        *pixel = pixel.map(video_io::color::eotf);
+    }
+}
+
+/// Resolve and freeze the export's colour: the requested OCIO view (or the output policy's
+/// choice) checked against the FILE's encoding, and its display-light kind. The caller renders
+/// with `CanvasOutput { hdr: encoding.hdr(), white_nits }`.
 fn freeze_output_pipeline(
-    settings: &mut color_pipeline::ColorPipelineSettings,
+    settings: &mut render_color::ColorPipelineSettings,
     encoding: video_io::export::PngEncoding,
     white_nits: f32,
 ) -> Result<
     (
-        color_pipeline::ColorPipeline,
+        render_color::ColorPipeline,
         video_io::export::DisplayLight,
     ),
     String,
 > {
-    use color_pipeline::vfx_ocio::Encoding;
-    use color_pipeline::{ColorMode, ColorPipeline};
+    use render_color::vfx_ocio::Encoding;
+    use render_color::{ColorMode, ColorPipeline};
     use video_io::output_view::{OutputKind, OutputView, resolve_output_view};
     if !white_nits.is_finite() || white_nits <= 0.0 {
         return Err("Output reference white must be finite and positive".into());
     }
-    settings.output_hdr = encoding.hdr();
-    settings.reference_white_nits = white_nits;
+    let hdr = encoding.hdr();
     let mut pipeline = ColorPipeline::new(settings);
     if settings.mode == ColorMode::Ocio {
         if pipeline.active_config_source() != &settings.ocio_config {
@@ -820,8 +835,9 @@ fn freeze_output_pipeline(
                 probe_settings.ocio_view = view.to_owned();
                 let probe = ColorPipeline::new(&probe_settings);
                 probe.validate_for_export(&probe_settings).ok()?;
+                let canvas = probe.canvas_processor(hdr, white_nits).ok()?;
                 video_io::export::measure_display_peak(
-                    |pixels| probe.apply_cpu_to_surface_linear(pixels),
+                    |pixels| canvas_light(&canvas, pixels),
                     white_nits,
                 )
                 .ok()
@@ -833,15 +849,21 @@ fn freeze_output_pipeline(
         pipeline = ColorPipeline::new(settings);
     }
     pipeline.validate_for_export(settings)?;
-    let kind = if settings.mode == ColorMode::Ocio
-        && pipeline.output_encoding(&settings.ocio_display, &settings.ocio_view) == Encoding::Hdr
-    {
-        video_io::export::DisplayLight::Absolute {
-            peak_nits: video_io::export::measure_display_peak(
-                |pixels| pipeline.apply_cpu_to_surface_linear(pixels),
-                white_nits,
-            )
-            .map_err(|e| e.to_string())?,
+    let kind = if settings.mode == ColorMode::Ocio {
+        // The frames are rendered through this canvas processor: refuse now what cannot build.
+        let canvas = pipeline
+            .canvas_processor(hdr, white_nits)
+            .map_err(|e| e.to_string())?;
+        if pipeline.output_encoding(&settings.ocio_display, &settings.ocio_view) == Encoding::Hdr {
+            video_io::export::DisplayLight::Absolute {
+                peak_nits: video_io::export::measure_display_peak(
+                    |pixels| canvas_light(&canvas, pixels),
+                    white_nits,
+                )
+                .map_err(|e| e.to_string())?,
+            }
+        } else {
+            video_io::export::DisplayLight::Relative
         }
     } else {
         video_io::export::DisplayLight::Relative
@@ -854,10 +876,10 @@ fn freeze_output_pipeline(
 /// is PQ or HLG by its display's name (the ACES naming WarpBro follows: "PQ" / "ST2084" /
 /// "ST-2084", "HLG"); an HDR view on a display named neither is never chosen (`Data`).
 fn view_signal(
-    ocio: color_pipeline::vfx_ocio::Encoding,
+    ocio: render_color::vfx_ocio::Encoding,
     display: &str,
 ) -> video_io::output_view::ViewSignal {
-    use color_pipeline::vfx_ocio::Encoding;
+    use render_color::vfx_ocio::Encoding;
     use video_io::output_view::ViewSignal;
     match ocio {
         Encoding::Data => ViewSignal::Data,
@@ -1034,15 +1056,17 @@ mod tests {
         app.finish_render_input_frame();
         app.needs_layout = true;
         app.needs_render_3d = true;
-        app.render_3d_opts.color_pipeline.output_hdr = true;
-        app.render_3d_opts.color_pipeline.reference_white_nits = 1000.0;
+        app.render_3d_opts.canvas = render_shared::CanvasOutput {
+            hdr: true,
+            white_nits: 1000.0,
+        };
         app.encode_dialog.output_encoding = PngEncoding::Hlg;
         app.encode_dialog.white_nits = 700.0;
         assert!(!app.layout_dirty_for_frame());
         assert!(!app.render_dirty_for_frame());
-        let frozen = &app.render_options_for_frame().color_pipeline;
-        assert!(!frozen.output_hdr);
-        assert_eq!(frozen.reference_white_nits, 80.0);
+        let frozen = app.render_options_for_frame().canvas;
+        assert!(!frozen.hdr);
+        assert_eq!(frozen.white_nits, 80.0);
         app.finish_render_input_frame();
         assert!(app.needs_layout && app.needs_render_3d);
     }
@@ -1061,10 +1085,13 @@ mod tests {
         assert_eq!(options.env_time, 11.0);
     }
 
+    /// An SDR file never inherits an HDR preview view: the output policy resolves it to an SDR
+    /// view with relative light. The monitor cannot change this — `freeze_output_pipeline` is not
+    /// given the monitor's output at all (the export renders with its file's `CanvasOutput`).
     #[test]
-    fn sdr_output_resolves_an_hdr_preview_view_independently_of_monitor() {
-        let mut settings = color_pipeline::ColorPipelineSettings::default();
-        let config = color_pipeline::vfx_ocio::builtin::default_config();
+    fn sdr_output_resolves_an_hdr_preview_view() {
+        let mut settings = render_color::ColorPipelineSettings::default();
+        let config = render_color::vfx_ocio::builtin::default_config();
         let (display, view) = config
             .displays()
             .displays()
@@ -1076,45 +1103,41 @@ mod tests {
                     .find_map(|view| {
                         let colorspace =
                             config.colorspace(view.effective_colorspace(display.name()))?;
-                        (colorspace.encoding() == color_pipeline::vfx_ocio::Encoding::Hdr)
+                        (colorspace.encoding() == render_color::vfx_ocio::Encoding::Hdr)
                             .then(|| (display.name().to_owned(), view.name().to_owned()))
                     })
             })
             .expect("shipped ACES HDR view");
         settings.ocio_display = display;
         settings.ocio_view = view;
-        let mut resolved = Vec::new();
-        for monitor_hdr in [false, true] {
-            let mut frozen = settings.clone();
-            frozen.output_hdr = monitor_hdr;
-            frozen.reference_white_nits = if monitor_hdr { 1000.0 } else { 80.0 };
-            let (pipeline, kind) =
-                freeze_output_pipeline(&mut frozen, PngEncoding::Sdr8, 203.0).unwrap();
-            pipeline.validate_for_export(&frozen).unwrap();
-            assert_eq!(kind, DisplayLight::Relative);
-            assert!(!frozen.output_hdr);
-            assert_eq!(frozen.reference_white_nits, 203.0);
-            assert_ne!(
-                pipeline.output_encoding(&frozen.ocio_display, &frozen.ocio_view),
-                color_pipeline::vfx_ocio::Encoding::Hdr
-            );
-            resolved.push((frozen.ocio_display, frozen.ocio_view));
-        }
-        assert_eq!(resolved[0], resolved[1]);
+        let (pipeline, kind) =
+            freeze_output_pipeline(&mut settings, PngEncoding::Sdr8, 203.0).unwrap();
+        pipeline.validate_for_export(&settings).unwrap();
+        assert_eq!(kind, DisplayLight::Relative);
+        assert_ne!(
+            pipeline.output_encoding(&settings.ocio_display, &settings.ocio_view),
+            render_color::vfx_ocio::Encoding::Hdr
+        );
+        pipeline
+            .canvas_processor(false, 203.0)
+            .expect("the resolved view builds for an SDR canvas");
     }
 
     #[test]
     fn export_rejects_requested_config_and_custom_lut_fallbacks() {
-        let mut settings = color_pipeline::ColorPipelineSettings::default();
-        settings.ocio_config = color_pipeline::ConfigSource::External(
-            std::env::temp_dir().join(format!("squarebob-missing-{}.ocio", uuid::Uuid::new_v4())),
-        );
+        let mut settings = render_color::ColorPipelineSettings {
+            ocio_config: render_color::ConfigSource::External(
+                std::env::temp_dir()
+                    .join(format!("squarebob-missing-{}.ocio", uuid::Uuid::new_v4())),
+            ),
+            ..render_color::ColorPipelineSettings::default()
+        };
         let error = match freeze_output_pipeline(&mut settings, PngEncoding::Sdr8, 203.0) {
             Err(error) => error,
             Ok(_) => panic!("missing requested config was replaced silently"),
         };
         assert!(error.contains("could not be loaded"));
-        settings.ocio_config = color_pipeline::ConfigSource::BuiltIn;
+        settings.ocio_config = render_color::ConfigSource::BuiltIn;
         settings.ocio_custom_lut = Some(
             std::env::temp_dir().join(format!("squarebob-missing-{}.cube", uuid::Uuid::new_v4())),
         );
@@ -1122,7 +1145,7 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("missing requested LUT was replaced silently"),
         };
-        assert!(error.contains("Custom LUT"));
+        assert!(error.contains("custom LUT"), "{error}");
     }
 
     #[test]

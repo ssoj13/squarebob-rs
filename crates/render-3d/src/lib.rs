@@ -22,8 +22,10 @@ use std::sync::Arc;
 use pt_material::StandardSurfaceParams;
 use pt_mats::MaterialSource;
 use render_core::gpu::{self, GpuContext};
+use render_color::{ColorCodepath, ColorMode, ColorPipeline};
+use render_color_gpu::OcioShader;
 use render_shared::{
-    CameraUniform, CubeHeightMode, EnvParamsUniform, HoverMode, HoverParamsUniform,
+    CameraUniform, CanvasOutput, CubeHeightMode, EnvParamsUniform, HoverMode, HoverParamsUniform,
     LightRigUniform, OrbitCamera, Render3DOptions,
 };
 use squarebob_core::DirEntry;
@@ -37,6 +39,29 @@ use renderer3d::material_cache::{
 use targets::{DynamicBindGroups, RenderTargets};
 
 const DEFAULT_SCENE_LAYOUT_SIZE: (u32, u32) = (1024, 1024);
+
+/// What the display blit's colour is built from: one `ColorPipeline` revision on one window
+/// output. A change of either rebuilds the canvas processor and recompiles the blit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DisplayKey {
+    revision: u64,
+    ocio: bool,
+    output: CanvasOutput,
+}
+
+/// The display colour of the path tracer, cached per [`DisplayKey`] (see [`Renderer3D::sync_color`]).
+#[derive(Default)]
+pub(crate) struct DisplayColor {
+    /// The key `canvas` / `error` belong to; `None` before the first sync.
+    key: Option<DisplayKey>,
+    /// `ColorPipeline::canvas_processor` for the key's output: the live OCIO processor adapted to
+    /// the window canvas. The blit runs it exactly (GPU) or the CPU codepath applies it. `None` in
+    /// `BuiltIn` mode or when it could not be built.
+    canvas: Option<render_color::vfx_ocio::Processor>,
+    /// Why there is no usable display transform in OCIO mode (a view this output cannot show, a
+    /// transform the device cannot compile). Reported by the host; refused by an export.
+    error: Option<String>,
+}
 
 pub(crate) struct PtState {
     pub path_tracer: Option<pt_megakernel::PathTraceCompute>,
@@ -56,6 +81,9 @@ pub(crate) struct PtState {
     pub pt_snap_anim_time: f32,
     pub pt_last_anim_time: f32,
     pub pt_anim_log_frame: u64,
+    /// The [`DisplayKey`] whose transform `path_tracer`'s blit was compiled with; reset with the
+    /// path tracer, so a recreated one gets the current transform installed.
+    pub display_key: Option<DisplayKey>,
 }
 
 impl Default for PtState {
@@ -76,6 +104,7 @@ impl Default for PtState {
             pt_snap_anim_time: 0.0,
             pt_last_anim_time: 0.0,
             pt_anim_log_frame: 0,
+            display_key: None,
         }
     }
 }
@@ -139,6 +168,9 @@ pub struct Renderer3D {
 
     // Path tracer state (lazy init)
     pt: PtState,
+
+    /// The path tracer's display colour (OCIO canvas processor + its error).
+    color: DisplayColor,
 
     // Per-path classification cache; invalidated only on mat-settings change.
     mat_cache: MaterialCache,
@@ -208,6 +240,7 @@ impl Renderer3D {
     /// Drop PT resources and force re-init on next render.
     pub fn reset_path_tracer(&mut self) {
         self.pt.path_tracer = None;
+        self.pt.display_key = None;
         self.pt.pt_scene_dirty = true;
         self.pt.pt_env_dirty = true;
         self.pt.pt_samples_per_update = 1;
@@ -397,6 +430,7 @@ impl Renderer3D {
             cached_layout_size: (0, 0),
             scene_layout_size: None,
             selected_ids: std::collections::HashSet::new(),
+            color: DisplayColor::default(),
         }
     }
 
@@ -1188,7 +1222,6 @@ impl Renderer3D {
         &mut self,
         source: Option<&wgpu::Texture>,
         opts: &Render3DOptions,
-        pipeline: &color_pipeline::ColorPipeline,
     ) -> Result<(), render_core::ReadbackError> {
         if self.instance_count == 0 {
             return Ok(());
@@ -1199,21 +1232,27 @@ impl Renderer3D {
         let Some(pt) = self.pt.path_tracer.as_mut() else {
             return Ok(());
         };
-        let cpu = opts.color_pipeline.mode == color_pipeline::ColorMode::Ocio
-            && opts.color_pipeline.codepath == color_pipeline::ColorCodepath::Cpu;
+        let cpu = opts.color_pipeline.mode == ColorMode::Ocio
+            && opts.color_pipeline.codepath == ColorCodepath::Cpu;
+        // The CPU codepath runs the SAME canvas processor the GPU blit compiles, so both write
+        // canvas-encoded values. Without one (its error is reported by `sync_color`) the CPU path
+        // leaves exposed scene light and the blit encodes it, like the GPU's stand-in.
+        let canvas = self.color.canvas.as_ref().filter(|_| cpu);
         let view = if cpu {
             let exposure = opts.effective_exposure_multiplier();
             Some(pt.apply_cpu_color_in_place(&self.ctx, source, |pixels| {
                 for pixel in pixels.iter_mut() {
                     *pixel = pixel.map(|value| value * exposure);
                 }
-                pipeline.apply_cpu_to_surface_linear(pixels);
+                if let Some(canvas) = canvas {
+                    canvas.apply_rgb(pixels);
+                }
             })?)
         } else {
             source.map(|texture| texture.create_view(&Default::default()))
         };
         // Both raw PT and denoised sources follow the same display path.
-        // CPU processing already consumed camera exposure and produced display light.
+        // CPU processing already consumed camera exposure.
         pt.set_blit_exposure(
             &self.ctx.queue,
             if cpu {
@@ -1222,6 +1261,7 @@ impl Renderer3D {
                 opts.effective_exposure_multiplier()
             },
         );
+        pt.set_blit_source_encoded(&self.ctx.queue, canvas.is_some());
         let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
         pt.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
         let mut encoder = self
@@ -1244,32 +1284,74 @@ impl Renderer3D {
         Ok(())
     }
 
-    /// Push any pending baked OCIO LUT into the path tracer's blit
-    /// shader. Idempotent — `ColorPipeline::take_pending_lut` is the
-    /// one-shot signal, so calling this every frame is a hash compare
-    /// + early return when nothing changed.
-    ///
-    /// Must be invoked AFTER `color_pipeline::ColorPipeline::ensure`
-    /// — that's the call that re-bakes the LUT and arms the pending
-    /// flag.
-    pub fn sync_color_lut(
-        &self,
-        pipeline: &mut color_pipeline::ColorPipeline,
-    ) -> Result<(), pt_megakernel::BlitLutUploadError> {
-        let Some(pt) = self.pt.path_tracer.as_ref() else {
-            return Ok(());
+    /// Bring the path tracer's display colour in line with `pipeline` (call AFTER
+    /// `ColorPipeline::ensure`) on `opts.canvas`: the window-canvas processor is rebuilt when the
+    /// pipeline revision, the mode or the output changes, and the blit recompiled for it — a
+    /// compare-and-return on a steady frame. `Err` while OCIO mode has no usable display transform
+    /// (the picture is then the canvas encoding alone, never a stale transform); an export treats
+    /// it as fatal, the viewport reports it.
+    pub fn sync_color(
+        &mut self,
+        pipeline: &ColorPipeline,
+        opts: &Render3DOptions,
+    ) -> Result<(), String> {
+        let ocio = opts.color_pipeline.mode == ColorMode::Ocio;
+        let key = DisplayKey {
+            revision: pipeline.revision(),
+            ocio,
+            output: opts.canvas,
         };
-        if let Some(lut) = pipeline.pending_lut() {
-            pt.set_blit_lut_3d(
-                &self.ctx.queue,
-                &lut.data,
-                lut.size,
-                lut.shaper.min_ev,
-                lut.shaper.max_ev,
-            )?;
-            pipeline.mark_lut_uploaded();
+        if self.color.key != Some(key) {
+            let (canvas, error) = if ocio {
+                match pipeline.canvas_processor(key.output.hdr, key.output.white_nits) {
+                    Ok(canvas) => (Some(canvas), None),
+                    Err(error) => (None, Some(error.to_string())),
+                }
+            } else {
+                (None, None)
+            };
+            if let Some(error) = &error {
+                warn!("display colour: no OCIO canvas transform: {error}");
+            }
+            self.color = DisplayColor {
+                key: Some(key),
+                canvas,
+                error,
+            };
         }
-        Ok(())
+        self.install_display_transform();
+        self.color.error.clone().map_or(Ok(()), Err)
+    }
+
+    /// Why the display has no usable OCIO transform, if it has none in OCIO mode.
+    pub fn color_error(&self) -> Option<&str> {
+        self.color.error.as_deref()
+    }
+
+    /// Compile the cached canvas processor into the path tracer's blit, once per
+    /// [`DisplayKey`] and per path tracer (a lazily created or reset one gets it too).
+    pub(crate) fn install_display_transform(&mut self) {
+        let Some(pt) = self.pt.path_tracer.as_mut() else {
+            return;
+        };
+        if self.pt.display_key == self.color.key {
+            return;
+        }
+        self.pt.display_key = self.color.key;
+        let shader = self.color.canvas.as_ref().and_then(|canvas| {
+            OcioShader::new(
+                &self.ctx.device,
+                &self.ctx.queue,
+                canvas,
+                wgpu::ShaderStages::FRAGMENT,
+            )
+            .inspect_err(|error| {
+                warn!("display colour: OCIO transform not compiled: {error}");
+                self.color.error = Some(error.to_string());
+            })
+            .ok()
+        });
+        pt.set_display_transform(&self.ctx.device, shader);
     }
 
     fn pt_frame_count_impl(&self) -> u32 {
@@ -1308,10 +1390,7 @@ impl Renderer3D {
                 &self.ctx,
                 &mut encoder,
                 &targets.render_texture,
-                width,
-                height,
-                8,
-                "HDR Display Readback",
+                gpu::TextureReadbackLayout::new("HDR Display Readback", width, height, 8)?,
                 &mut self.readback,
             )?;
         } else {

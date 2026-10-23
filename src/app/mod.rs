@@ -63,13 +63,12 @@ impl App {
         let output = ctx
             .data(|d| d.get_temp::<soluwell_viewport::display::DisplayState>(soluwell_viewport::display::state_id()))
             .map(|state| (state.target.hdr, state.target.white));
-        if let Some((hdr, white)) = output {
-            let cp = &mut self.render_3d_opts.color_pipeline;
-            if cp.output_hdr != hdr || cp.reference_white_nits != white {
+        if let Some((hdr, white_nits)) = output {
+            let canvas = render_shared::CanvasOutput { hdr, white_nits };
+            if self.render_3d_opts.canvas != canvas {
+                self.render_3d_opts.canvas = canvas;
                 self.needs_render_3d = true;
             }
-            cp.output_hdr = hdr;
-            cp.reference_white_nits = white;
         }
     }
 
@@ -163,7 +162,7 @@ impl App {
 
     pub(super) fn render_3d_resources_mut(
         &mut self,
-    ) -> (Option<&mut Renderer3D>, &mut color_pipeline::ColorPipeline) {
+    ) -> (Option<&mut Renderer3D>, &mut render_color::ColorPipeline) {
         match &mut self.encode_render_session {
             Some(session) => (session.renderer_3d.as_mut(), &mut session.pipeline),
             None => (self.renderer_3d.as_mut(), &mut self.color_pipeline),

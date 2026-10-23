@@ -6,6 +6,19 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-10-23 — exact OCIO display, shared render-color
+- **Removed** `crates/color-pipeline`, squarebob's own copy of the colour pipeline. The app uses
+  render-rs `render-color` (the policy every cglibs viewer shares) and `render-color-gpu`.
+  `ConfigSource::Bundled` (a legacy preset variant) is gone; `output_hdr` / `reference_white_nits`
+  left the persisted settings for the runtime `Render3DOptions::canvas` (`CanvasOutput`).
+- **Changed** the path-tracer display: the OCIO lane (tag 6) runs the canvas processor as
+  vfx-ocio's exact WGSL (`OcioShader`, groups 1/2 of the blit) instead of a log-shaped 33³ baked
+  LUT — no interpolation error, no clipping above +15 EV, black exact. The CPU codepath applies the
+  SAME canvas processor and the blit passes its codes through (`exposure.w` = source encoded)
+  instead of decoding them back with a [0, 1] clamp. `Renderer3D::sync_color` replaces
+  `sync_color_lut`; `PathTraceCompute::set_display_transform` replaces `set_blit_lut_3d`.
+- `display_blit_probe` checks the GPU OCIO lane against the CPU processor on a real device.
+
 ## 2026-10-06 — phosphor icons, attr-grid
 - UI icons through `egui_widgets_config::icons` (phosphor) instead of Unicode glyphs; removed
   egui-widgets crates (`egui-attr-table` / `egui-attr` / `egui-vector`) replaced by `egui-attr-grid`;

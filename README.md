@@ -383,8 +383,8 @@ Required GitHub secrets for signed macOS release builds:
 |   |-- squarebob-widgets        Shared widgets
 |   |-- pt-material              PT material types
 |   |-- playa-ae                 Composition engine
-|   |-- egui-colorpicker         Color picker
-|   `-- color-pipeline           OCIO/display color pipeline
+|   `-- egui-colorpicker         Color picker
+|   (display colour: render-rs `render-color` + `render-color-gpu`, exact OCIO in the PT blit)
 |-- docs/                        Historical design and integration plans
 |-- data/                        Screenshots and bundled factory render preset
 |-- bootstrap.py                 Cross-platform local helper script

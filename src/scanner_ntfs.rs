@@ -151,7 +151,7 @@ pub(crate) fn run_ntfs(
             ScanOutcome::Failed(format!("NTFS scan failed: {error:#}"))
         }
     };
-    let _ = terminal_tx.send(ScanMsg::Terminal(outcome));
+    let _ = terminal_tx.send(ScanMsg::Terminal(Box::new(outcome)));
 }
 
 #[cfg(all(test, windows))]
