@@ -1148,6 +1148,27 @@ mod tests {
         assert!(error.contains("custom LUT"), "{error}");
     }
 
+    /// A preset naming a display or view the config lacks stops the export with that name; it
+    /// is never rendered through the config's default view (the preview's fallback).
+    #[test]
+    fn export_rejects_a_stale_display_or_view() {
+        for (display, view) in [
+            ("sRGB - Display", "No Such View"),
+            ("No Such Display", "ACES 2.0 - SDR 100 nits (Rec.709)"),
+        ] {
+            let mut settings = render_color::ColorPipelineSettings {
+                ocio_display: display.into(),
+                ocio_view: view.into(),
+                ..render_color::ColorPipelineSettings::default()
+            };
+            let error = match freeze_output_pipeline(&mut settings, PngEncoding::Sdr8, 203.0) {
+                Err(error) => error,
+                Ok(_) => panic!("{display}/{view} was replaced silently"),
+            };
+            assert!(error.contains("No Such"), "{error}");
+        }
+    }
+
     #[test]
     fn uncaptured_gpu_error_reaches_pending_source_request_and_blocks_further_render() {
         let mut app = author_scene();
