@@ -40,12 +40,15 @@ use targets::{DynamicBindGroups, RenderTargets};
 
 const DEFAULT_SCENE_LAYOUT_SIZE: (u32, u32) = (1024, 1024);
 
-/// What the display blit's colour is built from: one `ColorPipeline` revision on one window
-/// output. A change of either rebuilds the canvas processor and recompiles the blit.
+/// What the display blit's colour is built from: one `ColorPipeline` revision (and whether its
+/// last build failed) on one window output, run by the GPU blit or the CPU codepath. A change of
+/// any rebuilds the canvas processor and recompiles the blit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DisplayKey {
     revision: u64,
+    failed: bool,
     ocio: bool,
+    gpu: bool,
     output: CanvasOutput,
 }
 
@@ -58,8 +61,12 @@ pub(crate) struct DisplayColor {
     /// the window canvas. The blit runs it exactly (GPU) or the CPU codepath applies it. `None` in
     /// `BuiltIn` mode or when it could not be built.
     canvas: Option<render_color::vfx_ocio::Processor>,
-    /// Why there is no usable display transform in OCIO mode (a view this output cannot show, a
-    /// transform the device cannot compile). Reported by the host; refused by an export.
+    /// `canvas` compiled for the blit's fragment stage, built with it in `sync_color` (only for the
+    /// GPU codepath) and installed into every path tracer, including one created later.
+    shader: Option<Arc<OcioShader>>,
+    /// Why there is no usable display transform in OCIO mode (a failed pipeline build, a view this
+    /// output cannot show, a transform the device cannot compile). Reported by the host; refused by
+    /// an export.
     error: Option<String>,
 }
 
@@ -1285,11 +1292,14 @@ impl Renderer3D {
     }
 
     /// Bring the path tracer's display colour in line with `pipeline` (call AFTER
-    /// `ColorPipeline::ensure`) on `opts.canvas`: the window-canvas processor is rebuilt when the
-    /// pipeline revision, the mode or the output changes, and the blit recompiled for it — a
-    /// compare-and-return on a steady frame. `Err` while OCIO mode has no usable display transform
-    /// (the picture is then the canvas encoding alone, never a stale transform); an export treats
-    /// it as fatal, the viewport reports it.
+    /// `ColorPipeline::ensure`) on `opts.canvas`: the window-canvas processor is rebuilt, and for
+    /// the GPU codepath compiled, when the pipeline revision or build outcome, the mode, the
+    /// codepath or the output changes — a compare-and-return on a steady frame. `Ok` means the
+    /// transform is ready to run even before a path tracer exists (one created later gets the same
+    /// compiled shader). `Err` while OCIO mode has no usable display transform (a failed pipeline
+    /// build, a view this output cannot show, a transform the device cannot compile): the picture is
+    /// then the canvas encoding alone, never a stale transform; an export treats it as fatal, the
+    /// viewport reports it.
     pub fn sync_color(
         &mut self,
         pipeline: &ColorPipeline,
@@ -1298,29 +1308,67 @@ impl Renderer3D {
         let ocio = opts.color_pipeline.mode == ColorMode::Ocio;
         let key = DisplayKey {
             revision: pipeline.revision(),
+            failed: pipeline.error().is_some(),
             ocio,
+            gpu: opts.color_pipeline.codepath != ColorCodepath::Cpu,
             output: opts.canvas,
         };
         if self.color.key != Some(key) {
-            let (canvas, error) = if ocio {
-                match pipeline.canvas_processor(key.output.hdr, key.output.white_nits) {
-                    Ok(canvas) => (Some(canvas), None),
-                    Err(error) => (None, Some(error.to_string())),
-                }
+            self.color = if ocio {
+                self.build_display_color(key, pipeline)
             } else {
-                (None, None)
+                DisplayColor {
+                    key: Some(key),
+                    ..DisplayColor::default()
+                }
             };
-            if let Some(error) = &error {
-                warn!("display colour: no OCIO canvas transform: {error}");
+            if let Some(error) = &self.color.error {
+                warn!("display colour: no OCIO display transform: {error}");
             }
-            self.color = DisplayColor {
-                key: Some(key),
-                canvas,
-                error,
-            };
         }
         self.install_display_transform();
         self.color.error.clone().map_or(Ok(()), Err)
+    }
+
+    /// The OCIO-mode display colour for `key`: the canvas processor and, for the GPU codepath, its
+    /// compiled blit shader; the first failure is the error and leaves no transform.
+    fn build_display_color(&self, key: DisplayKey, pipeline: &ColorPipeline) -> DisplayColor {
+        let built = pipeline
+            .error()
+            .map_or(Ok(()), |error| Err(error.to_owned()))
+            .and_then(|()| {
+                pipeline
+                    .canvas_processor(key.output.hdr, key.output.white_nits)
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|canvas| {
+                let shader = if key.gpu {
+                    let shader = OcioShader::new(
+                        &self.ctx.device,
+                        &self.ctx.queue,
+                        &canvas,
+                        wgpu::ShaderStages::FRAGMENT,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    Some(Arc::new(shader))
+                } else {
+                    None
+                };
+                Ok((canvas, shader))
+            });
+        match built {
+            Ok((canvas, shader)) => DisplayColor {
+                key: Some(key),
+                canvas: Some(canvas),
+                shader,
+                error: None,
+            },
+            Err(error) => DisplayColor {
+                key: Some(key),
+                error: Some(error),
+                ..DisplayColor::default()
+            },
+        }
     }
 
     /// Why the display has no usable OCIO transform, if it has none in OCIO mode.
@@ -1328,7 +1376,7 @@ impl Renderer3D {
         self.color.error.as_deref()
     }
 
-    /// Compile the cached canvas processor into the path tracer's blit, once per
+    /// Install the shader `sync_color` compiled into the path tracer's blit, once per
     /// [`DisplayKey`] and per path tracer (a lazily created or reset one gets it too).
     pub(crate) fn install_display_transform(&mut self) {
         let Some(pt) = self.pt.path_tracer.as_mut() else {
@@ -1338,20 +1386,7 @@ impl Renderer3D {
             return;
         }
         self.pt.display_key = self.color.key;
-        let shader = self.color.canvas.as_ref().and_then(|canvas| {
-            OcioShader::new(
-                &self.ctx.device,
-                &self.ctx.queue,
-                canvas,
-                wgpu::ShaderStages::FRAGMENT,
-            )
-            .inspect_err(|error| {
-                warn!("display colour: OCIO transform not compiled: {error}");
-                self.color.error = Some(error.to_string());
-            })
-            .ok()
-        });
-        pt.set_display_transform(&self.ctx.device, shader);
+        pt.set_display_transform(&self.ctx.device, self.color.shader.clone());
     }
 
     fn pt_frame_count_impl(&self) -> u32 {

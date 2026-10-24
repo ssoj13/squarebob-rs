@@ -1119,7 +1119,6 @@ pub enum EncodeStage {
     Encoding,   // Encoding frames
     Flushing,   // Flushing encoder
     Complete,   // Successfully finished
-    #[allow(dead_code)] // Used in ui_encode.rs pattern matching
     Error(String), // Failed with error
 }
 

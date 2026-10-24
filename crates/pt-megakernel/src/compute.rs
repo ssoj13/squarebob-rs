@@ -21,6 +21,7 @@ use pt_wavefront::{
     WavefrontPipeline, WfDims, pack_tile_slots,
 };
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 /// WGSL `Params` struct size for wavefront gbuffer (mirrors `GBufferParams`).
 const GBUFFER_PARAMS_SIZE: u64 = 160;
@@ -718,8 +719,9 @@ pub struct PathTraceCompute {
     /// The blit target format, kept to recompile the pipeline when the display transform changes.
     blit_format: wgpu::TextureFormat,
     /// The OCIO processor the blit's OCIO lane runs exactly ([`Self::set_display_transform`]);
-    /// `None` = [`NO_OCIO_WGSL`]. Owns the bind groups 1/2 the pipeline was compiled against.
-    display_ocio: Option<OcioShader>,
+    /// `None` = [`NO_OCIO_WGSL`]. Holds the bind groups 1/2 the pipeline was compiled against;
+    /// shared, so the host compiles it once and installs it into every tracer it creates.
+    display_ocio: Option<Arc<OcioShader>>,
     cpu_color_readback: render_core::gpu::TextureReadback,
     /// Display-light scratch; raw PT and denoiser textures are never color-transformed.
     cpu_color_output: Option<wgpu::Texture>,
@@ -5103,12 +5105,12 @@ impl PathTraceCompute {
     /// LUT, so no interpolation error, no domain clamp, black exact); `None` installs
     /// [`NO_OCIO_WGSL`] (canvas encoding only). Recompiles the blit pipeline, so call it when the
     /// processor changes, not per frame.
-    pub fn set_display_transform(&mut self, device: &wgpu::Device, ocio: Option<OcioShader>) {
+    pub fn set_display_transform(&mut self, device: &wgpu::Device, ocio: Option<Arc<OcioShader>>) {
         self.blit_pipeline = make_blit_pipeline(
             device,
             &self.blit_bind_group_layout,
             self.blit_format,
-            ocio.as_ref(),
+            ocio.as_deref(),
         );
         self.display_ocio = ocio;
     }
@@ -5313,7 +5315,7 @@ impl PathTraceCompute {
         });
         pass.set_pipeline(&self.blit_pipeline);
         pass.set_bind_group(0, bg, &[]);
-        for (group, _, ocio_bg) in self.display_ocio.iter().flat_map(OcioShader::groups) {
+        for (group, _, ocio_bg) in self.display_ocio.iter().flat_map(|ocio| ocio.groups()) {
             pass.set_bind_group(group, ocio_bg, &[]);
         }
         pass.draw(0..3, 0..1);

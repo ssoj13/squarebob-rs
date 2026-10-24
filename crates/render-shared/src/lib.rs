@@ -868,15 +868,17 @@ impl Render3DOptions {
         (self.color_pipeline.resolved_tonemap_tag(), 0.0, 1.0, 0.0)
     }
 
-    /// Scene-linear exposure multiplier applied at display + as the
-    /// OIDN `input_scale` override. `1.0` in `Manual` mode so the
-    /// existing autoexposure / display behaviour is preserved bit-
-    /// exactly.
+    /// Scene-linear exposure multiplier applied at display + as the OIDN `input_scale` override:
+    /// the physical camera's (`1.0` in `Manual` mode) times the colour pipeline's pre-display
+    /// gain `2^color_pipeline.exposure` (render-color's contract for that field: applied before the
+    /// display transform; `0` EV, the default, is `1.0`). ONE value, so the GPU blit, the CPU
+    /// colour path and the denoiser never disagree.
     pub fn effective_exposure_multiplier(&self) -> f32 {
-        match self.pt_camera_type {
+        let camera = match self.pt_camera_type {
             CameraType::Manual => 1.0,
             CameraType::Physical => self.pt_physical_camera.exposure_multiplier(),
-        }
+        };
+        camera * self.color_pipeline.exposure.exp2()
     }
 }
 

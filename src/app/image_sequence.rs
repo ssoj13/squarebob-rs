@@ -29,6 +29,8 @@ pub(super) struct FrozenRenderSession {
     pub(super) selected_ids: std::collections::HashSet<u32>,
     pub(super) pipeline: render_color::ColorPipeline,
     pub(super) display_light: video_io::export::DisplayLight,
+    /// [`FrozenOutput::notice`]: shown in the export dialog for this export.
+    pub(super) notice: Option<String>,
     pub(super) extent: (u32, u32),
     base_animation_time: f32,
     base_env_time: f32,
@@ -231,8 +233,11 @@ impl App {
             // PBR and 2D produce their own display canvas; OCIO is a PT display stage.
             options.color_pipeline.mode = render_color::ColorMode::BuiltIn;
         }
-        let (pipeline, display_light) =
-            freeze_output_pipeline(&mut options.color_pipeline, encoding, white_nits)?;
+        let FrozenOutput {
+            pipeline,
+            light: display_light,
+            notice,
+        } = freeze_output_pipeline(&mut options.color_pipeline, encoding, white_nits)?;
         // The export renders for its FILE's encoding, not the monitor's.
         options.canvas = render_shared::CanvasOutput {
             hdr: encoding.hdr(),
@@ -260,6 +265,7 @@ impl App {
             selected_ids: self.selected_3d_ids.clone(),
             pipeline,
             display_light,
+            notice,
             extent: self.last_render_size,
             base_animation_time: options.animation_time,
             base_env_time: options.env_time,
@@ -298,6 +304,8 @@ impl App {
         if width == 0 || height == 0 || self.encode_dialog.is_encoding() {
             return;
         }
+        // A notice belongs to one launch: the previous export's never outlives the next attempt.
+        self.encode_dialog.notice = None;
         let mut session =
             match self.freeze_encode_render_session(request.output_encoding, request.white_nits) {
                 Ok(session) => session,
@@ -326,6 +334,7 @@ impl App {
             .encode_dialog
             .start_encoding(&comp, &media_encoder::Project, request)
         {
+            self.encode_dialog.notice = session.notice.clone();
             session.renderer_3d = self.renderer_3d.take();
             session.renderer_2d = self.renderer_2d_gpu.take();
             self.encode_render_session = Some(session);
@@ -750,6 +759,15 @@ fn canvas_light(canvas: &render_color::vfx_ocio::Processor, pixels: &mut [[f32; 
     }
 }
 
+/// The colour an export is frozen to ([`freeze_output_pipeline`]).
+struct FrozenOutput {
+    pipeline: render_color::ColorPipeline,
+    light: video_io::export::DisplayLight,
+    /// Set when the chosen OCIO view cannot be written to the file and another one renders it
+    /// (`video_io::output_view::OutputChoice::note`): the export dialog must show it.
+    notice: Option<String>,
+}
+
 /// Resolve and freeze the export's colour: the requested OCIO view (or the output policy's
 /// choice) checked against the FILE's encoding, and its display-light kind. The caller renders
 /// with `CanvasOutput { hdr: encoding.hdr(), white_nits }`.
@@ -757,13 +775,7 @@ fn freeze_output_pipeline(
     settings: &mut render_color::ColorPipelineSettings,
     encoding: video_io::export::PngEncoding,
     white_nits: f32,
-) -> Result<
-    (
-        render_color::ColorPipeline,
-        video_io::export::DisplayLight,
-    ),
-    String,
-> {
+) -> Result<FrozenOutput, String> {
     use render_color::vfx_ocio::Encoding;
     use render_color::{ColorMode, ColorPipeline};
     use video_io::output_view::{OutputKind, OutputView, resolve_output_view};
@@ -772,13 +784,11 @@ fn freeze_output_pipeline(
     }
     let hdr = encoding.hdr();
     let mut pipeline = ColorPipeline::new(settings);
+    let mut notice = None;
     if settings.mode == ColorMode::Ocio {
-        if pipeline.active_config_source() != &settings.ocio_config {
-            return Err(format!(
-                "Requested OCIO config {:?} could not be loaded",
-                settings.ocio_config
-            ));
-        }
+        // The viewport's own transform first: a config that did not load, a name the config
+        // lacks or a failed build stops the export here, before any view is chosen for the file.
+        pipeline.validate_for_export(settings)?;
         // Every display/view with the OCIO encoding of its colour space, in config order.
         let views: Vec<_> = pipeline
             .available_displays()
@@ -802,30 +812,14 @@ fn freeze_output_pipeline(
                 signal: view_signal(*ocio, display),
             })
             .collect();
-        // Normalize empty OCIO selectors against the config's offered names,
-        // matching WarpBro's Ocio::resolve before applying its shared output policy.
-        let offered = |ocio: Encoding| encoding.hdr() || ocio != Encoding::Hdr;
-        let current_display = if settings.ocio_display.is_empty() {
-            views
-                .iter()
-                .find(|(_, _, ocio)| *ocio != Encoding::Data && offered(*ocio))
-                .map(|(display, _, _)| display.as_str())
-        } else {
-            Some(settings.ocio_display.as_str())
-        };
-        let current = current_display.and_then(|display| {
-            let view = if settings.ocio_view.is_empty() {
-                views
-                    .iter()
-                    .find(|(d, _, ocio)| d == display && offered(*ocio))
-                    .map(|(_, view, _)| view.as_str())
-            } else {
-                Some(settings.ocio_view.as_str())
-            };
-            view.map(|view| (display, view))
-        });
+        // The current choice is what the viewport shows for these settings (an empty selector is
+        // the config's default there), so the file is reported whenever it differs from it.
+        let shown = pipeline
+            .resolved_display_view()
+            .ok_or("the colour transform has no resolved display / view")?
+            .clone();
         let selected = resolve_output_view(
-            current,
+            Some((shown.display.as_str(), shown.view.as_str())),
             OutputKind::from(encoding),
             white_nits,
             &candidates,
@@ -844,12 +838,16 @@ fn freeze_output_pipeline(
             },
         )
         .map_err(|e| e.to_string())?;
-        settings.ocio_display = selected.display.to_owned();
-        settings.ocio_view = selected.view.to_owned();
+        notice = selected.note();
+        if let Some(notice) = &notice {
+            log::warn!("export colour: {notice}");
+        }
+        settings.ocio_display = selected.view.display.to_owned();
+        settings.ocio_view = selected.view.view.to_owned();
         pipeline = ColorPipeline::new(settings);
     }
     pipeline.validate_for_export(settings)?;
-    let kind = if settings.mode == ColorMode::Ocio {
+    let light = if settings.mode == ColorMode::Ocio {
         // The frames are rendered through this canvas processor: refuse now what cannot build.
         let canvas = pipeline
             .canvas_processor(hdr, white_nits)
@@ -868,13 +866,20 @@ fn freeze_output_pipeline(
     } else {
         video_io::export::DisplayLight::Relative
     };
-    Ok((pipeline, kind))
+    Ok(FrozenOutput {
+        pipeline,
+        light,
+        notice,
+    })
 }
 
 /// The output signal of an OCIO view, for `video_io`'s output-view choice: this host's OCIO
 /// adapter classifies it, because OCIO declares HDR views without telling PQ from HLG. An HDR view
 /// is PQ or HLG by its display's name (the ACES naming WarpBro follows: "PQ" / "ST2084" /
-/// "ST-2084", "HLG"); an HDR view on a display named neither is never chosen (`Data`).
+/// "ST-2084", "HLG"); an HDR view on a display named neither is never chosen (`Data`). Only an
+/// `sdr-video` view, or an untagged one (OCIO v1 configs), is SDR: an `edr-video` view (values
+/// above 1, e.g. the ACES configs' "Display P3 HDR - Display") or a linear/log one is not a signal
+/// an SDR file can hold, so it is never chosen either.
 fn view_signal(
     ocio: render_color::vfx_ocio::Encoding,
     display: &str,
@@ -882,7 +887,7 @@ fn view_signal(
     use render_color::vfx_ocio::Encoding;
     use video_io::output_view::ViewSignal;
     match ocio {
-        Encoding::Data => ViewSignal::Data,
+        Encoding::Sdr | Encoding::Unknown => ViewSignal::Sdr,
         Encoding::Hdr => {
             let name = display.to_ascii_uppercase();
             if name.contains("PQ") || name.contains("ST2084") || name.contains("ST-2084") {
@@ -893,7 +898,11 @@ fn view_signal(
                 ViewSignal::Data
             }
         }
-        _ => ViewSignal::Sdr,
+        Encoding::Edr
+        | Encoding::SceneLinear
+        | Encoding::DisplayLinear
+        | Encoding::Log
+        | Encoding::Data => ViewSignal::Data,
     }
 }
 
@@ -1108,12 +1117,19 @@ mod tests {
                     })
             })
             .expect("shipped ACES HDR view");
-        settings.ocio_display = display;
-        settings.ocio_view = view;
-        let (pipeline, kind) =
-            freeze_output_pipeline(&mut settings, PngEncoding::Sdr8, 203.0).unwrap();
+        settings.ocio_display = display.clone();
+        settings.ocio_view = view.clone();
+        let FrozenOutput {
+            pipeline,
+            light,
+            notice,
+        } = freeze_output_pipeline(&mut settings, PngEncoding::Sdr8, 203.0).unwrap();
         pipeline.validate_for_export(&settings).unwrap();
-        assert_eq!(kind, DisplayLight::Relative);
+        assert_eq!(light, DisplayLight::Relative);
+        let notice = notice.expect("the replaced HDR view is reported");
+        for name in [&display, &view, &settings.ocio_display, &settings.ocio_view] {
+            assert!(notice.contains(name.as_str()), "{notice} names {name}");
+        }
         assert_ne!(
             pipeline.output_encoding(&settings.ocio_display, &settings.ocio_view),
             render_color::vfx_ocio::Encoding::Hdr
@@ -1167,6 +1183,31 @@ mod tests {
             };
             assert!(error.contains("No Such"), "{error}");
         }
+    }
+
+    /// An `edr-video` view (values above 1) is no SDR signal: an SDR export replaces it with an
+    /// `sdr-video` view instead of clipping its highlights into 8 bits.
+    #[test]
+    fn sdr_export_replaces_an_edr_view() {
+        let mut settings = render_color::ColorPipelineSettings {
+            ocio_display: "Display P3 HDR - Display".into(),
+            ocio_view: "ACES 2.0 - SDR 100 nits (Rec.709)".into(),
+            ..render_color::ColorPipelineSettings::default()
+        };
+        let probe = render_color::ColorPipeline::new(&settings);
+        assert_eq!(
+            probe.output_encoding(&settings.ocio_display, &settings.ocio_view),
+            render_color::vfx_ocio::Encoding::Edr,
+            "the shipped config still tags this display edr-video"
+        );
+        let frozen = freeze_output_pipeline(&mut settings, PngEncoding::Sdr8, 203.0).unwrap();
+        assert!(frozen.notice.is_some(), "the replaced EDR view is reported");
+        let pipeline = frozen.pipeline;
+        assert_ne!(settings.ocio_display, "Display P3 HDR - Display");
+        assert_eq!(
+            pipeline.output_encoding(&settings.ocio_display, &settings.ocio_view),
+            render_color::vfx_ocio::Encoding::Sdr
+        );
     }
 
     #[test]

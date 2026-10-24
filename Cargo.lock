@@ -1651,7 +1651,7 @@ dependencies = [
 [[package]]
 name = "burn-device"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#ae0f9b5d471d2310ae38e0fb2311e3e2878aa8d5"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#1f500a430e81c0d35a0efe456abf3392b4914527"
 dependencies = [
  "burn",
  "cubecl-runtime",
@@ -3253,7 +3253,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 [[package]]
 name = "deflate-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 
 [[package]]
 name = "deflate64"
@@ -3992,7 +3992,7 @@ dependencies = [
 [[package]]
 name = "exr-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 dependencies = [
  "codec-simd",
  "deflate-rs",
@@ -4007,7 +4007,7 @@ dependencies = [
 [[package]]
 name = "exr-image"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 dependencies = [
  "exr-core",
  "image",
@@ -4016,7 +4016,7 @@ dependencies = [
 [[package]]
 name = "exv-codec"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 dependencies = [
  "codec-simd",
  "deflate-rs",
@@ -4031,7 +4031,7 @@ dependencies = [
 [[package]]
 name = "exv-format"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 dependencies = [
  "bytemuck",
  "exr-core",
@@ -4044,7 +4044,7 @@ dependencies = [
 [[package]]
 name = "exv-tile"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 dependencies = [
  "exv-format",
  "gpu-info-rs",
@@ -4054,7 +4054,7 @@ dependencies = [
 [[package]]
 name = "exv-video"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 dependencies = [
  "codec-simd",
  "exv-codec",
@@ -5129,7 +5129,7 @@ dependencies = [
 [[package]]
 name = "imath-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 
 [[package]]
 name = "imgref"
@@ -7358,7 +7358,7 @@ dependencies = [
 [[package]]
 name = "pt-denoise-oidn"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#ae0f9b5d471d2310ae38e0fb2311e3e2878aa8d5"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#1f500a430e81c0d35a0efe456abf3392b4914527"
 dependencies = [
  "anyhow",
  "burn",
@@ -7612,7 +7612,7 @@ checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 [[package]]
 name = "rans-rs"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#72cfe61a071aeba10350cc06dc439d205be39ce2"
+source = "git+ssh://git@github.com/ssoj13/exr-rs.git?branch=main#d78134b0c1d37cd329a0fb337439886697c476e9"
 
 [[package]]
 name = "rapidhash"
@@ -7850,7 +7850,7 @@ dependencies = [
 [[package]]
 name = "render-color"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#ae0f9b5d471d2310ae38e0fb2311e3e2878aa8d5"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#1f500a430e81c0d35a0efe456abf3392b4914527"
 dependencies = [
  "log",
  "serde",
@@ -7861,7 +7861,7 @@ dependencies = [
 [[package]]
 name = "render-color-gpu"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#ae0f9b5d471d2310ae38e0fb2311e3e2878aa8d5"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#1f500a430e81c0d35a0efe456abf3392b4914527"
 dependencies = [
  "bytemuck",
  "render-color",
@@ -9837,7 +9837,7 @@ dependencies = [
 [[package]]
 name = "video-io"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/video-io-rs.git?branch=main#ca041bd6de77fac38782cbe0aa72f56882dd8d24"
+source = "git+ssh://git@github.com/ssoj13/video-io-rs.git?branch=main#a8c77c8bec1e9c7a312b0fa69325f49fbc65a257"
 dependencies = [
  "av-codec",
  "av-codec-core",

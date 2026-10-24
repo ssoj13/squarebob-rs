@@ -146,7 +146,7 @@ fn main() -> Result<()> {
             &canvas,
             wgpu::ShaderStages::FRAGMENT,
         )?;
-        tracer.set_display_transform(&ctx.device, Some(shader));
+        tracer.set_display_transform(&ctx.device, Some(std::sync::Arc::new(shader)));
         tracer.set_blit_exposure(&ctx.queue, 2.0);
         tracer.set_blit_color(&ctx.queue, render_color::OCIO_TAG, 0.0, 1.0, 0.0);
         tracer.set_blit_source_encoded(&ctx.queue, false);

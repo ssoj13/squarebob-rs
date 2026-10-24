@@ -120,8 +120,14 @@ pub struct EncodeDialog {
     /// Per-codec settings
     pub codec_settings: CodecSettings,
 
-    /// Current encoding progress.
+    /// Current encoding progress. Kept after the generation ends, so its terminal `Complete` or
+    /// `Error` stays on screen until the next launch.
     pub progress: Option<EncodeProgress>,
+
+    /// What the host must tell the user about the current export, set at launch (e.g. the OCIO
+    /// view it renders through replaced the chosen one, `video_io::output_view::OutputChoice::note`).
+    /// Shown under the progress line until the next launch replaces it.
+    pub notice: Option<String>,
 
     /// Single owner for the worker, progress receiver, generation, and cancellation token.
     lifecycle: EncodeLifecycle,
@@ -304,6 +310,7 @@ impl EncodeDialog {
             selected_codec: settings.selected_codec,
             codec_settings: settings.codec_settings.clone(),
             progress: None,
+            notice: None,
             lifecycle: EncodeLifecycle::Idle(EncodeSessionToken::new(1)),
             progress_bar: ProgressBar::new(400.0, 20.0),
             tonemap_mode: settings.tonemap_mode,
@@ -975,9 +982,20 @@ impl EncodeDialog {
                     self.progress_bar.render(ui);
                 }
             } else {
-                // Idle: keep the slot occupied (label + bar) so the
-                // section height doesn't jump when encoding starts.
-                ui.label("Ready to encode");
+                // Idle: keep the slot occupied (label + bar) so the section height doesn't jump
+                // when encoding starts. The last generation's outcome stays readable here: a
+                // refused launch or a failed export never runs, so this is where its error shows.
+                match self.progress.as_ref().map(|progress| &progress.stage) {
+                    Some(EncodeStage::Error(msg)) => {
+                        ui.colored_label(ui.visuals().error_fg_color, msg);
+                    }
+                    Some(EncodeStage::Complete) => {
+                        ui.label("Complete!");
+                    }
+                    _ => {
+                        ui.label("Ready to encode");
+                    }
+                }
                 let planned_total = active_comp
                     .map(|c| {
                         let (s, e) = c.play_range(true);
@@ -986,6 +1004,9 @@ impl EncodeDialog {
                     .unwrap_or(0);
                 self.progress_bar.set_progress(0, planned_total);
                 self.progress_bar.render(ui);
+            }
+            if let Some(notice) = &self.notice {
+                ui.colored_label(ui.visuals().warn_fg_color, notice);
             }
 
             ui.separator();
