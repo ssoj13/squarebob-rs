@@ -101,6 +101,17 @@ impl BindGroupLayouts {
                         count: None,
                     },
                     uniform_entry(3, f), // Global mat params (materialize_mix)
+                    // Selected IDs - storage buffer (for single-pass MRT object_id output)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             }),
             env: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -118,7 +129,7 @@ impl BindGroupLayouts {
                     // Selected IDs - storage buffer (unlimited size)
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::VERTEX,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
@@ -172,15 +183,39 @@ struct CubePipelineConfig<'a> {
     format: wgpu::TextureFormat,
     blend: Option<wgpu::BlendState>,
     cull: Option<wgpu::Face>,
+    topology: wgpu::PrimitiveTopology,
     polygon_mode: wgpu::PolygonMode,
     depth_write: bool,
     depth_compare: wgpu::CompareFunction,
+    mrt_object_id: bool,
 }
 
 /// Create an instanced cube pipeline with given config
 fn create_cube_pipeline(device: &wgpu::Device, cfg: CubePipelineConfig) -> wgpu::RenderPipeline {
     // wgpu 30: VertexState.buffers is `&[Option<VertexBufferLayout>]`.
     let vtx_layouts = geometry::cube_vertex_layouts().map(Some);
+    let targets_mrt = [
+        Some(wgpu::ColorTargetState {
+            format: cfg.format,
+            blend: cfg.blend,
+            write_mask: wgpu::ColorWrites::ALL,
+        }),
+        Some(wgpu::ColorTargetState {
+            format: wgpu::TextureFormat::R32Uint,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        }),
+    ];
+    let targets_single = [Some(wgpu::ColorTargetState {
+        format: cfg.format,
+        blend: cfg.blend,
+        write_mask: wgpu::ColorWrites::ALL,
+    })];
+    let targets: &[Option<wgpu::ColorTargetState>] = if cfg.mrt_object_id {
+        &targets_mrt
+    } else {
+        &targets_single
+    };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(cfg.label),
         layout: Some(cfg.layout),
@@ -193,15 +228,11 @@ fn create_cube_pipeline(device: &wgpu::Device, cfg: CubePipelineConfig) -> wgpu:
         fragment: Some(wgpu::FragmentState {
             module: cfg.shader,
             entry_point: Some(cfg.fs_entry),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: cfg.format,
-                blend: cfg.blend,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets,
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
+            topology: cfg.topology,
             front_face: wgpu::FrontFace::Ccw,
             cull_mode: cfg.cull,
             polygon_mode: cfg.polygon_mode,
@@ -311,10 +342,12 @@ impl Pipelines {
                     fs_entry: "fs_main",
                     format: display_format,
                     blend: Some(wgpu::BlendState::REPLACE),
-                    cull: None, // TEMP: disabled culling for debugging
+                    cull: Some(wgpu::Face::Back),
+                    topology: wgpu::PrimitiveTopology::TriangleList,
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true,
                     depth_compare: wgpu::CompareFunction::Greater,
+                    mrt_object_id: true,
                 },
             ),
             pbr_double: create_cube_pipeline(
@@ -327,9 +360,11 @@ impl Pipelines {
                     format: display_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     cull: None,
+                    topology: wgpu::PrimitiveTopology::TriangleList,
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true,
                     depth_compare: wgpu::CompareFunction::Greater,
+                    mrt_object_id: true,
                 },
             ),
             wireframe: create_cube_pipeline(
@@ -342,9 +377,11 @@ impl Pipelines {
                     format: display_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     cull: None,
-                    polygon_mode: wgpu::PolygonMode::Line,
+                    topology: wgpu::PrimitiveTopology::LineList,
+                    polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true,
                     depth_compare: wgpu::CompareFunction::Greater,
+                    mrt_object_id: true,
                 },
             ),
             transparent: create_cube_pipeline(
@@ -353,13 +390,15 @@ impl Pipelines {
                     label: "Transparent",
                     layout: &pbr_layout,
                     shader: &pbr_shader,
-                    fs_entry: "fs_main",
+                    fs_entry: "fs_transparent",
                     format: display_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     cull: None,
+                    topology: wgpu::PrimitiveTopology::TriangleList,
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: false,
                     depth_compare: wgpu::CompareFunction::Greater,
+                    mrt_object_id: false,
                 },
             ),
             object_id: create_cube_pipeline(
@@ -372,9 +411,11 @@ impl Pipelines {
                     format: wgpu::TextureFormat::R32Uint,
                     blend: None,
                     cull: Some(wgpu::Face::Back),
+                    topology: wgpu::PrimitiveTopology::TriangleList,
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true, // Must write depth for proper occlusion (like alembic-rs)
                     depth_compare: wgpu::CompareFunction::GreaterEqual,
+                    mrt_object_id: false,
                 },
             ),
             object_id_double: create_cube_pipeline(
@@ -387,9 +428,11 @@ impl Pipelines {
                     format: wgpu::TextureFormat::R32Uint,
                     blend: None,
                     cull: None,
+                    topology: wgpu::PrimitiveTopology::TriangleList,
                     polygon_mode: wgpu::PolygonMode::Fill,
                     depth_write: true, // Must write depth for proper occlusion
                     depth_compare: wgpu::CompareFunction::GreaterEqual,
+                    mrt_object_id: false,
                 },
             ),
             outline: create_fullscreen_pipeline(

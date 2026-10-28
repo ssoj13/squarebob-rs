@@ -6,6 +6,7 @@
 const PI: f32 = 3.141592653589793;
 const PI_INV: f32 = 0.3183098861837907;
 const EPSILON: f32 = 1e-6;
+const SELECTED_BIT: u32 = 0x80000000u;
 
 // ============================================================================
 // Uniforms
@@ -51,6 +52,7 @@ struct GpuMaterial {
     opacity: vec4<f32>,                   // rgb=opacity (PT), a unused
     params1: vec4<f32>,                   // x=diff_rough, y=metal, z=spec_rough, w=spec_IOR
     params2: vec4<f32>,                   // x=spec_aniso, y=coat_rough, z=coat_IOR, w=visible
+    maps: vec4<f32>,                      // texture map indices (-1 = unbound); 160B stride matching StandardSurfaceParams
 };
 
 // Global material params shared by all instances — kept tiny so the materialize
@@ -64,10 +66,26 @@ struct MatGlobal {
     _pad2: f32,
 };
 
+struct SelectedIds {
+    count: u32,
+    ids: array<u32>,
+}
+
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> lights: LightRig;
 @group(0) @binding(2) var<storage, read> materials: array<GpuMaterial>;
 @group(0) @binding(3) var<uniform> mat_global: MatGlobal;
+@group(0) @binding(4) var<storage, read> selected: SelectedIds;
+
+fn is_selected(id: u32) -> bool {
+    let count = selected.count;
+    for (var i = 0u; i < count; i = i + 1u) {
+        if selected.ids[i] == id {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Environment map (equirectangular HDR)
 struct EnvParams {
@@ -220,12 +238,17 @@ fn vs_main(v: VertexInput, i: InstanceInput) -> VertexOutput {
     let wp = model * vec4<f32>(v.position, 1.0);
     let wn = normalize((model * vec4<f32>(v.normal, 0.0)).xyz);
 
+    var oid = i.object_id;
+    if oid != 0u && is_selected(oid) {
+        oid = oid | SELECTED_BIT;
+    }
+
     var out: VertexOutput;
     out.clip_position = camera.view_proj * wp;
     out.world_pos = wp.xyz;
     out.world_normal = wn;
     out.color = i.color;
-    out.object_id = i.object_id;
+    out.object_id = oid;
     out.material_id = i.material_id;
     return out;
 }
@@ -269,10 +292,12 @@ fn resolve_material(mat_id: u32, instance_color: vec3<f32>) -> ResolvedMat {
 // Forward PBR Fragment (main rendering path)
 // ============================================================================
 
-@fragment
-fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if slice_clip(in.world_pos) { discard; }
+struct PbrMrtOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) object_id: u32,
+}
 
+fn shade_pbr_color(in: VertexOutput, front: bool) -> vec4<f32> {
     let V = normalize(camera.position - in.world_pos);
 
     var N: vec3<f32>;
@@ -337,6 +362,18 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
     return vec4<f32>(display_encode(lit), alpha);
 }
 
+@fragment
+fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> PbrMrtOutput {
+    if slice_clip(in.world_pos) { discard; }
+    return PbrMrtOutput(shade_pbr_color(in, front), in.object_id);
+}
+
+@fragment
+fn fs_transparent(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if slice_clip(in.world_pos) { discard; }
+    return shade_pbr_color(in, front);
+}
+
 // ============================================================================
 // G-Buffer Fragment (deferred path)
 // ============================================================================
@@ -370,11 +407,11 @@ fn fs_gbuffer(in: VertexOutput, @builtin(front_facing) front: bool) -> GBufferOu
 // ============================================================================
 
 @fragment
-fn fs_wireframe(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_wireframe(in: VertexOutput) -> PbrMrtOutput {
     if slice_clip(in.world_pos) { discard; }
 
     // Wireframe stays per-instance-color tinted; library albedo not needed here.
     let mix_factor = clamp(in.color.a, 0.0, 1.0) * 0.4;
     let tint = mix(vec3<f32>(1.0, 1.0, 1.0), in.color.rgb, mix_factor);
-    return vec4<f32>(tint, 1.0);
+    return PbrMrtOutput(vec4<f32>(tint, 1.0), in.object_id);
 }

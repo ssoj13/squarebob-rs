@@ -248,7 +248,10 @@ fn push_rgba16f(data: &mut Vec<u8>, rgb: [f32; 3], alpha: f32) {
     }
 }
 
-#[allow(clippy::needless_range_loop)]
+#[expect(
+    clippy::needless_range_loop,
+    reason = "2D environment CDF row/column indexing uses explicit y/x coordinates for spherical sin(theta) weighting"
+)]
 fn build_env_cdfs(
     width: u32,
     height: u32,

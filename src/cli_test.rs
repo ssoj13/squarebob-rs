@@ -136,14 +136,21 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
     let queue = &ctx.queue;
     let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let smoke_result = (|| -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        let settle = |tracer: &mut pt_megakernel::PathTraceCompute| -> anyhow::Result<()> {
+            if tracer.pending() > 0 {
+                device.poll(wgpu::PollType::wait_indefinitely())?;
+            }
+            tracer.collect()?;
+            Ok(())
+        };
+
         let mut tracer = pt_megakernel::PathTraceCompute::new(
-            device,
-            queue,
+            &ctx.work_context,
             WIDTH,
             HEIGHT,
             wgpu::TextureFormat::Rgba8Unorm,
         )?;
-        tracer.samples = 4;
+        settle(&mut tracer)?;
 
         let instance = pt_core::Instance::from_cube(
             glam::Mat4::from_scale(glam::Vec3::splat(1.4)),
@@ -152,21 +159,20 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
             0,
         );
         let material = pt_core::GpuMaterial {
-            emission_color_weight: glam::Vec4::new(4.0, 1.0, 0.25, 1.0),
+            emission_color_weight: [4.0, 1.0, 0.25, 1.0],
             ..pt_core::GpuMaterial::default()
         };
         let instances = [instance];
-        let bvh = pt_core::build_instance_bvh(&instances);
-        let scene = pt_core::build_instance_gpu_data(&bvh, &instances, &[material]);
-        tracer.upload_scene(device, queue, &scene, Some(&instances))?;
+        let two_level = pt_core::pack_analytic_instances(&instances, &[material]);
+        tracer.upload_scene_two_level(&two_level)?;
+        settle(&mut tracer)?;
 
         let position = glam::Vec3::new(0.0, 0.0, 3.0);
         let view = glam::camera::rh::view::look_at_mat4(position, glam::Vec3::ZERO, glam::Vec3::Y);
         let projection =
             glam::camera::rh::proj::directx::perspective(45.0_f32.to_radians(), 1.0, 0.1, 100.0);
-        tracer.update_camera(
-            queue,
-            &pt_megakernel::PtCameraUniform {
+        tracer.configure(pt_megakernel::Configuration {
+            camera: Some(pt_megakernel::PtCameraUniform {
                 inv_view: view.inverse().to_cols_array_2d(),
                 inv_proj: projection.inverse().to_cols_array_2d(),
                 position: position.to_array(),
@@ -177,8 +183,7 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
                 dof_enabled: 0,
                 aperture: 0.0,
                 focus_distance: 3.0,
-                rr_enabled: 0,
-                _pad1: 0,
+                _pad1: [0; 2],
                 slice_enabled: 0.0,
                 slice_position: 0.0,
                 slice_invert: 0.0,
@@ -189,13 +194,19 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
                 spectral_samples: 1,
                 spectral_dispersion: 0,
                 sampler_mode: 0,
-                materialize_mix: 0.0,
-                _pad4: [0.0; 3],
-            },
-        );
-        tracer.set_restir_enabled(device, true, true)?;
-        tracer.set_adaptive_enabled(device, queue, true)?;
-        tracer.set_pathguide_enabled(device, true);
+                two_level: 1,
+                adaptive_enabled: 1,
+                adaptive_max_spp: 64,
+                _pad4: 0,
+            }),
+            max_samples: Some(4),
+            adaptive: Some(pt_megakernel::adaptive::AdaptiveConfig {
+                enabled: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })?;
+        settle(&mut tracer)?;
 
         let display = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gpu-pt-smoke display"),
@@ -214,20 +225,34 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
         let display_view = display.create_view(&wgpu::TextureViewDescriptor::default());
         let mut raw_readback = render_core::gpu::TextureReadback::default();
         let mut display_readback = render_core::gpu::TextureReadback::default();
+
+        let samples = tracer
+            .dispatch(1)?
+            .ok_or_else(|| anyhow::anyhow!("megakernel refused dispatch after scene upload"))?;
+        let _submission = tracer.submit(samples)?;
+        settle(&mut tracer)?;
+
+        let blit = render_3d::PtDisplayBlit::new(
+            device,
+            queue,
+            WIDTH,
+            HEIGHT,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu-pt-smoke encoder"),
         });
-
-        anyhow::ensure!(
-            tracer.dispatch(&mut encoder, queue),
-            "megakernel refused dispatch after scene upload"
+        blit.set_blit_exposure(queue, 1.0);
+        blit.blit_texture(
+            device,
+            &mut encoder,
+            &display_view,
+            tracer.output_texture_view_untracked(),
         );
-        tracer.set_blit_exposure(queue, 1.0);
-        tracer.blit(&mut encoder, &display_view);
         render_core::gpu::readback_texture_bytes(
             &ctx,
             &mut encoder,
-            tracer.output_texture(),
+            tracer.output_texture_untracked(),
             render_core::gpu::TextureReadbackLayout::new(
                 "gpu-pt-smoke raw readback",
                 WIDTH,

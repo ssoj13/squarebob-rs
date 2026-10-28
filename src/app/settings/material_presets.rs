@@ -106,7 +106,11 @@ pub fn factory_material_preset_bank() -> PresetBank {
 /// caller wants to push a preset into the bank without going
 /// through `StandardSurfaceParams`. Currently unused but kept as
 /// a stable extension point.
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    clippy::too_many_arguments,
+    reason = "preset helper takes all 9 StandardSurface lobes directly"
+)]
 pub fn make_attrs_from_lobes(
     base: Vec4,
     specular: Vec4,

@@ -711,7 +711,9 @@ impl App {
             // source (OIDN result if denoised, raw PT accumulator
             // otherwise) plus the outline overlay. No fresh PT sample.
             let source = if self.oidn_display_is_denoised {
-                self.oidn_denoiser.as_ref().map(|d| d.result_texture())
+                self.oidn_denoiser
+                    .as_ref()
+                    .map(|d| d.result_texture_untracked())
             } else {
                 None
             };
@@ -1223,7 +1225,9 @@ impl App {
                         .is_some_and(|instances| !instances.is_empty())
                 {
                     let source = if self.oidn_display_is_denoised {
-                        self.oidn_denoiser.as_ref().map(|d| d.result_texture())
+                        self.oidn_denoiser
+                            .as_ref()
+                            .map(|d| d.result_texture_untracked())
                     } else {
                         None
                     };
@@ -1607,13 +1611,10 @@ impl App {
         let albedo = r.pt_albedo_buffer().cloned();
         let normal = r.pt_normal_buffer().cloned();
         // render-rs's denoiser takes its own (burn-device) context over the same Arc'd wgpu handles.
-        let gpu_ctx = oidn_context(&gpu_ctx);
+        let oidn_ctx = oidn_context(&gpu_ctx);
 
         // Lazy build (or rebuild on resize).
-        let need_new = match &self.oidn_denoiser {
-            None => true,
-            Some(_d) => false, // resize() inside handles dims mismatch
-        };
+        let need_new = self.oidn_denoiser.is_none();
         if need_new {
             // External weights dir is optional now — `embed-hdr` on
             // `oidn-rs` bakes the HDR TZA blobs into the binary, so we
@@ -1630,13 +1631,32 @@ impl App {
                     None
                 }
             };
-            self.oidn_denoiser = Some(OidnDenoiser::new(&gpu_ctx, pt_w, pt_h, weights_dir));
+            match OidnDenoiser::new(&oidn_ctx, &gpu_ctx.work_context, pt_w, pt_h, weights_dir) {
+                Ok(d) => self.oidn_denoiser = Some(d),
+                Err(e) => {
+                    log::warn!("OIDN init failed: {e}");
+                    if let Some(session) = &mut self.encode_render_session {
+                        session.error = Some(format!("OIDN init failed: {e}"));
+                    }
+                    self.oidn_run_requested = false;
+                    self.oidn_display_is_denoised = false;
+                    return;
+                }
+            }
         }
 
         let Some(denoiser) = self.oidn_denoiser.as_mut() else {
             return;
         };
-        denoiser.resize(&gpu_ctx, pt_w, pt_h);
+        if let Err(e) = denoiser.resize(pt_w, pt_h) {
+            log::warn!("OIDN resize failed: {e}");
+            if let Some(session) = &mut self.encode_render_session {
+                session.error = Some(format!("OIDN resize failed: {e}"));
+            }
+            self.oidn_run_requested = false;
+            self.oidn_display_is_denoised = false;
+            return;
+        }
         // The denoiser is strict (a mode whose guides are missing is an error); the app chooses the richest mode its
         // buffers support, as its default preset (full AOVs with the wavefront PT off) has always behaved.
         let mode = effective_mode(map_mode(mode_opt), albedo.is_some(), normal.is_some());
@@ -1663,15 +1683,24 @@ impl App {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("oidn_denoise_encoder"),
             });
-        match denoiser.denoise(
-            &gpu_ctx,
-            encoder,
-            &output_tex,
-            albedo.as_ref(),
-            normal.as_ref(),
-            current_spp,
-        ) {
-            Ok(()) => {
+        let denoise_res = denoiser
+            .denoise(pt_denoise_oidn::DenoiseInput::TexturesUntracked {
+                encoder,
+                color: &output_tex,
+                albedo: albedo.as_ref(),
+                normal: normal.as_ref(),
+                samples: current_spp,
+            })
+            .map_err(|e| e.to_string())
+            .and_then(|_submission| {
+                gpu_ctx
+                    .device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .map_err(|e| format!("device poll failed during OIDN denoise: {e}"))?;
+                denoiser.collect().map_err(|e| e.to_string())
+            });
+        match denoise_res {
+            Ok(_) => {
                 self.oidn_last_latency_ms = denoiser.last_latency_ms();
                 self.oidn_denoised_this_accumulation = true;
                 self.oidn_run_requested = false;

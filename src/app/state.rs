@@ -419,7 +419,7 @@ pub struct App {
     /// for 50–200 ms per call. Off-load to its own thread, push
     /// `GpuMemInfo` updates through a channel, drain on each
     /// status-bar frame.
-    pub(super) gpu_info_rx: Option<crossbeam_channel::Receiver<gpu_mem::GpuMemInfo>>,
+    pub(super) gpu_info_rx: Option<crossbeam_channel::Receiver<gpu_mem::os::GpuMemInfo>>,
     pub(super) gpu_info_thread: Option<std::thread::JoinHandle<()>>,
     pub(super) wgpu_error_tx: crossbeam_channel::Sender<String>,
     pub(super) wgpu_error_rx: crossbeam_channel::Receiver<String>,

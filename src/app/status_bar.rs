@@ -234,12 +234,12 @@ impl App {
         if self.gpu_info_rx.is_some() {
             return;
         }
-        let (tx, rx) = crossbeam_channel::bounded::<gpu_mem::GpuMemInfo>(2);
+        let (tx, rx) = crossbeam_channel::bounded::<gpu_mem::os::GpuMemInfo>(2);
         let handle = std::thread::Builder::new()
             .name("squarebob-gpu-mem-poller".to_string())
             .spawn(move || {
                 loop {
-                    if let Some(info) = gpu_mem::query()
+                    if let Some(info) = gpu_mem::os::query()
                         && tx.send(info).is_err() {
                             // Receiver dropped — app shutting down.
                             break;

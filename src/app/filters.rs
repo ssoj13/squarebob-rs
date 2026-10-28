@@ -199,6 +199,10 @@ pub(super) fn count_files_outside_range(node: &DirEntry, min: u64, max: u64) -> 
         })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "LOD bucket builder accepts children, source entry, bounds, expanded set, kind, size, and file count"
+)]
 fn push_lod_bucket(
     children: &mut Vec<DirEntry>,
     src: &DirEntry,

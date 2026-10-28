@@ -2039,6 +2039,10 @@ fn write_tga_frame(
 ///
 /// Exports frames from comp to individual image files.
 /// Supports EXR, PNG, JPEG, TIFF, TGA formats.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "image sequence encoder entry point accepts comp, project, path, settings, encoding, nits, progress, and cancel flag"
+)]
 pub fn encode_image_sequence(
     comp: &Comp,
     _project: &crate::source::Project,

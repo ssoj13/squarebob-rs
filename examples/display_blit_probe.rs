@@ -14,16 +14,26 @@ fn main() -> Result<()> {
     let result = (|| -> Result<Vec<f32>> {
         // This constructs the real PBR/skybox/outline/wireframe pipelines.
         let _renderer = render_3d::Renderer3D::new(ctx.clone());
-        let mut tracer = pt_megakernel::PathTraceCompute::new(
+        let mut _tracer = pt_megakernel::PathTraceCompute::new(
+            &ctx.work_context,
+            4,
+            1,
+            DISPLAY_TEXTURE_FORMAT,
+        )?;
+        if _tracer.pending() > 0 {
+            ctx.device.poll(wgpu::PollType::wait_indefinitely())?;
+        }
+        _tracer.collect()?;
+        let mut blit = render_3d::PtDisplayBlit::new(
             &ctx.device,
             &ctx.queue,
             4,
             1,
             DISPLAY_TEXTURE_FORMAT,
-        )?;
-        tracer.set_blit_exposure(&ctx.queue, 1.0);
-        tracer.set_blit_odt_tag(&ctx.queue, 0);
-        tracer.set_blit_color(&ctx.queue, 0, 0.0, 1.0, 0.0);
+        );
+        blit.set_blit_exposure(&ctx.queue, 1.0);
+        blit.set_blit_odt_tag(&ctx.queue, 0);
+        blit.set_blit_color(&ctx.queue, 0, 0.0, 1.0, 0.0);
         let source = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frozen display blit input"),
             size: wgpu::Extent3d {
@@ -31,6 +41,18 @@ fn main() -> Result<()> {
                 height: 1,
                 depth_or_array_layers: 1,
             },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let pt_output = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("frozen pt output input"),
+            size: source.size(),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -70,11 +92,11 @@ fn main() -> Result<()> {
             view_formats: &[],
         });
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
-        tracer.blit_with_source(
+        blit.blit_texture(
             &ctx.device,
             &mut encoder,
             &target.create_view(&Default::default()),
-            Some(&source.create_view(&Default::default())),
+            &source.create_view(&Default::default()),
         );
         let mut staging = TextureReadback::default();
         readback_texture_bytes(
@@ -94,7 +116,7 @@ fn main() -> Result<()> {
         // Both PT and OIDN source contracts are immutable scene-linear RGBA32F.
         ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: tracer.output_texture(),
+                texture: &pt_output,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -146,16 +168,16 @@ fn main() -> Result<()> {
             &canvas,
             wgpu::ShaderStages::FRAGMENT,
         )?;
-        tracer.set_display_transform(&ctx.device, Some(std::sync::Arc::new(shader)));
-        tracer.set_blit_exposure(&ctx.queue, 2.0);
-        tracer.set_blit_color(&ctx.queue, render_color::OCIO_TAG, 0.0, 1.0, 0.0);
-        tracer.set_blit_source_encoded(&ctx.queue, false);
+        blit.set_display_transform(&ctx.device, Some(std::sync::Arc::new(shader)));
+        blit.set_blit_exposure(&ctx.queue, 2.0);
+        blit.set_blit_color(&ctx.queue, render_color::OCIO_TAG, 0.0, 1.0, 0.0);
+        blit.set_blit_source_encoded(&ctx.queue, false);
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
-        tracer.blit_with_source(
+        blit.blit_texture(
             &ctx.device,
             &mut encoder,
             &target.create_view(&Default::default()),
-            Some(&source.create_view(&Default::default())),
+            &source.create_view(&Default::default()),
         );
         readback_texture_bytes(
             &ctx,
@@ -169,24 +191,25 @@ fn main() -> Result<()> {
         println!("gpu_ocio_lane_matches_cpu=true");
 
         // CPU: the same processor applied after readback; the blit passes its codes through.
-        tracer.set_blit_exposure(&ctx.queue, 1.0);
-        tracer.set_blit_color(&ctx.queue, 0, 0.0, 1.0, 0.0);
-        tracer.set_blit_source_encoded(&ctx.queue, true);
+        blit.set_blit_exposure(&ctx.queue, 1.0);
+        blit.set_blit_color(&ctx.queue, 0, 0.0, 1.0, 0.0);
+        blit.set_blit_source_encoded(&ctx.queue, true);
         let mut cpu_reference = None;
         for external in [true, true, false, false] {
+            let raw_input = if external { &source } else { &pt_output };
             let scratch =
-                tracer.apply_cpu_color_in_place(&ctx, external.then_some(&source), |pixels| {
+                blit.apply_cpu_color_in_place(&ctx, raw_input, |pixels| {
                     for pixel in pixels.iter_mut() {
                         *pixel = pixel.map(|value| value * 2.0);
                     }
                     canvas.apply_rgb(pixels);
                 })?;
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
-            tracer.blit_with_source(
+            blit.blit_texture(
                 &ctx.device,
                 &mut encoder,
                 &target.create_view(&Default::default()),
-                Some(&scratch),
+                &scratch,
             );
             readback_texture_bytes(
                 &ctx,
@@ -206,7 +229,7 @@ fn main() -> Result<()> {
                 cpu_reference = Some(cpu_bytes.clone());
             }
             check(&cpu_bytes, "CPU OCIO codepath vs CPU processor")?;
-            for raw_source in [&source, tracer.output_texture()] {
+            for raw_source in [&source, &pt_output] {
                 let mut encoder = ctx.device.create_command_encoder(&Default::default());
                 readback_texture_bytes(
                     &ctx,

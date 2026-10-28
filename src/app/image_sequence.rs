@@ -548,7 +548,7 @@ impl App {
             let source = if self.oidn_display_is_denoised {
                 self.oidn_denoiser
                     .as_ref()
-                    .map(|denoiser| denoiser.result_texture())
+                    .map(|denoiser| denoiser.result_texture_untracked())
             } else {
                 None
             };

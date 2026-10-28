@@ -367,24 +367,15 @@ Required GitHub secrets for signed macOS release builds:
 |-- crates/
 |   |-- squarebob-core             Shared tree/data structures
 |   |-- treemap                  2D treemap layout and GPU 2D renderer
-|   |-- render-core              Shared GPU context/readback utilities
+|   |-- render-core              Shared GPU context/readback utilities (`gpu-info-rs` `WorkContext`)
 |   |-- render-shared            Shared 3D options, camera, uniforms, visualization parameters
-|   |-- render-3d                3D renderer, picking, environment, path-tracing integration
-|   |-- pt-core                  Path tracing shared types
-|   |-- pt-mats                  Materials, palettes, and material classification
-|   |-- pt-megakernel            Megakernel path tracer compute backend
-|   |-- pt-wavefront             Wavefront path tracing infrastructure
-|   |-- bvh-gpu                  GPU BVH construction/refit
+|   |-- render-3d                3D renderer (MRT PBR, 12-edge wireframe, PT display blit, picking)
 |   |-- media-encoder            Reusable encode dialog and media export implementation
 |   |-- xtask                    Build/test/release automation
-|   |-- pt-denoise-oidn          OIDN integration
-|   |-- gpu-mem                  GPU memory utilities
-|   |-- standard-surface         Standard Surface shaders and material data
 |   |-- squarebob-widgets        Shared widgets
-|   |-- pt-material              PT material types
 |   |-- playa-ae                 Composition engine
 |   `-- egui-colorpicker         Color picker
-|   (display colour: render-rs `render-color` + `render-color-gpu`, exact OCIO in the PT blit)
+|   (path tracing, BVH, materials, OIDN, and display colour are consumed from `render-rs` and `gpu-info-rs`)
 |-- docs/                        Historical design and integration plans
 |-- data/                        Screenshots and bundled factory render preset
 |-- bootstrap.py                 Cross-platform local helper script
@@ -403,7 +394,7 @@ Required GitHub secrets for signed macOS release builds:
 | Math / GPU data | `glam`, `bytemuck`, `half` | `0.33`, `1.25`, `2.7.x` |
 | 2D treemap | local `treemap` crate | workspace `0.1.0`, optional `wgpu` feature |
 | 3D renderer | local `render-3d`, `render-shared`, `render-core` crates | workspace `0.1.0` |
-| Path tracing | local `pt-core`, `pt-megakernel`, `pt-wavefront`, `pt-mats`, `bvh-gpu` crates | workspace `0.1.0` |
+| Path tracing & colour | `render-rs` (`pt-core`, `pt-megakernel`, `pt-cuda`, `pt-mats`, `pt-material`, `standard-surface`, `bvh-gpu`, `pt-denoise-oidn`, `render-color`, `render-color-gpu`) + `gpu-info-rs` | git: `ssh://git@github.com/ssoj13/render-rs.git`, `main` |
 | Scanning | `fscan-rs`, `rayon`, `windows` | GitHub revision `c33d4474`, `1.12`, `0.62` |
 | App services | `directories`, `rfd`, `open`, `trash`, `sysinfo` | `6`, `0.17`, `5`, `5`, `0.39` |
 | Serialization/cache | `serde`, `serde_json`, `bincode`, `sha2` | `1`, `1`, `1`, `0.11` |

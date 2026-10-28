@@ -1,0 +1,14 @@
+# squarebob-rs CUDA kernels (`pt-cuda` via `render-rs`) build through cuda-oxide (`cargo oxide ...`):
+# kernels inside `#[cuda_module]` are compiled directly to PTX by `rustc_codegen_cuda`.
+[alias]
+ob = "oxide build"
+ot = "oxide test"
+
+[net]
+git-fetch-with-cli = true
+
+[env]
+# cuda-oxide drives compiler-internal APIs from the stable toolchain.
+RUSTC_BOOTSTRAP = "1"
+# Kernel PTX and LLVM IR dumps go under target/, not the repository root.
+CUDA_OXIDE_PTX_DIR = { value = "target/oxide-ptx", relative = true }

@@ -240,7 +240,7 @@ fn main() -> Result<()> {
         device: ctx.device.clone(),
         queue: ctx.queue.clone(),
     };
-    let mut denoiser = OidnDenoiser::new(&oidn, W, H, None);
+    let mut denoiser = OidnDenoiser::new(&oidn, &ctx.work_context, W, H, None)?;
     denoiser.set_mode(OidnMode::ColorAlbedoNormal);
     denoiser.set_quality(Quality::Balanced);
     denoiser.set_external_input_scale(Some(0.02));
@@ -261,8 +261,16 @@ fn main() -> Result<()> {
     ] {
         denoiser.set_adaptive_clamp(adaptive);
         let encoder = ctx.device.create_command_encoder(&Default::default());
-        denoiser.denoise(&oidn, encoder, &color, Some(&albedo), Some(&normal), spp)?;
-        let output = capture(&ctx, denoiser.result_view())?;
+        let _submission = denoiser.denoise(pt_denoise_oidn::DenoiseInput::TexturesUntracked {
+            encoder,
+            color: &color,
+            albedo: Some(&albedo),
+            normal: Some(&normal),
+            samples: spp,
+        })?;
+        ctx.device.poll(wgpu::PollType::wait_indefinitely())?;
+        denoiser.collect()?;
+        let output = capture(&ctx, denoiser.result_view_untracked())?;
         ensure!(output.iter().all(|x| x.is_finite()), "nonfinite output");
         let (mean, sd, max) = region_stats(&output, true);
         let (dark, _, _) = region_stats(&output, false);
@@ -294,8 +302,16 @@ fn main() -> Result<()> {
     let mut repeated_max = 0.0_f32;
     for _ in 0..32 {
         let encoder = ctx.device.create_command_encoder(&Default::default());
-        denoiser.denoise(&oidn, encoder, &color, Some(&albedo), Some(&normal), 256)?;
-        let output = capture(&ctx, denoiser.result_view())?;
+        let _submission = denoiser.denoise(pt_denoise_oidn::DenoiseInput::TexturesUntracked {
+            encoder,
+            color: &color,
+            albedo: Some(&albedo),
+            normal: Some(&normal),
+            samples: 256,
+        })?;
+        ctx.device.poll(wgpu::PollType::wait_indefinitely())?;
+        denoiser.collect()?;
+        let output = capture(&ctx, denoiser.result_view_untracked())?;
         ensure!(
             output.iter().all(|x| x.is_finite()),
             "nonfinite repeated output"

@@ -21,9 +21,17 @@ render-color = { workspace = true }
 render-color-gpu = { workspace = true }
 pt-core = { workspace = true }
 pt-megakernel = { workspace = true }
+pt-cuda = { workspace = true, optional = true }
 pt-mats = { workspace = true }
 pt-material = { workspace = true }
+standard-surface = { workspace = true }
+gpu-mem = { workspace = true }
+rayon = { workspace = true }
 treemap = { workspace = true }
+
+[features]
+default = []
+cuda = ["dep:pt-cuda"]
 
 [dev-dependencies]
 exr-core = { workspace = true }

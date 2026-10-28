@@ -1,4 +1,8 @@
-//! See parent `super` for module-level imports.
+//! Megakernel path-tracing frame execution and display blit orchestration.
+//!
+//! Coordinates scene/environment publication, camera/adaptive/spectral configuration,
+//! sample recording/submission on `pt_megakernel::PathTraceCompute`, and final
+//! presentation via `PtDisplayBlit`.
 
 use super::*;
 
@@ -6,6 +10,22 @@ use super::*;
 pub(super) enum PtOutput {
     GpuOnly,
     CpuReadback,
+}
+
+fn pt_err(err: impl std::fmt::Display) -> render_core::ReadbackError {
+    render_core::ReadbackError::SceneBuild(err.to_string())
+}
+
+fn settle_pt(
+    device: &wgpu::Device,
+    pt: &mut pt_megakernel::PathTraceCompute,
+) -> Result<(), render_core::ReadbackError> {
+    if pt.pending() > 0 {
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(render_core::ReadbackError::PollFailed)?;
+    }
+    pt.collect().map(|_| ()).map_err(pt_err)
 }
 
 pub(crate) fn render_path_traced(
@@ -38,45 +58,59 @@ pub(super) fn render_path_traced_frame(
     output: PtOutput,
 ) -> Result<Option<Vec<u8>>, render_core::ReadbackError> {
     let pt_start = std::time::Instant::now();
-    use pt_core::build::build_instance_bvh;
-    use pt_core::gpu_data::{
-        GpuInstanceSceneData, build_gpu_data_from_nodes, build_instance_gpu_data,
-    };
     use pt_megakernel::{PathTraceCompute, PtCameraUniform};
 
-    // Lazy init path tracer
+    // Lazy init path tracer and host display blit
     let surface_format = render_core::DISPLAY_TEXTURE_FORMAT;
     if renderer.pt.path_tracer.is_none() {
         let mut pt = PathTraceCompute::new(
+            &renderer.ctx.work_context,
+            width,
+            height,
+            surface_format,
+        )
+        .map_err(pt_err)?;
+        settle_pt(&renderer.ctx.device, &mut pt)?;
+
+        // Forward env map to path tracer when enabled
+        if opts.env_map_enabled {
+            pt.set_environment_texture(
+                pt_megakernel::EnvironmentTexture::Untracked(&renderer.env.texture),
+                opts.env_map_intensity,
+                true,
+            )
+            .map_err(pt_err)?;
+            settle_pt(&renderer.ctx.device, &mut pt)?;
+            pt.set_environment_cdfs(
+                &renderer.env.marginal_cdf_data,
+                &renderer.env.conditional_cdf_data,
+                renderer.env.width,
+                renderer.env.height,
+            )
+            .map_err(pt_err)?;
+            settle_pt(&renderer.ctx.device, &mut pt)?;
+            renderer.pt.pt_env_dirty = false;
+        } else {
+            renderer.pt.pt_env_dirty = true;
+        }
+        renderer.pt.path_tracer = Some(pt);
+        renderer.pt.display_key = None;
+        renderer.pt.pt_scene_dirty = true;
+    }
+
+    if renderer.pt.blit.is_none() {
+        renderer.pt.blit = Some(crate::pt::blit::PtDisplayBlit::new(
             &renderer.ctx.device,
             &renderer.ctx.queue,
             width,
             height,
             surface_format,
-        )?;
-        // Forward env map to path tracer
-        if opts.env_map_enabled {
-            pt.set_environment_texture(
-                &renderer.ctx.device,
-                &renderer.ctx.queue,
-                &renderer.env.texture,
-                opts.env_map_intensity,
-                true,
-            );
-            pt.set_environment_cdfs(
-                &renderer.ctx.device,
-                &renderer.env.marginal_cdf_data,
-                &renderer.env.conditional_cdf_data,
-                renderer.env.width,
-                renderer.env.height,
-            );
-        }
-        renderer.pt.path_tracer = Some(pt);
+        ));
         renderer.pt.display_key = None;
-        renderer.pt.pt_scene_dirty = true;
-        renderer.pt.pt_env_dirty = false;
-        // A new blit starts without a display transform; give it the synced one now.
-        renderer.install_display_transform();
+    }
+    renderer.install_display_transform();
+    if let Some(blit) = renderer.pt.blit.as_mut() {
+        blit.resize(width, height);
     }
 
     let pt = renderer
@@ -84,14 +118,8 @@ pub(super) fn render_path_traced_frame(
         .path_tracer
         .as_mut()
         .ok_or(render_core::ReadbackError::MissingTarget)?;
-    pt.resize(&renderer.ctx.device, width, height)?;
-    pt.samples = opts.pt_samples;
-    pt.set_emissive_sampling(
-        &renderer.ctx.queue,
-        opts.pt_emissive_sampling,
-        opts.pt_emissive_samples,
-        opts.pt_emissive_min_weight,
-    );
+    pt.resize(width, height).map_err(pt_err)?;
+    settle_pt(&renderer.ctx.device, pt)?;
     pt.set_bvh_config(opts.pt_gpu_bvh, opts.pt_bvh_refit);
     if renderer.pt.pt_accum_reset {
         pt.reset_accumulation();
@@ -113,7 +141,7 @@ pub(super) fn render_path_traced_frame(
     let allow_update = !snap_enabled
         || elapsed >= snap_interval
         || !renderer.pt.pt_snap_valid
-        || pt.frame_count == 0;
+        || pt.frame_count() == 0;
 
     if allow_update && snap_enabled {
         renderer.pt.pt_camera_snap_time = std::time::Instant::now();
@@ -141,81 +169,41 @@ pub(super) fn render_path_traced_frame(
             );
         let materials = materials_arc.as_ref();
 
-        // Build BVH: GPU-accelerated or CPU fallback based on config
+        // Build two-level acceleration structure: GPU or CPU analytic-instance packing
         let bvh_start = std::time::Instant::now();
         debug!(
             "PT BVH start: gpu={}, instances={}",
             opts.pt_gpu_bvh,
             pt_instances.len()
         );
-        let gpu_data = if opts.pt_gpu_bvh && opts.pt_bvh_refit {
-            let data = GpuInstanceSceneData {
-                nodes: Vec::new(),
-                instances: Vec::new(),
-                materials: materials.clone(),
-            };
-            pt.upload_scene_smart(
-                &renderer.ctx.device,
-                &renderer.ctx.queue,
-                &pt_instances,
-                &data,
-                animated,
-            )
-            .map_err(render_core::ReadbackError::SceneBuild)?;
-            reset_by_scene = true;
-            pt.reset_accumulation();
-            None
-        } else if opts.pt_gpu_bvh {
-            let (nodes, sorted_indices) = pt
-                .build_bvh(&renderer.ctx.device, &renderer.ctx.queue, &pt_instances)
-                .map_err(render_core::ReadbackError::SceneBuild)?;
-            debug!(
-                "PT BVH done (GPU): nodes={}, sorted_indices={}",
-                nodes.len(),
-                sorted_indices.len()
-            );
-            Some(build_gpu_data_from_nodes(
-                nodes,
-                &sorted_indices,
-                &pt_instances,
-                materials,
-            ))
+        if opts.pt_gpu_bvh {
+            pt.build_analytic_instances_gpu(&pt_instances, materials, None, None)
+                .map_err(pt_err)?;
+            settle_pt(&renderer.ctx.device, pt)?;
         } else {
-            let bvh = build_instance_bvh(&pt_instances);
+            let two_level = pt_core::pack_analytic_instances(&pt_instances, materials);
             debug!(
-                "PT BVH done (CPU): nodes={}, sorted_indices={}",
-                bvh.nodes.len(),
-                bvh.tri_indices.len()
+                "PT BVH done (CPU two-level): tlas_nodes={}, blas_nodes={}, instances={}, materials={}",
+                two_level.tlas_nodes.len(),
+                two_level.blas_nodes.len(),
+                two_level.instances.len(),
+                two_level.materials.len()
             );
-            Some(build_instance_gpu_data(&bvh, &pt_instances, materials))
-        };
+            let upload_start = std::time::Instant::now();
+            pt.upload_scene_two_level(&two_level).map_err(pt_err)?;
+            settle_pt(&renderer.ctx.device, pt)?;
+            let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
+            debug!("  scene_upload: {:.2}ms", upload_ms);
+        }
         let bvh_ms = bvh_start.elapsed().as_secs_f64() * 1000.0;
         debug!(
             "  bvh_build: {:.2}ms ({})",
             bvh_ms,
             if opts.pt_gpu_bvh { "GPU" } else { "CPU" }
         );
-
-        let upload_start = std::time::Instant::now();
-        if let Some(gpu_data) = gpu_data {
-            debug!(
-                "PT upload: nodes={}, instances={}, materials={}",
-                gpu_data.nodes.len(),
-                gpu_data.instances.len(),
-                gpu_data.materials.len()
-            );
-            pt.upload_scene(
-                &renderer.ctx.device,
-                &renderer.ctx.queue,
-                &gpu_data,
-                Some(&pt_instances),
-            )?;
-            reset_by_scene = true;
-            pt.reset_accumulation();
-        }
+        reset_by_scene = true;
+        pt.reset_accumulation();
         renderer.pt.pt_scene_dirty = false;
-        let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
-        debug!("  scene_upload: {:.2}ms", upload_ms);
 
         let scene_ms = scene_start.elapsed().as_secs_f64() * 1000.0;
         debug!(
@@ -251,19 +239,20 @@ pub(super) fn render_path_traced_frame(
         }
     }
 
+    let derived_min = (opts.pt_samples / 16).max(8);
+    let derived_max = opts.pt_samples.max(derived_min);
     let cam_uniform = PtCameraUniform {
         inv_view: inv_view.to_cols_array_2d(),
         inv_proj: inv_proj.to_cols_array_2d(),
         position: pos.to_array(),
         _pad0: 0,
-        frame_count: pt.frame_count + 1,
+        frame_count: 1,
         max_bounces: opts.pt_max_bounces,
         max_transmission_depth: opts.pt_max_transmission_depth,
-        dof_enabled: if opts.pt_dof_enabled { 1 } else { 0 },
+        dof_enabled: u32::from(opts.pt_dof_enabled),
         aperture: opts.effective_aperture(),
         focus_distance: opts.effective_focus_distance(),
-        rr_enabled: if opts.pt_russian_roulette { 1 } else { 0 },
-        _pad1: 0,
+        _pad1: [0; 2],
         slice_enabled: if opts.slice_enabled { 1.0 } else { 0.0 },
         slice_position: compute_slice_position(opts),
         slice_invert: if opts.slice_invert { 1.0 } else { 0.0 },
@@ -271,18 +260,20 @@ pub(super) fn render_path_traced_frame(
         slice_normal: compute_slice_normal(opts),
         _pad3: 0.0,
         spectral_mode: opts.pt_spectral_mode as u32,
-        spectral_samples: opts.pt_spectral_samples.max(1),
-        spectral_dispersion: if opts.pt_spectral_dispersion { 1 } else { 0 },
+        spectral_samples: opts.pt_spectral_samples,
+        spectral_dispersion: u32::from(opts.pt_spectral_dispersion),
         sampler_mode: opts.pt_sampler_mode as u32,
-        materialize_mix: opts.materialize_mix.clamp(0.0, 1.0),
-        _pad4: [0.0; 3],
+        two_level: 1,
+        adaptive_enabled: u32::from(opts.pt_adaptive_sampling),
+        adaptive_max_spp: derived_max,
+        _pad4: 0,
     };
-    pt.set_materialize_mix(opts.materialize_mix);
-    // Update ReSTIR gbuffer camera matrices and detect camera movement.
+
+    // Update camera matrices and detect camera movement.
     let cam_pos = pos.to_array();
     let cam_vp = (proj_for_vp * view_for_vp).to_cols_array_2d();
     let prev_vp = pt.last_view_proj.unwrap_or(cam_vp);
-    pt.update_view_proj(&renderer.ctx.queue, prev_vp, cam_vp);
+    pt.update_view_proj(prev_vp, cam_vp);
     let cam_jump = pt.last_camera_pos.is_some_and(|p| {
         let prev = glam::Vec3::from(p);
         let delta = (prev - pos).length();
@@ -302,11 +293,6 @@ pub(super) fn render_path_traced_frame(
         pt.mark_history_dirty();
     }
     let cam_moved = (pt.last_camera_pos != Some(cam_pos)) || (pt.last_view_proj != Some(cam_vp));
-    // Always roll prev_view_proj forward (independent of cam_moved) so a
-    // static camera after motion has a coherent prev/curr pair, and ReSTIR
-    // temporal can correctly see "this pixel didn't move" rather than a
-    // stale matrix from earlier in the session.
-    pt.prev_view_proj = pt.last_view_proj;
     pt.last_view_proj = Some(cam_vp);
     if cam_moved {
         pt.mark_history_dirty();
@@ -331,19 +317,20 @@ pub(super) fn render_path_traced_frame(
 
     if opts.env_map_enabled && renderer.pt.pt_env_dirty {
         pt.set_environment_texture(
-            &renderer.ctx.device,
-            &renderer.ctx.queue,
-            &renderer.env.texture,
+            pt_megakernel::EnvironmentTexture::Untracked(&renderer.env.texture),
             opts.env_map_intensity,
             true,
-        );
+        )
+        .map_err(pt_err)?;
+        settle_pt(&renderer.ctx.device, pt)?;
         pt.set_environment_cdfs(
-            &renderer.ctx.device,
             &renderer.env.marginal_cdf_data,
             &renderer.env.conditional_cdf_data,
             renderer.env.width,
             renderer.env.height,
-        );
+        )
+        .map_err(pt_err)?;
+        settle_pt(&renderer.ctx.device, pt)?;
         renderer.pt.pt_env_dirty = false;
     }
 
@@ -356,12 +343,12 @@ pub(super) fn render_path_traced_frame(
     } else {
         opts.animation_time
     };
-    // Env time is accumulated independently in render_loop so the sky
-    // keeps rolling even when object animation is paused.
-    let _ = anim_time_used;
-    let env_time = opts.env_time;
-    if anim_active && allow_update {
-        pt.mark_history_dirty();
+    let env_time = if opts.env_animate {
+        opts.env_time
+    } else {
+        0.0
+    };
+    if animated && (anim_time_used - renderer.pt.pt_last_anim_time).abs() > 1e-5 {
         reset_by_anim = true;
         pt.reset_accumulation();
     }
@@ -373,7 +360,7 @@ pub(super) fn render_path_traced_frame(
                 "PT animate: t={:.3} dt={:.3} frame_count={} reset[scene={},cam={},slice={},anim={}] scene_dirty={} env_dirty={} auto_spp={} spp_update={} wavefront={}",
                 anim_time_used,
                 dt,
-                pt.frame_count,
+                pt.frame_count(),
                 reset_by_scene,
                 reset_by_cam,
                 reset_by_slice,
@@ -389,57 +376,54 @@ pub(super) fn render_path_traced_frame(
     if allow_update {
         renderer.pt.pt_last_anim_time = anim_time_used;
     }
-    pt.update_camera(&renderer.ctx.queue, &cam_uniform);
-    pt.set_restir_enabled(&renderer.ctx.device, opts.pt_restir_di, opts.pt_restir_gi)?;
-    pt.set_restir_options(
-        opts.pt_restir_temporal,
-        opts.pt_restir_spatial,
-        opts.pt_restir_m_max,
-    );
-    pt.set_adaptive_enabled(
-        &renderer.ctx.device,
-        &renderer.ctx.queue,
-        opts.pt_adaptive_sampling,
-    )?;
-    // Adaptive per-pixel SPP range derives from the single global samples
-    // knob — one slider drives all sampling budgets.
-    let derived_min = (opts.pt_samples / 16).max(8);
-    let derived_max = opts.pt_samples.max(derived_min);
-    pt.set_adaptive_config(
-        &renderer.ctx.queue,
-        derived_min,
-        derived_max,
-        opts.pt_adaptive_variance,
-        opts.pt_adaptive_interval,
-    );
-    pt.set_pathguide_enabled(&renderer.ctx.device, opts.pt_path_guiding);
-    pt.set_wavefront_tile_size(opts.pt_wavefront_tile_size);
-    pt.set_wavefront_rr_enabled(opts.pt_russian_roulette);
-    pt.set_spectral_options(
-        opts.pt_spectral_mode as u32,
-        opts.pt_spectral_samples,
-        if opts.pt_spectral_dispersion { 1 } else { 0 },
-    );
-    pt.update_env_params(
-        &renderer.ctx.queue,
-        opts.env_map_intensity,
-        opts.env_map_rotation,
-        opts.env_map_enabled,
-        opts.pt_env_importance_sampling && renderer.env.width > 1 && renderer.env.height > 1,
-        renderer.env.width,
-        renderer.env.height,
-        1.0,
-        env_time,
-    );
+
+    let env_use_importance = opts.pt_env_importance_sampling
+        && opts.env_map_enabled
+        && renderer.env.width > 1
+        && renderer.env.height > 1
+        && !renderer.env.marginal_cdf_data.is_empty()
+        && !renderer.env.conditional_cdf_data.is_empty();
+    let env_w = if opts.env_map_enabled {
+        renderer.env.width as f32
+    } else {
+        0.0
+    };
+    let env_h = if opts.env_map_enabled {
+        renderer.env.height as f32
+    } else {
+        0.0
+    };
+    pt.configure(pt_megakernel::Configuration {
+        camera: Some(cam_uniform),
+        max_samples: Some(opts.pt_samples),
+        adaptive: Some(pt_megakernel::adaptive::AdaptiveConfig {
+            enabled: opts.pt_adaptive_sampling,
+            min_spp: derived_min,
+            max_spp: derived_max,
+            variance_threshold: opts.pt_adaptive_variance,
+            update_interval: opts.pt_adaptive_interval,
+        }),
+        spectral: Some([
+            opts.pt_spectral_mode as u32,
+            opts.pt_spectral_samples,
+            u32::from(opts.pt_spectral_dispersion),
+        ]),
+        environment: Some(pt_megakernel::PtEnvUniform {
+            params0: [
+                opts.env_map_intensity,
+                0.0,
+                f32::from(opts.env_map_enabled),
+                f32::from(env_use_importance),
+            ],
+            params1: [env_w, env_h, 1.0, env_time],
+            env_to_world: glam::Mat4::from_rotation_y(opts.env_map_rotation).to_cols_array_2d(),
+        }),
+    })
+    .map_err(pt_err)?;
+    settle_pt(&renderer.ctx.device, pt)?;
 
     // Dispatch compute shader + blit to render texture
     let frame_start = std::time::Instant::now();
-    let mut encoder = renderer
-        .ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("PT Encoder"),
-        });
     if !opts.pt_auto_spp {
         renderer.pt.pt_samples_per_update = opts.pt_samples_per_update.max(1);
     }
@@ -457,32 +441,26 @@ pub(super) fn render_path_traced_frame(
         }
         renderer.pt.pt_samples_per_update = samples_this_frame;
     }
+
     let dispatch_start = std::time::Instant::now();
-    // Use wavefront or megakernel dispatch
     let mut actual_samples_this_frame = 0u32;
-    if opts.pt_wavefront {
-        pt.set_wavefront_enabled(&renderer.ctx.device, true)?;
-        for _ in 0..samples_this_frame {
-            if !pt.dispatch_wavefront(
-                &renderer.ctx.device,
-                &mut encoder,
-                &renderer.ctx.queue,
-                opts.pt_max_bounces,
-                env_time,
-            ) {
-                break;
-            }
-            actual_samples_this_frame += 1;
+    let mut remaining = samples_this_frame;
+    while remaining > 0 {
+        let chunk = remaining.min(pt_megakernel::MAX_SAMPLES_PER_RECORDING);
+        let Some(samples) = pt.dispatch(chunk).map_err(pt_err)? else {
+            break;
+        };
+        let n = samples.samples();
+        let _submission = pt.submit(samples).map_err(pt_err)?;
+        settle_pt(&renderer.ctx.device, pt)?;
+        actual_samples_this_frame += n;
+        remaining = remaining.saturating_sub(n);
+        if n == 0 {
+            break;
         }
-    } else {
-        for _ in 0..samples_this_frame {
-            if !pt.dispatch(&mut encoder, &renderer.ctx.queue) {
-                break;
-            }
-            actual_samples_this_frame += 1;
-        }
-        pt.update_adaptive_sample_map(&mut encoder, &renderer.ctx.queue);
     }
+    let frame_count = pt.frame_count();
+    let output_view = pt.output_texture_view_untracked().clone();
     let dispatch_ms = dispatch_start.elapsed().as_secs_f64() * 1000.0;
     debug!(
         "  dispatch: {:.2}ms ({} samples)",
@@ -490,21 +468,32 @@ pub(super) fn render_path_traced_frame(
     );
 
     let blit_start = std::time::Instant::now();
+    let mut encoder = renderer
+        .ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("PT Encoder"),
+        });
     let state = renderer
         .render_state
         .as_ref()
         .expect("render_state not built — call ensure_render_targets before render");
     let targets = &state.targets;
-    // Denoising (OIDN) is now invoked from the app layer, after PT output is
-    // sample-normalized — see `pt-denoise-oidn`. The raw blit always uses
-    // the PT accumulator; if OIDN is active, the app blits its result texture
-    // separately on top.
-    pt.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
-    pt.set_blit_source_encoded(&renderer.ctx.queue, false);
-    // Phase 11 deletion — see render-3d/src/lib.rs for context.
+    let blit = renderer
+        .pt
+        .blit
+        .as_mut()
+        .ok_or(render_core::ReadbackError::MissingTarget)?;
+    blit.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
+    blit.set_blit_source_encoded(&renderer.ctx.queue, false);
     let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
-    pt.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);
-    pt.blit(&mut encoder, &targets.render_view);
+    blit.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);
+    blit.blit_texture(
+        &renderer.ctx.device,
+        &mut encoder,
+        &targets.render_view,
+        &output_view,
+    );
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);
 
@@ -542,7 +531,7 @@ pub(super) fn render_path_traced_frame(
         total_ms,
         instances.len(),
         actual_samples_this_frame,
-        pt.frame_count
+        frame_count
     );
     trace!(
         "  scene_dirty: {}, env_dirty: {}",

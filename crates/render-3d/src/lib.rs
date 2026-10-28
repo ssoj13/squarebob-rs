@@ -33,6 +33,7 @@ use treemap::{self, TreeMapOptions};
 
 use geometry::{CUBE_INDICES, CubeInstance, NUM_INDICES};
 use pipelines::{BindGroupLayouts, Pipelines};
+pub use pt::blit::PtDisplayBlit;
 use renderer3d::material_cache::{
     MAX_MATERIAL_SLOTS, MatGlobalUniform, MaterialCache, mat_settings_hash,
 };
@@ -72,6 +73,7 @@ pub(crate) struct DisplayColor {
 
 pub(crate) struct PtState {
     pub path_tracer: Option<pt_megakernel::PathTraceCompute>,
+    pub blit: Option<pt::blit::PtDisplayBlit>,
     pub pt_backend_kind: pt::PtBackendKind,
     /// Full scene/BVH/material-table upload on next PT frame.
     pub pt_scene_dirty: bool,
@@ -97,6 +99,7 @@ impl Default for PtState {
     fn default() -> Self {
         Self {
             path_tracer: None,
+            blit: None,
             pt_backend_kind: pt::PtBackendKind::Megakernel,
             pt_scene_dirty: false,
             pt_accum_reset: false,
@@ -124,6 +127,7 @@ pub struct Renderer3D {
     // Geometry buffers (static)
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    line_index_buffer: wgpu::Buffer,
     instance_buffer: Option<wgpu::Buffer>,
     instance_buffer_capacity: usize, // Max instances buffer can hold
     instance_count: u32,
@@ -132,10 +136,7 @@ pub struct Renderer3D {
     camera_buf: wgpu::Buffer,
     light_rig_buf: wgpu::Buffer,
     /// Storage buffer holding the full `MaterialLibrary` (array of GpuMaterial).
-    /// Indexed per cube via `CubeInstance.material_id` in the PBR shader. Owned by
-    /// the renderer so the bind group keeps a live GPU handle (dead-code lint can't
-    /// see the bind group reference).
-    #[allow(dead_code)]
+    /// Indexed per cube via `CubeInstance.material_id` in the PBR shader.
     materials_buf: wgpu::Buffer,
     /// UBO with global mat params (currently `materialize_mix`).
     mat_global_buf: wgpu::Buffer,
@@ -247,6 +248,7 @@ impl Renderer3D {
     /// Drop PT resources and force re-init on next render.
     pub fn reset_path_tracer(&mut self) {
         self.pt.path_tracer = None;
+        self.pt.blit = None;
         self.pt.display_key = None;
         self.pt.pt_scene_dirty = true;
         self.pt.pt_env_dirty = true;
@@ -308,8 +310,10 @@ impl Renderer3D {
         // mid-session. Contents are written per-frame from
         // `opts.material_library` in `update_uniforms` — at construction
         // we only need the buffer to exist and bind correctly.
-        // `MAX_MATERIAL_SLOTS` (256) × 144 B = 36 KiB.
-        let initial_materials = vec![StandardSurfaceParams::default(); MAX_MATERIAL_SLOTS as usize];
+        // `MAX_MATERIAL_SLOTS` (256) × 160 B = 40 KiB.
+        let initial_gpu_mat =
+            pt_core::GpuMaterial::from(&StandardSurfaceParams::default().sanitized_for_gpu());
+        let initial_materials = vec![initial_gpu_mat; MAX_MATERIAL_SLOTS as usize];
         let materials_buf = make_buffer_init(
             device,
             "Materials Storage",
@@ -369,6 +373,10 @@ impl Renderer3D {
                     binding: 3,
                     resource: mat_global_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: selected_ids_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -402,12 +410,19 @@ impl Renderer3D {
             bytemuck::cast_slice(CUBE_INDICES),
             wgpu::BufferUsages::INDEX,
         );
+        let line_index_buffer = make_buffer_init(
+            device,
+            "Cube Line IBO",
+            bytemuck::cast_slice(geometry::CUBE_LINE_INDICES),
+            wgpu::BufferUsages::INDEX,
+        );
 
         Self {
             ctx,
             readback: gpu::TextureReadback::default(),
             vertex_buffer,
             index_buffer,
+            line_index_buffer,
             instance_buffer: None,
             instance_buffer_capacity: 0,
             instance_count: 0,
@@ -796,7 +811,6 @@ impl Renderer3D {
     // ========================================================================
 
     /// CPU ray pick against cubes (matches render placement)
-    #[allow(clippy::too_many_arguments)]
     fn update_uniforms(
         &self,
         camera: &OrbitCamera,
@@ -869,9 +883,15 @@ impl Renderer3D {
             );
         }
         if n > 0 {
-            let params: Vec<StandardSurfaceParams> =
-                lib.materials[..n].iter().map(|m| m.params).collect();
-            q.write_buffer(&self.materials_buf, 0, bytemuck::cast_slice(&params));
+            let gpu_materials: Vec<pt_core::GpuMaterial> = lib.materials[..n]
+                .iter()
+                .map(|m| pt_core::GpuMaterial::from(&m.params.sanitized_for_gpu()))
+                .collect();
+            q.write_buffer(
+                &self.materials_buf,
+                0,
+                bytemuck::cast_slice(&gpu_materials),
+            );
         }
 
         q.write_buffer(
@@ -935,24 +955,44 @@ impl Renderer3D {
             return;
         }
 
+        let is_transparent = !opts.show_wireframe && opts.xray_alpha < 1.0;
+
         // Pass 1: Main geometry (PBR / wireframe / transparent)
         {
+            let color_attachment = Some(wgpu::RenderPassColorAttachment {
+                view: &targets.render_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: opts.background_color[0] as f64,
+                        g: opts.background_color[1] as f64,
+                        b: opts.background_color[2] as f64,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            });
+            let object_id_attachment = Some(wgpu::RenderPassColorAttachment {
+                view: &targets.object_id_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            });
+            let attachments_mrt = [color_attachment.clone(), object_id_attachment];
+            let attachments_single = [color_attachment];
+            let color_attachments: &[Option<wgpu::RenderPassColorAttachment>] = if is_transparent {
+                &attachments_single
+            } else {
+                &attachments_mrt
+            };
+
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Main"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.render_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: opts.background_color[0] as f64,
-                            g: opts.background_color[1] as f64,
-                            b: opts.background_color[2] as f64,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth_view,
                     depth_ops: Some(wgpu::Operations {
@@ -998,8 +1038,16 @@ impl Renderer3D {
                 let ib = ib.expect("nonempty scene requires instance buffer");
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_vertex_buffer(1, ib.slice(..));
-                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
+                if opts.show_wireframe {
+                    pass.set_index_buffer(
+                        self.line_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
+                    pass.draw_indexed(0..geometry::NUM_LINE_INDICES, 0, 0..self.instance_count);
+                } else {
+                    pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.draw_indexed(0..NUM_INDICES, 0, 0..self.instance_count);
+                }
             }
             log::trace!("encode_passes: Pass 1 (Main) DONE");
         }
@@ -1033,31 +1081,32 @@ impl Renderer3D {
         }
 
         // Pass 3: Object ID (for hover picking) and Pass 4: Outline.
-        // Shared with the PT-mode outline+picking encoder in
-        // `renderer3d/render.rs` — see `encode_object_id_pass` /
-        // `encode_outline_pass` for the actual encoder bodies.
-        if self.instance_count == 0 {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Empty Object ID"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.object_id_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
-        } else if opts.hover_mode != HoverMode::None {
-            self.encode_object_id_pass(
-                encoder,
-                targets,
-                ib.expect("nonempty scene requires instance buffer"),
-                opts.double_sided,
-            );
+        // In PBR and Wireframe modes, Pass 1 already wrote (and cleared) `targets.object_id_view`
+        // via single-pass MRT; only transparent X-ray mode needs a separate Object ID pass.
+        if is_transparent {
+            if self.instance_count == 0 {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Empty Object ID"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &targets.object_id_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    ..Default::default()
+                });
+            } else if opts.hover_mode != HoverMode::None {
+                self.encode_object_id_pass(
+                    encoder,
+                    targets,
+                    ib.expect("nonempty scene requires instance buffer"),
+                    opts.double_sided,
+                );
+            }
         }
         let has_active = !self.selected_ids.is_empty() || hovered_id != 0;
         info!(
@@ -1174,13 +1223,20 @@ impl Renderer3D {
     /// drives all accumulation; everything else (per-dispatch batch size,
     /// adaptive caps, OIDN trigger threshold) is derived from this.
     pub fn pt_target_spp(&self) -> u32 {
-        self.pt.path_tracer.as_ref().map(|p| p.samples).unwrap_or(0)
+        self.pt
+            .path_tracer
+            .as_ref()
+            .map(|p| p.max_samples())
+            .unwrap_or(0)
     }
 
     /// PT output color texture (Rgba32Float, post sample-normalization).
     /// `None` until `path_tracer` is built on the first PT-mode frame.
     pub fn pt_output_texture(&self) -> Option<&wgpu::Texture> {
-        self.pt.path_tracer.as_ref().map(|p| p.output_texture())
+        self.pt
+            .path_tracer
+            .as_ref()
+            .map(|p| p.output_texture_untracked())
     }
 
     /// PT viewport dims, when available.
@@ -1192,13 +1248,19 @@ impl Renderer3D {
     /// wavefront PT backends (each writes its own buffer at bounce 0; the
     /// active backend's buffer is returned).
     pub fn pt_albedo_buffer(&self) -> Option<&wgpu::Buffer> {
-        self.pt.path_tracer.as_ref().map(|p| p.albedo_buffer())
+        self.pt
+            .path_tracer
+            .as_ref()
+            .map(|p| p.albedo_aov_buffer_untracked())
     }
 
     /// Per-pixel primary-hit world-space normal AOV. Available for both
     /// megakernel and wavefront PT backends.
     pub fn pt_normal_buffer(&self) -> Option<&wgpu::Buffer> {
-        self.pt.path_tracer.as_ref().map(|p| p.normal_buffer())
+        self.pt
+            .path_tracer
+            .as_ref()
+            .map(|p| p.normal_aov_buffer_untracked())
     }
 
     /// Access to the underlying GPU context — needed by the OIDN denoiser
@@ -1236,9 +1298,14 @@ impl Renderer3D {
         let Some(state) = self.render_state.as_ref() else {
             return Ok(());
         };
-        let Some(pt) = self.pt.path_tracer.as_mut() else {
+        let Some(pt) = self.pt.path_tracer.as_ref() else {
             return Ok(());
         };
+        let Some(blit) = self.pt.blit.as_mut() else {
+            return Ok(());
+        };
+        let pt_tex = pt.output_texture_untracked();
+        let src_tex = source.unwrap_or(pt_tex);
         let cpu = opts.color_pipeline.mode == ColorMode::Ocio
             && opts.color_pipeline.codepath == ColorCodepath::Cpu;
         // The CPU codepath runs the SAME canvas processor the GPU blit compiles, so both write
@@ -1247,20 +1314,20 @@ impl Renderer3D {
         let canvas = self.color.canvas.as_ref().filter(|_| cpu);
         let view = if cpu {
             let exposure = opts.effective_exposure_multiplier();
-            Some(pt.apply_cpu_color_in_place(&self.ctx, source, |pixels| {
+            blit.apply_cpu_color_in_place(&self.ctx, src_tex, |pixels| {
                 for pixel in pixels.iter_mut() {
                     *pixel = pixel.map(|value| value * exposure);
                 }
                 if let Some(canvas) = canvas {
                     canvas.apply_rgb(pixels);
                 }
-            })?)
+            })?
         } else {
-            source.map(|texture| texture.create_view(&Default::default()))
+            src_tex.create_view(&Default::default())
         };
         // Both raw PT and denoised sources follow the same display path.
         // CPU processing already consumed camera exposure.
-        pt.set_blit_exposure(
+        blit.set_blit_exposure(
             &self.ctx.queue,
             if cpu {
                 1.0
@@ -1268,20 +1335,20 @@ impl Renderer3D {
                 opts.effective_exposure_multiplier()
             },
         );
-        pt.set_blit_source_encoded(&self.ctx.queue, canvas.is_some());
+        blit.set_blit_source_encoded(&self.ctx.queue, canvas.is_some());
         let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
-        pt.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
+        blit.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
         let mut encoder = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("composite_overlay"),
             });
-        pt.blit_with_source(
+        blit.blit_texture(
             &self.ctx.device,
             &mut encoder,
             &state.targets.render_view,
-            view.as_ref(),
+            &view,
         );
         let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
         if opts.hover_mode != HoverMode::None && has_active {
@@ -1379,21 +1446,21 @@ impl Renderer3D {
     /// Install the shader `sync_color` compiled into the path tracer's blit, once per
     /// [`DisplayKey`] and per path tracer (a lazily created or reset one gets it too).
     pub(crate) fn install_display_transform(&mut self) {
-        let Some(pt) = self.pt.path_tracer.as_mut() else {
+        let Some(blit) = self.pt.blit.as_mut() else {
             return;
         };
         if self.pt.display_key == self.color.key {
             return;
         }
         self.pt.display_key = self.color.key;
-        pt.set_display_transform(&self.ctx.device, self.color.shader.clone());
+        blit.set_display_transform(&self.ctx.device, self.color.shader.clone());
     }
 
     fn pt_frame_count_impl(&self) -> u32 {
         self.pt
             .path_tracer
             .as_ref()
-            .map(|pt| pt.frame_count)
+            .map(|pt| pt.frame_count())
             .unwrap_or(0)
     }
 
@@ -1493,13 +1560,27 @@ impl Renderer3D {
     }
 
     fn pt_pick_impl(&mut self, origin: Vec3, dir: Vec3) -> Option<(u32, f32)> {
-        let pt = self.pt.path_tracer.as_mut()?;
-        pt.gpu_pick(
-            &self.ctx.device,
-            &self.ctx.queue,
-            origin.to_array(),
-            dir.to_array(),
-        )
+        let instances = self.cached_instances.as_ref()?;
+        let min = Vec3::splat(-0.5);
+        let max = Vec3::splat(0.5);
+        let mut best: Option<(u32, f32)> = None;
+        for inst in instances.iter() {
+            if inst.object_id == 0 {
+                continue;
+            }
+            let model = Mat4::from_cols_array_2d(&inst.model);
+            let inv_model = model.inverse();
+            let local_origin = inv_model.transform_point3(origin);
+            let local_dir = inv_model.transform_vector3(dir);
+            if let Some(local_t) = ray_aabb_intersect(local_origin, local_dir, min, max) {
+                let world_hit = model.transform_point3(local_origin + local_dir * local_t);
+                let world_t = (world_hit - origin).length();
+                if best.is_none_or(|(_, best_t)| world_t < best_t) {
+                    best = Some((inst.object_id, world_t));
+                }
+            }
+        }
+        best
     }
 
     /// Look up path for an object ID

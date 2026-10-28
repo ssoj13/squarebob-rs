@@ -7,12 +7,10 @@
 //! 1. `MaterialCache::classify_or_get` maps a path to a
 //!    `material_index` in `0..library.len()` via
 //!    `pt_mats::classify_to_index`.
-//! 2. [`expand_pt_materials_and_ids`] resolves *one*
-//!    `StandardSurfaceParams` per cube (`Material::resolve_for_cube`),
-//!    producing a `(materials, ids)` pair where `ids[i] == i`. This
-//!    natively supports per-attribute variance (each cube has its own
-//!    resolved record) at the cost of a slightly larger GPU material
-//!    storage buffer (~144 bytes per cube).
+//! 2. [`expand_pt_materials_and_ids`] builds a compact variant pool of
+//!    `StandardSurfaceParams` (`PT_VARIANTS_PER_SLOT` variants per
+//!    library slot via `Material::resolve_for_cube`) and maps each cube
+//!    to its `(slot, variant)` entry in `0..materials.len()`.
 
 use std::sync::Arc;
 
@@ -27,13 +25,17 @@ use render_shared::{Render3DOptions, name_hash};
 use crate::geometry::CubeInstance;
 use crate::picking::PickingState;
 
-/// Capacity of the PBR `materials_buf` storage buffer (entries × 144 B
-/// each → 36 KiB at 256). Library indices visible to PBR are clamped to
+/// Capacity of the PBR `materials_buf` storage buffer (entries × 160 B
+/// each → 40 KiB at 256). Library indices visible to PBR are clamped to
 /// `[0, MAX_MATERIAL_SLOTS)` so a user-grown library cannot make the
 /// shader read past the buffer or the per-frame upload exceed buffer
 /// capacity. PT-side resolution is unaffected (its material storage is
 /// sized per-cube, not from this cap).
 pub(crate) const MAX_MATERIAL_SLOTS: u32 = 256;
+
+/// Number of pre-resolved material variants per library slot in the PT
+/// compact material pool (`256 * 16 = 4096` max `GpuMaterial` entries).
+pub(crate) const PT_VARIANTS_PER_SLOT: u32 = 16;
 
 /// Global material params shared across all cubes in the PBR shader. Currently holds
 /// only the materialize-mix (instance color → library albedo blend factor). Kept
@@ -71,6 +73,7 @@ pub(crate) struct MaterialCache {
     /// not double. Reset on `ensure()` settings-change AND on every
     /// fresh `collect_cubes` (via [`Self::reset_overlay_counts`]).
     overlay_applied: [u32; 2],
+    weights_scratch: Vec<f32>,
 }
 
 impl Default for MaterialCache {
@@ -82,6 +85,7 @@ impl Default for MaterialCache {
             scene_max_depth: 1,
             scene_max_size: 1,
             overlay_applied: [0, 0],
+            weights_scratch: Vec::new(),
         }
     }
 }
@@ -158,17 +162,10 @@ impl MaterialCache {
         if lib_len == 0 || opts.mat_source == MaterialSource::None {
             return 0;
         }
-        let path_str = path.to_string_lossy();
-        let path_key = name_hash(&path_str);
-        // `Extension` source needs all cubes that share an extension
-        // to land on the *same* source value — that's the whole point
-        // of the mode. The previous implementation hashed the full
-        // path for both `name_hash` and `path_hash`, which made
-        // Extension and Path behave identically. Now `name_hash` is
-        // a hash of just the extension; `path_hash` keeps the full
-        // path.
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let ext_key = name_hash(ext);
+        let path_key = match path.to_str() {
+            Some(s) => name_hash(s),
+            None => name_hash(&path.to_string_lossy()),
+        };
         let settings = settings_from_opts(opts, is_pt);
         // Position-dependent distributions can't use the per-path
         // cache: re-layout changes positions while leaving paths
@@ -178,6 +175,28 @@ impl MaterialCache {
             settings.distribution,
             pt_mats::MaterialDistribution::Spatial | pt_mats::MaterialDistribution::Perlin
         );
+        let has_active_override = opts.material_overrides.iter().any(|over| {
+            over.enabled && over.material_uuid.is_some() && over.probability.clamp(0.0, 1.0) > 0.0
+        });
+        if !position_dependent && !has_active_override {
+            let bucket = if is_pt {
+                &self.ids_pt
+            } else {
+                &self.ids_pbr
+            };
+            if let Some(&cached) = bucket.get(&path_key) {
+                return cached;
+            }
+        }
+        // `Extension` source needs all cubes that share an extension
+        // to land on the *same* source value — that's the whole point
+        // of the mode. The previous implementation hashed the full
+        // path for both `name_hash` and `path_hash`, which made
+        // Extension and Path behave identically. Now `name_hash` is
+        // a hash of just the extension; `path_hash` keeps the full
+        // path.
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext_key = name_hash(ext);
         let input = MaterialInput {
             name_hash: ext_key,
             path_hash: path_key,
@@ -193,8 +212,8 @@ impl MaterialCache {
         };
 
         // Base classification — cached by `path_key` for non-position
-        // distributions. The `Vec<f32>` is rebuilt on cache miss only,
-        // so cost is bounded.
+        // distributions. Reuses `weights_scratch` on cache miss to avoid
+        // per-cube heap allocations.
         let base_id = {
             let bucket = if is_pt {
                 &mut self.ids_pt
@@ -204,11 +223,13 @@ impl MaterialCache {
             if !position_dependent && let Some(&cached) = bucket.get(&path_key) {
                 cached
             } else {
-                let weights: Vec<f32> = raw_lib.materials[..lib_len]
-                    .iter()
-                    .map(|m| m.weight.max(0.0))
-                    .collect();
-                let id = classify_to_index(&input, &settings, &weights);
+                self.weights_scratch.clear();
+                self.weights_scratch.extend(
+                    raw_lib.materials[..lib_len]
+                        .iter()
+                        .map(|m| m.weight.max(0.0)),
+                );
+                let id = classify_to_index(&input, &settings, &self.weights_scratch);
                 if !position_dependent {
                     bucket.insert(path_key, id);
                 }
@@ -314,6 +335,7 @@ pub(crate) fn settings_from_opts(opts: &Render3DOptions, is_pt: bool) -> Materia
         spatial_scale: opts.mat_spatial_scale,
         palette: opts.mat_palette,
         path_hierarchical: opts.mat_path_hierarchical,
+        ..MaterializeSettings::default()
     }
 }
 
@@ -336,7 +358,7 @@ fn pt_expand_opts_hash(opts: &Render3DOptions) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     // Library contents: UUID identifies each slot, params + variance
-    // drive resolution. Hash 40 lanes (10 vec4s × 4 channels) per slot.
+    // drive resolution. Hash 36 lanes (9 vec4s × 4 channels) per slot.
     for m in &opts.material_library.materials {
         m.uuid.hash(&mut h);
         let p: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&m.params));
@@ -356,7 +378,7 @@ pub(crate) fn pt_expand_cache_key(
     opts: &Render3DOptions,
     mat_settings_hash: u64,
     scene_meta: (u32, u64),
-    picking: &PickingState,
+    _picking: &PickingState,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -364,84 +386,61 @@ pub(crate) fn pt_expand_cache_key(
     scene_meta.0.hash(&mut h);
     scene_meta.1.hash(&mut h);
     instances.len().hash(&mut h);
+    (opts.mat_source as u8).hash(&mut h);
     pt_expand_opts_hash(opts).hash(&mut h);
-    for inst in instances {
-        inst.object_id.hash(&mut h);
-        for c in &inst.color {
-            c.to_bits().hash(&mut h);
-        }
-        if opts.mat_source == MaterialSource::None {
-            0xF0u8.hash(&mut h);
-        } else if let Some(path) = picking.path_for_id(inst.object_id) {
-            let is_dir = picking.is_dir_for_id(inst.object_id).unwrap_or(false);
-            let size = picking.size_for_id(inst.object_id).unwrap_or(0);
-            1u8.hash(&mut h);
-            is_dir.hash(&mut h);
-            size.hash(&mut h);
-            name_hash(&path.to_string_lossy()).hash(&mut h);
-        } else {
-            2u8.hash(&mut h);
-        }
+    if let Some(first) = instances.first() {
+        first.object_id.hash(&mut h);
+        first.material_id.hash(&mut h);
+    }
+    if let Some(last) = instances.last() {
+        last.object_id.hash(&mut h);
+        last.material_id.hash(&mut h);
     }
     h.finish()
 }
 
-/// Build the per-cube `GpuMaterial` table for the PT pipeline.
+/// Build the compact `GpuMaterial` variant pool and per-instance material IDs for the PT pipeline.
 ///
-/// Each cube becomes one entry in the output `Vec<GpuMaterial>`; the
-/// `material_ids` vec is therefore the identity map `[0, 1, .., N-1]`.
-/// This trades a slightly larger GPU buffer (~144 bytes per cube) for a
-/// model that natively supports per-cube variance — each cube hashes
-/// its `object_id` through `Material::resolve_for_cube`, so two cubes
-/// pointing at the same library slot can land on different shades of
-/// the same family.
+/// Pre-resolves `PT_VARIANTS_PER_SLOT` variants per library slot (`<= 4096` entries total)
+/// and maps each cube to `slot * PT_VARIANTS_PER_SLOT + variant` using its pre-classified
+/// `inst.material_id` and deterministic `inst.object_id` hash.
 pub(crate) fn expand_pt_materials_and_ids(
     library: &MaterialLibrary,
-    mat_cache: &mut MaterialCache,
-    picking: &PickingState,
+    _mat_cache: &mut MaterialCache,
+    _picking: &PickingState,
     instances: &[CubeInstance],
     opts: &Render3DOptions,
 ) -> (Vec<GpuMaterial>, Vec<u32>) {
-    // Mirror the PBR cap so a user-grown library cannot drive
-    // `material_index` past the slot range the shader can read.
     let lib_size = library.len().min(MAX_MATERIAL_SLOTS as usize);
-    let mut materials = Vec::with_capacity(instances.len());
-    let mut material_ids = Vec::with_capacity(instances.len());
-
-    for inst in instances {
-        let lib_idx = if lib_size > 0 && opts.mat_source != MaterialSource::None {
-            let path_opt = picking.path_for_id(inst.object_id);
-            let is_dir = picking.is_dir_for_id(inst.object_id).unwrap_or(false);
-            let size = picking.size_for_id(inst.object_id).unwrap_or(0);
-            if let Some(path) = path_opt {
-                if is_dir && !opts.mat_include_dirs {
-                    0
-                } else {
-                    // Translation column of the column-major model
-                    // matrix → world-space cube centre. Required by
-                    // the position-dependent (Spatial / Perlin)
-                    // distributions; ignored otherwise.
-                    let pos = [inst.model[3][0], inst.model[3][1], inst.model[3][2]];
-                    mat_cache.classify_or_get(path, size, 0, pos, opts, true) as usize
-                }
-            } else {
-                0
+    let mut materials = Vec::with_capacity((lib_size * PT_VARIANTS_PER_SLOT as usize).max(1));
+    if lib_size > 0 && opts.mat_source != MaterialSource::None {
+        for slot_idx in 0..lib_size {
+            let mat = &library.materials[slot_idx];
+            for v in 0..PT_VARIANTS_PER_SLOT {
+                let resolved = mat.resolve_for_cube(u64::from(v) + 1).sanitized_for_gpu();
+                materials.push(GpuMaterial::from(&resolved));
             }
-        } else {
-            0
-        };
-        let lib_idx = lib_idx.min(lib_size.saturating_sub(1));
-        // `GpuMaterial` is a type alias for `StandardSurfaceParams`
-        // (see `pt-core/src/bvh.rs`), so `resolve_for_cube` lands the
-        // value directly into the GPU buffer without a cast.
-        let resolved: GpuMaterial = if lib_size > 0 {
-            library.materials[lib_idx].resolve_for_cube(inst.object_id as u64)
-        } else {
-            StandardSurfaceParams::default()
-        };
-        materials.push(resolved);
-        material_ids.push(materials.len() as u32 - 1);
+        }
+    } else {
+        let fallback = StandardSurfaceParams::default().sanitized_for_gpu();
+        materials.push(GpuMaterial::from(&fallback));
     }
+
+    let material_ids: Vec<u32> = if lib_size > 0 && opts.mat_source != MaterialSource::None {
+        let max_slot = (lib_size - 1) as u32;
+        instances
+            .iter()
+            .map(|inst| {
+                let slot = inst.material_id.min(max_slot);
+                let variant =
+                    (inst.object_id.wrapping_mul(0x9E37_79B9) >> 28) % PT_VARIANTS_PER_SLOT;
+                slot * PT_VARIANTS_PER_SLOT + variant
+            })
+            .collect()
+    } else {
+        vec![0; instances.len()]
+    };
+
     (materials, material_ids)
 }
 
@@ -449,14 +448,26 @@ pub(crate) fn build_pt_instances(
     instances: &[CubeInstance],
     material_ids: &[u32],
 ) -> Vec<Instance> {
-    instances
-        .iter()
-        .zip(material_ids.iter())
-        .map(|(inst, &material_id)| {
-            let model = Mat4::from_cols_array_2d(&inst.model);
-            Instance::from_cube(model, inst.color, inst.object_id, material_id)
-        })
-        .collect()
+    use rayon::prelude::*;
+    if instances.len() >= 4096 {
+        instances
+            .par_iter()
+            .zip(material_ids.par_iter())
+            .map(|(inst, &material_id)| {
+                let model = Mat4::from_cols_array_2d(&inst.model);
+                Instance::from_cube(model, inst.color, inst.object_id, material_id)
+            })
+            .collect()
+    } else {
+        instances
+            .iter()
+            .zip(material_ids.iter())
+            .map(|(inst, &material_id)| {
+                let model = Mat4::from_cols_array_2d(&inst.model);
+                Instance::from_cube(model, inst.color, inst.object_id, material_id)
+            })
+            .collect()
+    }
 }
 
 pub(crate) fn prepare_pt_expanded_materials(
@@ -490,4 +501,61 @@ pub(crate) fn prepare_pt_expanded_materials(
     });
     let pt_instances = build_pt_instances(instances, &entry.material_ids);
     (arc, pt_instances)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_material_stride_and_pt_expansion_parity() {
+        assert_eq!(
+            std::mem::size_of::<GpuMaterial>(),
+            160,
+            "GpuMaterial must match 160B (10 x vec4<f32>) shader layout"
+        );
+        assert_eq!(
+            std::mem::size_of::<StandardSurfaceParams>(),
+            144,
+            "StandardSurfaceParams has 9 x vec4<f32> (144B) before GpuMaterial::from conversion"
+        );
+
+        let mut mat_cache = MaterialCache::default();
+        let picking = PickingState::new();
+        let opts = Render3DOptions {
+            mat_source: MaterialSource::Extension,
+            ..Render3DOptions::default()
+        };
+        let lib = opts.material_library.clone();
+
+        let instances = vec![
+            CubeInstance {
+                model: Mat4::IDENTITY.to_cols_array_2d(),
+                color: [0.8, 0.2, 0.1, 1.0],
+                object_id: 1,
+                hash: 101,
+                material_id: 0,
+                _pad: 0,
+            },
+            CubeInstance {
+                model: Mat4::IDENTITY.to_cols_array_2d(),
+                color: [0.1, 0.7, 0.3, 1.0],
+                object_id: 2,
+                hash: 202,
+                material_id: 1,
+                _pad: 0,
+            },
+        ];
+
+        let (materials, material_ids) =
+            expand_pt_materials_and_ids(&lib, &mut mat_cache, &picking, &instances, &opts);
+        assert_eq!(
+            materials.len(),
+            lib.len().min(MAX_MATERIAL_SLOTS as usize) * PT_VARIANTS_PER_SLOT as usize
+        );
+        assert_eq!(material_ids.len(), instances.len());
+        for &id in &material_ids {
+            assert!((id as usize) < materials.len());
+        }
+    }
 }

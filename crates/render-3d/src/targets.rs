@@ -7,7 +7,6 @@ use super::pipelines::BindGroupLayouts;
 pub struct RenderTargets {
     pub render_texture: wgpu::Texture,
     pub render_view: wgpu::TextureView,
-    #[allow(dead_code)] // Must stay alive for depth_view
     pub depth_texture: wgpu::Texture,
     pub depth_view: wgpu::TextureView,
     pub object_id_texture: wgpu::Texture,
@@ -81,7 +80,10 @@ impl RenderTargets {
 
 impl DynamicBindGroups {
     /// Create bind groups that reference render targets + shared resources
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "dynamic bind group constructor takes device, layouts, targets, and uniform/env bindings"
+    )]
     pub fn new(
         device: &wgpu::Device,
         layouts: &BindGroupLayouts,

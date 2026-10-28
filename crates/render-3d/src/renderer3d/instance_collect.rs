@@ -24,7 +24,10 @@ impl Renderer3D {
     // Cube collection (builds instances + ID mapping)
     // ========================================================================
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "tree traversal context parameters"
+    )]
     pub(crate) fn collect_cubes(
         &mut self,
         root: &DirEntry,
@@ -36,6 +39,10 @@ impl Renderer3D {
         fov: f32,
     ) -> Vec<CubeInstance> {
         let start = std::time::Instant::now();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         // Stage A.1 verification instrumentation: every entry into this
         // function is a full instance rebuild. Used to confirm that
         // shader-side uniforms (e.g. materialize_mix) do not invalidate
@@ -46,6 +53,11 @@ impl Renderer3D {
             self.cached_instances_rebuild_count
         );
         let need_picking = opts.hover_mode != HoverMode::None || opts.path_tracing;
+        let est_capacity = self
+            .picking
+            .active_len()
+            .max(self.picking.entries.len())
+            .max(1024);
         self.picking.reset_frame(false);
         // Drop mat-class cache once per frame if mat-settings changed.
         self.mat_cache.ensure(opts);
@@ -59,7 +71,7 @@ impl Renderer3D {
         let (scene_max_depth, scene_max_size) = scan_scene_bounds(root, 0);
         self.mat_cache
             .set_scene_meta(scene_max_depth, scene_max_size);
-        let mut instances = Vec::new();
+        let mut instances = Vec::with_capacity(est_capacity);
         let lod_ctx = if opts.lod_enabled {
             Some((camera_eye, screen_height, fov, opts.lod_min_screen_size))
         } else {
@@ -74,6 +86,7 @@ impl Renderer3D {
             world_center,
             need_picking,
             lod_ctx,
+            now_secs,
             &mut instances,
         );
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -107,7 +120,10 @@ impl Renderer3D {
         instances
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "tree traversal context parameters"
+    )]
     pub(crate) fn collect_instances(
         &mut self,
         node: &DirEntry,
@@ -118,9 +134,23 @@ impl Renderer3D {
         world_center: Vec3,
         need_picking: bool,
         lod_ctx: Option<(Vec3, f32, f32, f32)>, // (cam_eye, screen_h, fov, min_size)
+        now_secs: u64,
         out: &mut Vec<CubeInstance>,
     ) {
-        let mut pending = vec![(node, depth, dir_hash)];
+        let (scene_max_depth, scene_max_size) = self.mat_cache.scene_meta();
+        let max_log = ((scene_max_size as f64).max(1.0).log10()).max(1.0);
+        let mode_default_palette = opts
+            .mat_palette
+            .unwrap_or_else(|| default_palette_for_color_mode(opts.color_mode));
+        let color_ramp = opts.color_ramps.get(opts.color_mode as usize);
+        let folder_tint = opts.folder_tint.clamp(0.0, 1.0);
+        let folder_default = default_palette_for_folder_mode(opts.folder_color_mode);
+        let folder_ramp = opts.folder_ramps.get(opts.folder_color_mode as usize);
+        let active_hash_strength = opts.active_hash_strength();
+        let active_hash_time = opts.active_hash_time();
+
+        let mut pending = Vec::with_capacity(256);
+        pending.push((node, depth, dir_hash));
         while let Some((node, depth, dir_hash)) = pending.pop() {
             let [x, y, w, h] = node.rect.get();
             if w < 1.0 || h < 1.0 || node.size == 0 {
@@ -157,24 +187,22 @@ impl Renderer3D {
                 // / depth); the active ramp's palette + distribution + curve
                 // turns that into an RGB tint. Auto-routes palette by source
                 // if the user hasn't pinned one.
-                let (scene_max_depth, scene_max_size) = self.mat_cache.scene_meta();
                 let t = match opts.color_mode {
                     ColorMode::FileType => name_hash(&node.ext) as f32 / u32::MAX as f32,
                     ColorMode::FileAge => {
                         if let Some(mtime) = node.modified_time {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            let age_secs = now.saturating_sub(mtime);
+                            let age_secs = now_secs.saturating_sub(mtime);
                             let year_secs = 365 * 24 * 60 * 60;
                             (age_secs as f32 / year_secs as f32).clamp(0.0, 1.0)
                         } else {
-                            (name_hash(&node.path.to_string_lossy()) % 1000) as f32 / 1000.0
+                            let path_h = match node.path.to_str() {
+                                Some(s) => name_hash(s),
+                                None => name_hash(&node.path.to_string_lossy()),
+                            };
+                            (path_h % 1000) as f32 / 1000.0
                         }
                     }
                     ColorMode::FileSize => {
-                        let max_log = ((scene_max_size as f64).max(1.0).log10()).max(1.0);
                         if node.size > 0 {
                             (((node.size as f64).log10()) / max_log).clamp(0.0, 1.0) as f32
                         } else {
@@ -193,18 +221,10 @@ impl Renderer3D {
                 // are on Auto. That makes the "Palette" knob in the
                 // Materials section a single visible-everywhere control,
                 // not a dead widget.
-                let mode_default_palette = opts
-                    .mat_palette
-                    .unwrap_or_else(|| default_palette_for_color_mode(opts.color_mode));
-                let mut base_color = sample_color_ramp(
-                    t,
-                    opts.color_ramps.get(opts.color_mode as usize),
-                    mode_default_palette,
-                    &node.path,
-                );
+                let mut base_color =
+                    sample_color_ramp(t, color_ramp, mode_default_palette, &node.path);
 
                 // Folder tint: directories get a folder color, files are tinted by parent folder color
-                let folder_tint = opts.folder_tint.clamp(0.0, 1.0);
                 if folder_tint > 0.0 || node.is_dir {
                     let folder_depth = if node.is_dir {
                         depth
@@ -224,19 +244,17 @@ impl Renderer3D {
                         FolderColorMode::NameHash => {
                             let h = folder_path
                                 .file_name()
-                                .map(|n| name_hash(&n.to_string_lossy()))
+                                .map(|n| match n.to_str() {
+                                    Some(s) => name_hash(s),
+                                    None => name_hash(&n.to_string_lossy()),
+                                })
                                 .unwrap_or(dir_hash);
                             h as f32 / u32::MAX as f32
                         }
                         FolderColorMode::PathHash => hierarchical_path_value(folder_path),
                     };
-                    let folder_default = default_palette_for_folder_mode(opts.folder_color_mode);
-                    let mut folder_color = sample_color_ramp(
-                        folder_t,
-                        opts.folder_ramps.get(opts.folder_color_mode as usize),
-                        folder_default,
-                        folder_path,
-                    );
+                    let mut folder_color =
+                        sample_color_ramp(folder_t, folder_ramp, folder_default, folder_path);
                     // Depth attenuation: deeper folders → darker tint.
                     let depth_factor = (1.0 - folder_depth as f32 * 0.04).clamp(0.35, 1.0);
                     folder_color[0] *= depth_factor;
@@ -314,8 +332,8 @@ impl Renderer3D {
                     pos,
                     world_center,
                     opts.hash_effect,
-                    opts.active_hash_strength(),
-                    opts.active_hash_time(),
+                    active_hash_strength,
+                    active_hash_time,
                 );
                 let model = Mat4::from_translation(pos + transform.offset)
                     * Mat4::from_quat(transform.rotation)

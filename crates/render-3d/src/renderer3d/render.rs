@@ -15,6 +15,10 @@ use crate::targets::{DynamicBindGroups, RenderTargets};
 use crate::{Renderer3D, pt};
 
 impl Renderer3D {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "3D viewport render entry point accepts root, dimensions, camera, options, and selection state"
+    )]
     pub fn render_to_view(
         &mut self,
         root: &DirEntry,
@@ -210,11 +214,11 @@ impl Renderer3D {
     // Picking / outline shared passes
     // ========================================================================
     //
-    // These two helpers eliminate the structural duplication between
-    // the PBR/wireframe flow (`encode_passes` in `lib.rs`) and the PT
-    // outline+picking encoder (further up in this file). Both modes
-    // now call exactly the same code, so future depth/blend/format
-    // tweaks land once and apply uniformly.
+    // `encode_object_id_pass` is shared between the transparent X-ray fallback
+    // (`encode_passes` in `lib.rs`; opaque PBR and wireframe write Object IDs
+    // via single-pass MRT in the main pass) and the PT outline+picking encoder
+    // (further up in this file). `encode_outline_pass` composites the selection
+    // and hover outline overlay across all modes.
 
     /// Render the per-pixel u32 Object ID texture used by hover
     /// picking. Caller gates on `opts.hover_mode != None`; the pass

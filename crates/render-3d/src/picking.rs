@@ -4,14 +4,12 @@
 /// Matches `cube_object_id.wgsl` — selected instances OR this into the R32Uint object_id texture.
 pub const OBJECT_ID_SELECTED_BIT: u32 = 0x8000_0000;
 
-/// Strip GPU-only bits so lookups match `id_map` keys (allocated without SELECTED_BIT).
+/// Strip GPU-only bits so lookups match `entries` indices (allocated without SELECTED_BIT).
 #[inline]
 pub fn canonical_object_id(id: u32) -> u32 {
     id & !OBJECT_ID_SELECTED_BIT
 }
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
 /// Combined pick info for a single object ID
@@ -35,9 +33,9 @@ pub struct PickingState {
     texture_width: u32,
     /// Last successfully read ID
     pub hovered_id: u32,
-    /// object_id -> pick info (path, size, is_dir) - rebuilt each frame
-    pub id_map: HashMap<u32, PickInfo>,
-    /// Next available object ID (0 = background)
+    /// Dense flat table: object_id `id >= 1` maps to `entries[(id - 1) as usize]`
+    pub entries: Vec<PickInfo>,
+    /// Next available object ID (0 = background; active IDs are `1..next_id`)
     pub next_id: u32,
 }
 
@@ -56,15 +54,21 @@ impl PickingState {
             pending_px: None,
             texture_width: 0,
             hovered_id: 0,
-            id_map: HashMap::new(),
+            entries: Vec::new(),
             next_id: 1,
         }
+    }
+
+    /// Number of active object IDs allocated in the current frame.
+    #[inline]
+    pub fn active_len(&self) -> usize {
+        (self.next_id.saturating_sub(1) as usize).min(self.entries.len())
     }
 
     /// Reset the active ID range for a new instance collection.
     /// Retain entries for path allocation reuse; lookups ignore inactive IDs.
     pub fn reset_frame(&mut self, clear_hover: bool) {
-        log::trace!("picking.reset_frame: {} entries (reuse)", self.id_map.len());
+        log::trace!("picking.reset_frame: {} entries (reuse)", self.entries.len());
         self.next_id = 1;
         if clear_hover {
             self.hovered_id = 0;
@@ -74,30 +78,27 @@ impl PickingState {
     }
 
     /// Allocate a new object ID and map it to a path.
-    /// Skips PathBuf clone if existing entry already matches (common during animation).
+    /// Reuses existing `PathBuf` allocations in `entries` when possible.
     pub fn alloc_id(&mut self, path: &std::path::Path, size: u64, is_dir: bool) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        match self.id_map.entry(id) {
-            Entry::Occupied(mut e) if e.get().path.as_path() == path => {
-                let info = e.get_mut();
-                info.size = size;
-                info.is_dir = is_dir;
+        let idx = (id - 1) as usize;
+        if idx < self.entries.len() {
+            if self.entries[idx].path.as_path() == path {
+                self.entries[idx].size = size;
+                self.entries[idx].is_dir = is_dir;
+            } else {
+                self.entries[idx].path.clear();
+                self.entries[idx].path.push(path);
+                self.entries[idx].size = size;
+                self.entries[idx].is_dir = is_dir;
             }
-            Entry::Occupied(mut e) => {
-                e.insert(PickInfo {
-                    path: path.to_path_buf(),
-                    size,
-                    is_dir,
-                });
-            }
-            Entry::Vacant(e) => {
-                e.insert(PickInfo {
-                    path: path.to_path_buf(),
-                    size,
-                    is_dir,
-                });
-            }
+        } else {
+            self.entries.push(PickInfo {
+                path: path.to_path_buf(),
+                size,
+                is_dir,
+            });
         }
         id
     }
@@ -236,7 +237,7 @@ impl PickingState {
         self.pending_px = None;
         let raw = result?;
 
-        // Texture encodes selected instances as id | SELECTED_BIT; id_map uses canonical ids only.
+        // Texture encodes selected instances as id | SELECTED_BIT; entries uses canonical ids only.
         let id = canonical_object_id(raw);
         self.hovered_id = if self.info_for_id(id).is_some() {
             id
@@ -256,9 +257,9 @@ impl PickingState {
         let result = self.info_for_id(id).map(|info| &info.path);
         if result.is_none() {
             log::debug!(
-                "path_for_id({}): not found in id_map (map has {} entries)",
+                "path_for_id({}): not found in entries ({} active entries)",
                 id,
-                self.id_map.len()
+                self.active_len()
             );
         }
         result
@@ -266,10 +267,17 @@ impl PickingState {
 
     /// Look up object ID for a path (reverse lookup)
     pub fn id_for_path(&self, path: &std::path::Path) -> Option<u32> {
-        self.id_map
-            .iter()
-            .find(|(id, info)| **id > 0 && **id < self.next_id && info.path.as_path() == path)
-            .map(|(id, _)| *id)
+        use rayon::prelude::*;
+        let active_len = (self.next_id.saturating_sub(1) as usize).min(self.entries.len());
+        let slice = &self.entries[..active_len];
+        let pos = if active_len >= 4096 {
+            slice
+                .par_iter()
+                .position_first(|info| info.path.as_path() == path)
+        } else {
+            slice.iter().position(|info| info.path.as_path() == path)
+        };
+        pos.map(|idx| (idx + 1) as u32)
     }
 
     /// Look up file size for an object ID
@@ -283,11 +291,12 @@ impl PickingState {
     }
 
     /// Get full pick info for an object ID
+    #[inline]
     pub fn info_for_id(&self, id: u32) -> Option<&PickInfo> {
         let id = canonical_object_id(id);
         if id == 0 || id >= self.next_id {
             return None;
         }
-        self.id_map.get(&id)
+        self.entries.get((id - 1) as usize)
     }
 }

@@ -191,3 +191,17 @@ pub const CUBE_INDICES: &[u16] = &[
 ];
 
 pub const NUM_INDICES: u32 = 36;
+
+/// 12 unique edges of the unit cube (24 indices for `PrimitiveTopology::LineList`).
+/// Eliminates the 6 face diagonal lines produced by triangle PolygonMode::Line
+/// and cuts wireframe vertex processing by 33%.
+pub const CUBE_LINE_INDICES: &[u16] = &[
+    // Front face (+Z)
+    0, 1, 1, 2, 2, 3, 3, 0,
+    // Back face (-Z)
+    4, 5, 5, 6, 6, 7, 7, 4,
+    // Connecting edges (+Z to -Z)
+    0, 5, 1, 4, 2, 7, 3, 6,
+];
+pub const NUM_LINE_INDICES: u32 = 24;
+

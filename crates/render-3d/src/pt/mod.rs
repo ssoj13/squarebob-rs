@@ -1,5 +1,6 @@
 //! Path tracing backend selection and dispatch.
 
+pub mod blit;
 pub(crate) mod megakernel;
 mod spectral;
 mod wavefront;
@@ -11,7 +12,6 @@ use render_shared::{OrbitCamera, Render3DOptions, SpectralMode};
 pub enum PtBackendKind {
     Megakernel,
     Wavefront,
-    #[allow(dead_code)]
     Spectral,
 }
 

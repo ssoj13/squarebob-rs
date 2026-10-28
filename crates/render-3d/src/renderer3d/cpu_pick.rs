@@ -13,7 +13,10 @@ use treemap::TreeMapOptions;
 use crate::{CpuPickHit, Renderer3D, ray_aabb_intersect};
 
 impl Renderer3D {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "CPU raycast entry point accepts scene root, viewport dimensions, camera, options, and cursor coordinates"
+    )]
     pub fn cpu_pick(
         &self,
         root: &DirEntry,
@@ -58,7 +61,10 @@ impl Renderer3D {
         hit
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "iterative tree raycast helper threads node, depth, hash, options, world center, ray, and closest hit"
+    )]
     fn pick_tree(
         &self,
         node: &DirEntry,

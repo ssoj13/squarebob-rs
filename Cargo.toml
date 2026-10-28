@@ -15,21 +15,13 @@ path = "src/main.rs"
 [workspace]
 members = [
     "crates/squarebob-core",
-    "crates/pt-core",
-    "crates/bvh-gpu",
-    "crates/pt-megakernel",
-    "crates/pt-wavefront",
-    "crates/pt-mats",
     "crates/render-core",
     "crates/render-shared",
     "crates/render-3d",
     "crates/media-encoder",
     "crates/xtask",
     "crates/treemap",
-    "crates/gpu-mem",
-    "crates/standard-surface",
     "crates/squarebob-widgets",
-    "crates/pt-material",
     "crates/playa-ae",
     "crates/egui-colorpicker",
 ]
@@ -133,21 +125,21 @@ render-color-gpu = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch =
 # OCIO config machinery.
 vfx-lut = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main" }
 
-# Internal crate paths
+# Internal crate paths and shared cglibs crates (render-rs + gpu-info-rs)
 squarebob-core = { path = "crates/squarebob-core" }
 render-core = { path = "crates/render-core" }
 render-shared = { path = "crates/render-shared" }
 render-3d = { path = "crates/render-3d" }
 treemap = { path = "crates/treemap" }
-pt-core = { path = "crates/pt-core" }
-pt-mats = { path = "crates/pt-mats" }
-pt-material = { path = "crates/pt-material" }
-pt-megakernel = { path = "crates/pt-megakernel" }
-pt-wavefront = { path = "crates/pt-wavefront" }
-bvh-gpu = { path = "crates/bvh-gpu" }
-gpu-mem = { path = "crates/gpu-mem" }
+pt-core = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
+pt-mats = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
+pt-material = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
+pt-megakernel = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
+pt-cuda = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
+bvh-gpu = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
+gpu-mem = { package = "gpu-info-rs", git = "ssh://git@github.com/ssoj13/gpu-info-rs.git", branch = "main", features = ["wgpu"] }
 media-encoder = { path = "crates/media-encoder" }
-standard-surface = { path = "crates/standard-surface" }
+standard-surface = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 squarebob-widgets = { path = "crates/squarebob-widgets" }
 playa-ae = { path = "crates/playa-ae" }
 egui-colorpicker = { path = "crates/egui-colorpicker" }
@@ -194,7 +186,6 @@ treemap = { workspace = true, features = ["wgpu"] }
 pt-core = { workspace = true }
 bvh-gpu = { workspace = true }
 pt-megakernel = { workspace = true }
-pt-wavefront = { workspace = true }
 pt-mats = { workspace = true }
 pt-material = { workspace = true }
 squarebob-widgets = { workspace = true }
@@ -217,6 +208,16 @@ windows = { workspace = true }
 tempfile = "3"
 # `display_blit_probe` compiles the OCIO canvas processor for the blit, as render-3d does.
 render-color-gpu = { workspace = true }
+
+[features]
+default = []
+cuda = ["render-3d/cuda"]
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 opt-level = 3

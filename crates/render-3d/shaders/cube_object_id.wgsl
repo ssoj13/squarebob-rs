@@ -47,17 +47,6 @@ struct VertexOutput {
     @location(0) @interpolate(flat) object_id: u32,
 }
 
-@vertex
-fn vs_main(v: VertexInput, i: InstanceInput) -> VertexOutput {
-    let model = mat4x4<f32>(i.model_0, i.model_1, i.model_2, i.model_3);
-    let wp = model * vec4<f32>(v.position, 1.0);
-
-    var out: VertexOutput;
-    out.position = camera.view_proj * wp;
-    out.object_id = i.object_id;
-    return out;
-}
-
 /// Check if object_id is in selected set (unlimited size)
 fn is_selected(id: u32) -> bool {
     let count = selected.count;
@@ -69,11 +58,23 @@ fn is_selected(id: u32) -> bool {
     return false;
 }
 
+@vertex
+fn vs_main(v: VertexInput, i: InstanceInput) -> VertexOutput {
+    let model = mat4x4<f32>(i.model_0, i.model_1, i.model_2, i.model_3);
+    let wp = model * vec4<f32>(v.position, 1.0);
+
+    var oid = i.object_id;
+    if oid != 0u && is_selected(oid) {
+        oid = oid | SELECTED_BIT;
+    }
+
+    var out: VertexOutput;
+    out.position = camera.view_proj * wp;
+    out.object_id = oid;
+    return out;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) u32 {
-    // Mark selected objects with SELECTED_BIT
-    if is_selected(in.object_id) {
-        return in.object_id | SELECTED_BIT;
-    }
     return in.object_id;
 }

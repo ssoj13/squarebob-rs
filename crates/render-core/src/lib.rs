@@ -382,11 +382,10 @@ pub mod gpu {
         pub adapter: Arc<wgpu::Adapter>,
         pub device: Arc<wgpu::Device>,
         pub queue: Arc<wgpu::Queue>,
-        /// Best-effort VRAM intel queried at init via `gpu-mem`. `None`
-        /// when no platform method (nvidia-smi / registry / sysfs /
-        /// system_profiler) could determine it. Consumers should treat
-        /// missing data as "limits unknown — use conservative defaults".
-        pub gpu_info: Option<gpu_mem::GpuMemInfo>,
+        /// Canonical shared ownership context (`gpu-info-rs`) minted once from `(device, queue)`.
+        pub work_context: gpu_mem::WorkContext,
+        /// Best-effort VRAM intel queried at init via `gpu-info-rs` (`gpu_mem::os`).
+        pub gpu_info: Option<gpu_mem::os::GpuMemInfo>,
     }
 
     impl GpuContext {
@@ -458,7 +457,7 @@ pub mod gpu {
                     }
                 };
 
-            let gpu_info = gpu_mem::query();
+            let gpu_info = gpu_mem::os::query();
             if let Some(info) = &gpu_info {
                 let to_mib = |b: u64| b / (1024 * 1024);
                 log::info!(
@@ -472,48 +471,54 @@ pub mod gpu {
                 log::info!("GPU: VRAM query unavailable on this platform");
             }
 
+            let instance = Arc::new(instance);
+            let adapter = Arc::new(adapter);
+            let device = Arc::new(device);
+            let queue = Arc::new(queue);
+            let work_context = gpu_mem::WorkContext::from((Arc::clone(&device), Arc::clone(&queue)));
+            let vram_budget = gpu_info.as_ref().and_then(|info| {
+                let headroom = if info.free_vram > 0 {
+                    info.free_vram
+                } else {
+                    info.dedicated_vram
+                };
+                (headroom > 0).then(|| gpu_mem::budget::vram_budget_from(headroom, info.unified))
+            });
+            work_context
+                .memory()
+                .set_limit(Some(vram_budget.unwrap_or(u64::MAX / 2)));
+
             Some(Self {
-                instance: Arc::new(instance),
-                adapter: Arc::new(adapter),
-                device: Arc::new(device),
-                queue: Arc::new(queue),
+                instance,
+                adapter,
+                device,
+                queue,
+                work_context,
                 gpu_info,
             })
         }
 
         /// Conservative VRAM budget for large transient buffers
-        /// (BVH, wavefront tile state, OIDN aux). Delegates to
-        /// [`gpu_mem::budget_from`] so the 75 %-of-free rule lives in
-        /// one place. Returns `None` when `gpu-mem` could not
-        /// determine VRAM size for the active adapter.
+        /// (BVH, OIDN aux). Delegates to [`gpu_mem::budget::vram_budget_from`].
         pub fn vram_budget(&self) -> Option<u64> {
-            gpu_mem::budget_from(self.gpu_info.as_ref()?)
+            let info = self.gpu_info.as_ref()?;
+            let headroom = if info.free_vram > 0 {
+                info.free_vram
+            } else {
+                info.dedicated_vram
+            };
+            (headroom > 0).then(|| gpu_mem::budget::vram_budget_from(headroom, info.unified))
         }
     }
 
     /// Single unified entry point for creating a GPU buffer.
-    ///
-    /// Behaviour:
-    /// - Applies the WebGPU 16-byte minimum (`size.max(16)`) so callers
-    ///   don't each repeat the same guard.
-    /// - Calls [`gpu_mem::note_alloc`] *before* allocation so the log
-    ///   shows the requested size even if `create_buffer` itself
-    ///   triggers an OOM panic.
-    /// - `mapped_at_creation` is always `false`. Use [`make_buffer_init`]
-    ///   when initial contents are known up-front.
-    ///
-    /// Use this instead of `device.create_buffer(...)` for every
-    /// buffer in the workspace — storage, uniform, vertex, index,
-    /// readback staging. The helper is the single place that knows
-    /// about VRAM accounting; callers stay focused on size + usage
-    /// flags.
     pub fn make_buffer(
         device: &wgpu::Device,
         label: &str,
         size: u64,
         usage: wgpu::BufferUsages,
     ) -> wgpu::Buffer {
-        gpu_mem::note_alloc(label, size);
+        log::trace!("GPU alloc: {} ({} bytes)", label, size);
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: size.max(16),
@@ -522,14 +527,7 @@ pub mod gpu {
         })
     }
 
-    /// Pre-populated variant of [`make_buffer`]. Wraps
-    /// `wgpu::util::DeviceExt::create_buffer_init` so initial contents
-    /// land in the buffer via a single mapped-at-creation copy
-    /// (faster than `create_buffer + queue.write_buffer` for small
-    /// param buffers that change rarely).
-    ///
-    /// Size is taken from `contents.len()` and the same
-    /// [`gpu_mem::note_alloc`] visibility hook runs first.
+    /// Pre-populated variant of [`make_buffer`].
     pub fn make_buffer_init(
         device: &wgpu::Device,
         label: &str,
@@ -537,7 +535,7 @@ pub mod gpu {
         usage: wgpu::BufferUsages,
     ) -> wgpu::Buffer {
         use wgpu::util::DeviceExt as _;
-        gpu_mem::note_alloc(label, contents.len() as u64);
+        log::trace!("GPU alloc init: {} ({} bytes)", label, contents.len());
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
             contents,

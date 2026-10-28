@@ -18,7 +18,15 @@ Primary constraints for future agents:
 
 ## Workspace inventory
 
-`Cargo.toml:15-37` lists 19 members: `squarebob-core`, `pt-core`, `bvh-gpu`, `pt-megakernel`, `pt-wavefront`, `pt-mats`, `render-core`, `render-shared`, `render-3d`, `media-encoder`, `xtask`, `treemap`, `pt-denoise-oidn`, `gpu-mem`, `standard-surface`, `squarebob-widgets`, `pt-material`, `playa-ae` and `egui-colorpicker` (`color-pipeline` was removed 2026-10-23 for render-rs `render-color`). Earlier file counts and bug-hunt artifact claims were historical snapshots.
+`Cargo.toml` lists 10 local workspace members: `squarebob-core`, `render-core`, `render-shared`, `render-3d`, `media-encoder`, `xtask`, `treemap`, `squarebob-widgets`, `playa-ae`, and `egui-colorpicker`. All path-tracing, BVH, material, OIDN denoiser, and color-pipeline crates (`pt-core`, `bvh-gpu`, `pt-megakernel`, `pt-cuda`, `pt-mats`, `pt-material`, `standard-surface`, `pt-denoise-oidn`, `render-color`, `render-color-gpu`) are consumed from the canonical `render-rs` repository, and `gpu-mem` (`gpu-info-rs`) is consumed from the canonical `gpu-info-rs` repository (`BUG1.md`, 2026-10-27).
+
+## 3D Renderer & 1M–20M Cube Instancing Architecture (2026-10-27)
+
+- **Unified 160B `GpuMaterial` SSOT**: Both PBR (`cube_pbr.wgsl`) and PT (`pt-megakernel` / `pt-cuda`) consume `pt_core::GpuMaterial` (`10 x vec4<f32>` = 160 bytes) converted from `pt_material::StandardSurfaceParams` via `GpuMaterial::from(&params.sanitized_for_gpu())`.
+- **Compact PT Material Pool**: `expand_pt_materials_and_ids` (`crates/render-3d/src/renderer3d/material_cache.rs`) builds a bounded variant table (`PT_VARIANTS_PER_SLOT = 16`, max `256 * 16 = 4096` `GpuMaterial` entries = 640 KiB) instead of an $O(N)$ per-cube material array, with an $O(1)$ cache key and parallel `rayon` `Instance::from_cube` construction.
+- **Analytic Unit-Cube Two-Level BVH (`ANALYTIC_UNIT_CUBE_BLAS_ROOT = u32::MAX`)**: `render-rs` (`pt-core`, `bvh-gpu`, `pt-integrator`, `pt-megakernel`, `pt-cuda`) natively intersects unit-cube TLAS instances in object space (`[-0.5, 0.5]^3`) without triangle expansion (`0` triangles per cube instead of `12`).
+- **Single-Pass MRT PBR/Wireframe & 12-Edge `LineList` Wireframe**: Opaque PBR and Wireframe passes render colour (`display_format`) and `R32Uint` `object_id` (with vertex-stage `SELECTED_BIT`) in a single geometry pass via MRT (`crates/render-3d/src/pipelines.rs`, `crates/render-3d/src/lib.rs`), with backface culling (`Some(Face::Back)`) enabled on opaque PBR and `object_id`. Wireframe uses `PrimitiveTopology::LineList` with `CUBE_LINE_INDICES` (`24` indices = 12 cube edges, zero face diagonals).
+- **Decoupled Host Display Blit (`PtDisplayBlit`)**: `crates/render-3d/src/pt/blit.rs` presents scene-linear `Rgba32Float` output from `PathTraceCompute` or `OidnDenoiser` through GPU or CPU OCIO / ACES tonemapping without mutating raw source textures.
 
 ## Application dataflow
 
