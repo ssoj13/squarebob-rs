@@ -65,15 +65,27 @@ impl Renderer3D {
         // calls so the UI displays only cubes from THIS pass, not
         // accumulated history.
         self.mat_cache.reset_overlay_counts();
-        // Pre-walk: compute scene normalisation bounds so `Depth`/`Size`
-        // sources produce meaningful values (otherwise both collapse to a
-        // single point and any distribute on top is a no-op).
-        let (scene_max_depth, scene_max_size) = scan_scene_bounds(root, 0);
+        // Pre-walk: compute scene normalisation bounds and candidate leaf count so `Depth`/`Size`
+        // sources produce meaningful values and hardware buffer caps (`gpu-info-rs` `GpuLimits`)
+        // can automatically consolidate sub-pixel folders when the tree exceeds device limits.
+        let (scene_max_depth, scene_max_size, candidate_leaves) = scan_scene_bounds(root, 0);
         self.mat_cache
             .set_scene_meta(scene_max_depth, scene_max_size);
-        let mut instances = Vec::with_capacity(est_capacity);
+        let max_instances = self.max_scene_instances(opts.path_tracing);
+        let mut instances = Vec::with_capacity(est_capacity.min(max_instances));
         let lod_ctx = if opts.lod_enabled {
             Some((camera_eye, screen_height, fov, opts.lod_min_screen_size))
+        } else if candidate_leaves > max_instances {
+            let ratio = (candidate_leaves as f32 / max_instances.max(1) as f32).sqrt();
+            let auto_min_px = (ratio * 2.5).clamp(1.5, 32.0);
+            log::warn!(
+                "Scene leaf count ({}) exceeds adapter instance limit ({}) from gpu-info-rs (max_buffer_bytes={} MiB); enabling automatic LOD consolidation (min_screen_px={:.1})",
+                candidate_leaves,
+                max_instances,
+                self.ctx.max_buffer_bytes(opts.path_tracing) / (1024 * 1024),
+                auto_min_px,
+            );
+            Some((camera_eye, screen_height, fov, auto_min_px))
         } else {
             None
         };
@@ -86,6 +98,7 @@ impl Renderer3D {
             world_center,
             need_picking,
             lod_ctx,
+            max_instances,
             now_secs,
             &mut instances,
         );
@@ -134,6 +147,7 @@ impl Renderer3D {
         world_center: Vec3,
         need_picking: bool,
         lod_ctx: Option<(Vec3, f32, f32, f32)>, // (cam_eye, screen_h, fov, min_size)
+        max_instances: usize,
         now_secs: u64,
         out: &mut Vec<CubeInstance>,
     ) {
@@ -152,6 +166,13 @@ impl Renderer3D {
         let mut pending = Vec::with_capacity(256);
         pending.push((node, depth, dir_hash));
         while let Some((node, depth, dir_hash)) = pending.pop() {
+            if out.len() >= max_instances {
+                log::warn!(
+                    "collect_instances reached hardware instance limit ({} cubes); truncating remaining nodes",
+                    max_instances
+                );
+                break;
+            }
             let [x, y, w, h] = node.rect.get();
             if w < 1.0 || h < 1.0 || node.size == 0 {
                 continue;
@@ -425,17 +446,24 @@ fn sample_color_ramp(
     [rgb[0], rgb[1], rgb[2], 1.0]
 }
 
-/// Scan the directory tree to find the deepest depth and largest file size.
-fn scan_scene_bounds(node: &DirEntry, depth: u32) -> (u32, u64) {
+/// Scan the directory tree to find the deepest depth, largest file size, and total leaf count.
+fn scan_scene_bounds(node: &DirEntry, depth: u32) -> (u32, u64, usize) {
     let mut max_depth = depth;
     let mut max_size = node.size;
+    let mut leaf_count = 0usize;
     let mut pending = vec![(node, depth)];
 
     while let Some((node, depth)) = pending.pop() {
         max_depth = max_depth.max(depth);
         max_size = max_size.max(node.size);
-        let child_depth = depth.saturating_add(1);
-        pending.extend(node.children.iter().rev().map(|child| (child, child_depth)));
+        if !node.is_dir || node.children.is_empty() {
+            if node.size > 0 {
+                leaf_count += 1;
+            }
+        } else {
+            let child_depth = depth.saturating_add(1);
+            pending.extend(node.children.iter().rev().map(|child| (child, child_depth)));
+        }
     }
-    (max_depth, max_size)
+    (max_depth, max_size, leaf_count)
 }

@@ -71,8 +71,34 @@ pub(crate) struct DisplayColor {
     error: Option<String>,
 }
 
+#[cfg(feature = "cuda")]
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct CudaCameraKey {
+    pub inv_view: [[f32; 4]; 4],
+    pub inv_proj: [[f32; 4]; 4],
+    pub pos: [f32; 3],
+    pub slice_enabled: bool,
+    pub slice_normal: [f32; 3],
+    pub slice_position: f32,
+    pub slice_invert: bool,
+}
+
 pub(crate) struct PtState {
     pub path_tracer: Option<pt_megakernel::PathTraceCompute>,
+    #[cfg(feature = "cuda")]
+    pub cuda_tracer: Option<pt_cuda::CudaPathTracer>,
+    #[cfg(feature = "cuda")]
+    pub cuda_output_tex: Option<(wgpu::Texture, wgpu::TextureView, u32, u32)>,
+    #[cfg(feature = "cuda")]
+    pub cuda_scene_dirty: bool,
+    #[cfg(feature = "cuda")]
+    pub cuda_env_dirty: bool,
+    #[cfg(feature = "cuda")]
+    pub cuda_accum_reset: bool,
+    #[cfg(feature = "cuda")]
+    pub cuda_last_cam: Option<CudaCameraKey>,
+    #[cfg(feature = "cuda")]
+    pub cuda_init_failed: bool,
     pub blit: Option<pt::blit::PtDisplayBlit>,
     pub pt_backend_kind: pt::PtBackendKind,
     /// Full scene/BVH/material-table upload on next PT frame.
@@ -99,6 +125,20 @@ impl Default for PtState {
     fn default() -> Self {
         Self {
             path_tracer: None,
+            #[cfg(feature = "cuda")]
+            cuda_tracer: None,
+            #[cfg(feature = "cuda")]
+            cuda_output_tex: None,
+            #[cfg(feature = "cuda")]
+            cuda_scene_dirty: true,
+            #[cfg(feature = "cuda")]
+            cuda_env_dirty: true,
+            #[cfg(feature = "cuda")]
+            cuda_accum_reset: false,
+            #[cfg(feature = "cuda")]
+            cuda_last_cam: None,
+            #[cfg(feature = "cuda")]
+            cuda_init_failed: false,
             blit: None,
             pt_backend_kind: pt::PtBackendKind::Megakernel,
             pt_scene_dirty: false,
@@ -248,6 +288,16 @@ impl Renderer3D {
     /// Drop PT resources and force re-init on next render.
     pub fn reset_path_tracer(&mut self) {
         self.pt.path_tracer = None;
+        #[cfg(feature = "cuda")]
+        {
+            self.pt.cuda_tracer = None;
+            self.pt.cuda_output_tex = None;
+            self.pt.cuda_scene_dirty = true;
+            self.pt.cuda_env_dirty = true;
+            self.pt.cuda_accum_reset = false;
+            self.pt.cuda_last_cam = None;
+            self.pt.cuda_init_failed = false;
+        }
         self.pt.blit = None;
         self.pt.display_key = None;
         self.pt.pt_scene_dirty = true;
@@ -259,21 +309,55 @@ impl Renderer3D {
 
     pub fn mark_pt_scene_dirty(&mut self) {
         self.pt.pt_scene_dirty = true;
+        #[cfg(feature = "cuda")]
+        {
+            self.pt.cuda_scene_dirty = true;
+        }
     }
 
     /// Request accumulation reset only (no BVH / material-table re-upload). Use when GPU scene
     /// buffers are unchanged, e.g. `materialize_mix` in PT (product coloring; not the PBR blend uniform).
     pub fn mark_pt_accum_reset(&mut self) {
         self.pt.pt_accum_reset = true;
+        #[cfg(feature = "cuda")]
+        {
+            self.pt.cuda_accum_reset = true;
+        }
     }
 
     pub fn mark_pt_env_dirty(&mut self) {
         self.pt.pt_env_dirty = true;
+        #[cfg(feature = "cuda")]
+        {
+            self.pt.cuda_env_dirty = true;
+        }
     }
 
     pub fn reset_pt_accumulation(&mut self) {
         if let Some(pt) = &mut self.pt.path_tracer {
             pt.reset_accumulation();
+        }
+        #[cfg(feature = "cuda")]
+        if let Some(cuda) = &mut self.pt.cuda_tracer {
+            let _ = cuda.reset_accumulation();
+        }
+    }
+
+    /// Hardware-negotiated upper bound on scene cube instances from `gpu-info-rs` (`GpuLimits`).
+    ///
+    /// * In PBR / Wireframe mode, instances live in a `CubeInstance` (96 B) vertex buffer capped by
+    ///   `max_buffer_size` and available VRAM.
+    /// * In Path Tracing mode, instances are bound as a `GpuInstance` (160 B) storage buffer
+    ///   capped by `max_storage_buffer_binding_size` (`GpuLimits::max_buffer_bytes`) plus TLAS
+    ///   and VBO memory overhead (~320 B/instance total).
+    pub fn max_scene_instances(&self, path_tracing: bool) -> usize {
+        if path_tracing {
+            let stride = std::mem::size_of::<pt_core::bvh::GpuInstance>() as u64;
+            let vram_per_inst = stride + std::mem::size_of::<CubeInstance>() as u64 + 64;
+            self.ctx.max_instances(stride, true, vram_per_inst)
+        } else {
+            let stride = std::mem::size_of::<CubeInstance>() as u64;
+            self.ctx.max_instances(stride, false, stride)
         }
     }
 
@@ -585,6 +669,10 @@ impl Renderer3D {
                 camera.fov,
             ));
             self.pt.pt_scene_dirty = true;
+            #[cfg(feature = "cuda")]
+            {
+                self.pt.cuda_scene_dirty = true;
+            }
             if self.picking.hovered_id != 0
                 && hovered_path.as_deref()
                     != self
@@ -631,7 +719,14 @@ impl Renderer3D {
             if !cache_valid || self.instance_buffer.is_none() {
                 if self.instance_buffer.is_none() || instances.len() > self.instance_buffer_capacity
                 {
-                    let new_capacity = (instances.len() * 5 / 4).max(1024);
+                    let max_vbo_cap = self
+                        .ctx
+                        .max_instances(std::mem::size_of::<CubeInstance>() as u64, false, 0)
+                        .max(instances.len());
+                    let new_capacity = (instances.len() * 5 / 4)
+                        .max(1024)
+                        .min(max_vbo_cap)
+                        .max(instances.len());
                     let new_size = new_capacity * std::mem::size_of::<CubeInstance>();
                     self.instance_buffer = Some(render_core::gpu::make_buffer(
                         &self.ctx.device,
@@ -1231,8 +1326,14 @@ impl Renderer3D {
     }
 
     /// PT output color texture (Rgba32Float, post sample-normalization).
-    /// `None` until `path_tracer` is built on the first PT-mode frame.
+    /// `None` until `path_tracer` (or `cuda_output_tex` in CUDA mode) is built on the first PT-mode frame.
     pub fn pt_output_texture(&self) -> Option<&wgpu::Texture> {
+        #[cfg(feature = "cuda")]
+        if self.pt.pt_backend_kind == pt::PtBackendKind::Wavefront
+            && let Some((tex, _, _, _)) = self.pt.cuda_output_tex.as_ref()
+        {
+            return Some(tex);
+        }
         self.pt
             .path_tracer
             .as_ref()
@@ -1241,6 +1342,12 @@ impl Renderer3D {
 
     /// PT viewport dims, when available.
     pub fn pt_dimensions(&self) -> Option<(u32, u32)> {
+        #[cfg(feature = "cuda")]
+        if self.pt.pt_backend_kind == pt::PtBackendKind::Wavefront
+            && let Some(c) = self.pt.cuda_tracer.as_ref()
+        {
+            return Some((c.width(), c.height()));
+        }
         self.pt.path_tracer.as_ref().map(|p| p.dimensions())
     }
 
@@ -1560,6 +1667,15 @@ impl Renderer3D {
     }
 
     fn pt_pick_impl(&mut self, origin: Vec3, dir: Vec3) -> Option<(u32, f32)> {
+        if let Some(pt) = self.pt.path_tracer.as_mut() {
+            if pt.pending() > 0 {
+                let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
+                let _ = pt.collect();
+            }
+            if let Ok(res) = pt.gpu_pick(origin.to_array(), dir.to_array()) {
+                return res;
+            }
+        }
         let instances = self.cached_instances.as_ref()?;
         let min = Vec3::splat(-0.5);
         let max = Vec3::splat(0.5);

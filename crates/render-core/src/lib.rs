@@ -384,6 +384,8 @@ pub mod gpu {
         pub queue: Arc<wgpu::Queue>,
         /// Canonical shared ownership context (`gpu-info-rs`) minted once from `(device, queue)`.
         pub work_context: gpu_mem::WorkContext,
+        /// Negotiated device limits and VRAM budget from `gpu-info-rs` (`gpu_mem::limits::GpuLimits`).
+        pub limits: gpu_mem::limits::GpuLimits,
         /// Best-effort VRAM intel queried at init via `gpu-info-rs` (`gpu_mem::os`).
         pub gpu_info: Option<gpu_mem::os::GpuMemInfo>,
     }
@@ -432,7 +434,7 @@ pub mod gpu {
                 .features()
                 .difference(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
                 | wgpu::Features::POLYGON_MODE_LINE; // also keep our wireframe need
-            let required_limits = adapter.limits();
+            let required_limits = gpu_mem::recommended_limits(&adapter);
 
             let (device, queue) =
                 match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -457,6 +459,7 @@ pub mod gpu {
                     }
                 };
 
+            log::info!("{}", gpu_mem::adapter_summary(&adapter));
             let gpu_info = gpu_mem::os::query();
             if let Some(info) = &gpu_info {
                 let to_mib = |b: u64| b / (1024 * 1024);
@@ -471,19 +474,31 @@ pub mod gpu {
                 log::info!("GPU: VRAM query unavailable on this platform");
             }
 
+            let vram_budget = gpu_mem::vram_budget_bytes(&adapter).or_else(|| {
+                gpu_info.as_ref().and_then(|info| {
+                    let headroom = if info.free_vram > 0 {
+                        info.free_vram
+                    } else {
+                        info.dedicated_vram
+                    };
+                    (headroom > 0).then(|| gpu_mem::budget::vram_budget_from(headroom, info.unified))
+                })
+            });
+            let total_vram = gpu_info
+                .as_ref()
+                .map(|i| i.dedicated_vram)
+                .unwrap_or_else(|| vram_budget.unwrap_or(0));
+            let limits = gpu_mem::limits::GpuLimits::from_wgpu_limits(
+                &device.limits(),
+                total_vram,
+                vram_budget.unwrap_or(total_vram),
+            );
+
             let instance = Arc::new(instance);
             let adapter = Arc::new(adapter);
             let device = Arc::new(device);
             let queue = Arc::new(queue);
             let work_context = gpu_mem::WorkContext::from((Arc::clone(&device), Arc::clone(&queue)));
-            let vram_budget = gpu_info.as_ref().and_then(|info| {
-                let headroom = if info.free_vram > 0 {
-                    info.free_vram
-                } else {
-                    info.dedicated_vram
-                };
-                (headroom > 0).then(|| gpu_mem::budget::vram_budget_from(headroom, info.unified))
-            });
             work_context
                 .memory()
                 .set_limit(Some(vram_budget.unwrap_or(u64::MAX / 2)));
@@ -494,20 +509,45 @@ pub mod gpu {
                 device,
                 queue,
                 work_context,
+                limits,
                 gpu_info,
             })
         }
 
         /// Conservative VRAM budget for large transient buffers
-        /// (BVH, OIDN aux). Delegates to [`gpu_mem::budget::vram_budget_from`].
+        /// (BVH, OIDN aux). Delegates to [`gpu_mem::vram_budget_bytes`].
         pub fn vram_budget(&self) -> Option<u64> {
-            let info = self.gpu_info.as_ref()?;
-            let headroom = if info.free_vram > 0 {
-                info.free_vram
+            (self.limits.available_memory > 0).then_some(self.limits.available_memory)
+        }
+
+        /// Maximum bytes permitted for a single buffer on this device.
+        ///
+        /// When `storage_binding` is `true`, clamps by [`gpu_mem::limits::GpuLimits::max_buffer_bytes`]
+        /// (`max_storage_buffer_binding_size`) as well as `max_buffer_size`.
+        pub fn max_buffer_bytes(&self, storage_binding: bool) -> u64 {
+            let max_buf = self.device.limits().max_buffer_size;
+            if storage_binding {
+                self.limits.max_buffer_bytes.min(max_buf)
             } else {
-                info.dedicated_vram
+                max_buf
+            }
+        }
+
+        /// Maximum instance count supported by the adapter's buffer and VRAM limits.
+        pub fn max_instances(
+            &self,
+            instance_stride: u64,
+            storage_binding: bool,
+            vram_bytes_per_instance: u64,
+        ) -> usize {
+            let max_buf_bytes = self.max_buffer_bytes(storage_binding);
+            let by_binding = (max_buf_bytes / instance_stride.max(1)) as usize;
+            let by_vram = if self.limits.available_memory > 0 && vram_bytes_per_instance > 0 {
+                (self.limits.available_memory / vram_bytes_per_instance) as usize
+            } else {
+                usize::MAX
             };
-            (headroom > 0).then(|| gpu_mem::budget::vram_budget_from(headroom, info.unified))
+            by_binding.min(by_vram).max(1024)
         }
     }
 

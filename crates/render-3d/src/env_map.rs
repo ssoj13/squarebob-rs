@@ -15,6 +15,7 @@ pub struct EnvMap {
     pub conditional_cdf: wgpu::Buffer,
     pub marginal_cdf_data: Vec<f32>,
     pub conditional_cdf_data: Vec<f32>,
+    pub texels_rgb: Vec<[f32; 3]>,
     pub width: u32,
     pub height: u32,
 }
@@ -87,6 +88,7 @@ impl EnvMap {
             conditional_cdf,
             marginal_cdf_data: vec![1.0],
             conditional_cdf_data: vec![1.0],
+            texels_rgb: vec![[0.5, 0.5, 0.5]],
             width: 1,
             height: 1,
         }
@@ -116,6 +118,7 @@ impl EnvMap {
 
         let mut data = Vec::with_capacity(byte_len);
         let mut luminance = Vec::with_capacity(pixel_len);
+        let mut texels_rgb = Vec::with_capacity(pixel_len);
         if is_hdr {
             for pixel in img.to_rgba32f().pixels() {
                 let rgb = [
@@ -130,6 +133,7 @@ impl EnvMap {
                 };
                 push_rgba16f(&mut data, rgb, alpha);
                 luminance.push(linear_luminance(rgb));
+                texels_rgb.push(rgb);
             }
         } else {
             for pixel in img.to_rgba8().pixels() {
@@ -140,6 +144,7 @@ impl EnvMap {
                 ];
                 push_rgba16f(&mut data, rgb, pixel[3] as f32 / 255.0);
                 luminance.push(linear_luminance(rgb));
+                texels_rgb.push(rgb);
             }
         }
         debug_assert_eq!(data.len(), byte_len);
@@ -196,6 +201,7 @@ impl EnvMap {
         let (conditional_cdf_data, marginal_cdf_data) = build_env_cdfs(w, h, &luminance)?;
         self.conditional_cdf_data = conditional_cdf_data;
         self.marginal_cdf_data = marginal_cdf_data;
+        self.texels_rgb = texels_rgb;
         self.conditional_cdf = render_core::gpu::make_buffer_init(
             &ctx.device,
             "env_conditional_cdf",
