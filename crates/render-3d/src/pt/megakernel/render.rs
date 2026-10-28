@@ -241,6 +241,11 @@ pub(super) fn render_path_traced_frame(
 
     let derived_min = (opts.pt_samples / 16).max(8);
     let derived_max = opts.pt_samples.max(derived_min);
+    let instance_tint_mix = if opts.mat_source == pt_mats::MaterialSource::None {
+        1.0_f32
+    } else {
+        (1.0 - opts.materialize_mix).clamp(0.0, 1.0)
+    };
     let cam_uniform = PtCameraUniform {
         inv_view: inv_view.to_cols_array_2d(),
         inv_proj: inv_proj.to_cols_array_2d(),
@@ -266,7 +271,7 @@ pub(super) fn render_path_traced_frame(
         two_level: 1,
         adaptive_enabled: u32::from(opts.pt_adaptive_sampling),
         adaptive_max_spp: derived_max,
-        _pad4: 0,
+        _pad4: instance_tint_mix.to_bits(),
     };
 
     // Update camera matrices and detect camera movement.
