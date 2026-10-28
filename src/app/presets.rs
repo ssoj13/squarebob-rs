@@ -43,10 +43,24 @@ pub fn factory_render_3d_options() -> Render3DOptions {
     static PARSED: OnceLock<Render3DOptions> = OnceLock::new();
     PARSED
         .get_or_init(|| {
-            load_adjacent_default_render_3d_options()
-                .unwrap_or_else(bundled_factory_render_3d_options)
+            let mut opts = load_adjacent_default_render_3d_options()
+                .unwrap_or_else(bundled_factory_render_3d_options);
+            upgrade_legacy_material_library(&mut opts.material_library);
+            opts
         })
         .clone()
+}
+
+/// Non-destructively upgrade a legacy 10-slot `MaterialLibrary` by appending
+/// all new curated presets while preserving existing slots' UUIDs, weights, and params.
+fn upgrade_legacy_material_library(lib: &mut pt_material::MaterialLibrary) {
+    if pt_material::is_legacy_default_library(lib) {
+        for p in pt_material::curated_presets() {
+            if !lib.materials.iter().any(|m| m.name == p.name) {
+                lib.push(pt_material::Material::new(p.name, p.params));
+            }
+        }
+    }
 }
 
 fn bundled_factory_render_3d_options() -> Render3DOptions {
@@ -165,7 +179,8 @@ pub fn load_all_presets() -> HashMap<String, RenderPreset> {
         match std::fs::read_to_string(&path) {
             Ok(content) => match serde_json::from_str::<PresetsFile>(&content) {
                 Ok(file) => {
-                    for preset in file.presets {
+                    for mut preset in file.presets {
+                        upgrade_legacy_material_library(&mut preset.render_3d.material_library);
                         presets.insert(preset.name.clone(), preset);
                     }
                     log::info!("Loaded {} presets from {}", presets.len(), path.display());

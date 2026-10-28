@@ -5,6 +5,7 @@ Cross-platform, Python 3, stdlib only. Ported from Playa's bootstrap.py and
 adapted for this repository's xtask setup.
 Commands:
     b(uild)       Build squarebob-rs via xtask
+    i(nstall)     Install squarebob binary via cargo install (xtask install)
     t(est)        Run workspace tests via xtask
     c(heck)       Format check + clippy via xtask
     cl(ean)       Clean build artifacts
@@ -12,11 +13,12 @@ Commands:
     pkg(package)  Distribution package via cargo-packager
     h(elp)        Print help
 Flags:
-    -d, --debug       Debug profile for build/test
-    -f, --features    Cargo features for build
+    -d, --debug       Debug profile for build/install/test
+    -f, --features    Cargo features for build/install
     -n, --nocapture   Show test output
 Examples:
     python bootstrap.py b
+    python bootstrap.py i
     python bootstrap.py b -d
     python bootstrap.py c
 """
@@ -206,6 +208,27 @@ def run_build(args: argparse.Namespace) -> int:
 	return code
 
 
+def run_install(args: argparse.Namespace) -> int:
+	header("INSTALL")
+	cmd = xtask_cmd("install")
+	if args.debug:
+		cmd.append("--debug")
+		step("Mode: debug")
+	else:
+		step("Mode: release")
+	if args.features:
+		cmd.extend(["--features", args.features])
+		step(f"Features: {args.features}")
+	print()
+	code, _, elapsed = run(cmd)
+	if code == 0:
+		ok(f"Install successful ({fmt_time(elapsed)})")
+	else:
+		err("Install failed")
+	print()
+	return code
+
+
 def run_test(args: argparse.Namespace) -> int:
 	header("TEST")
 	cmd = xtask_cmd("test")
@@ -372,6 +395,7 @@ HELP_TEXT = """
 SQUAREBOB BUILD SYSTEM
 COMMANDS
   b       build via xtask
+  i       install via cargo install (xtask install)
   t       test via xtask
   c       cargo fmt --check + xtask clippy
   cl      cargo clean
@@ -379,23 +403,21 @@ COMMANDS
   pkg     package via cargo-packager
   h       help
 OPTIONS
-  -d, --debug       debug profile for build/test
-  -f, --features    cargo features for build
+  -d, --debug       debug profile for build/install/test
+  -f, --features    cargo features for build/install
   -n, --nocapture   show test output
 XTASK PASSTHROUGH
-  changelog, tag-dev, tag-rel, pr, deploy, wipe, wipe-wf, check, clippy, build, test
+  changelog, tag-dev, tag-rel, pr, deploy, wipe, wipe-wf, check, clippy, build, install, test
 EXAMPLES
   python bootstrap.py b
+  python bootstrap.py i
   python bootstrap.py b -d
   python bootstrap.py c
   python bootstrap.py clippy --workspace --all-targets -- -D warnings
 """
-COMMANDS = ["b", "t", "c", "cl", "d", "pkg", "h"]
+COMMANDS = ["b", "build", "i", "install", "t", "test", "c", "check", "cl", "clean", "d", "download", "pkg", "package", "h", "help"]
 XTASK_COMMANDS = {
-	"build",
-	"check",
 	"clippy",
-	"test",
 	"changelog",
 	"tag-dev",
 	"tag-rel",
@@ -424,25 +446,33 @@ def main() -> int:
 		nargs="?",
 		choices=COMMANDS,
 		default="h",
-		help="b, t, c, cl, d, pkg, h",
+		help="b(uild), i(nstall), t(est), c(heck), cl(ean), d(ownload), pkg(package), h(elp)",
 	)
 	parser.add_argument("-d", "--debug", action="store_true", help="Debug mode")
 	parser.add_argument("-f", "--features", help="Cargo features")
 	parser.add_argument("-n", "--nocapture", action="store_true", help="Show test output")
 	args = parser.parse_args()
-	if args.command == "h":
+	if args.command in ("h", "help"):
 		print(HELP_TEXT)
 		return 0
 	if not check_cargo():
 		return 1
-	setup_env(include_vs=args.command == "pkg")
+	setup_env(include_vs=args.command in ("pkg", "package"))
 	dispatch = {
 		"b": run_build,
+		"build": run_build,
+		"i": run_install,
+		"install": run_install,
 		"t": run_test,
+		"test": run_test,
 		"c": run_check,
+		"check": run_check,
 		"cl": run_clean,
+		"clean": run_clean,
 		"d": run_download,
+		"download": run_download,
 		"pkg": run_package,
+		"package": run_package,
 	}
 	handler = dispatch.get(args.command)
 	if handler:

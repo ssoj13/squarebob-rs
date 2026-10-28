@@ -58,6 +58,21 @@ enum Commands {
         features: Option<String>,
     },
 
+    /// 📦 Install squarebob binary via `cargo install --path .`
+    ///
+    /// Examples:
+    ///   cargo xtask install            # Release install (default)
+    ///   cargo xtask install --debug    # Debug install
+    Install {
+        /// Install in debug mode
+        #[arg(long)]
+        debug: bool,
+
+        /// Comma-separated cargo features to enable
+        #[arg(short = 'f', long)]
+        features: Option<String>,
+    },
+
     /// Check Rust code after bootstrapping native build dependencies
     ///
     /// Examples:
@@ -257,6 +272,7 @@ fn run() -> Result<()> {
     if matches!(
         cli.command,
         Commands::Build { .. }
+            | Commands::Install { .. }
             | Commands::Check { .. }
             | Commands::Clippy { .. }
             | Commands::Test { .. }
@@ -273,6 +289,7 @@ fn run() -> Result<()> {
             let is_release = !debug;
             cmd_build(is_release, features.as_deref())
         }
+        Commands::Install { debug, features } => cmd_install(debug, features.as_deref()),
         Commands::Check {
             package,
             features,
@@ -354,6 +371,40 @@ fn cmd_build(release: bool, features: Option<&str>) -> Result<()> {
 
     println!();
     println!("✓ Build complete (vfx-io/exr-core backend, no external dependencies)");
+
+    Ok(())
+}
+
+/// Command: cargo xtask install [--debug] [--features ...]
+fn cmd_install(debug: bool, features: Option<&str>) -> Result<()> {
+    println!("========================================");
+    println!("Installing squarebob-rs (cargo install --path .)");
+    println!("Profile: {}", if debug { "debug" } else { "release" });
+    if let Some(f) = features {
+        println!("Features: {f}");
+    }
+    println!("========================================");
+    println!();
+
+    let mut cmd = Command::new("cargo");
+    cmd.args(["install", "--path", ".", "--force"]);
+
+    if debug {
+        cmd.arg("--debug");
+    }
+
+    if let Some(f) = features {
+        cmd.args(["--features", f]);
+    }
+
+    let status = cmd.status().context("Failed to run cargo install")?;
+
+    if !status.success() {
+        anyhow::bail!("cargo install failed!");
+    }
+
+    println!();
+    println!("✓ Install complete (squarebob installed into cargo bin dir)");
 
     Ok(())
 }

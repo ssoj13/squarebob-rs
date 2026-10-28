@@ -1,21 +1,21 @@
 //! Factory preset library for the material `playa_ae::PresetBank`.
 //!
-//! Ships ~30 hand-tuned `StandardSurfaceParams` looks grouped by
-//! category — Plastic, Metal, Glass, Stone, Cloth, Paper, Emissive,
-//! Organic. Names use `Group / Name` so the playa-ae preset menu
-//! buckets them into sub-menus automatically.
+//! Sources all 86 curated `StandardSurfaceParams` looks directly from
+//! [`pt_material::curated_presets`] (Single Source of Truth shared with
+//! `render-rs` and WarpBro), grouped by category — `Plastic`, `Metal`,
+//! `CarPaint`, `Glass`, `Ceramic`, `Stone`, `Wood`, `Leather`, `Fabric`,
+//! `Rubber`, `Paper`, `Emissive`, `Organic`. Names use `Category / Name`
+//! so the `playa-ae` preset menu buckets them into sub-menus automatically.
 //!
-//! On app start we read `{config_dir}/material_presets.json`; if
-//! that file is missing or fails to parse we re-seed from
-//! [`factory_material_preset_bank`]. Every time the user saves /
-//! renames / removes a preset through the AE button we write the
-//! whole bank back. Deleting the JSON file resets to factory.
+//! On app start we read `{config_dir}/material_presets.json`; if that file
+//! is missing or fails to parse we seed from [`factory_material_preset_bank`],
+//! and if an existing file is loaded we ensure all factory presets are present
+//! alongside any user-saved custom presets.
 
 use std::path::PathBuf;
 
 use glam::Vec4;
 use playa_ae::{AttrValue, Attrs, PresetBank};
-use pt_material::StandardSurfaceParams;
 
 use super::materials::{material_schema_name, material_to_attrs_pub};
 
@@ -37,8 +37,8 @@ pub fn preset_file_path() -> Option<PathBuf> {
 }
 
 /// Load the user-customised bank from disk, or fall back to the
-/// factory bank. Bad JSON is logged and treated as missing so the
-/// app never refuses to start over a malformed presets file.
+/// factory bank. Missing factory presets (e.g. from the WarpBro
+/// catalog expansion) are merged in without overwriting user presets.
 pub fn load_preset_bank() -> PresetBank {
     let Some(path) = preset_file_path() else {
         return factory_material_preset_bank();
@@ -47,7 +47,10 @@ pub fn load_preset_bank() -> PresetBank {
         return factory_material_preset_bank();
     };
     match serde_json::from_slice::<PresetBank>(&bytes) {
-        Ok(bank) => bank,
+        Ok(mut bank) => {
+            merge_factory_presets(&mut bank);
+            bank
+        }
         Err(e) => {
             log::warn!(
                 "material_presets: failed to parse {} ({e}), re-seeding from factory",
@@ -91,15 +94,22 @@ pub fn save_preset_bank(bank: &PresetBank) {
     }
 }
 
-/// Build the factory bank — 30 grouped material looks.
+/// Build the factory bank from [`pt_material::curated_presets`].
 pub fn factory_material_preset_bank() -> PresetBank {
     let mut bank = PresetBank::default();
-    let key = material_schema_key();
-    for (name, params) in factory_presets() {
-        let attrs = material_to_attrs_pub(&params);
-        bank.save(key, name, &attrs);
-    }
+    merge_factory_presets(&mut bank);
     bank
+}
+
+fn merge_factory_presets(bank: &mut PresetBank) {
+    let key = material_schema_key();
+    for preset in pt_material::curated_presets() {
+        let menu_name = preset.menu_key();
+        if !bank.contains(key, &menu_name) {
+            let attrs = material_to_attrs_pub(&preset.params);
+            bank.save(key, menu_name, &attrs);
+        }
+    }
 }
 
 /// `Attrs` built directly from category + raw fields, useful when
@@ -138,247 +148,4 @@ pub fn make_attrs_from_lobes(
     a.set("Coat Roughness", AttrValue::Float(params2.y));
     a.set("Coat IOR", AttrValue::Float(params2.z));
     a
-}
-
-// ============================================================================
-// 30 factory materials, grouped by category. Names use `Group / Leaf`
-// so playa-ae's preset menu nests them into sub-menus automatically.
-// ============================================================================
-
-fn factory_presets() -> Vec<(&'static str, StandardSurfaceParams)> {
-    vec![
-        // ---- Plastics ----------------------------------------------------
-        ("Plastic / Red Glossy", plastic_glossy([0.95, 0.10, 0.10])),
-        ("Plastic / Blue Matte", plastic_matte([0.10, 0.30, 0.85])),
-        (
-            "Plastic / Yellow Glossy",
-            plastic_glossy([0.95, 0.85, 0.05]),
-        ),
-        (
-            "Plastic / Green Translucent",
-            plastic_translucent([0.20, 0.80, 0.40]),
-        ),
-        ("Plastic / Black Rubber", rubber()),
-        // ---- Metals ------------------------------------------------------
-        (
-            "Metal / Brushed Gold",
-            metal_brushed([1.0, 0.78, 0.34], 0.32),
-        ),
-        (
-            "Metal / Polished Chrome",
-            metal_polished([0.95, 0.95, 0.97], 0.04),
-        ),
-        ("Metal / Copper", metal_polished([0.95, 0.55, 0.30], 0.18)),
-        (
-            "Metal / Brushed Aluminum",
-            metal_brushed([0.91, 0.92, 0.94], 0.35),
-        ),
-        ("Metal / Iron", metal_polished([0.55, 0.55, 0.55], 0.25)),
-        ("Metal / Brass", metal_polished([0.95, 0.80, 0.45], 0.15)),
-        // ---- Glass -------------------------------------------------------
-        ("Glass / Clear", glass_clear([0.98, 0.99, 0.99], 1.52)),
-        (
-            "Glass / Frosted",
-            glass_rough([0.98, 0.98, 0.98], 1.52, 0.4),
-        ),
-        ("Glass / Amber", glass_clear([0.95, 0.55, 0.20], 1.55)),
-        ("Glass / Blue", glass_clear([0.20, 0.50, 0.95], 1.50)),
-        (
-            "Glass / Green Bottle",
-            glass_clear([0.15, 0.65, 0.30], 1.51),
-        ),
-        // ---- Stone -------------------------------------------------------
-        ("Stone / Polished Marble", marble([0.95, 0.93, 0.88], 0.18)),
-        ("Stone / Granite", stone_rough([0.55, 0.55, 0.55], 0.7)),
-        ("Stone / Slate", stone_rough([0.22, 0.22, 0.25], 0.6)),
-        ("Stone / Sandstone", stone_rough([0.80, 0.65, 0.45], 0.85)),
-        // ---- Cloth & Paper ----------------------------------------------
-        ("Cloth / Velvet Red", velvet([0.65, 0.05, 0.10])),
-        ("Cloth / Silk Cream", silk([0.95, 0.88, 0.72])),
-        ("Cloth / Felt Grey", felt([0.45, 0.45, 0.45])),
-        ("Paper / Matte White", matte_paper([0.92, 0.91, 0.88])),
-        // ---- Emissive ----------------------------------------------------
-        ("Emissive / Neon Cyan", emissive([0.15, 0.95, 1.0], 8.0)),
-        ("Emissive / Hot Lava", lava()),
-        ("Emissive / Bulb Warm", bulb([1.0, 0.85, 0.55], 6.0)),
-        ("Emissive / Bulb Cool", bulb([0.85, 0.92, 1.0], 6.0)),
-        // ---- Organic / SSS ----------------------------------------------
-        ("Organic / Wax", wax([1.0, 0.85, 0.65])),
-        ("Organic / Skin", skin([1.0, 0.78, 0.65])),
-    ]
-}
-
-// ---- Construction helpers -------------------------------------------------
-
-fn plastic_glossy(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 1.0),
-        coat_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.35),
-        params1: Vec4::new(0.0, 0.0, 0.12, 1.5),
-        params2: Vec4::new(0.0, 0.04, 1.5, 1.0),
-        ..Default::default()
-    }
-}
-
-fn plastic_matte(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.5),
-        params1: Vec4::new(0.4, 0.0, 0.6, 1.5),
-        ..Default::default()
-    }
-}
-
-fn plastic_translucent(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 0.5),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 1.0),
-        transmission_color_weight: Vec4::new(c[0], c[1], c[2], 0.5),
-        params1: Vec4::new(0.0, 0.0, 0.2, 1.45),
-        ..Default::default()
-    }
-}
-
-fn rubber() -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(0.04, 0.04, 0.04, 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.2),
-        params1: Vec4::new(0.6, 0.0, 0.7, 1.4),
-        ..Default::default()
-    }
-}
-
-fn metal_brushed(c: [f32; 3], roughness: f32) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 1.0),
-        params1: Vec4::new(0.0, 1.0, roughness, 1.5),
-        params2: Vec4::new(0.5, 0.1, 1.5, 1.0),
-        ..Default::default()
-    }
-}
-
-fn metal_polished(c: [f32; 3], roughness: f32) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 1.0),
-        params1: Vec4::new(0.0, 1.0, roughness, 1.5),
-        ..Default::default()
-    }
-}
-
-fn glass_clear(c: [f32; 3], ior: f32) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 1.0),
-        transmission_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        params1: Vec4::new(0.0, 0.0, 0.02, ior),
-        ..Default::default()
-    }
-}
-
-fn glass_rough(c: [f32; 3], ior: f32, roughness: f32) -> StandardSurfaceParams {
-    let mut p = glass_clear(c, ior);
-    p.params1.z = roughness;
-    p
-}
-
-fn marble(c: [f32; 3], sss_weight: f32) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 1.0),
-        subsurface_color_weight: Vec4::new(c[0] * 0.95, c[1] * 0.9, c[2] * 0.85, sss_weight),
-        params1: Vec4::new(0.0, 0.0, 0.18, 1.5),
-        ..Default::default()
-    }
-}
-
-fn stone_rough(c: [f32; 3], roughness: f32) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.4),
-        params1: Vec4::new(0.5, 0.0, roughness, 1.5),
-        ..Default::default()
-    }
-}
-
-fn velvet(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.4),
-        params1: Vec4::new(0.9, 0.0, 0.6, 1.5),
-        ..Default::default()
-    }
-}
-
-fn silk(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.7),
-        params1: Vec4::new(0.3, 0.0, 0.25, 1.5),
-        params2: Vec4::new(0.4, 0.0, 1.5, 1.0),
-        ..Default::default()
-    }
-}
-
-fn felt(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.1),
-        params1: Vec4::new(0.8, 0.0, 0.85, 1.5),
-        ..Default::default()
-    }
-}
-
-fn matte_paper(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 1.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.0),
-        params1: Vec4::new(0.5, 0.0, 0.5, 1.5),
-        ..Default::default()
-    }
-}
-
-fn emissive(c: [f32; 3], intensity: f32) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0], c[1], c[2], 0.0),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.0),
-        emission_color_weight: Vec4::new(c[0], c[1], c[2], intensity),
-        ..Default::default()
-    }
-}
-
-fn lava() -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(0.40, 0.06, 0.0, 0.3),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.2),
-        emission_color_weight: Vec4::new(1.0, 0.30, 0.05, 4.0),
-        params1: Vec4::new(0.6, 0.0, 0.7, 1.5),
-        ..Default::default()
-    }
-}
-
-fn bulb(c: [f32; 3], intensity: f32) -> StandardSurfaceParams {
-    emissive(c, intensity)
-}
-
-fn wax(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0] * 0.85, c[1] * 0.8, c[2] * 0.7, 0.5),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.7),
-        subsurface_color_weight: Vec4::new(c[0], c[1] * 0.6, c[2] * 0.45, 0.65),
-        params1: Vec4::new(0.0, 0.0, 0.25, 1.45),
-        ..Default::default()
-    }
-}
-
-fn skin(c: [f32; 3]) -> StandardSurfaceParams {
-    StandardSurfaceParams {
-        base_color_weight: Vec4::new(c[0] * 0.9, c[1] * 0.85, c[2] * 0.75, 0.6),
-        specular_color_weight: Vec4::new(1.0, 1.0, 1.0, 0.5),
-        subsurface_color_weight: Vec4::new(c[0], c[1] * 0.5, c[2] * 0.35, 0.7),
-        params1: Vec4::new(0.3, 0.0, 0.35, 1.4),
-        ..Default::default()
-    }
 }

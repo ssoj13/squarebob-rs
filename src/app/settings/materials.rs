@@ -215,7 +215,7 @@ pub(super) fn materials_browser_section(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     egui::ScrollArea::vertical()
         .id_salt("materials_list_scroll")
-        .max_height(160.0)
+        .max_height(220.0)
         .show(ui, |ui| {
             materials_list(ui, app);
         });
@@ -411,6 +411,15 @@ fn materials_toolbar(ui: &mut egui::Ui, app: &mut App) {
                     library_dirty = true;
                 }
             });
+
+            if ui
+                .button("Reset")
+                .on_hover_text("Reset material library to all built-in factory presets")
+                .clicked()
+            {
+                *lib = pt_material::default_library();
+                library_dirty = true;
+            }
         }
 
         ui.separator();
