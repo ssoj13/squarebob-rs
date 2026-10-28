@@ -1,9 +1,9 @@
 //! Native window owner. egui paints into the float canvas; egui-display alone
 //! encodes that canvas for the selected monitor signal.
 use eframe::{Storage, egui};
+use egui_wgpu::RenderState;
 use soluwell_viewport::display::screenshot::{Capture, Pixels};
 use soluwell_viewport::display::{CANVAS_FORMAT, DisplayState, Output, PresentPass, Target};
-use egui_wgpu::RenderState;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -38,7 +38,8 @@ pub(crate) fn settings_ui(ui: &mut egui::Ui) {
         .ctx()
         .data(|d| d.get_temp::<soluwell_viewport::display::DisplayPrefs>(prefs_id()))
         .unwrap_or_default();
-    if soluwell_viewport::display::settings_ui(ui, "squarebob.display", &mut prefs, state.as_ref()) {
+    if soluwell_viewport::display::settings_ui(ui, "squarebob.display", &mut prefs, state.as_ref())
+    {
         ui.ctx().data_mut(|d| d.insert_temp(prefs_id(), prefs));
         ui.ctx().request_repaint();
     }
@@ -124,7 +125,9 @@ pub(crate) fn run<A: NativeApp + 'static>(
     });
     let prefs = storage
         .get_string("display_output")
-        .and_then(|text| serde_json::from_str::<soluwell_viewport::display::DisplayPrefs>(&text).ok())
+        .and_then(|text| {
+            serde_json::from_str::<soluwell_viewport::display::DisplayPrefs>(&text).ok()
+        })
         .unwrap_or(soluwell_viewport::display::DisplayPrefs {
             output: Output::Hdr10,
             white: None,
@@ -250,7 +253,10 @@ impl<A: NativeApp> Host<A> {
         let present = PresentPass::new(&rs.device, config.format, Output::Sdr8);
         // egui draws into the PresentPass canvas: `show_backdrop` clears it there (the pass
         // composites the backdrop under it) instead of painting the SDR fallback.
-        soluwell_viewport::display::set_renderer_target(&self.ctx, soluwell_viewport::display::RendererTarget::CANVAS);
+        soluwell_viewport::display::set_renderer_target(
+            &self.ctx,
+            soluwell_viewport::display::RendererTarget::CANVAS,
+        );
         let state = DisplayState {
             output: Output::Sdr8,
             target: Target::default(),
@@ -315,8 +321,9 @@ impl<A: NativeApp> Host<A> {
             return Ok(());
         };
         live.refresh_output()?;
-        self.ctx
-            .data_mut(|d| d.insert_temp(soluwell_viewport::display::state_id(), live.state.clone()));
+        self.ctx.data_mut(|d| {
+            d.insert_temp(soluwell_viewport::display::state_id(), live.state.clone())
+        });
         egui_winit::update_viewport_info(&mut live.viewport, &self.ctx, &live.window, false);
         let mut input = live.input.take_egui_input(&live.window);
         input.events.append(&mut live.pending_events);
@@ -330,7 +337,8 @@ impl<A: NativeApp> Host<A> {
         let output = self.ctx.run_ui(input, |ui| live.app.ui_native(ui));
         // The viewer backdrops the root viewport published this frame (none when it showed no
         // picture); the present pass composites the canvas over them.
-        live.present.backdrops = soluwell_viewport::display::take_backdrops(&self.ctx, egui::ViewportId::ROOT);
+        live.present.backdrops =
+            soluwell_viewport::display::take_backdrops(&self.ctx, egui::ViewportId::ROOT);
         live.viewport.events.clear();
         live.input.handle_platform_output_with_event_loop(
             &live.window,
@@ -822,7 +830,10 @@ mod tests {
         assert_eq!(
             restored
                 .get_string("display_output")
-                .and_then(|text| serde_json::from_str::<soluwell_viewport::display::DisplayPrefs>(&text).ok()),
+                .and_then(
+                    |text| serde_json::from_str::<soluwell_viewport::display::DisplayPrefs>(&text)
+                        .ok()
+                ),
             Some(prefs)
         );
         assert_eq!(

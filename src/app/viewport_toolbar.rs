@@ -1,7 +1,7 @@
 use eframe::egui;
-use soluwell_viewport::toolbar::{ToolbarEdge, ToolbarResponse, ViewportToolbar};
-use soluwell_config::icons;
 use render_shared::{CameraType, RenderMode};
+use soluwell_config::icons;
+use soluwell_viewport::toolbar::{ToolbarEdge, ToolbarResponse, ViewportToolbar};
 
 use super::App;
 

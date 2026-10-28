@@ -179,9 +179,7 @@ fn run_standard(
     let outcome = match scan_dir(root.path(), &tx, &cancel) {
         Ok(build) => finish_build(&root, build),
         Err(ScanFailure::Cancelled) => ScanOutcome::Cancelled,
-        Err(ScanFailure::Failed(error)) => {
-            ScanOutcome::Failed(format!("{error:#}"))
-        }
+        Err(ScanFailure::Failed(error)) => ScanOutcome::Failed(format!("{error:#}")),
     };
     let _ = terminal_tx.send(ScanMsg::Terminal(Box::new(outcome)));
 }
@@ -383,13 +381,9 @@ fn scan_dir(
                 total_bytes = total_bytes
                     .checked_add(size)
                     .ok_or_else(|| ScanFailure::Failed(anyhow::anyhow!("byte count overflow")))?;
-                dirs.entry(parent.to_path_buf()).or_default().push(DirEntry::new_file(
-                    name,
-                    path,
-                    size,
-                    ext,
-                    modified_time,
-                ));
+                dirs.entry(parent.to_path_buf())
+                    .or_default()
+                    .push(DirEntry::new_file(name, path, size, ext, modified_time));
             }
 
             progress_counter = progress_counter.saturating_add(1);

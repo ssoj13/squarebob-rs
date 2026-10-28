@@ -5,7 +5,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result, ensure};
 use render_core::{
     DISPLAY_TEXTURE_FORMAT,
-    gpu::{GpuContext, TextureReadback, TextureReadbackLayout, map_readback, readback_texture_bytes},
+    gpu::{
+        GpuContext, TextureReadback, TextureReadbackLayout, map_readback, readback_texture_bytes,
+    },
 };
 
 fn main() -> Result<()> {
@@ -14,23 +16,14 @@ fn main() -> Result<()> {
     let result = (|| -> Result<Vec<f32>> {
         // This constructs the real PBR/skybox/outline/wireframe pipelines.
         let _renderer = render_3d::Renderer3D::new(ctx.clone());
-        let mut _tracer = pt_megakernel::PathTraceCompute::new(
-            &ctx.work_context,
-            4,
-            1,
-            DISPLAY_TEXTURE_FORMAT,
-        )?;
+        let mut _tracer =
+            pt_megakernel::PathTraceCompute::new(&ctx.work_context, 4, 1, DISPLAY_TEXTURE_FORMAT)?;
         if _tracer.pending() > 0 {
             ctx.device.poll(wgpu::PollType::wait_indefinitely())?;
         }
         _tracer.collect()?;
-        let mut blit = render_3d::PtDisplayBlit::new(
-            &ctx.device,
-            &ctx.queue,
-            4,
-            1,
-            DISPLAY_TEXTURE_FORMAT,
-        );
+        let mut blit =
+            render_3d::PtDisplayBlit::new(&ctx.device, &ctx.queue, 4, 1, DISPLAY_TEXTURE_FORMAT);
         blit.set_blit_exposure(&ctx.queue, 1.0);
         blit.set_blit_odt_tag(&ctx.queue, 0);
         blit.set_blit_color(&ctx.queue, 0, 0.0, 1.0, 0.0);
@@ -187,7 +180,10 @@ fn main() -> Result<()> {
             &mut staging,
         )?;
         ctx.queue.submit([encoder.finish()]);
-        check(&map_readback(&ctx, &staging)?, "GPU OCIO lane vs CPU processor")?;
+        check(
+            &map_readback(&ctx, &staging)?,
+            "GPU OCIO lane vs CPU processor",
+        )?;
         println!("gpu_ocio_lane_matches_cpu=true");
 
         // CPU: the same processor applied after readback; the blit passes its codes through.
@@ -197,13 +193,12 @@ fn main() -> Result<()> {
         let mut cpu_reference = None;
         for external in [true, true, false, false] {
             let raw_input = if external { &source } else { &pt_output };
-            let scratch =
-                blit.apply_cpu_color_in_place(&ctx, raw_input, |pixels| {
-                    for pixel in pixels.iter_mut() {
-                        *pixel = pixel.map(|value| value * 2.0);
-                    }
-                    canvas.apply_rgb(pixels);
-                })?;
+            let scratch = blit.apply_cpu_color_in_place(&ctx, raw_input, |pixels| {
+                for pixel in pixels.iter_mut() {
+                    *pixel = pixel.map(|value| value * 2.0);
+                }
+                canvas.apply_rgb(pixels);
+            })?;
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
             blit.blit_texture(
                 &ctx.device,

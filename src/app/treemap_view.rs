@@ -718,9 +718,10 @@ impl App {
                 None
             };
             if let Some(r) = self.renderer_3d.as_mut()
-                && let Err(error) = r.composite_overlay(source, &self.render_3d_opts) {
-                    log::error!("PT display composite failed: {error}");
-                }
+                && let Err(error) = r.composite_overlay(source, &self.render_3d_opts)
+            {
+                log::error!("PT display composite failed: {error}");
+            }
             ctx.request_repaint();
         } else {
             // PBR/wireframe: cube colours come from a full rasterisation
@@ -1661,7 +1662,10 @@ impl App {
         // buffers support, as its default preset (full AOVs with the wavefront PT off) has always behaved.
         let mode = effective_mode(map_mode(mode_opt), albedo.is_some(), normal.is_some());
         if mode != map_mode(mode_opt) {
-            log::debug!("OIDN: {:?} needs guides this frame lacks; running {mode:?}", map_mode(mode_opt));
+            log::debug!(
+                "OIDN: {:?} needs guides this frame lacks; running {mode:?}",
+                map_mode(mode_opt)
+            );
         }
         denoiser.set_mode(mode);
         denoiser.set_quality(map_quality(options.pt_oidn_quality));
@@ -1741,7 +1745,11 @@ fn map_quality(q: render_shared::OidnQualityOption) -> pt_denoise_oidn::Quality 
 
 /// The richest mode the supplied guides support, at most `wanted` (albedo and normal buffers come from the wavefront
 /// PT only).
-fn effective_mode(wanted: pt_denoise_oidn::OidnMode, albedo: bool, normal: bool) -> pt_denoise_oidn::OidnMode {
+fn effective_mode(
+    wanted: pt_denoise_oidn::OidnMode,
+    albedo: bool,
+    normal: bool,
+) -> pt_denoise_oidn::OidnMode {
     use pt_denoise_oidn::OidnMode;
     match wanted {
         OidnMode::ColorAlbedoNormal if albedo && normal => OidnMode::ColorAlbedoNormal,
@@ -1777,8 +1785,7 @@ mod toolbar_tests {
                         egui::pos2(10.0, 20.0),
                         egui::vec2(300.0, 34.0),
                     ),
-                    last_wheel_zoom: std::time::Instant::now()
-                        - std::time::Duration::from_secs(1),
+                    last_wheel_zoom: std::time::Instant::now() - std::time::Duration::from_secs(1),
                     ..App::default()
                 };
                 app.render_3d_opts.inertia_enabled = false;

@@ -67,7 +67,9 @@ impl App {
         let pipeline_error = self
             .color_pipeline
             .error()
-            .map(|e| format!("Colour transform failed: {e} \u{2014} showing the last one that built"))
+            .map(|e| {
+                format!("Colour transform failed: {e} \u{2014} showing the last one that built")
+            })
             .or_else(|| {
                 self.renderer_3d
                     .as_ref()
@@ -420,8 +422,11 @@ impl App {
                                         .map(|n| n.to_string_lossy().into_owned())
                                         .unwrap_or_else(|| path.display().to_string());
                                     ui.label(
-                                        egui::RichText::new(format!("{} Loaded: {name}", icons::SUCCESS))
-                                            .color(egui::Color32::from_rgb(120, 200, 120)),
+                                        egui::RichText::new(format!(
+                                            "{} Loaded: {name}",
+                                            icons::SUCCESS
+                                        ))
+                                        .color(egui::Color32::from_rgb(120, 200, 120)),
                                     )
                                     .on_hover_text(path.display().to_string());
                                 }
@@ -431,8 +436,11 @@ impl App {
                                         .map(|n| n.to_string_lossy().into_owned())
                                         .unwrap_or_else(|| path.display().to_string());
                                     ui.label(
-                                        egui::RichText::new(format!("{} Failed: {name}", icons::ERROR))
-                                            .color(egui::Color32::from_rgb(220, 110, 110)),
+                                        egui::RichText::new(format!(
+                                            "{} Failed: {name}",
+                                            icons::ERROR
+                                        ))
+                                        .color(egui::Color32::from_rgb(220, 110, 110)),
                                     )
                                     .on_hover_text(format!("{}\n\n{error}", path.display()));
                                 }

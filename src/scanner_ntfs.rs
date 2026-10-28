@@ -67,7 +67,11 @@ fn convert_tree(tree: fscan_rs::TreeEntry) -> DirEntry {
     }
     fn frame(mut node: fscan_rs::TreeEntry) -> Frame {
         let remaining = std::mem::take(&mut node.children).into_iter();
-        Frame { node, remaining, built_children: Vec::new() }
+        Frame {
+            node,
+            remaining,
+            built_children: Vec::new(),
+        }
     }
     let mut frames = vec![frame(tree)];
     loop {

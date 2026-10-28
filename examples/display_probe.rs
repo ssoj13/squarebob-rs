@@ -2,8 +2,8 @@
 //! Run: cargo run --locked --example display_probe
 //! This verifies signal encoding, not monitor capability negotiation or perception.
 use anyhow::{Context, Result, ensure};
-use soluwell_viewport::display::{Output, PresentPass, Target, screenshot::Pixels, transfer};
 use render_core::gpu::GpuContext;
+use soluwell_viewport::display::{Output, PresentPass, Target, screenshot::Pixels, transfer};
 
 fn canvas(ctx: &GpuContext, present: &mut PresentPass, linear: [f32; 3]) -> [f32; 3] {
     let gamma = linear.map(transfer::oetf);
@@ -149,8 +149,8 @@ fn main() -> Result<()> {
         for peak in [203.0, 1000.0] {
             let linear = primary.map(|channel| channel * peak / target.white);
             let stored_linear = canvas(&ctx, &mut present, linear);
-            let expected =
-                soluwell_viewport::display::rec2020_nits(stored_linear, target.white).map(soluwell_viewport::display::pq);
+            let expected = soluwell_viewport::display::rec2020_nits(stored_linear, target.white)
+                .map(soluwell_viewport::display::pq);
             let capture = present
                 .capture(&ctx.device, &ctx.queue, Output::Hdr10, target)?
                 .wait(&ctx.device)?;

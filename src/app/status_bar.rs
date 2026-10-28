@@ -4,17 +4,18 @@ use eframe::egui;
 
 use super::App;
 use super::helpers::{disk_free_info, fmt_size};
-use soluwell_config::icons;
 use crate::cache;
+use soluwell_config::icons;
 
 impl App {
     /// Render bottom status bar
     pub(super) fn ui_status_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("status").show(ui, |ui| {
-            if let Some(state) = ui
-                .ctx()
-                .data(|d| d.get_temp::<soluwell_viewport::display::DisplayState>(soluwell_viewport::display::state_id()))
-            {
+            if let Some(state) = ui.ctx().data(|d| {
+                d.get_temp::<soluwell_viewport::display::DisplayState>(
+                    soluwell_viewport::display::state_id(),
+                )
+            }) {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!(
                         "Display: {} · white {:.0} nits",
@@ -240,10 +241,11 @@ impl App {
             .spawn(move || {
                 loop {
                     if let Some(info) = gpu_mem::os::query()
-                        && tx.send(info).is_err() {
-                            // Receiver dropped — app shutting down.
-                            break;
-                        }
+                        && tx.send(info).is_err()
+                    {
+                        // Receiver dropped — app shutting down.
+                        break;
+                    }
                     std::thread::sleep(std::time::Duration::from_secs(2));
                 }
             })

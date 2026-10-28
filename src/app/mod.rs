@@ -61,7 +61,11 @@ use state::{PersistState, SavedOpts};
 impl App {
     pub(super) fn sync_display(&mut self, ctx: &egui::Context) {
         let output = ctx
-            .data(|d| d.get_temp::<soluwell_viewport::display::DisplayState>(soluwell_viewport::display::state_id()))
+            .data(|d| {
+                d.get_temp::<soluwell_viewport::display::DisplayState>(
+                    soluwell_viewport::display::state_id(),
+                )
+            })
             .map(|state| (state.target.hdr, state.target.white));
         if let Some((hdr, white_nits)) = output {
             let canvas = render_shared::CanvasOutput { hdr, white_nits };
