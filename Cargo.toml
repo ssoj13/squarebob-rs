@@ -144,6 +144,7 @@ squarebob-widgets = { path = "crates/squarebob-widgets" }
 playa-ae = { path = "crates/playa-ae" }
 egui-colorpicker = { path = "crates/egui-colorpicker" }
 crashdump = { package = "crashdump-rs", git = "ssh://git@github.com/ssoj13/crashdump-rs.git", branch = "main" }
+appbus = { package = "appbus-rs", git = "ssh://git@github.com/ssoj13/appbus-rs.git", branch = "main", default-features = false, features = ["bus"] }
 
 [dependencies]
 av-util-core = { workspace = true }
@@ -199,6 +200,7 @@ sysinfo = { workspace = true }
 soluwell-config = { workspace = true }
 gpu-mem = { workspace = true }
 crashdump = { workspace = true }
+appbus = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

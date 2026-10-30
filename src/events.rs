@@ -1,55 +1,68 @@
-//! Simple event bus for decoupled component communication.
+//! Application event bus and domain events backed by `appbus::bus`.
 //!
-//! Minimal design: emit events → poll in main loop → handle.
-//! No pub/sub callbacks - keeps it simple for this app's needs.
+//! Wraps [`appbus::bus::EventBus`] and [`appbus::bus::EventEmitter`] while preserving
+//! the queued emit/poll ergonomics used across `squarebob`'s UI panels and render loop.
 
-use std::any::Any;
 use std::collections::VecDeque;
 
-/// Marker trait for events
-pub trait Event: Any + Send + 'static {
-    fn as_any(&self) -> &dyn Any;
-}
+pub use appbus::bus::{BoxedEvent, Event, EventEmitter, downcast_event};
 
-impl<T: Any + Send + 'static> Event for T {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-/// Boxed event for queue storage
-pub type BoxedEvent = Box<dyn Event>;
-
-/// Simple event queue
-#[derive(Default)]
+/// Event bus backed by [`appbus::bus::EventBus`].
+#[derive(Clone, Debug, Default)]
 pub struct EventBus {
-    queue: VecDeque<BoxedEvent>,
+    inner: appbus::bus::EventBus,
 }
 
 impl EventBus {
+    /// Creates a new [`EventBus`].
+    #[inline]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: appbus::bus::EventBus::new(),
+        }
     }
 
-    /// Emit an event (queued for later processing)
-    pub fn emit<E: Event>(&mut self, event: E) {
-        self.queue.push_back(Box::new(event));
+    /// Returns a reference to the underlying [`appbus::bus::EventBus`].
+    #[inline]
+    pub fn app_bus(&self) -> &appbus::bus::EventBus {
+        &self.inner
     }
 
-    /// Poll all queued events (zero-alloc swap)
-    pub fn poll(&mut self) -> VecDeque<BoxedEvent> {
-        std::mem::take(&mut self.queue)
+    /// Creates a lightweight [`EventEmitter`] handle sharing this bus.
+    #[inline]
+    pub fn emitter(&self) -> EventEmitter {
+        self.inner.emitter()
     }
 
+    /// Emits an event (queued for later processing and dispatched to any registered subscribers).
+    #[inline]
+    pub fn emit<E: Event + Clone>(&self, event: E) {
+        self.inner.emit(event);
+    }
+
+    /// Drains all queued events into `out` (clearing `out` first) and returns the count.
+    #[inline]
+    pub fn poll_into(&self, out: &mut Vec<BoxedEvent>) -> usize {
+        self.inner.poll_into(out)
+    }
+
+    /// Polls all queued events into a [`VecDeque`].
+    #[inline]
+    pub fn poll(&self) -> VecDeque<BoxedEvent> {
+        VecDeque::from(self.inner.poll())
+    }
+
+    /// Returns `true` if there is at least one queued event waiting to be polled.
+    #[inline]
     pub fn has_pending(&self) -> bool {
-        !self.queue.is_empty()
+        self.inner.queue_len() > 0
     }
 }
 
-/// Downcast boxed event to concrete type
+/// Downcasts a [`BoxedEvent`] to concrete event type `E`.
 #[inline]
 pub fn downcast<E: Event>(event: &BoxedEvent) -> Option<&E> {
-    (**event).as_any().downcast_ref::<E>()
+    downcast_event::<E>(event)
 }
 
 // ============================================================================

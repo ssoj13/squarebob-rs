@@ -364,6 +364,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "appbus-rs"
+version = "0.1.0"
+source = "git+ssh://git@github.com/ssoj13/appbus-rs.git?branch=main#01a66580df6845a02ae5820d266cff88abcdec2e"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8800,6 +8808,7 @@ name = "squarebob-rs"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "appbus-rs",
  "auto-allocator",
  "av-util-core",
  "bincode",
