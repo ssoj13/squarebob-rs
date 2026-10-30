@@ -1,3 +1,6 @@
+//! SquareBob binary entry point: CLI parsing, allocator diagnostics, structured logging
+//! setup, and desktop GPU treemap + 3D path-tracer application launch.
+
 mod app;
 mod atomic_file;
 mod cache;
@@ -18,6 +21,7 @@ pub use cli::CliOptions;
 use log::info;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _crash_guard = crashdump::init!();
     let cli = match cli::parse_args() {
         Ok(cli) => cli,
         Err(error) => {

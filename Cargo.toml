@@ -143,6 +143,7 @@ standard-surface = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch =
 squarebob-widgets = { path = "crates/squarebob-widgets" }
 playa-ae = { path = "crates/playa-ae" }
 egui-colorpicker = { path = "crates/egui-colorpicker" }
+crashdump = { package = "crashdump-rs", git = "ssh://git@github.com/ssoj13/crashdump-rs.git", branch = "main" }
 
 [dependencies]
 av-util-core = { workspace = true }
@@ -197,6 +198,7 @@ pt-denoise-oidn = { workspace = true }
 sysinfo = { workspace = true }
 soluwell-config = { workspace = true }
 gpu-mem = { workspace = true }
+crashdump = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
