@@ -35,6 +35,14 @@ impl App {
         let Some(delay) = self.screenshot_delay else {
             return;
         };
+        if self
+            .renderer_3d_for_frame()
+            .is_some_and(|r| r.pt_is_preparing_pipeline())
+        {
+            self.screenshot_start_time = Some(std::time::Instant::now());
+            ctx.request_repaint();
+            return;
+        }
         let Some(start) = self.screenshot_start_time else {
             return;
         };
@@ -120,6 +128,9 @@ impl App {
             },
             RenderMode::Mode3D => {
                 if self.last_render_frame_3d == self.frame_count
+                    && self
+                        .renderer_3d_for_frame()
+                        .is_some_and(|r| !render_options.path_tracing || r.pt_frame_count() > 0)
                     && let Some(renderer) = self.renderer_3d_for_frame_mut()
                 {
                     renderer
@@ -146,6 +157,24 @@ impl App {
                             Some(&mut selected_ids),
                         )
                         .map_err(|error| format!("3D capture render failed: {error}"))?;
+                    if render_options.path_tracing && renderer.pt_is_preparing_pipeline() {
+                        renderer
+                            .wait_for_pt_pipeline(std::time::Duration::from_secs(180))
+                            .map_err(|error| {
+                                format!("3D capture pipeline wait failed: {error}")
+                            })?;
+                        renderer
+                            .render_to_view(
+                                root,
+                                w,
+                                h,
+                                &camera,
+                                &render_options,
+                                &options,
+                                Some(&mut selected_ids),
+                            )
+                            .map_err(|error| format!("3D capture render failed: {error}"))?;
+                    }
                     let pixels = renderer
                         .readback_render_texture(false)
                         .map_err(|error| format!("3D capture readback failed: {error}"))?;

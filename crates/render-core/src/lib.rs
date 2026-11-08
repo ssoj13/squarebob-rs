@@ -801,16 +801,14 @@ pub mod gpu {
             };
             pixels.clear();
             if pixels.capacity() < output_size {
-                pixels.try_reserve_exact(output_size - pixels.capacity())?;
+                pixels.try_reserve_exact(output_size)?;
             }
             for row in 0..layout.height as usize {
                 let start = row * padded_row_bytes;
                 let source = &data[start..start + row_bytes];
                 if convert {
-                    for channel in source.chunks_exact(2) {
-                        let value =
-                            half::f16::from_bits(u16::from_le_bytes([channel[0], channel[1]]))
-                                .to_f32();
+                    for &channel in source.as_chunks::<2>().0 {
+                        let value = half::f16::from_bits(u16::from_le_bytes(channel)).to_f32();
                         let value = if value.is_nan() {
                             0.0
                         } else {
@@ -1043,5 +1041,59 @@ mod tests {
         assert_eq!(layout.padded_row_bytes(), 512);
         assert_eq!(layout.buffer_size(), 1536);
         assert_eq!(layout.output_size(), 780);
+    }
+
+    #[test]
+    fn map_readback_into_reserves_full_output_size_after_clear() {
+        let Some(ctx) = gpu::GpuContext::new() else {
+            return;
+        };
+        let (width, height) = (4u32, 4u32);
+        let output_size = (width * height * 4) as usize;
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("growing buffer readback regression"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let raw = vec![0x7fu8; output_size];
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &raw,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            texture.size(),
+        );
+        let mut staging = gpu::TextureReadback::default();
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        gpu::readback_texture(&ctx, &mut encoder, &texture, width, height, &mut staging).unwrap();
+        ctx.queue.submit([encoder.finish()]);
+
+        // Pre-populate `pixels` with a non-zero capacity > output_size / 2 but < output_size
+        // so `output_size - pixels.capacity() < pixels.capacity()` would fail to grow capacity
+        // to `output_size` if `try_reserve_exact` subtracted `pixels.capacity()` after `clear()`.
+        let mut pixels = Vec::with_capacity(48);
+        pixels.extend_from_slice(&[1u8; 48]);
+        assert!(pixels.capacity() >= 48 && pixels.capacity() < output_size);
+        gpu::map_readback_into(&ctx, &staging, &mut pixels).unwrap();
+        assert_eq!(pixels.len(), output_size);
+        assert_eq!(pixels.capacity(), output_size);
+        assert_eq!(pixels, raw);
     }
 }

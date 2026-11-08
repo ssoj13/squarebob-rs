@@ -120,7 +120,7 @@ Sources: `crates/media-encoder/src/dialogs/encode/encode.rs:1148-1280,1657-1762,
 <!-- gitnexus-rs:start -->
 # GitNexus-rs — Code Intelligence
 
-This project is indexed by gitnexus-rs as **squarebob-rs** (5697 symbols, 13022 relationships, 300 execution flows). Use the gitnexus-rs MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by gitnexus-rs as **squarebob-rs** (4468 symbols, 10683 relationships, 300 execution flows). Use the gitnexus-rs MCP tools to understand code, assess impact, and navigate safely.
 
 > Call `graph_status` when freshness matters. Use `reanalyze` (incremental) or `gitnexus-rs analyze` (full). `detect_changes` does **not** re-index.
 
@@ -269,3 +269,27 @@ Upgraded `squarebob-rs` onto `render-rs@23c01af` and `egui-widgets-rs@1a621308`:
   - Added `gpu::map_readback_into`, `Renderer3D::readback_render_texture_into`, and `Renderer3D::read_pt_linear_into` wired into `FrozenRenderSession` (`pt_rgba_scratch`, `pt_rgb_scratch`, `readback_bytes_scratch`) for zero-steady-state-allocation CPU linear/HDR readback during sequence export.
   - Transform-only scene updates (e.g. animated `HashTransformEffect`) preserve topology hash and run GPU TLAS refit (`PathTraceCompute::refit_scene_two_level_gpu` on WGPU, `CudaPathTracer::refit_two_level_instances_gpu` on CUDA) without rebuilding prototypes or material tables.
   - Wired `MaterialExt` (`transmission_depth`, sheen, anisotropy from `pt_material::curated_presets()`), `set_emissive_sampling`, pipeline-cached `OcioPass::new_with_adapter` / `PtDisplayBlit::new_with_adapter` / `PathTraceCompute::new_with_adapter` (`gpu-mem`), adaptive `pt_is_converged()`, `oidn_last_denoised_spp` final-pass gating, and non-destructive `pt_render_error` surfacing.
+
+## PT startup stall verification — 2026-11-08
+
+See [the measured startup investigation](docs/bughunt/startup-2026-11-08.md) and [plan19](docs/plans/plan19.md). Historical BUG0.md's constructor-only/permanent-smoke-hang interpretation does not describe these measured runs. The first GUI dispatch reached NVIDIA's shader compiler synchronously on the main thread, took 46.736 s, then rendering continued. Warm first dispatch 113.47 ms; PT smoke and screenshot exits passed.
+
+```text
+GUI event/frame -> render_path_traced_frame -> pt.dispatch
+ -> active_variant_key -> ensure_megakernel_pipeline
+      cache hit: record/submit samples
+      cache miss: synchronous create_compute_pipeline -> NVIDIA compiler
+ -> GPU samples -> display -> next GUI event
+```
+
+Pinned render-rs@23c01af `compute.rs:2413-2431,4735-4736,4828-4829` owns this path; Squarebob calls it at `crates/render-3d/src/pt/megakernel/render.rs:539`. `gpu_mem::checked` checks error scopes and executes its closure immediately; it does not make shader compilation asynchronous. Both sample-only and combined recording paths need the same canonical repair. Preserve pending compile/validation results across polls; the current local Pending branch drops its Checked owner (runtime consequences not reproduced here).
+
+Appbus in this executable is bus-only (`Cargo.toml:149`, `src/events.rs:10-41`); a library REST capability/comment does not mean Squarebob starts a REST server. Do not diagnose an infinite deadlock from a timed-out startup or the last log alone.
+
+## Non-blocking PT background pipeline compilation — 2026-11-08 (`render-rs@5eeebc2`)
+
+Implemented [plan19](docs/plans/plan19.md) across `render-rs@5eeebc2` and `squarebob-rs`:
+- Replaced `select(runtime_expr, SPEC_*, SPEC_USE_OVERRIDES)` in `bvh_traverse.wgsl` with `if SPEC_USE_OVERRIDES { return SPEC_*; } return runtime_expr;` so `naga::back::pipeline_constants::process_function` folds dead specialization branches before SPIR-V codegen, cutting cold NVIDIA compile time per variant from `46.74s` to `21.82s` (`0.017s` on warm disk cache).
+- Removed eager `PipelineVariantKey::INITIAL` synchronous compilation from `PathTraceCompute::create` and moved `compile_megakernel_variant` + `gpu_mem::checked` onto a retained background worker thread (`PendingPipelineJob`, `pt-pipeline-compile`) in `PathTraceCompute` (`is_preparing_pipeline`, `preparing_pipeline_elapsed`, `poll_pipeline`, `wait_for_pipeline`, `set_blocking_pipeline_compile`).
+- Wired `Renderer3D::{pt_is_preparing_pipeline, pt_preparing_pipeline_elapsed, wait_for_pt_pipeline}` into `crates/render-3d/src/pt/megakernel/render.rs`, `src/app/{treemap_view, status_bar, screenshot}.rs`, and `src/cli_test.rs`, and fixed `try_reserve_exact(output_size)` after `clear()` in `crates/render-core/src/lib.rs` and `crates/render-3d/src/pt/blit.rs`.
+- Verified on `D:\temp` (`4,043` cubes, `1231x969`): cold cache ticks UI frames at `0.16ms–0.34ms` during `21.816s` background compile and renders frame 1 in `113.72ms`; warm cache loads in `17ms` (`4.59s` total process with `--screenshot 2`); `squarebob.exe test gpu-pt-smoke` and `cargo test -p render-core -p render-3d` pass.

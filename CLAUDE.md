@@ -1,7 +1,7 @@
 <!-- gitnexus-rs:start -->
 # GitNexus-rs — Code Intelligence
 
-This project is indexed by gitnexus-rs as **squarebob-rs** (5697 symbols, 13022 relationships, 300 execution flows). Use the gitnexus-rs MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by gitnexus-rs as **squarebob-rs** (4468 symbols, 10683 relationships, 300 execution flows). Use the gitnexus-rs MCP tools to understand code, assess impact, and navigate safely.
 
 > Call `graph_status` when freshness matters. Use `reanalyze` (incremental) or `gitnexus-rs analyze` (full). `detect_changes` does **not** re-index.
 

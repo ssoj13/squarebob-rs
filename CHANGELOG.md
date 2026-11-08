@@ -6,6 +6,11 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-11-08 — Non-blocking PT background shader compilation (`render-rs@5eeebc2`) & readback reserve fix
+- **Fixed** the 46.74-second UI-thread startup freeze on first PT dispatch (`plan19.md`): upgraded to `render-rs@5eeebc2` where `PathTraceCompute` compiles specialized `bvh_traverse` variants asynchronously on a retained background worker (`PendingPipelineJob`, `pt-pipeline-compile`) while folding constant `override` branches in Naga (`46.74s -> 21.82s` cold, `17ms` warm disk cache).
+- **Added** `Renderer3D::{pt_is_preparing_pipeline, pt_preparing_pipeline_elapsed, wait_for_pt_pipeline}`, viewport/status-bar shader compilation progress indicators (`src/app/treemap_view.rs`, `src/app/status_bar.rs`), `--screenshot` preparation gating (`src/app/screenshot.rs`), `pt_auto_spp` / `static_converged` preparation guards (`crates/render-3d/src/pt/megakernel/render.rs`), and synchronous CLI/CPU readback waiting (`PtOutput::CpuReadback`, `src/cli_test.rs`).
+- **Fixed** `pixels.try_reserve_exact(output_size)` after `clear()` in `crates/render-core/src/lib.rs` (with regression test `map_readback_into_reserves_full_output_size_after_clear`) and `crates/render-3d/src/pt/blit.rs`.
+
 ## 2026-11-08 — Dual-backend PT (`Auto` / `WGPU` / `CUDA`), `render-env` & `render-settings` SSOT, CUDA+OIDN interop
 - **Deduplicated** equirectangular HDRI format detection, sRGB EOTF linearization, and spherical `sin(theta)` importance-sampling CDFs in `crates/render-3d/src/env_map.rs` onto `render_env`, and unified path-tracing/OIDN settings enums in `crates/render-shared` onto `render_settings` (`PtComputeBackend`, `PtSamplerMode`, `AdaptivePreset`, `SpectralMode`, `OidnModeOption`, `OidnQualityOption`, `DenoiserSettings`) with full serde backwards compatibility.
 - **Added** runtime `PtComputeBackend::{Auto, Wgpu, Cuda}` selection (`--pt-backend <auto|wgpu|cuda>` and Settings → Backend selector with live active-backend indicator via `Renderer3D::active_backend()`), enforcing strict no-silent-fallback when `Cuda` is explicitly selected.

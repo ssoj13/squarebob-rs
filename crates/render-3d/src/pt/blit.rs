@@ -287,15 +287,13 @@ impl PtDisplayBlit {
         let raw = render_core::gpu::map_readback(ctx, &self.cpu_color_readback)?;
         self.cpu_pixels.clear();
         if self.cpu_pixels.capacity() < texel_count {
-            self.cpu_pixels
-                .try_reserve(texel_count - self.cpu_pixels.capacity())?;
+            self.cpu_pixels.try_reserve(texel_count)?;
         }
         self.cpu_alphas.clear();
         if self.cpu_alphas.capacity() < texel_count {
-            self.cpu_alphas
-                .try_reserve(texel_count - self.cpu_alphas.capacity())?;
+            self.cpu_alphas.try_reserve(texel_count)?;
         }
-        for texel in raw.chunks_exact(BYTES_PER_PIXEL as usize) {
+        for texel in raw.as_chunks::<{ BYTES_PER_PIXEL as usize }>().0 {
             let channel = |offset: usize| {
                 f32::from_ne_bytes([
                     texel[offset],
@@ -312,8 +310,7 @@ impl PtDisplayBlit {
 
         self.cpu_packed.clear();
         if self.cpu_packed.capacity() < texel_count {
-            self.cpu_packed
-                .try_reserve(texel_count - self.cpu_packed.capacity())?;
+            self.cpu_packed.try_reserve(texel_count)?;
         }
         for (&pixel, &alpha) in self.cpu_pixels.iter().zip(self.cpu_alphas.iter()) {
             self.cpu_packed.push([pixel[0], pixel[1], pixel[2], alpha]);

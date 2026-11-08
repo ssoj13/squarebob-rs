@@ -1482,6 +1482,48 @@ impl Renderer3D {
         self.pt.path_tracer.as_ref().is_some_and(|p| p.is_converged())
     }
 
+    /// Whether the active WGPU PT backend is currently compiling or validating a specialized
+    /// compute pipeline in the background.
+    pub fn pt_is_preparing_pipeline(&self) -> bool {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return false;
+        }
+        self.pt
+            .path_tracer
+            .as_ref()
+            .is_some_and(|p| p.is_preparing_pipeline())
+    }
+
+    /// Elapsed duration of the active background PT pipeline compilation job, if any.
+    pub fn pt_preparing_pipeline_elapsed(&self) -> Option<std::time::Duration> {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return None;
+        }
+        self.pt
+            .path_tracer
+            .as_ref()
+            .and_then(|p| p.preparing_pipeline_elapsed())
+    }
+
+    /// Wait up to `timeout` for the active WGPU PT pipeline variant to finish background
+    /// compilation and validation (for synchronous captures/exports).
+    pub fn wait_for_pt_pipeline(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<bool, render_core::ReadbackError> {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return Ok(true);
+        }
+        let Some(pt) = self.pt.path_tracer.as_mut() else {
+            return Ok(true);
+        };
+        pt.wait_for_pipeline(timeout)
+            .map_err(|e| render_core::ReadbackError::SceneBuild(e.to_string()))
+    }
+
     /// Current PT samples-per-update (auto-SPP uses this).
     pub fn pt_samples_per_update(&self) -> u32 {
         self.pt.pt_samples_per_update

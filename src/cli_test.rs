@@ -226,6 +226,7 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
         let mut raw_readback = render_core::gpu::TextureReadback::default();
         let mut display_readback = render_core::gpu::TextureReadback::default();
 
+        tracer.wait_for_pipeline(std::time::Duration::from_secs(180))?;
         let samples = tracer
             .dispatch(1)?
             .ok_or_else(|| anyhow::anyhow!("megakernel refused dispatch after scene upload"))?;
@@ -286,8 +287,8 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
     let mut raw_nonzero = 0usize;
     let mut raw_min = f32::INFINITY;
     let mut raw_max = f32::NEG_INFINITY;
-    for bytes in raw.chunks_exact(4) {
-        let value = f32::from_ne_bytes(bytes.try_into().expect("four-byte chunk"));
+    for &bytes in raw.as_chunks::<4>().0 {
+        let value = f32::from_ne_bytes(bytes);
         if value.is_finite() {
             raw_finite += 1;
             raw_min = raw_min.min(value);
@@ -300,8 +301,10 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
 
     let first = display.get(..4).unwrap_or(&[]);
     let display_nonuniform = display
-        .chunks_exact(4)
-        .filter(|pixel| *pixel != first)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel.as_slice() != first)
         .count();
     let center = ((HEIGHT / 2 * WIDTH + WIDTH / 2) * 4) as usize;
     let center_pixel = display.get(center..center + 4).unwrap_or(&[]);

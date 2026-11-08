@@ -290,3 +290,45 @@ flowchart LR
     Restore --> CPU["CPU path and physical camera restored"]
     Map --> Negotiation["Actual HDR10 PQ surface negotiation"]
 ```
+
+## Measured PT startup variant compilation — 2026-11-08
+
+Evidence: [startup report](docs/bughunt/startup-2026-11-08.md), [plan19](docs/plans/plan19.md). This describes the current synchronous path, not the proposed worker repair.
+
+```mermaid
+sequenceDiagram
+    participant UI as Main GUI thread
+    participant PT as PathTraceCompute
+    participant Map as Variant map and disk cache
+    participant Driver as NVIDIA compiler
+    participant GPU as GPU queue
+    UI->>PT: First frame / dispatch
+    PT->>PT: active_variant_key
+    PT->>Map: ensure requested variant
+    alt Variant absent
+        PT->>Driver: create_compute_pipeline (synchronous)
+        Note over UI,Driver: GUI event handling blocked; measured dispatch 46.736 s
+        Driver-->>PT: Compiled pipeline
+        PT->>Map: Retain pipeline and save cache
+    else Variant available / warmed
+        Note over UI,PT: Warm repeat first dispatch 113.47 ms
+    end
+    PT->>GPU: Record and submit samples
+    GPU-->>UI: Present scene
+    Note over UI: Resume subsequent frames, about 60–70 ms
+```
+
+```mermaid
+flowchart LR
+    Startup["Shared GPU + restored app state"] --> Init["Lazy PT constructor: INITIAL flat variant"]
+    Init --> BVH["Upload two-level scene / GPU BVH"]
+    BVH --> Dispatch["First dispatch: active specialization key"]
+    Dispatch --> Ensure["ensure_megakernel_pipeline"]
+    Ensure --> Compile["Cache miss: synchronous driver compile"]
+    Compile --> Samples["GPU samples and display"]
+    Ensure -->|available| Samples
+    Samples --> Next["Next UI event"]
+    Bus["appbus bus-only feature"] --> Events["In-process event queue"]
+```
+
+Source: Squarebob `render.rs:65-74,485-544`; pinned render-rs23c01af `compute.rs:2413-2431,2628-2635,4585-4599,4735-4736,4828-4829`. A previous generic GPU test does not necessarily warm the GUI's exact key; CPU compiler time is separate from GPU sample execution. No REST server is initialized by the checked Squarebob integration.

@@ -1107,7 +1107,11 @@ impl App {
         let pt_throttled = self.encode_render_session.is_none()
             && options.path_tracing
             && (options.pt_auto_spp || options.pt_camera_snap);
-        let pt_tick_ready = (!pt_throttled || self.render_tick_3d) && self.pt_render_error.is_none();
+        let pt_preparing = self
+            .renderer_3d_for_frame()
+            .is_some_and(|r| r.pt_is_preparing_pipeline());
+        let pt_tick_ready =
+            (!pt_throttled || self.render_tick_3d || pt_preparing) && self.pt_render_error.is_none();
         let need_render =
             layout_dirty || render_dirty || size_changed || (options.path_tracing && pt_tick_ready);
 
@@ -1365,7 +1369,10 @@ impl App {
                 self.avg_frame_ms = avg;
                 self.avg_fps = if avg > 0.0 { 1000.0 / avg } else { 0.0 };
             }
-            if pt_throttled {
+            let pt_preparing_after = self
+                .renderer_3d_for_frame()
+                .is_some_and(|r| r.pt_is_preparing_pipeline());
+            if pt_throttled && !pt_preparing_after {
                 self.render_tick_3d = false;
             }
             self.last_samples_per_frame = samples_per_frame;
@@ -1420,14 +1427,32 @@ impl App {
             self.handle_context_menu(&ctx);
         }
 
+        if options.path_tracing
+            && let Some(elapsed) = self
+                .renderer_3d_for_frame()
+                .and_then(|r| r.pt_preparing_pipeline_elapsed())
+        {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!(
+                    "Compiling PT shader ({:.1}s)...",
+                    elapsed.as_secs_f32()
+                ));
+            });
+        }
+
         // Request repaint only for continuous modes
+        let pt_preparing = self
+            .renderer_3d_for_frame()
+            .is_some_and(|r| r.pt_is_preparing_pipeline());
         let static_converged = !options.animate
             && !self.oidn_run_requested
+            && !pt_preparing
             && self
                 .renderer_3d_for_frame()
                 .is_some_and(|r| r.pt_is_converged());
         if options.path_tracing
-            && !pt_throttled
+            && (!pt_throttled || pt_preparing)
             && !static_converged
             && self.pt_render_error.is_none()
         {

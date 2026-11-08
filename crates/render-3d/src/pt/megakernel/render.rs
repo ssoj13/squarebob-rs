@@ -513,6 +513,10 @@ pub(super) fn render_path_traced_frame(
 
     // Dispatch compute shader + blit to render texture
     let frame_start = std::time::Instant::now();
+    if output == PtOutput::CpuReadback {
+        pt.wait_for_pipeline(std::time::Duration::from_secs(180))
+            .map_err(pt_err)?;
+    }
     if !opts.pt_auto_spp {
         renderer.pt.pt_samples_per_update = opts.pt_samples_per_update.max(1);
     }
@@ -521,7 +525,7 @@ pub(super) fn render_path_traced_frame(
     } else {
         opts.pt_samples_per_update.max(1)
     };
-    if opts.pt_auto_spp {
+    if opts.pt_auto_spp && renderer.pt.pt_last_render_ms > 0.0 && !pt.is_preparing_pipeline() {
         let target_ms = 1000.0 / opts.pt_target_fps.max(1.0);
         if renderer.pt.pt_last_render_ms < target_ms * 0.85 {
             samples_this_frame = (samples_this_frame + 1).min(64);
@@ -587,7 +591,9 @@ pub(super) fn render_path_traced_frame(
     let submit_ms = submit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  submit: {:.2}ms", submit_ms);
 
-    renderer.pt.pt_last_render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+    if actual_samples_this_frame > 0 {
+        renderer.pt.pt_last_render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+    }
 
     let result = if output == PtOutput::CpuReadback {
         let readback_start = std::time::Instant::now();
