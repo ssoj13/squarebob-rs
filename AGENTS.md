@@ -2,12 +2,12 @@
 
 ## Bug-hunt operating notes
 
-This is the `squarebob-rs` Rust package and `squarebob` binary (`Cargo.toml:1-13`). Source paths below were checked on 2026-09-23. On 2026-09-23, the first user-authorized `python bootstrap.py b` release build failed in upstream `vfx-io` with `E0599`. After the upstream EXR fix and a local `egui_dock` `TabViewer::id` implementation (`src/app/dock.rs:105-110`), a second release build succeeded. No tests ran; see [plan11.md](plan11.md) for that build sequence and the warnings observed then. The completed systemic repairs are tracked in [plan12.md](plan12.md); [plan13.md](plan13.md) records the subsequent warning and CPU-picking fixes. Read [DIAGRAMS.md](DIAGRAMS.md) for Mermaid dataflows. Neither pass ran tests or a visual comparison.
+This is the `squarebob-rs` Rust package and `squarebob` binary (`Cargo.toml:1-13`). See [PLAN.md](PLAN.md) for the consolidated master plan and milestone history, and [DIAGRAMS.md](DIAGRAMS.md) for Mermaid dataflows.
 
 Primary constraints for future agents:
 
 - Keep owned scan data on the UI side. `DirEntry.rect` uses `Cell`; scanner/cache workers transfer owned trees through channels.
-- Use `ScanRoot`'s canonical path and native-path ID for operational identity. Its `display` string preserves user spelling for UI/history (`src/path_key.rs:6-62`). Cache and exclusion validation now use the canonical identity; inspect `plan12.md` for the source review and outstanding verification.
+- Use `ScanRoot`'s canonical path and native-path ID for operational identity. Its `display` string preserves user spelling for UI/history (`src/path_key.rs:6-62`). Cache and exclusion validation use the canonical identity; see [PLAN.md](PLAN.md).
 - The standard walker calls `fscan_rs::scan_standard`; its entry callback builds the owned tree and reports progress (`src/scanner.rs:288-421`). It reconstructs omitted parent directories from yielded paths (`src/scanner.rs:302,315-366`). The Windows NTFS adapter calls `fscan_rs::scan_ntfs_tree_with_progress` and converts its tree to owned `DirEntry` nodes (`src/scanner_ntfs.rs:62-150`). `Cargo.toml:179` and `Cargo.lock:3337-3345` pin the private GitHub `fscan-rs` revision `c33d4474b5004ec047ecd065f96f6a53addbc97e`. Its public NTFS tree API preserves typed `ScanFailure` variants (`../fscan-rs/src/ntfs.rs:394-433`).
 - A scan generation owns a `ScanSession`, progress receiver, and separate terminal receiver. Replacement cancels and retires the prior session; `poll_scan` discards stale generation/root outcomes (`src/scanner.rs:85-153`; `src/app/scan_orchestration.rs:38-69,456-528`).
 - `CacheService` owns ordered cache I/O, generation watermarks, and atomic replacement. Only complete live scans queue a cache store (`src/cache.rs:107-245,893-905`; `src/app/scan_orchestration.rs:237-250`). Flat cache v4 still carries a serialized display-path field for decoding, but runtime validation uses canonical root ID (`src/cache.rs:39-48,523-535,786-797`).
@@ -18,7 +18,7 @@ Primary constraints for future agents:
 
 ## Workspace inventory
 
-`Cargo.toml` lists 10 local workspace members: `squarebob-core`, `render-core`, `render-shared`, `render-3d`, `media-encoder`, `xtask`, `treemap`, `squarebob-widgets`, `playa-ae`, and `egui-colorpicker`. All path-tracing, BVH, material, OIDN denoiser, and color-pipeline crates (`pt-core`, `bvh-gpu`, `pt-megakernel`, `pt-cuda`, `pt-mats`, `pt-material`, `standard-surface`, `pt-denoise-oidn`, `render-color`, `render-color-gpu`) are consumed from the canonical `render-rs` repository, and `gpu-mem` (`gpu-info-rs`) is consumed from the canonical `gpu-info-rs` repository (`BUG1.md`, 2026-10-27).
+`Cargo.toml` lists 10 local workspace members: `squarebob-core`, `render-core`, `render-shared`, `render-3d`, `media-encoder`, `xtask`, `treemap`, `squarebob-widgets`, `playa-ae`, and `egui-colorpicker`. All path-tracing, BVH, material, OIDN denoiser, and color-pipeline crates (`pt-core`, `bvh-gpu`, `pt-megakernel`, `pt-cuda`, `pt-mats`, `pt-material`, `standard-surface`, `pt-denoise-oidn`, `render-color`, `render-color-gpu`) are consumed from the canonical `render-rs` repository, and `gpu-mem` (`gpu-info-rs`) is consumed from the canonical `gpu-info-rs` repository (see [PLAN.md](PLAN.md)).
 
 ## 3D Renderer & 1M–20M Cube Instancing Architecture (2026-10-27)
 
@@ -115,7 +115,7 @@ Sources: `crates/media-encoder/src/dialogs/encode/encode.rs:1148-1280,1657-1762,
 
 ## Current bug-hunt focus
 
-[plan13.md](plan13.md) records the bug-hunt pass at `6562a5280c42195345dee2fef36c59254ee7d894`; it resolved the four `glam` warnings recorded in [plan12.md](plan12.md). The scanner migration now uses a pinned GitHub revision. `cargo check` and the scanner unit tests passed on Windows; large-scan performance and other platforms remain unverified. [plan14.md](plan14.md) records the earlier documentation checkpoint and publication update. [plan15.md](plan15.md) records the typed NTFS outcome repair, the cleanup of incidental lockfile changes, and current CI/runtime verification gates. The current repair passed `cargo metadata --locked --no-deps` and `cargo check --workspace --locked -q` on Windows with empty check stderr; no tests were run for it. [plan12.md](plan12.md) retains the systemic repair and runtime gates; [plan11.md](plan11.md) retains the original evidence and wider workspace audit backlog. Check historical source references against the current worktree before use.
+See [PLAN.md](PLAN.md) for the consolidated milestone and bug-hunt history across `plan10..plan19`. Check historical source references against the current worktree before use.
 
 <!-- gitnexus-rs:start -->
 # GitNexus-rs — Code Intelligence
@@ -272,23 +272,21 @@ Upgraded `squarebob-rs` onto `render-rs@23c01af` and `egui-widgets-rs@1a621308`:
 
 ## PT startup stall verification — 2026-11-08
 
-See [the measured startup investigation](docs/bughunt/startup-2026-11-08.md) and [plan19](docs/plans/plan19.md). Historical BUG0.md's constructor-only/permanent-smoke-hang interpretation does not describe these measured runs. The first GUI dispatch reached NVIDIA's shader compiler synchronously on the main thread, took 46.736 s, then rendering continued. Warm first dispatch 113.47 ms; PT smoke and screenshot exits passed.
+See [PLAN.md](PLAN.md) for the consolidated startup investigation and repair record.
 
 ```text
 GUI event/frame -> render_path_traced_frame -> pt.dispatch
  -> active_variant_key -> ensure_megakernel_pipeline
       cache hit: record/submit samples
-      cache miss: synchronous create_compute_pipeline -> NVIDIA compiler
+      cache miss: non-blocking PendingPipelineJob (pt-pipeline-compile thread)
  -> GPU samples -> display -> next GUI event
 ```
 
-Pinned render-rs@23c01af `compute.rs:2413-2431,4735-4736,4828-4829` owns this path; Squarebob calls it at `crates/render-3d/src/pt/megakernel/render.rs:539`. `gpu_mem::checked` checks error scopes and executes its closure immediately; it does not make shader compilation asynchronous. Both sample-only and combined recording paths need the same canonical repair. Preserve pending compile/validation results across polls; the current local Pending branch drops its Checked owner (runtime consequences not reproduced here).
-
 Appbus in this executable is bus-only (`Cargo.toml:149`, `src/events.rs:10-41`); a library REST capability/comment does not mean Squarebob starts a REST server. Do not diagnose an infinite deadlock from a timed-out startup or the last log alone.
 
-## Non-blocking PT background pipeline compilation — 2026-11-08 (`render-rs@5eeebc2`)
+## Non-blocking PT background pipeline compilation — 2026-11-08 (`render-rs@35e38da`)
 
-Implemented [plan19](docs/plans/plan19.md) across `render-rs@5eeebc2` and `squarebob-rs`:
+Implemented [PLAN.md](PLAN.md) across `render-rs@35e38da` and `squarebob-rs`:
 - Replaced `select(runtime_expr, SPEC_*, SPEC_USE_OVERRIDES)` in `bvh_traverse.wgsl` with `if SPEC_USE_OVERRIDES { return SPEC_*; } return runtime_expr;` so `naga::back::pipeline_constants::process_function` folds dead specialization branches before SPIR-V codegen, cutting cold NVIDIA compile time per variant from `46.74s` to `21.82s` (`0.017s` on warm disk cache).
 - Removed eager `PipelineVariantKey::INITIAL` synchronous compilation from `PathTraceCompute::create` and moved `compile_megakernel_variant` + `gpu_mem::checked` onto a retained background worker thread (`PendingPipelineJob`, `pt-pipeline-compile`) in `PathTraceCompute` (`is_preparing_pipeline`, `preparing_pipeline_elapsed`, `poll_pipeline`, `wait_for_pipeline`, `set_blocking_pipeline_compile`).
 - Wired `Renderer3D::{pt_is_preparing_pipeline, pt_preparing_pipeline_elapsed, wait_for_pt_pipeline}` into `crates/render-3d/src/pt/megakernel/render.rs`, `src/app/{treemap_view, status_bar, screenshot}.rs`, and `src/cli_test.rs`, and fixed `try_reserve_exact(output_size)` after `clear()` in `crates/render-core/src/lib.rs` and `crates/render-3d/src/pt/blit.rs`.

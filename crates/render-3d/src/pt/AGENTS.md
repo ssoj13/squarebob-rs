@@ -1,6 +1,6 @@
 # PT startup and compilation ownership
 
-The startup diagnosis and proposed repair are in [the investigation](../../../../docs/bughunt/startup-2026-11-08.md) and [plan19](../../../../docs/plans/plan19.md).
+The startup diagnosis and implemented repair are recorded in [PLAN.md](../../../../PLAN.md).
 
 - The WGPU megakernel's first dispatch can synchronously compile a missing specialization in canonical render-rs. This blocked the GUI for 46.736 s in the measured 2026-11-08 run, then completed.
 - `megakernel/render.rs:539` calls dispatch inside the GUI frame. The same shared ensure path is also used by render-rs's combined sample/blit recording.
