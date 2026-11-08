@@ -63,8 +63,9 @@ pub(super) fn render_path_traced_frame(
     // Lazy init path tracer and host display blit
     let surface_format = render_core::DISPLAY_TEXTURE_FORMAT;
     if renderer.pt.path_tracer.is_none() {
-        let mut pt = PathTraceCompute::new(
+        let mut pt = PathTraceCompute::new_with_adapter(
             &renderer.ctx.work_context,
+            &renderer.adapter_info,
             width,
             height,
             surface_format,
@@ -96,12 +97,15 @@ pub(super) fn render_path_traced_frame(
         renderer.pt.path_tracer = Some(pt);
         renderer.pt.display_key = None;
         renderer.pt.pt_scene_dirty = true;
+        renderer.pt.wgpu_tlas_instance_count = 0;
+        renderer.pt.wgpu_last_emissive_sampling = None;
     }
 
     if renderer.pt.blit.is_none() {
-        renderer.pt.blit = Some(crate::pt::blit::PtDisplayBlit::new(
+        renderer.pt.blit = Some(crate::pt::blit::PtDisplayBlit::new_with_adapter(
             &renderer.ctx.device,
             &renderer.ctx.queue,
+            &renderer.adapter_info,
             width,
             height,
             surface_format,
@@ -113,6 +117,9 @@ pub(super) fn render_path_traced_frame(
         blit.resize(width, height);
     }
 
+    renderer.pt.active_backend = render_settings::PtComputeBackend::Wgpu;
+    renderer.pt.pt_target_samples = opts.pt_samples.max(1);
+
     let pt = renderer
         .pt
         .path_tracer
@@ -120,6 +127,16 @@ pub(super) fn render_path_traced_frame(
         .ok_or(render_core::ReadbackError::MissingTarget)?;
     pt.resize(width, height).map_err(pt_err)?;
     settle_pt(&renderer.ctx.device, pt)?;
+    let (need_albedo, need_normal) = opts.pt_oidn_mode.requires_aov();
+    let want_aovs = need_albedo || need_normal;
+    if pt.aovs_enabled() != want_aovs {
+        let enabling = want_aovs && !pt.aovs_enabled();
+        pt.set_aovs_enabled(want_aovs).map_err(pt_err)?;
+        settle_pt(&renderer.ctx.device, pt)?;
+        if enabling && pt.frame_count() > 0 {
+            pt.reset_accumulation();
+        }
+    }
     pt.set_bvh_config(opts.pt_gpu_bvh, opts.pt_bvh_refit);
     if renderer.pt.pt_accum_reset {
         pt.reset_accumulation();
@@ -149,16 +166,19 @@ pub(super) fn render_path_traced_frame(
         renderer.pt.pt_snap_anim_time = opts.animation_time;
     }
 
-    // Upload scene: rebuild when dirty or actively animating
+    // Upload scene: rebuild on topology/material change or refit TLAS on transform-only update
     let anim_active = opts.animate && opts.hash_effect != HashTransformEffect::None;
     let animated = anim_active && allow_update;
     let mut reset_by_scene = false;
     let mut reset_by_cam = false;
     let mut reset_by_slice = false;
     let mut reset_by_anim = false;
-    if allow_update && (renderer.pt.pt_scene_dirty || animated) && !instances.is_empty() {
+    if allow_update
+        && (renderer.pt.pt_scene_dirty || renderer.pt.pt_transforms_dirty || animated)
+        && !instances.is_empty()
+    {
         let scene_start = std::time::Instant::now();
-        let (materials_arc, pt_instances) =
+        let (materials_arc, materials_ext_arc, pt_instances, materials_key) =
             crate::renderer3d::material_cache::prepare_pt_expanded_materials(
                 &opts.material_library,
                 &mut renderer.mat_cache,
@@ -168,19 +188,65 @@ pub(super) fn render_path_traced_frame(
                 opts,
             );
         let materials = materials_arc.as_ref();
+        let materials_ext = materials_ext_arc.as_ref();
 
-        // Build two-level acceleration structure: GPU or CPU analytic-instance packing
+        // Build or refit two-level acceleration structure: GPU or CPU analytic-instance packing
         let bvh_start = std::time::Instant::now();
+        let can_refit = !renderer.pt.pt_scene_dirty
+            && opts.pt_gpu_bvh
+            && opts.pt_bvh_refit
+            && renderer.pt.wgpu_tlas_instance_count == pt_instances.len()
+            && renderer.pt.wgpu_tlas_materials_key == materials_key
+            && !pt_instances.is_empty();
         debug!(
-            "PT BVH start: gpu={}, instances={}",
+            "PT BVH start: gpu={}, refit_candidate={}, instances={}",
             opts.pt_gpu_bvh,
+            can_refit,
             pt_instances.len()
         );
+        let mut used_refit = false;
         if opts.pt_gpu_bvh {
-            pt.build_analytic_instances_gpu(&pt_instances, materials, None, None)
+            if renderer.pt.wgpu_instance_proto.len() != pt_instances.len() {
+                renderer
+                    .pt
+                    .wgpu_instance_proto
+                    .resize(pt_instances.len(), pt_core::ANALYTIC_UNIT_CUBE_BLAS_ROOT);
+            }
+            if can_refit {
+                match pt.refit_scene_two_level_gpu(
+                    pt_megakernel::TwoLevelScene {
+                        prototypes: &[],
+                        instances: &pt_instances,
+                        instance_proto: &renderer.pt.wgpu_instance_proto,
+                        flat_materials: materials,
+                        materials_ext: Some(materials_ext),
+                        world_tris_for_bounds: &[],
+                    },
+                    None,
+                ) {
+                    Ok(()) => {
+                        settle_pt(&renderer.ctx.device, pt)?;
+                        used_refit = true;
+                    }
+                    Err(err) => {
+                        debug!("PT GPU TLAS refit fell back to full build: {err}");
+                    }
+                }
+            }
+            if !used_refit {
+                pt.build_analytic_instances_gpu(
+                    &pt_instances,
+                    materials,
+                    Some(materials_ext),
+                    None,
+                )
                 .map_err(pt_err)?;
-            settle_pt(&renderer.ctx.device, pt)?;
+                settle_pt(&renderer.ctx.device, pt)?;
+                renderer.pt.wgpu_tlas_instance_count = pt_instances.len();
+                renderer.pt.wgpu_tlas_materials_key = materials_key;
+            }
         } else {
+            renderer.pt.wgpu_tlas_instance_count = 0;
             let two_level = pt_core::pack_analytic_instances(&pt_instances, materials);
             debug!(
                 "PT BVH done (CPU two-level): tlas_nodes={}, blas_nodes={}, instances={}, materials={}",
@@ -192,6 +258,8 @@ pub(super) fn render_path_traced_frame(
             let upload_start = std::time::Instant::now();
             pt.upload_scene_two_level(&two_level).map_err(pt_err)?;
             settle_pt(&renderer.ctx.device, pt)?;
+            pt.set_materials_ext(materials_ext).map_err(pt_err)?;
+            settle_pt(&renderer.ctx.device, pt)?;
             let upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
             debug!("  scene_upload: {:.2}ms", upload_ms);
         }
@@ -199,11 +267,18 @@ pub(super) fn render_path_traced_frame(
         debug!(
             "  bvh_build: {:.2}ms ({})",
             bvh_ms,
-            if opts.pt_gpu_bvh { "GPU" } else { "CPU" }
+            if used_refit {
+                "GPU refit"
+            } else if opts.pt_gpu_bvh {
+                "GPU"
+            } else {
+                "CPU"
+            }
         );
         reset_by_scene = true;
         pt.reset_accumulation();
         renderer.pt.pt_scene_dirty = false;
+        renderer.pt.pt_transforms_dirty = false;
 
         let scene_ms = scene_start.elapsed().as_secs_f64() * 1000.0;
         debug!(
@@ -246,7 +321,7 @@ pub(super) fn render_path_traced_frame(
     } else {
         (1.0 - opts.materialize_mix).clamp(0.0, 1.0)
     };
-    let cam_uniform = PtCameraUniform {
+    let mut cam_uniform = PtCameraUniform {
         inv_view: inv_view.to_cols_array_2d(),
         inv_proj: inv_proj.to_cols_array_2d(),
         position: pos.to_array(),
@@ -264,15 +339,24 @@ pub(super) fn render_path_traced_frame(
         _pad2: 0.0,
         slice_normal: compute_slice_normal(opts),
         _pad3: 0.0,
-        spectral_mode: opts.pt_spectral_mode as u32,
+        spectral_mode: opts.pt_spectral_mode.as_u32(),
         spectral_samples: opts.pt_spectral_samples,
         spectral_dispersion: u32::from(opts.pt_spectral_dispersion),
-        sampler_mode: opts.pt_sampler_mode as u32,
+        sampler_mode: opts.pt_sampler_mode.as_u32(),
         two_level: 1,
         adaptive_enabled: u32::from(opts.pt_adaptive_sampling),
         adaptive_max_spp: derived_max,
         _pad4: instance_tint_mix.to_bits(),
     };
+    cam_uniform.set_emissive_sampling(opts.pt_emissive_sampling);
+    if renderer
+        .pt
+        .wgpu_last_emissive_sampling
+        .is_some_and(|prev| prev != opts.pt_emissive_sampling)
+    {
+        pt.reset_accumulation();
+    }
+    renderer.pt.wgpu_last_emissive_sampling = Some(opts.pt_emissive_sampling);
 
     // Update camera matrices and detect camera movement.
     let cam_pos = pos.to_array();
@@ -409,7 +493,7 @@ pub(super) fn render_path_traced_frame(
             update_interval: opts.pt_adaptive_interval,
         }),
         spectral: Some([
-            opts.pt_spectral_mode as u32,
+            opts.pt_spectral_mode.as_u32(),
             opts.pt_spectral_samples,
             u32::from(opts.pt_spectral_dispersion),
         ]),
@@ -450,7 +534,7 @@ pub(super) fn render_path_traced_frame(
     let dispatch_start = std::time::Instant::now();
     let mut actual_samples_this_frame = 0u32;
     let mut remaining = samples_this_frame;
-    while remaining > 0 {
+    while remaining > 0 && !pt.is_converged() {
         let chunk = remaining.min(pt_megakernel::MAX_SAMPLES_PER_RECORDING);
         let Some(samples) = pt.dispatch(chunk).map_err(pt_err)? else {
             break;
@@ -465,7 +549,7 @@ pub(super) fn render_path_traced_frame(
         }
     }
     let frame_count = pt.frame_count();
-    let output_view = pt.output_texture_view_untracked().clone();
+    let output_tex = pt.output_texture_untracked().clone();
     let dispatch_ms = dispatch_start.elapsed().as_secs_f64() * 1000.0;
     debug!(
         "  dispatch: {:.2}ms ({} samples)",
@@ -479,34 +563,19 @@ pub(super) fn render_path_traced_frame(
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("PT Encoder"),
         });
-    let state = renderer
-        .render_state
-        .as_ref()
-        .expect("render_state not built — call ensure_render_targets before render");
-    let targets = &state.targets;
-    let blit = renderer
-        .pt
-        .blit
-        .as_mut()
-        .ok_or(render_core::ReadbackError::MissingTarget)?;
-    blit.set_blit_exposure(&renderer.ctx.queue, opts.effective_exposure_multiplier());
-    blit.set_blit_source_encoded(&renderer.ctx.queue, false);
-    let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
-    blit.set_blit_color(&renderer.ctx.queue, tm_tag, ev, wb, gc);
-    blit.blit_texture(
-        &renderer.ctx.device,
-        &mut encoder,
-        &targets.render_view,
-        &output_view,
-    );
+    renderer.encode_pt_display_pass(&mut encoder, &output_tex, opts)?;
     let blit_ms = blit_start.elapsed().as_secs_f64() * 1000.0;
     debug!("  blit: {:.2}ms", blit_ms);
 
     if output == PtOutput::CpuReadback {
+        let state = renderer
+            .render_state
+            .as_ref()
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
         gpu::readback_texture(
             &renderer.ctx,
             &mut encoder,
-            &targets.render_texture,
+            &state.targets.render_texture,
             width,
             height,
             &mut renderer.readback,

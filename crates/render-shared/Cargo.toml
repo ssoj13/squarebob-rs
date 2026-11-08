@@ -13,6 +13,7 @@ uuid = { workspace = true }
 pt-mats = { workspace = true }
 pt-material = { workspace = true }
 render-color = { workspace = true }
+render-settings = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

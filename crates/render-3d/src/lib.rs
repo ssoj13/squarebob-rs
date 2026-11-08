@@ -65,6 +65,9 @@ pub(crate) struct DisplayColor {
     /// `canvas` compiled for the blit's fragment stage, built with it in `sync_color` (only for the
     /// GPU codepath) and installed into every path tracer, including one created later.
     shader: Option<Arc<OcioShader>>,
+    /// Compute-stage OCIO pass (`OcioPass::new_with_adapter` backed by `gpu_mem::pipeline_cache`)
+    /// writing canvas-adapted `Rgba16Float` directly into `targets.render_view`.
+    ocio_pass: Option<render_color_gpu::OcioPass>,
     /// Why there is no usable display transform in OCIO mode (a failed pipeline build, a view this
     /// output cannot show, a transform the device cannot compile). Reported by the host; refused by
     /// an export.
@@ -72,31 +75,86 @@ pub(crate) struct DisplayColor {
 }
 
 #[cfg(feature = "cuda")]
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) struct CudaCameraKey {
-    pub inv_view: [[f32; 4]; 4],
-    pub inv_proj: [[f32; 4]; 4],
-    pub pos: [f32; 3],
-    pub slice_enabled: bool,
-    pub slice_normal: [f32; 3],
-    pub slice_position: f32,
-    pub slice_invert: bool,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CudaAccumKey {
+    pub packed: [u32; pt_cuda::P_COUNT],
+    pub emissive_sampling: bool,
+}
+
+#[cfg(feature = "cuda")]
+impl CudaAccumKey {
+    pub fn from_config(cfg: &pt_cuda::CudaLaunchConfig, emissive_sampling: bool) -> Self {
+        let mut norm_cfg = cfg.clone();
+        norm_cfg.sample_origin = 0;
+        norm_cfg.samples_per_launch = 0;
+        norm_cfg.exposure = 0.0;
+        norm_cfg.pick_x = 0.0;
+        norm_cfg.pick_y = 0.0;
+        if !norm_cfg.adaptive_enabled {
+            norm_cfg.adaptive_min_spp = 0;
+            norm_cfg.adaptive_max_spp = 0;
+            norm_cfg.adaptive_threshold = 0.0;
+        }
+        let mut floats = norm_cfg.pack();
+        for f in &mut floats {
+            if *f == 0.0 {
+                *f = 0.0;
+            }
+        }
+        Self {
+            packed: bytemuck::cast(floats),
+            emissive_sampling,
+        }
+    }
 }
 
 pub(crate) struct PtState {
     pub path_tracer: Option<pt_megakernel::PathTraceCompute>,
+    pub active_backend: render_settings::PtComputeBackend,
+    pub pt_target_samples: u32,
+    pub pt_transforms_dirty: bool,
+    pub wgpu_tlas_instance_count: usize,
+    pub wgpu_tlas_materials_key: u64,
+    pub wgpu_instance_proto: Vec<u32>,
+    pub wgpu_last_emissive_sampling: Option<bool>,
+    pub linear_readback: gpu::TextureReadback,
+    pub linear_readback_bytes: Vec<u8>,
     #[cfg(feature = "cuda")]
     pub cuda_tracer: Option<pt_cuda::CudaPathTracer>,
     #[cfg(feature = "cuda")]
     pub cuda_output_tex: Option<(wgpu::Texture, wgpu::TextureView, u32, u32)>,
     #[cfg(feature = "cuda")]
+    pub cuda_albedo_buf: Option<(wgpu::Buffer, usize)>,
+    #[cfg(feature = "cuda")]
+    pub cuda_normal_buf: Option<(wgpu::Buffer, usize)>,
+    #[cfg(feature = "cuda")]
+    pub cuda_staging_linear: Vec<[f32; 4]>,
+    #[cfg(feature = "cuda")]
+    pub cuda_staging_albedo: Vec<[f32; 4]>,
+    #[cfg(feature = "cuda")]
+    pub cuda_staging_normal: Vec<[f32; 4]>,
+    #[cfg(feature = "cuda")]
     pub cuda_scene_dirty: bool,
+    #[cfg(feature = "cuda")]
+    pub cuda_transforms_dirty: bool,
+    #[cfg(feature = "cuda")]
+    pub cuda_tlas_order: Vec<usize>,
+    #[cfg(feature = "cuda")]
+    pub cuda_tlas_materials_key: u64,
+    #[cfg(feature = "cuda")]
+    pub cuda_refit_instances: Vec<pt_core::bvh::GpuInstance>,
     #[cfg(feature = "cuda")]
     pub cuda_env_dirty: bool,
     #[cfg(feature = "cuda")]
     pub cuda_accum_reset: bool,
     #[cfg(feature = "cuda")]
-    pub cuda_last_cam: Option<CudaCameraKey>,
+    pub cuda_last_accum_key: Option<CudaAccumKey>,
+    #[cfg(feature = "cuda")]
+    pub cuda_guides_synced: bool,
+    #[cfg(feature = "cuda")]
+    pub cuda_oidn_mode: render_settings::OidnModeOption,
+    #[cfg(feature = "cuda")]
+    pub cuda_last_slice: (bool, bool, f32, [f32; 3]),
     #[cfg(feature = "cuda")]
     pub cuda_init_failed: bool,
     pub blit: Option<pt::blit::PtDisplayBlit>,
@@ -125,22 +183,55 @@ impl Default for PtState {
     fn default() -> Self {
         Self {
             path_tracer: None,
+            active_backend: render_settings::PtComputeBackend::Wgpu,
+            pt_target_samples: 0,
+            pt_transforms_dirty: false,
+            wgpu_tlas_instance_count: 0,
+            wgpu_tlas_materials_key: 0,
+            wgpu_instance_proto: Vec::new(),
+            wgpu_last_emissive_sampling: None,
+            linear_readback: gpu::TextureReadback::default(),
+            linear_readback_bytes: Vec::new(),
             #[cfg(feature = "cuda")]
             cuda_tracer: None,
             #[cfg(feature = "cuda")]
             cuda_output_tex: None,
             #[cfg(feature = "cuda")]
+            cuda_albedo_buf: None,
+            #[cfg(feature = "cuda")]
+            cuda_normal_buf: None,
+            #[cfg(feature = "cuda")]
+            cuda_staging_linear: Vec::new(),
+            #[cfg(feature = "cuda")]
+            cuda_staging_albedo: Vec::new(),
+            #[cfg(feature = "cuda")]
+            cuda_staging_normal: Vec::new(),
+            #[cfg(feature = "cuda")]
             cuda_scene_dirty: true,
+            #[cfg(feature = "cuda")]
+            cuda_transforms_dirty: false,
+            #[cfg(feature = "cuda")]
+            cuda_tlas_order: Vec::new(),
+            #[cfg(feature = "cuda")]
+            cuda_tlas_materials_key: 0,
+            #[cfg(feature = "cuda")]
+            cuda_refit_instances: Vec::new(),
             #[cfg(feature = "cuda")]
             cuda_env_dirty: true,
             #[cfg(feature = "cuda")]
             cuda_accum_reset: false,
             #[cfg(feature = "cuda")]
-            cuda_last_cam: None,
+            cuda_last_accum_key: None,
+            #[cfg(feature = "cuda")]
+            cuda_guides_synced: false,
+            #[cfg(feature = "cuda")]
+            cuda_oidn_mode: render_settings::OidnModeOption::Off,
+            #[cfg(feature = "cuda")]
+            cuda_last_slice: (false, false, 0.0, [0.0, 1.0, 0.0]),
             #[cfg(feature = "cuda")]
             cuda_init_failed: false,
             blit: None,
-            pt_backend_kind: pt::PtBackendKind::Megakernel,
+            pt_backend_kind: pt::PtBackendKind::WgpuMegakernel,
             pt_scene_dirty: false,
             pt_accum_reset: false,
             pt_env_dirty: true,
@@ -162,6 +253,7 @@ impl Default for PtState {
 /// 3D Renderer with multi-pass PBR pipeline
 pub struct Renderer3D {
     ctx: Arc<GpuContext>,
+    pub(crate) adapter_info: wgpu::AdapterInfo,
     pub(crate) readback: gpu::TextureReadback,
 
     // Geometry buffers (static)
@@ -235,6 +327,7 @@ pub struct Renderer3D {
     /// mix slider changes between frames. Read via `instance_rebuild_count`.
     cached_instances_rebuild_count: u64,
     cached_opts_hash: u64,
+    cached_topology_hash: Option<u64>,
     cached_layout_size: (u32, u32),
     scene_layout_size: Option<(u32, u32)>,
 
@@ -265,6 +358,7 @@ impl Renderer3D {
     pub fn invalidate_instances(&mut self) {
         self.cached_instances = None;
         self.cached_opts_hash = 0;
+        self.cached_topology_hash = None;
         self.pt_expand_cache = None;
     }
 
@@ -280,6 +374,7 @@ impl Renderer3D {
         // Clear instance cache to force rebuild
         self.cached_instances = None;
         self.cached_opts_hash = 0;
+        self.cached_topology_hash = None;
         self.cached_layout_size = (0, 0);
         self.scene_layout_size = None;
         self.pt_expand_cache = None;
@@ -288,30 +383,54 @@ impl Renderer3D {
     /// Drop PT resources and force re-init on next render.
     pub fn reset_path_tracer(&mut self) {
         self.pt.path_tracer = None;
+        self.pt.active_backend = render_settings::PtComputeBackend::Wgpu;
+        self.pt.pt_target_samples = 0;
+        self.pt.pt_transforms_dirty = false;
+        self.pt.wgpu_tlas_instance_count = 0;
+        self.pt.wgpu_tlas_materials_key = 0;
+        self.pt.wgpu_instance_proto.clear();
+        self.pt.wgpu_last_emissive_sampling = None;
         #[cfg(feature = "cuda")]
         {
             self.pt.cuda_tracer = None;
             self.pt.cuda_output_tex = None;
+            self.pt.cuda_albedo_buf = None;
+            self.pt.cuda_normal_buf = None;
+            self.pt.cuda_staging_linear.clear();
+            self.pt.cuda_staging_albedo.clear();
+            self.pt.cuda_staging_normal.clear();
             self.pt.cuda_scene_dirty = true;
+            self.pt.cuda_transforms_dirty = false;
+            self.pt.cuda_tlas_order.clear();
+            self.pt.cuda_tlas_materials_key = 0;
+            self.pt.cuda_refit_instances.clear();
             self.pt.cuda_env_dirty = true;
             self.pt.cuda_accum_reset = false;
-            self.pt.cuda_last_cam = None;
+            self.pt.cuda_last_accum_key = None;
+            self.pt.cuda_guides_synced = false;
+            self.pt.cuda_last_slice = (false, false, 0.0, [0.0, 1.0, 0.0]);
             self.pt.cuda_init_failed = false;
         }
+        self.pt.linear_readback_bytes.clear();
         self.pt.blit = None;
         self.pt.display_key = None;
         self.pt.pt_scene_dirty = true;
         self.pt.pt_env_dirty = true;
         self.pt.pt_samples_per_update = 1;
         self.pt.pt_last_render_ms = 0.0;
+        self.cached_topology_hash = None;
         self.pt_expand_cache = None;
     }
 
     pub fn mark_pt_scene_dirty(&mut self) {
         self.pt.pt_scene_dirty = true;
+        self.pt.pt_transforms_dirty = false;
+        self.cached_topology_hash = None;
         #[cfg(feature = "cuda")]
         {
             self.pt.cuda_scene_dirty = true;
+            self.pt.cuda_transforms_dirty = false;
+            self.pt.cuda_guides_synced = false;
         }
     }
 
@@ -322,6 +441,7 @@ impl Renderer3D {
         #[cfg(feature = "cuda")]
         {
             self.pt.cuda_accum_reset = true;
+            self.pt.cuda_guides_synced = false;
         }
     }
 
@@ -330,6 +450,7 @@ impl Renderer3D {
         #[cfg(feature = "cuda")]
         {
             self.pt.cuda_env_dirty = true;
+            self.pt.cuda_guides_synced = false;
         }
     }
 
@@ -338,8 +459,19 @@ impl Renderer3D {
             pt.reset_accumulation();
         }
         #[cfg(feature = "cuda")]
-        if let Some(cuda) = &mut self.pt.cuda_tracer {
-            let _ = cuda.reset_accumulation();
+        {
+            self.pt.cuda_accum_reset = true;
+            self.pt.cuda_guides_synced = false;
+            if let Some(cuda) = self.pt.cuda_tracer.as_mut() {
+                match cuda.reset_accumulation() {
+                    Ok(()) => {
+                        self.pt.cuda_accum_reset = false;
+                    }
+                    Err(err) => {
+                        log::warn!("reset_pt_accumulation: CUDA reset failed: {err}");
+                    }
+                }
+            }
         }
     }
 
@@ -363,6 +495,7 @@ impl Renderer3D {
 
     /// Create a new 3D renderer
     pub fn new(ctx: Arc<GpuContext>) -> Self {
+        let adapter_info = ctx.adapter.get_info();
         let device = &ctx.device;
 
         // Bind group layouts
@@ -503,6 +636,7 @@ impl Renderer3D {
 
         Self {
             ctx,
+            adapter_info,
             readback: gpu::TextureReadback::default(),
             vertex_buffer,
             index_buffer,
@@ -533,6 +667,7 @@ impl Renderer3D {
             cached_instances: None,
             cached_instances_rebuild_count: 0,
             cached_opts_hash: 0,
+            cached_topology_hash: None,
             cached_layout_size: (0, 0),
             scene_layout_size: None,
             selected_ids: std::collections::HashSet::new(),
@@ -668,10 +803,33 @@ impl Renderer3D {
                 height as f32,
                 camera.fov,
             ));
-            self.pt.pt_scene_dirty = true;
-            #[cfg(feature = "cuda")]
-            {
-                self.pt.cuda_scene_dirty = true;
+            let topology_hash = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                instances.len().hash(&mut h);
+                mat_settings_hash(&opts).hash(&mut h);
+                self.mat_cache.scene_meta().hash(&mut h);
+                for inst in instances.iter() {
+                    inst.object_id.hash(&mut h);
+                    inst.material_id.hash(&mut h);
+                }
+                h.finish()
+            };
+            if !instances.is_empty() && self.cached_topology_hash == Some(topology_hash) {
+                self.pt.pt_transforms_dirty = true;
+                #[cfg(feature = "cuda")]
+                {
+                    self.pt.cuda_transforms_dirty = true;
+                }
+            } else {
+                self.cached_topology_hash = Some(topology_hash);
+                self.pt.pt_scene_dirty = true;
+                self.pt.pt_transforms_dirty = false;
+                #[cfg(feature = "cuda")]
+                {
+                    self.pt.cuda_scene_dirty = true;
+                    self.pt.cuda_transforms_dirty = false;
+                }
             }
             if self.picking.hovered_id != 0
                 && hovered_path.as_deref()
@@ -809,7 +967,8 @@ impl Renderer3D {
                 &self.env_params_buf,
             );
         }
-        self.pt.pt_env_dirty = true;
+        self.mark_pt_env_dirty();
+        self.reset_pt_accumulation();
     }
 
     // ========================================================================
@@ -1304,6 +1463,25 @@ impl Renderer3D {
         self.picking.poll_result(&self.ctx.device)
     }
 
+    /// Which concrete path-tracing compute backend actually executed the latest PT frame
+    /// (`PtComputeBackend::Wgpu` or `PtComputeBackend::Cuda`).
+    pub fn active_backend(&self) -> render_settings::PtComputeBackend {
+        self.pt.active_backend
+    }
+
+    /// Whether the active PT backend has reached its sample target or converged adaptively.
+    pub fn pt_is_converged(&self) -> bool {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return self.pt.cuda_tracer.as_ref().is_some_and(|c| {
+                c.is_converged()
+                    || (self.pt.pt_target_samples > 0
+                        && c.frame_count() >= self.pt.pt_target_samples)
+            });
+        }
+        self.pt.path_tracer.as_ref().is_some_and(|p| p.is_converged())
+    }
+
     /// Current PT samples-per-update (auto-SPP uses this).
     pub fn pt_samples_per_update(&self) -> u32 {
         self.pt.pt_samples_per_update
@@ -1311,6 +1489,12 @@ impl Renderer3D {
 
     /// Current accumulated sample count (for progress display)
     pub fn pt_frame_count(&self) -> u32 {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda
+            && let Some(cuda) = self.pt.cuda_tracer.as_ref()
+        {
+            return cuda.frame_count();
+        }
         pt::frame_count(self.pt.pt_backend_kind, self)
     }
 
@@ -1318,21 +1502,23 @@ impl Renderer3D {
     /// drives all accumulation; everything else (per-dispatch batch size,
     /// adaptive caps, OIDN trigger threshold) is derived from this.
     pub fn pt_target_spp(&self) -> u32 {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return self.pt.pt_target_samples;
+        }
         self.pt
             .path_tracer
             .as_ref()
             .map(|p| p.max_samples())
-            .unwrap_or(0)
+            .unwrap_or(self.pt.pt_target_samples)
     }
 
     /// PT output color texture (Rgba32Float, post sample-normalization).
     /// `None` until `path_tracer` (or `cuda_output_tex` in CUDA mode) is built on the first PT-mode frame.
     pub fn pt_output_texture(&self) -> Option<&wgpu::Texture> {
         #[cfg(feature = "cuda")]
-        if self.pt.pt_backend_kind == pt::PtBackendKind::Wavefront
-            && let Some((tex, _, _, _)) = self.pt.cuda_output_tex.as_ref()
-        {
-            return Some(tex);
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return self.pt.cuda_output_tex.as_ref().map(|(tex, _, _, _)| tex);
         }
         self.pt
             .path_tracer
@@ -1343,31 +1529,238 @@ impl Renderer3D {
     /// PT viewport dims, when available.
     pub fn pt_dimensions(&self) -> Option<(u32, u32)> {
         #[cfg(feature = "cuda")]
-        if self.pt.pt_backend_kind == pt::PtBackendKind::Wavefront
-            && let Some(c) = self.pt.cuda_tracer.as_ref()
-        {
-            return Some((c.width(), c.height()));
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return self.pt.cuda_tracer.as_ref().map(|c| (c.width(), c.height()));
         }
         self.pt.path_tracer.as_ref().map(|p| p.dimensions())
     }
 
-    /// Per-pixel primary-hit albedo AOV. Available for both megakernel and
-    /// wavefront PT backends (each writes its own buffer at bounce 0; the
-    /// active backend's buffer is returned).
+    /// Per-pixel primary-hit albedo AOV. Available for both WGPU (`pt-megakernel` when
+    /// `aovs_enabled()`) and CUDA (`pt-cuda` uploaded into `cuda_albedo_buf`) backends.
     pub fn pt_albedo_buffer(&self) -> Option<&wgpu::Buffer> {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return self.pt.cuda_albedo_buf.as_ref().map(|(buf, _)| buf);
+        }
         self.pt
             .path_tracer
             .as_ref()
+            .filter(|p| p.aovs_enabled())
             .map(|p| p.albedo_aov_buffer_untracked())
     }
 
-    /// Per-pixel primary-hit world-space normal AOV. Available for both
-    /// megakernel and wavefront PT backends.
+    /// Per-pixel primary-hit world-space normal AOV. Available for both WGPU (`pt-megakernel`
+    /// when `aovs_enabled()`) and CUDA (`pt-cuda` uploaded into `cuda_normal_buf`) backends.
     pub fn pt_normal_buffer(&self) -> Option<&wgpu::Buffer> {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            return self.pt.cuda_normal_buf.as_ref().map(|(buf, _)| buf);
+        }
         self.pt
             .path_tracer
-            .as_ref()
+             .as_ref()
+            .filter(|p| p.aovs_enabled())
             .map(|p| p.normal_aov_buffer_untracked())
+    }
+
+    /// Synchronize CUDA primary-hit albedo and normal AOV guides into WGPU storage buffers
+    /// on demand right before `OidnDenoiser::denoise` runs, avoiding per-frame DtoH/HtoD
+    /// guide traffic during interactive path-tracing accumulation.
+    pub fn sync_oidn_guides(&mut self) -> Result<(), String> {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            let (need_albedo, need_normal) = self.pt.cuda_oidn_mode.requires_aov();
+            if (!need_albedo && !need_normal) || self.pt.cuda_guides_synced {
+                return Ok(());
+            }
+            let Some(cuda) = self.pt.cuda_tracer.as_mut() else {
+                return Ok(());
+            };
+            let pixels = (cuda.width().max(1) as usize)
+                .saturating_mul(cuda.height().max(1) as usize);
+            if need_albedo {
+                if self.pt.cuda_staging_albedo.len() != pixels {
+                    self.pt.cuda_staging_albedo.resize(pixels, [0.0; 4]);
+                }
+                cuda.read_albedo_aov_into(&mut self.pt.cuda_staging_albedo)
+                    .map_err(|e| format!("CUDA albedo AOV readback failed: {e}"))?;
+                let albedo_buf = pt::wavefront::ensure_cuda_aov_buffer(
+                    &self.ctx.device,
+                    &mut self.pt.cuda_albedo_buf,
+                    pixels,
+                    "pt_cuda_albedo_aov",
+                );
+                self.ctx.queue.write_buffer(
+                    albedo_buf,
+                    0,
+                    bytemuck::cast_slice(&self.pt.cuda_staging_albedo),
+                );
+            }
+            if need_normal {
+                if self.pt.cuda_staging_normal.len() != pixels {
+                    self.pt.cuda_staging_normal.resize(pixels, [0.0; 4]);
+                }
+                cuda.read_normal_aov_into(&mut self.pt.cuda_staging_normal)
+                    .map_err(|e| format!("CUDA normal AOV readback failed: {e}"))?;
+                let normal_buf = pt::wavefront::ensure_cuda_aov_buffer(
+                    &self.ctx.device,
+                    &mut self.pt.cuda_normal_buf,
+                    pixels,
+                    "pt_cuda_normal_aov",
+                );
+                self.ctx.queue.write_buffer(
+                    normal_buf,
+                    0,
+                    bytemuck::cast_slice(&self.pt.cuda_staging_normal),
+                );
+            }
+            self.pt.cuda_guides_synced = true;
+        }
+        Ok(())
+    }
+
+    /// Read scene-linear `Rgba32Float` beauty output from the active PT backend into `out_rgba`
+    /// (`width * height * 4` floats) without steady-state heap allocations.
+    pub fn read_pt_linear_into(
+        &mut self,
+        out_rgba: &mut Vec<f32>,
+    ) -> Result<(u32, u32), render_core::ReadbackError> {
+        #[cfg(feature = "cuda")]
+        if self.pt.active_backend == render_settings::PtComputeBackend::Cuda {
+            let cuda = self
+                .pt
+                .cuda_tracer
+                .as_mut()
+                .ok_or(render_core::ReadbackError::MissingTarget)?;
+            let (w, h) = (cuda.width(), cuda.height());
+            let pixels = (w as usize)
+                .checked_mul(h as usize)
+                .ok_or(render_core::ReadbackError::MissingTarget)?;
+            let floats = pixels
+                .checked_mul(4)
+                .ok_or(render_core::ReadbackError::MissingTarget)?;
+            if out_rgba.len() != floats {
+                out_rgba.resize(floats, 0.0);
+            }
+            let dst: &mut [[f32; 4]] = bytemuck::cast_slice_mut(out_rgba.as_mut_slice());
+            cuda.read_linear_into(dst)
+                .map_err(|e| render_core::ReadbackError::SceneBuild(e.to_string()))?;
+            return Ok((w, h));
+        }
+
+        let pt = self
+            .pt
+            .path_tracer
+            .as_ref()
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
+        let (w, h) = pt.dimensions();
+        let pixels = (w as usize)
+            .checked_mul(h as usize)
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
+        let floats = pixels
+            .checked_mul(4)
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
+        let tex = pt.output_texture_untracked().clone();
+        let mut encoder =
+            self.ctx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("PT Linear Readback Encoder"),
+                });
+        gpu::readback_texture_bytes(
+            &self.ctx,
+            &mut encoder,
+            &tex,
+            gpu::TextureReadbackLayout::new("PT Linear Readback", w, h, 16)?,
+            &mut self.pt.linear_readback,
+        )?;
+        self.ctx.queue.submit(std::iter::once(encoder.finish()));
+        gpu::map_readback_into(
+            &self.ctx,
+            &self.pt.linear_readback,
+            &mut self.pt.linear_readback_bytes,
+        )?;
+        let expected_bytes = pixels.saturating_mul(16);
+        if self.pt.linear_readback_bytes.len() != expected_bytes {
+            return Err(render_core::ReadbackError::SceneBuild(format!(
+                "PT linear readback size mismatch: got {} B, expected {} B",
+                self.pt.linear_readback_bytes.len(),
+                expected_bytes
+            )));
+        }
+        if out_rgba.len() != floats {
+            out_rgba.resize(floats, 0.0);
+        }
+        bytemuck::cast_slice_mut::<f32, u8>(out_rgba.as_mut_slice())
+            .copy_from_slice(&self.pt.linear_readback_bytes);
+        Ok((w, h))
+    }
+
+    /// Encode the shared display color pass (`OcioPass` for GPU OCIO, `PtDisplayBlit` for
+    /// BuiltIn tonemap, CPU OCIO, or OCIO fallback) from `src_tex` into `targets.render_view`.
+    pub(crate) fn encode_pt_display_pass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        src_tex: &wgpu::Texture,
+        opts: &Render3DOptions,
+    ) -> Result<(), render_core::ReadbackError> {
+        let state = self
+            .render_state
+            .as_ref()
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
+        let (width, height) = state.targets.size;
+        let gpu_ocio = opts.color_pipeline.mode == ColorMode::Ocio
+            && opts.color_pipeline.codepath != ColorCodepath::Cpu;
+        if gpu_ocio && let Some(ocio_pass) = self.color.ocio_pass.as_mut() {
+            let src_view = src_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let exposure_ev = opts.effective_exposure_multiplier().max(1e-20).log2();
+            ocio_pass.run(
+                &self.ctx.device,
+                &self.ctx.queue,
+                encoder,
+                &src_view,
+                &state.targets.render_view,
+                exposure_ev,
+                width,
+                height,
+            );
+            return Ok(());
+        }
+
+        let blit = self
+            .pt
+            .blit
+            .as_mut()
+            .ok_or(render_core::ReadbackError::MissingTarget)?;
+        let cpu = opts.color_pipeline.mode == ColorMode::Ocio
+            && opts.color_pipeline.codepath == ColorCodepath::Cpu;
+        let canvas = self.color.canvas.as_ref().filter(|_| cpu);
+        let view = if cpu {
+            let exposure = opts.effective_exposure_multiplier();
+            blit.apply_cpu_color_in_place(&self.ctx, src_tex, |pixels| {
+                for pixel in pixels.iter_mut() {
+                    *pixel = pixel.map(|value| value * exposure);
+                }
+                if let Some(canvas) = canvas {
+                    canvas.apply_rgb(pixels);
+                }
+            })?
+        } else {
+            src_tex.create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        blit.set_blit_exposure(
+            &self.ctx.queue,
+            if cpu {
+                1.0
+            } else {
+                opts.effective_exposure_multiplier()
+            },
+        );
+        blit.set_blit_source_encoded(&self.ctx.queue, canvas.is_some());
+        let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
+        blit.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
+        blit.blit_texture(&self.ctx.device, encoder, &state.targets.render_view, &view);
+        Ok(())
     }
 
     /// Access to the underlying GPU context — needed by the OIDN denoiser
@@ -1399,67 +1792,30 @@ impl Renderer3D {
         source: Option<&wgpu::Texture>,
         opts: &Render3DOptions,
     ) -> Result<(), render_core::ReadbackError> {
-        if self.instance_count == 0 {
+        if self.instance_count == 0 || self.render_state.is_none() || self.pt.blit.is_none() {
             return Ok(());
         }
-        let Some(state) = self.render_state.as_ref() else {
-            return Ok(());
+        let src_tex = match source {
+            Some(tex) => tex.clone(),
+            None => {
+                let Some(pt_tex) = self.pt_output_texture().cloned() else {
+                    return Ok(());
+                };
+                pt_tex
+            }
         };
-        let Some(pt) = self.pt.path_tracer.as_ref() else {
-            return Ok(());
-        };
-        let Some(blit) = self.pt.blit.as_mut() else {
-            return Ok(());
-        };
-        let pt_tex = pt.output_texture_untracked();
-        let src_tex = source.unwrap_or(pt_tex);
-        let cpu = opts.color_pipeline.mode == ColorMode::Ocio
-            && opts.color_pipeline.codepath == ColorCodepath::Cpu;
-        // The CPU codepath runs the SAME canvas processor the GPU blit compiles, so both write
-        // canvas-encoded values. Without one (its error is reported by `sync_color`) the CPU path
-        // leaves exposed scene light and the blit encodes it, like the GPU's stand-in.
-        let canvas = self.color.canvas.as_ref().filter(|_| cpu);
-        let view = if cpu {
-            let exposure = opts.effective_exposure_multiplier();
-            blit.apply_cpu_color_in_place(&self.ctx, src_tex, |pixels| {
-                for pixel in pixels.iter_mut() {
-                    *pixel = pixel.map(|value| value * exposure);
-                }
-                if let Some(canvas) = canvas {
-                    canvas.apply_rgb(pixels);
-                }
-            })?
-        } else {
-            src_tex.create_view(&Default::default())
-        };
-        // Both raw PT and denoised sources follow the same display path.
-        // CPU processing already consumed camera exposure.
-        blit.set_blit_exposure(
-            &self.ctx.queue,
-            if cpu {
-                1.0
-            } else {
-                opts.effective_exposure_multiplier()
-            },
-        );
-        blit.set_blit_source_encoded(&self.ctx.queue, canvas.is_some());
-        let (tm_tag, ev, wb, gc) = opts.blit_color_lane();
-        blit.set_blit_color(&self.ctx.queue, tm_tag, ev, wb, gc);
         let mut encoder = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("composite_overlay"),
             });
-        blit.blit_texture(
-            &self.ctx.device,
-            &mut encoder,
-            &state.targets.render_view,
-            &view,
-        );
-        let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
-        if opts.hover_mode != HoverMode::None && has_active {
-            self.encode_outline_pass(&mut encoder, &state.targets, &state.dyn_bgs);
+        self.encode_pt_display_pass(&mut encoder, &src_tex, opts)?;
+        if let Some(state) = self.render_state.as_ref() {
+            let has_active = !self.selected_ids.is_empty() || self.picking.hovered_id != 0;
+            if opts.hover_mode != HoverMode::None && has_active {
+                self.encode_outline_pass(&mut encoder, &state.targets, &state.dyn_bgs);
+            }
         }
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
         Ok(())
@@ -1516,7 +1872,7 @@ impl Renderer3D {
                     .map_err(|error| error.to_string())
             })
             .and_then(|canvas| {
-                let shader = if key.gpu {
+                let (shader, ocio_pass) = if key.gpu {
                     let shader = OcioShader::new(
                         &self.ctx.device,
                         &self.ctx.queue,
@@ -1524,17 +1880,27 @@ impl Renderer3D {
                         wgpu::ShaderStages::FRAGMENT,
                     )
                     .map_err(|error| error.to_string())?;
-                    Some(Arc::new(shader))
+                    let pass = render_color_gpu::OcioPass::new_with_adapter(
+                        &self.ctx.device,
+                        &self.ctx.queue,
+                        &self.adapter_info,
+                        &canvas,
+                        render_color_gpu::Alpha::Straight,
+                        render_core::DISPLAY_TEXTURE_FORMAT,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    (Some(Arc::new(shader)), Some(pass))
                 } else {
-                    None
+                    (None, None)
                 };
-                Ok((canvas, shader))
+                Ok((canvas, shader, ocio_pass))
             });
         match built {
-            Ok((canvas, shader)) => DisplayColor {
+            Ok((canvas, shader, ocio_pass)) => DisplayColor {
                 key: Some(key),
                 canvas: Some(canvas),
                 shader,
+                ocio_pass,
                 error: None,
             },
             Err(error) => DisplayColor {
@@ -1571,12 +1937,14 @@ impl Renderer3D {
             .unwrap_or(0)
     }
 
-    /// Read the existing display canvas once. `raw_float` retains packed RGBA16Float
-    /// for HDR export; otherwise the shared helper produces SDR screenshot bytes.
-    pub fn readback_render_texture(
+    /// Read the existing display canvas into `out_bytes`, reusing capacity across frames.
+    /// `raw_float` retains packed RGBA16Float for HDR export; otherwise the shared helper
+    /// produces SDR screenshot bytes.
+    pub fn readback_render_texture_into(
         &mut self,
         raw_float: bool,
-    ) -> Result<Vec<u8>, render_core::ReadbackError> {
+        out_bytes: &mut Vec<u8>,
+    ) -> Result<(), render_core::ReadbackError> {
         let state = self
             .render_state
             .as_ref()
@@ -1613,7 +1981,18 @@ impl Renderer3D {
             )?;
         }
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
-        gpu::map_readback(&self.ctx, &self.readback)
+        gpu::map_readback_into(&self.ctx, &self.readback, out_bytes)
+    }
+
+    /// Read the existing display canvas once. `raw_float` retains packed RGBA16Float
+    /// for HDR export; otherwise the shared helper produces SDR screenshot bytes.
+    pub fn readback_render_texture(
+        &mut self,
+        raw_float: bool,
+    ) -> Result<Vec<u8>, render_core::ReadbackError> {
+        let mut bytes = Vec::new();
+        self.readback_render_texture_into(raw_float, &mut bytes)?;
+        Ok(bytes)
     }
 
     /// Build a world-space ray from screen coordinates
@@ -1669,8 +2048,12 @@ impl Renderer3D {
     fn pt_pick_impl(&mut self, origin: Vec3, dir: Vec3) -> Option<(u32, f32)> {
         if let Some(pt) = self.pt.path_tracer.as_mut() {
             if pt.pending() > 0 {
-                let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
-                let _ = pt.collect();
+                if let Err(err) = self.ctx.device.poll(wgpu::PollType::wait_indefinitely()) {
+                    log::warn!("pt_pick_impl: device poll before pick failed: {err}");
+                }
+                if let Err(err) = pt.collect() {
+                    log::warn!("pt_pick_impl: PathTraceCompute::collect failed: {err}");
+                }
             }
             if let Ok(res) = pt.gpu_pick(origin.to_array(), dir.to_array()) {
                 return res;

@@ -21,6 +21,16 @@ pub(super) fn apply_cli_overrides(opts: &mut Render3DOptions, cli: &CliOptions) 
     }
     if let Some(wf) = cli.wavefront {
         opts.pt_wavefront = wf;
+        if cli.pt_compute_backend.is_none() {
+            opts.pt_compute_backend = if wf {
+                render_shared::PtComputeBackend::Auto
+            } else {
+                render_shared::PtComputeBackend::Wgpu
+            };
+        }
+    }
+    if let Some(backend) = cli.pt_compute_backend {
+        opts.pt_compute_backend = backend;
     }
     if let Some(t) = cli.pt_wavefront_tile_size {
         opts.pt_wavefront_tile_size = t;
@@ -267,6 +277,7 @@ mod tests {
 
             // Applicator inputs.
             path_tracing: Some(true),
+            pt_compute_backend: Some(render_shared::PtComputeBackend::Cuda),
             wavefront: Some(true),
             height_mode: Some(CubeHeightMode::Depth),
             height_squared: Some(true),
@@ -347,6 +358,10 @@ mod tests {
         apply_cli_overrides(&mut opts, &cli);
 
         assert!(opts.path_tracing);
+        assert_eq!(
+            opts.pt_compute_backend,
+            render_shared::PtComputeBackend::Cuda
+        );
         assert!(opts.pt_wavefront);
         assert_eq!(opts.pt_wavefront_tile_size, 64);
         assert_eq!(opts.pt_max_bounces, 13);
@@ -436,6 +451,7 @@ mod tests {
 
         // Spot-check a few fields from each major group.
         assert_eq!(opts.path_tracing, baseline.path_tracing);
+        assert_eq!(opts.pt_compute_backend, baseline.pt_compute_backend);
         assert_eq!(opts.pt_max_bounces, baseline.pt_max_bounces);
         assert_eq!(
             opts.height_curves.get(opts.height_mode as usize).scale,

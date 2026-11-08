@@ -765,12 +765,14 @@ pub mod gpu {
         Ok(())
     }
 
-    /// Map the most recent copy and strip row padding. Semantic float readback converts to
-    /// SDR RGBA8, clipping extended-range values; raw byte readback preserves all channels.
-    pub fn map_readback(
+    /// Map the most recent copy and strip row padding into `pixels`, reusing existing capacity
+    /// when possible. Semantic float readback converts to SDR RGBA8, clipping extended-range
+    /// values; raw byte readback preserves all channels.
+    pub fn map_readback_into(
         ctx: &GpuContext,
         staging: &TextureReadback,
-    ) -> Result<Vec<u8>, ReadbackError> {
+        pixels: &mut Vec<u8>,
+    ) -> Result<(), ReadbackError> {
         let layout = staging.layout.ok_or(ReadbackError::MissingTarget)?;
         let buffer = staging
             .buffer
@@ -797,8 +799,10 @@ pub mod gpu {
             } else {
                 layout.output_size
             };
-            let mut pixels = Vec::new();
-            pixels.try_reserve_exact(output_size)?;
+            pixels.clear();
+            if pixels.capacity() < output_size {
+                pixels.try_reserve_exact(output_size - pixels.capacity())?;
+            }
             for row in 0..layout.height as usize {
                 let start = row * padded_row_bytes;
                 let source = &data[start..start + row_bytes];
@@ -818,8 +822,19 @@ pub mod gpu {
                     pixels.extend_from_slice(source);
                 }
             }
-            Ok(pixels)
+            Ok(())
         })?
+    }
+
+    /// Map the most recent copy and strip row padding. Semantic float readback converts to
+    /// SDR RGBA8, clipping extended-range values; raw byte readback preserves all channels.
+    pub fn map_readback(
+        ctx: &GpuContext,
+        staging: &TextureReadback,
+    ) -> Result<Vec<u8>, ReadbackError> {
+        let mut pixels = Vec::new();
+        map_readback_into(ctx, staging, &mut pixels)?;
+        Ok(pixels)
     }
 }
 

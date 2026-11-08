@@ -76,6 +76,7 @@ impl App {
                         )
                     {
                         self.on_render_mode_changed(previous_mode.0);
+                        self.pt_render_error = None;
                         self.needs_layout = true;
                         self.needs_render_3d = true;
                         self.preset_dirty = true;

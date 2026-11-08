@@ -12,15 +12,16 @@
 //!    library slot via `Material::resolve_for_cube`) and maps each cube
 //!    to its `(slot, variant)` entry in `0..materials.len()`.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use glam::Mat4;
 use pt_core::{GpuMaterial, Instance};
-use pt_material::{MaterialLibrary, StandardSurfaceParams};
+use pt_material::{MaterialLibrary, StandardSurfaceParams, curated_presets};
 use pt_mats::{
     MaterialInput, MaterialSource, MaterializeSettings, classify_to_index, hierarchical_path_value,
 };
 use render_shared::{Render3DOptions, name_hash};
+use standard_surface::MaterialExt;
 
 use crate::geometry::CubeInstance;
 use crate::picking::PickingState;
@@ -347,20 +348,41 @@ pub(crate) fn settings_from_opts(opts: &Render3DOptions, is_pt: bool) -> Materia
 pub(crate) struct PtExpandCacheEntry {
     pub key: u64,
     pub materials: Arc<Vec<GpuMaterial>>,
+    pub materials_ext: Arc<Vec<MaterialExt>>,
     pub material_ids: Vec<u32>,
+}
+
+fn preset_ext_by_name() -> &'static std::collections::HashMap<&'static str, MaterialExt> {
+    static MAP: OnceLock<std::collections::HashMap<&'static str, MaterialExt>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        curated_presets()
+            .into_iter()
+            .map(|p| (p.name, p.ext))
+            .collect()
+    })
+}
+
+fn resolve_slot_ext(name: &str) -> MaterialExt {
+    let map = preset_ext_by_name();
+    if let Some(&ext) = map.get(name) {
+        return ext;
+    }
+    let base_name = name.trim_end_matches(" copy");
+    map.get(base_name).copied().unwrap_or_default()
 }
 
 /// Hash the bits of `opts` that influence per-cube material resolution
 /// but don't appear in `mat_settings_hash` — primarily the library
-/// contents (params + variance) and the PT-side glass UI knobs (kept
-/// for the follow-up wiring; they don't drive expansion yet).
+/// contents (params + variance) and preset name (for `MaterialExt`).
 fn pt_expand_opts_hash(opts: &Render3DOptions) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    // Library contents: UUID identifies each slot, params + variance
-    // drive resolution. Hash 36 lanes (9 vec4s × 4 channels) per slot.
+    // Library contents: UUID + name identify each slot and its curated
+    // `MaterialExt` (`transmission_depth` / sheen / anisotropy), while
+    // params + variance drive resolution (36 lanes = 9 vec4s × 4 channels).
     for m in &opts.material_library.materials {
         m.uuid.hash(&mut h);
+        m.name.hash(&mut h);
         let p: &[f32] = bytemuck::cast_slice(std::slice::from_ref(&m.params));
         for x in p {
             x.to_bits().hash(&mut h);
@@ -399,7 +421,8 @@ pub(crate) fn pt_expand_cache_key(
     h.finish()
 }
 
-/// Build the compact `GpuMaterial` variant pool and per-instance material IDs for the PT pipeline.
+/// Build the compact `GpuMaterial` + parallel `MaterialExt` variant pools and per-instance
+/// material IDs for the PT pipeline.
 ///
 /// Pre-resolves `PT_VARIANTS_PER_SLOT` variants per library slot (`<= 4096` entries total)
 /// and maps each cube to `slot * PT_VARIANTS_PER_SLOT + variant` using its pre-classified
@@ -410,20 +433,25 @@ pub(crate) fn expand_pt_materials_and_ids(
     _picking: &PickingState,
     instances: &[CubeInstance],
     opts: &Render3DOptions,
-) -> (Vec<GpuMaterial>, Vec<u32>) {
+) -> (Vec<GpuMaterial>, Vec<MaterialExt>, Vec<u32>) {
     let lib_size = library.len().min(MAX_MATERIAL_SLOTS as usize);
-    let mut materials = Vec::with_capacity((lib_size * PT_VARIANTS_PER_SLOT as usize).max(1));
+    let cap = (lib_size * PT_VARIANTS_PER_SLOT as usize).max(1);
+    let mut materials = Vec::with_capacity(cap);
+    let mut materials_ext = Vec::with_capacity(cap);
     if lib_size > 0 && opts.mat_source != MaterialSource::None {
         for slot_idx in 0..lib_size {
             let mat = &library.materials[slot_idx];
+            let slot_ext = resolve_slot_ext(&mat.name);
             for v in 0..PT_VARIANTS_PER_SLOT {
                 let resolved = mat.resolve_for_cube(u64::from(v) + 1).sanitized_for_gpu();
                 materials.push(GpuMaterial::from(&resolved));
+                materials_ext.push(slot_ext);
             }
         }
     } else {
         let fallback = StandardSurfaceParams::default().sanitized_for_gpu();
         materials.push(GpuMaterial::from(&fallback));
+        materials_ext.push(MaterialExt::default());
     }
 
     let material_ids: Vec<u32> = if lib_size > 0 && opts.mat_source != MaterialSource::None {
@@ -441,7 +469,7 @@ pub(crate) fn expand_pt_materials_and_ids(
         vec![0; instances.len()]
     };
 
-    (materials, material_ids)
+    (materials, materials_ext, material_ids)
 }
 
 pub(crate) fn build_pt_instances(
@@ -470,6 +498,13 @@ pub(crate) fn build_pt_instances(
     }
 }
 
+pub(crate) type PreparedPtMaterials = (
+    Arc<Vec<GpuMaterial>>,
+    Arc<Vec<MaterialExt>>,
+    Vec<Instance>,
+    u64,
+);
+
 pub(crate) fn prepare_pt_expanded_materials(
     library: &MaterialLibrary,
     mat_cache: &mut MaterialCache,
@@ -477,7 +512,7 @@ pub(crate) fn prepare_pt_expanded_materials(
     cache_slot: &mut Option<PtExpandCacheEntry>,
     instances: &[CubeInstance],
     opts: &Render3DOptions,
-) -> (Arc<Vec<GpuMaterial>>, Vec<Instance>) {
+) -> PreparedPtMaterials {
     mat_cache.ensure(opts);
     let key = pt_expand_cache_key(
         instances,
@@ -487,20 +522,29 @@ pub(crate) fn prepare_pt_expanded_materials(
         picking,
     );
     if let Some(entry) = cache_slot
-        && entry.key == key && entry.material_ids.len() == instances.len() {
-            let pt_instances = build_pt_instances(instances, &entry.material_ids);
-            return (Arc::clone(&entry.materials), pt_instances);
-        }
-    let (materials, material_ids) =
+        && entry.key == key
+        && entry.material_ids.len() == instances.len()
+    {
+        let pt_instances = build_pt_instances(instances, &entry.material_ids);
+        return (
+            Arc::clone(&entry.materials),
+            Arc::clone(&entry.materials_ext),
+            pt_instances,
+            key,
+        );
+    }
+    let (materials, materials_ext, material_ids) =
         expand_pt_materials_and_ids(library, mat_cache, picking, instances, opts);
     let arc = Arc::new(materials);
+    let ext_arc = Arc::new(materials_ext);
     let entry = cache_slot.insert(PtExpandCacheEntry {
         key,
         materials: Arc::clone(&arc),
+        materials_ext: Arc::clone(&ext_arc),
         material_ids,
     });
     let pt_instances = build_pt_instances(instances, &entry.material_ids);
-    (arc, pt_instances)
+    (arc, ext_arc, pt_instances, key)
 }
 
 #[cfg(test)]
@@ -547,11 +591,16 @@ mod tests {
             },
         ];
 
-        let (materials, material_ids) =
+        let (materials, materials_ext, material_ids) =
             expand_pt_materials_and_ids(&lib, &mut mat_cache, &picking, &instances, &opts);
         assert_eq!(
             materials.len(),
             lib.len().min(MAX_MATERIAL_SLOTS as usize) * PT_VARIANTS_PER_SLOT as usize
+        );
+        assert_eq!(materials_ext.len(), materials.len());
+        assert!(
+            materials_ext.iter().any(|ext| ext.transmission_depth() > 0.0),
+            "curated glass/gemstone presets must propagate Beer-Lambert transmission_depth"
         );
         assert_eq!(material_ids.len(), instances.len());
         for &id in &material_ids {

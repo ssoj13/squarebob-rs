@@ -136,6 +136,8 @@ pt-mats = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 pt-material = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 pt-megakernel = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 pt-cuda = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
+render-env = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main", default-features = false }
+render-settings = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 bvh-gpu = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 gpu-mem = { package = "gpu-info-rs", git = "ssh://git@github.com/ssoj13/gpu-info-rs.git", branch = "main", features = ["wgpu"] }
 media-encoder = { path = "crates/media-encoder" }
@@ -222,6 +224,9 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+[profile.dev.package.pt-cuda]
+opt-level = 2
 
 [profile.release]
 opt-level = 3

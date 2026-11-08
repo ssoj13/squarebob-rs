@@ -51,6 +51,7 @@ impl App {
                 // material storage. Skip the layout rebuild — cube
                 // positions don't depend on materials.
                 self.needs_render_3d = true;
+                self.pt_render_error = None;
                 if let Some(r) = &mut self.renderer_3d {
                     r.mark_pt_scene_dirty();
                     r.reset_pt_accumulation();
@@ -168,6 +169,7 @@ impl App {
         // Mark preset dirty when settings change
         if self.needs_layout || self.needs_render_3d {
             self.preset_dirty = true;
+            self.pt_render_error = None;
         }
 
         // Autosave preset if enabled and dirty
@@ -339,18 +341,27 @@ impl App {
 
             // Request repaint for 3D mode when animation or path tracing is active
             // Note: PT mode needs repaint but NOT needs_layout (that triggers geometry rebuild)
-            if self.render_3d_opts.path_tracing {
+            if self.render_3d_opts.path_tracing && self.pt_render_error.is_none() {
+                let static_converged = !self.render_3d_opts.animate
+                    && !self.needs_layout
+                    && !self.needs_render_3d
+                    && !self.oidn_run_requested
+                    && self
+                        .renderer_3d
+                        .as_ref()
+                        .is_some_and(|r| r.pt_is_converged());
                 if auto_spp_freeze {
                     let interval = 1.0 / self.render_3d_opts.pt_target_fps.max(1.0);
                     ctx.request_repaint_after(std::time::Duration::from_secs_f32(interval));
-                } else {
-                    ctx.request_repaint(); // PT accumulates samples continuously
+                } else if !static_converged {
+                    ctx.request_repaint(); // PT accumulates samples continuously until converged
                 }
-            } else if (!menu_open
-                && self.render_3d_opts.hash_effect != HashTransformEffect::None
-                && self.render_3d_opts.animate
-                && allow_anim_tick)
-                || self.orbit_camera.is_animating()
+            } else if !self.render_3d_opts.path_tracing
+                && ((!menu_open
+                    && self.render_3d_opts.hash_effect != HashTransformEffect::None
+                    && self.render_3d_opts.animate
+                    && allow_anim_tick)
+                    || self.orbit_camera.is_animating())
             {
                 self.needs_layout = true;
                 ctx.request_repaint();

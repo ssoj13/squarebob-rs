@@ -266,6 +266,7 @@ impl App {
         if let Some(preset) = self.presets.get(name).cloned() {
             self.render_3d_opts = preset.render_3d;
             self.preset_name = name.to_string();
+            self.pt_render_error = None;
             self.needs_layout = true;
             self.needs_render_3d = true;
             if let Some(renderer) = &mut self.renderer_3d {
@@ -433,6 +434,7 @@ impl App {
                         self.preset_dirty = true;
                     }
                     if dirty.any() {
+                        self.pt_render_error = None;
                         ctx.request_repaint();
                     }
                 });

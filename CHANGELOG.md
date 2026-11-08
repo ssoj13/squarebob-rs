@@ -6,6 +6,12 @@ preserve behaviour are summarised at the end of each sprint section.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/) but
 adapted for a single-developer workflow that batches by sprint.
 
+## 2026-11-08 — Dual-backend PT (`Auto` / `WGPU` / `CUDA`), `render-env` & `render-settings` SSOT, CUDA+OIDN interop
+- **Deduplicated** equirectangular HDRI format detection, sRGB EOTF linearization, and spherical `sin(theta)` importance-sampling CDFs in `crates/render-3d/src/env_map.rs` onto `render_env`, and unified path-tracing/OIDN settings enums in `crates/render-shared` onto `render_settings` (`PtComputeBackend`, `PtSamplerMode`, `AdaptivePreset`, `SpectralMode`, `OidnModeOption`, `OidnQualityOption`, `DenoiserSettings`) with full serde backwards compatibility.
+- **Added** runtime `PtComputeBackend::{Auto, Wgpu, Cuda}` selection (`--pt-backend <auto|wgpu|cuda>` and Settings → Backend selector with live active-backend indicator via `Renderer3D::active_backend()`), enforcing strict no-silent-fallback when `Cuda` is explicitly selected.
+- **Fixed** CUDA + OIDN denoising interop: `pt-cuda` uploads scene-linear `Rgba32Float` beauty (`read_linear_into`) and on-demand primary-hit albedo/normal AOV guides (`Renderer3D::sync_oidn_guides`) into persistent `COPY_SRC` `wgpu` resources consumed by `pt_denoise_oidn::OidnDenoiser` (`DenoiseInput::TexturesUntracked`), with `oidn_last_denoised_spp` ensuring final convergence always denoises after intermediate interval passes.
+- **Wired** lazy AOV toggling (`set_aovs_enabled`), full normalized `CudaAccumKey`, zero-allocation `Renderer3D::read_pt_linear_into` / `readback_render_texture_into` (reusing `pt_rgba_scratch` / `pt_rgb_scratch` / `readback_bytes_scratch` on `FrozenRenderSession`), transform-only GPU TLAS refit (`PathTraceCompute::refit_scene_two_level_gpu` and `CudaPathTracer::refit_two_level_instances_gpu`), `MaterialExt` (`transmission_depth`, sheen, anisotropy), `set_emissive_sampling`, adapter-cached `OcioPass::new_with_adapter` / `PtDisplayBlit::new_with_adapter` / `PathTraceCompute::new_with_adapter`, `pt_is_converged()`, and non-destructive `pt_render_error` surfacing.
+
 ## 2026-10-23 — exact OCIO display, shared render-color
 - **Removed** `crates/color-pipeline`, squarebob's own copy of the colour pipeline. The app uses
   render-rs `render-color` (the policy every cglibs viewer shares) and `render-color-gpu`.

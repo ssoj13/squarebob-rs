@@ -229,6 +229,7 @@ impl App {
         if self.render_mode == old_mode {
             return;
         }
+        self.pt_render_error = None;
         self.invalidate_render_mode_resources();
 
         // Set front view matching 2D layout when switching to 3D

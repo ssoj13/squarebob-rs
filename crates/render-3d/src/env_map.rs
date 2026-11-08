@@ -1,10 +1,13 @@
-//! Environment map loading and management
-//! Supports HDR/LDR images (PNG/JPG/HDR/EXR) via the image crate; EXR decodes through exr-core
-//! (exr-image's hooks), never crates.io `exr`.
+//! Environment map loading and management.
+//!
+//! Supports HDR/LDR images (PNG/JPG/HDR/EXR) via `image` + `exr-image` (`exr-core` hooks, never
+//! crates.io `exr`), delegating sRGB EOTF linearization and spherical `sin(theta)` importance-sampling
+//! CDF construction to `render_env` (`EnvCdfs`, `EnvFormat`, `srgb_rgba8_to_linear`).
 
 use image::{DynamicImage, GenericImageView, ImageReader};
 use log::info;
 use render_core::gpu::GpuContext;
+use render_env::{EnvCdfs, EnvFormat, srgb_rgba8_to_linear};
 
 /// Environment map state (texture + sampler)
 pub struct EnvMap {
@@ -62,6 +65,7 @@ impl EnvMap {
             label: Some("Env Sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
@@ -95,29 +99,24 @@ impl EnvMap {
     }
 
     /// Load env map from an image file (PNG, JPG, HDR, EXR)
-    /// Decode every supported format into a scene-linear Rgba16Float texture
+    /// Decode every supported format into a scene-linear Rgba16Float mip pyramid
     pub fn load_from_file(
         &mut self,
         ctx: &GpuContext,
         path: &std::path::Path,
     ) -> anyhow::Result<()> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase());
         let img = read_image(path)?;
         let (w, h) = img.dimensions();
 
         // Environment textures have one contract: scene-linear RGBA16F.
         // HDR decoders already return linear values. LDR decoders return
-        // sRGB-encoded values, so decode them before upload and before building
-        // the importance distribution.
-        let is_hdr = ext.as_deref().is_some_and(|e| matches!(e, "hdr" | "exr"));
-        let byte_len = render_core::checked_2d_byte_len("environment texture", w, h, 8)?;
+        // sRGB-encoded values, linearized via `render_env::srgb_rgba8_to_linear`
+        // before mip generation, upload, and `render_env::EnvCdfs::build`.
+        let is_hdr = EnvFormat::of(path).is_hdr();
+        render_core::checked_texture_extent_2d(&ctx.device, "environment texture", w, h)?;
         let pixel_len = render_core::checked_2d_buffer_len("environment texture", w, h)?;
 
-        let mut data = Vec::with_capacity(byte_len);
-        let mut luminance = Vec::with_capacity(pixel_len);
+        let mut level0 = Vec::with_capacity(pixel_len);
         let mut texels_rgb = Vec::with_capacity(pixel_len);
         if is_hdr {
             for pixel in img.to_rgba32f().pixels() {
@@ -131,24 +130,21 @@ impl EnvMap {
                 } else {
                     1.0
                 };
-                push_rgba16f(&mut data, rgb, alpha);
-                luminance.push(linear_luminance(rgb));
+                level0.push([rgb[0], rgb[1], rgb[2], alpha]);
                 texels_rgb.push(rgb);
             }
         } else {
             for pixel in img.to_rgba8().pixels() {
-                let rgb = [
-                    srgb_to_linear(pixel[0] as f32 / 255.0),
-                    srgb_to_linear(pixel[1] as f32 / 255.0),
-                    srgb_to_linear(pixel[2] as f32 / 255.0),
-                ];
-                push_rgba16f(&mut data, rgb, pixel[3] as f32 / 255.0);
-                luminance.push(linear_luminance(rgb));
-                texels_rgb.push(rgb);
+                let lin = srgb_rgba8_to_linear(pixel.0);
+                level0.push(lin);
+                texels_rgb.push([lin[0], lin[1], lin[2]]);
             }
         }
-        debug_assert_eq!(data.len(), byte_len);
-        debug_assert_eq!(luminance.len(), pixel_len);
+        debug_assert_eq!(level0.len(), pixel_len);
+        debug_assert_eq!(texels_rgb.len(), pixel_len);
+
+        let pyramid = build_linear_mip_pyramid(w, h, level0);
+        let mip_level_count = pyramid.len() as u32;
         let format = wgpu::TextureFormat::Rgba16Float;
 
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
@@ -158,7 +154,7 @@ impl EnvMap {
                 height: h,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
@@ -166,39 +162,51 @@ impl EnvMap {
             view_formats: &[],
         });
 
-        let bytes_per_row = u32::try_from(render_core::checked_2d_buffer_size(
-            "environment texture row",
-            w,
-            1,
-            8,
-        )?)
-        .map_err(|_| anyhow::anyhow!("environment texture row pitch exceeds u32"))?;
-        ctx.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(h),
-            },
-            wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-        );
+        let mut mip_bytes = Vec::new();
+        for (mip_idx, mip) in pyramid.iter().enumerate() {
+            let byte_len =
+                render_core::checked_2d_byte_len("environment mip", mip.width, mip.height, 8)?;
+            let bytes_per_row = u32::try_from(render_core::checked_2d_buffer_size(
+                "environment texture row",
+                mip.width,
+                1,
+                8,
+            )?)
+            .map_err(|_| anyhow::anyhow!("environment texture row pitch exceeds u32"))?;
+            mip_bytes.clear();
+            if mip_bytes.capacity() < byte_len {
+                mip_bytes.reserve(byte_len - mip_bytes.capacity());
+            }
+            for &rgba in &mip.texels {
+                push_rgba16f(&mut mip_bytes, [rgba[0], rgba[1], rgba[2]], rgba[3]);
+            }
+            ctx.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: mip_idx as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &mip_bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(mip.height),
+                },
+                wgpu::Extent3d {
+                    width: mip.width,
+                    height: mip.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         self.view = texture.create_view(&Default::default());
         self.texture = texture;
         self.width = w;
         self.height = h;
 
-        let (conditional_cdf_data, marginal_cdf_data) = build_env_cdfs(w, h, &luminance)?;
+        let (conditional_cdf_data, marginal_cdf_data) = build_env_cdfs(w, h, &texels_rgb)?;
         self.conditional_cdf_data = conditional_cdf_data;
         self.marginal_cdf_data = marginal_cdf_data;
         self.texels_rgb = texels_rgb;
@@ -215,7 +223,10 @@ impl EnvMap {
             wgpu::BufferUsages::STORAGE,
         );
 
-        info!("Loaded env map: {}x{} {:?} from {:?}", w, h, format, path);
+        info!(
+            "Loaded env map: {}x{} ({} mips) {:?} from {:?}",
+            w, h, mip_level_count, format, path
+        );
         Ok(())
     }
 }
@@ -228,14 +239,6 @@ fn read_image(path: &std::path::Path) -> anyhow::Result<DynamicImage> {
     Ok(ImageReader::open(path)?.decode()?)
 }
 
-fn srgb_to_linear(value: f32) -> f32 {
-    if value <= 0.04045 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 fn sanitize_radiance(value: f32) -> f32 {
     if value.is_finite() {
         value.max(0.0)
@@ -244,88 +247,149 @@ fn sanitize_radiance(value: f32) -> f32 {
     }
 }
 
-fn linear_luminance(rgb: [f32; 3]) -> f32 {
-    0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-}
-
 fn push_rgba16f(data: &mut Vec<u8>, rgb: [f32; 3], alpha: f32) {
     for value in [rgb[0], rgb[1], rgb[2], alpha] {
         data.extend_from_slice(&half::f16::from_f32(value).to_le_bytes());
     }
 }
 
-#[expect(
-    clippy::needless_range_loop,
-    reason = "2D environment CDF row/column indexing uses explicit y/x coordinates for spherical sin(theta) weighting"
-)]
+#[derive(Clone, Debug)]
+struct LinearMip {
+    width: u32,
+    height: u32,
+    texels: Vec<[f32; 4]>,
+}
+
+#[inline]
+fn mip_level_count_for(width: u32, height: u32) -> u32 {
+    let max_dim = width.max(height);
+    if max_dim <= 1 { 1 } else { max_dim.ilog2() + 1 }
+}
+
+/// Downsample `prev` (`pw x ph`) to `wgpu` subresource extent `(nw x nh)` using spherical
+/// `sin(theta)` solid-angle row weights, wrapping azimuth columns and clamping polar rows.
+fn downsample_solid_angle(
+    prev: &[[f32; 4]],
+    pw: usize,
+    ph: usize,
+    nw: usize,
+    nh: usize,
+) -> Vec<[f32; 4]> {
+    let inv_ph = 1.0f32 / (ph as f32);
+    let mut out = Vec::with_capacity(nw * nh);
+    for y in 0..nh {
+        let ys = (y * ph) / nh;
+        let ye = (((y + 1) * ph) / nh).max(ys + 1).min(ph);
+        let mut wy_sum = 0.0f64;
+        for sy in ys..ye {
+            let theta = ((sy as f32 + 0.5) * inv_ph) * std::f32::consts::PI;
+            wy_sum += f64::from(theta.sin().max(1e-6));
+        }
+        for x in 0..nw {
+            let xs = (x * pw) / nw;
+            let xe = (((x + 1) * pw) / nw).max(xs + 1);
+            let inv_norm = 1.0 / (wy_sum * ((xe - xs) as f64));
+            let mut acc = [0.0f64; 4];
+            for sy in ys..ye {
+                let theta = ((sy as f32 + 0.5) * inv_ph) * std::f32::consts::PI;
+                let wy = f64::from(theta.sin().max(1e-6));
+                let row = &prev[sy * pw..(sy + 1) * pw];
+                for sx in xs..xe {
+                    let px = row[sx % pw];
+                    acc[0] += f64::from(px[0]) * wy;
+                    acc[1] += f64::from(px[1]) * wy;
+                    acc[2] += f64::from(px[2]) * wy;
+                    acc[3] += f64::from(px[3]) * wy;
+                }
+            }
+            out.push([
+                (acc[0] * inv_norm).clamp(0.0, f64::from(f32::MAX)) as f32,
+                (acc[1] * inv_norm).clamp(0.0, f64::from(f32::MAX)) as f32,
+                (acc[2] * inv_norm).clamp(0.0, f64::from(f32::MAX)) as f32,
+                (acc[3] * inv_norm).clamp(0.0, 1.0) as f32,
+            ]);
+        }
+    }
+    out
+}
+
+fn build_linear_mip_pyramid(width: u32, height: u32, level0: Vec<[f32; 4]>) -> Vec<LinearMip> {
+    let mip_count = mip_level_count_for(width, height);
+    let mut levels = Vec::with_capacity(mip_count as usize);
+    levels.push(LinearMip {
+        width,
+        height,
+        texels: level0,
+    });
+    for level in 1..mip_count {
+        let nw = (width >> level).max(1);
+        let nh = (height >> level).max(1);
+        let prev = &levels[(level - 1) as usize];
+        let texels = downsample_solid_angle(
+            &prev.texels,
+            prev.width as usize,
+            prev.height as usize,
+            nw as usize,
+            nh as usize,
+        );
+        levels.push(LinearMip {
+            width: nw,
+            height: nh,
+            texels,
+        });
+    }
+    levels
+}
+
+/// Build row-conditional and marginal importance-sampling CDFs via [`render_env::EnvCdfs::build`],
+/// normalizing degenerate zero-energy rows/maps to uniform distributions so shader binary search
+/// always receives monotonic `[1/N .. 1.0]` tables.
 fn build_env_cdfs(
     width: u32,
     height: u32,
-    luminance: &[f32],
+    texels_rgb: &[[f32; 3]],
 ) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
     let pixel_count = render_core::checked_2d_buffer_len("environment CDF", width, height)?;
     anyhow::ensure!(
-        luminance.len() == pixel_count,
-        "environment luminance length mismatch: expected {pixel_count}, got {}",
-        luminance.len()
+        texels_rgb.len() == pixel_count,
+        "environment texel length mismatch: expected {pixel_count}, got {}",
+        texels_rgb.len()
     );
     let w =
         usize::try_from(width).map_err(|_| anyhow::anyhow!("environment width exceeds usize"))?;
     let h =
         usize::try_from(height).map_err(|_| anyhow::anyhow!("environment height exceeds usize"))?;
-    let mut conditional_cdf = vec![0.0f32; pixel_count];
-    let mut row_integrals = vec![0.0f32; h];
 
-    for y in 0..h {
-        let theta = std::f32::consts::PI * (y as f32 + 0.5) / h as f32;
-        let sin_theta = theta.sin().max(1e-6);
-        let row_start = y * w;
-        let mut row_sum = 0.0f32;
-
-        for x in 0..w {
-            let lum = luminance[row_start + x] * sin_theta;
-            row_sum += lum;
-            conditional_cdf[row_start + x] = row_sum;
-        }
-
-        if row_sum > 0.0 && row_sum.is_finite() {
-            for x in 0..w {
-                conditional_cdf[row_start + x] /= row_sum;
+    let mut cdfs = EnvCdfs::build(width, height, texels_rgb);
+    for cond_row in cdfs.conditional.chunks_exact_mut(w) {
+        if !cond_row
+            .last()
+            .copied()
+            .is_some_and(|end| end > 0.0 && end.is_finite())
+        {
+            for (x, slot) in cond_row.iter_mut().enumerate() {
+                *slot = (x + 1) as f32 / w as f32;
             }
-            row_integrals[y] = row_sum;
-        } else {
-            // A zero-energy row is never selected when another row has
-            // energy, but keep its conditional distribution valid. If the
-            // entire image is black this becomes the uniform fallback.
-            for x in 0..w {
-                conditional_cdf[row_start + x] = (x + 1) as f32 / w as f32;
-            }
-            row_integrals[y] = 0.0;
+        }
+    }
+    if !cdfs
+        .marginal
+        .last()
+        .copied()
+        .is_some_and(|end| end > 0.0 && end.is_finite())
+    {
+        for (y, slot) in cdfs.marginal.iter_mut().enumerate() {
+            *slot = (y + 1) as f32 / h as f32;
         }
     }
 
-    let mut marginal_cdf = vec![0.0f32; h];
-    let mut total = 0.0f32;
-    for y in 0..h {
-        total += row_integrals[y];
-        marginal_cdf[y] = total;
-    }
-    if total > 0.0 && total.is_finite() {
-        for y in 0..h {
-            marginal_cdf[y] /= total;
-        }
-    } else {
-        for y in 0..h {
-            marginal_cdf[y] = (y + 1) as f32 / h as f32;
-        }
-    }
-
-    Ok((conditional_cdf, marginal_cdf))
+    Ok((cdfs.conditional, cdfs.marginal))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render_env::srgb_to_linear;
 
     #[test]
     fn srgb_reference_values_are_linearized() {
@@ -337,14 +401,23 @@ mod tests {
 
     #[test]
     fn black_environment_gets_uniform_valid_cdfs() {
-        let (conditional, marginal) = build_env_cdfs(2, 2, &[0.0; 4]).unwrap();
+        let (conditional, marginal) = build_env_cdfs(2, 2, &[[0.0; 3]; 4]).unwrap();
         assert_eq!(conditional, vec![0.5, 1.0, 0.5, 1.0]);
         assert_eq!(marginal, vec![0.5, 1.0]);
     }
 
     #[test]
     fn cdf_rejects_mismatched_luminance() {
-        assert!(build_env_cdfs(2, 2, &[1.0; 3]).is_err());
+        assert!(build_env_cdfs(2, 2, &[[1.0; 3]; 3]).is_err());
+    }
+
+    #[test]
+    fn npot_mip_pyramid_matches_wgpu_subresource_extents() {
+        let npot = build_linear_mip_pyramid(5, 3, vec![[2.0, 1.0, 0.5, 1.0]; 15]);
+        assert_eq!(npot.len(), 3);
+        assert_eq!((npot[0].width, npot[0].height), (5, 3));
+        assert_eq!((npot[1].width, npot[1].height), (2, 1));
+        assert_eq!((npot[2].width, npot[2].height), (1, 1));
     }
 
     /// An EXR environment (any extension casing) decodes through exr-core with radiance above 1

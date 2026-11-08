@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-pub use appbus::bus::{BoxedEvent, Event, EventEmitter, downcast_event};
+pub use appbus::bus::{BoxedEvent, Event, downcast_event};
 
 /// Event bus backed by [`appbus::bus::EventBus`].
 #[derive(Clone, Debug, Default)]
@@ -22,28 +22,10 @@ impl EventBus {
         }
     }
 
-    /// Returns a reference to the underlying [`appbus::bus::EventBus`].
-    #[inline]
-    pub fn app_bus(&self) -> &appbus::bus::EventBus {
-        &self.inner
-    }
-
-    /// Creates a lightweight [`EventEmitter`] handle sharing this bus.
-    #[inline]
-    pub fn emitter(&self) -> EventEmitter {
-        self.inner.emitter()
-    }
-
     /// Emits an event (queued for later processing and dispatched to any registered subscribers).
     #[inline]
     pub fn emit<E: Event + Clone>(&self, event: E) {
         self.inner.emit(event);
-    }
-
-    /// Drains all queued events into `out` (clearing `out` first) and returns the count.
-    #[inline]
-    pub fn poll_into(&self, out: &mut Vec<BoxedEvent>) -> usize {
-        self.inner.poll_into(out)
     }
 
     /// Polls all queued events into a [`VecDeque`].

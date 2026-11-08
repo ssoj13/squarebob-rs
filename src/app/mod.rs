@@ -208,6 +208,8 @@ impl App {
         self.oidn_display_is_denoised = false;
         self.oidn_denoised_this_accumulation = false;
         self.oidn_last_frame_count = 0;
+        self.oidn_last_denoised_spp = 0;
+        self.pt_render_error = None;
         self.last_render_frame_3d = 0;
         if let Some(renderer) = self.renderer_3d_for_frame_mut() {
             renderer.invalidate_instances();

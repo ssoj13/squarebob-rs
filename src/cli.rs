@@ -5,7 +5,7 @@
 //! `print_help`, and the per-field `parse_*` helpers all live here.
 
 use pt_mats::MaterialSource;
-use render_shared::{OidnModeOption, OidnQualityOption};
+use render_shared::{OidnModeOption, OidnQualityOption, PtComputeBackend};
 
 use crate::renderer::{self, RenderBackend, RenderMode};
 
@@ -32,6 +32,7 @@ pub struct CliOptions {
 
     // Render settings (for automated testing)
     pub path_tracing: Option<bool>,
+    pub pt_compute_backend: Option<PtComputeBackend>,
     pub wavefront: Option<bool>,
 
     // Full Render3DOptions overrides
@@ -145,8 +146,9 @@ TESTING OPTIONS:
 RENDER SETTINGS (3D, overrides saved config):
     -p, --path-trace             Enable path tracing
     -P, --no-path-trace          Disable path tracing
-    -w, --wavefront              Use wavefront PT (experimental)
-    -W, --no-wavefront           Use megakernel PT
+    --pt-backend <BACKEND>       PT compute backend (auto|wgpu|cuda)
+    -w, --wavefront              Use auto PT backend (legacy alias)
+    -W, --no-wavefront           Use WGPU megakernel PT (legacy alias)
     -t, --pt-wavefront-tile <N>  Wavefront tile size in pixels (0 = disabled)
     -b, --bounces <N>            PT max bounces
     -s, --samples <N>            PT max samples
@@ -160,7 +162,7 @@ RENDER SETTINGS (3D, overrides saved config):
     --pt-path-guiding            Enable path guiding
     --no-pt-path-guiding         Disable path guiding
     --oidn-mode <MODE>            OIDN mode (off|color|color_albedo|color_albedo_normal)
-    --oidn-quality <QUALITY>      OIDN model size (small|base)
+    --oidn-quality <QUALITY>      OIDN model size (small|base|large)
     --oidn-auto                   Enable automatic OIDN
     --no-oidn-auto                Disable automatic OIDN
     --pt-restir-di               Enable ReSTIR DI
@@ -348,6 +350,16 @@ fn parse_spectral_mode(input: &str) -> Option<renderer::SpectralMode> {
     }
 }
 
+fn parse_pt_backend(input: &str) -> Option<PtComputeBackend> {
+    match input.to_ascii_lowercase().as_str() {
+        "auto" => Some(PtComputeBackend::Auto),
+        "wgpu" => Some(PtComputeBackend::Wgpu),
+        "cuda" => Some(PtComputeBackend::Cuda),
+        "cpu" => Some(PtComputeBackend::Cpu),
+        _ => None,
+    }
+}
+
 fn value<'a>(args: &'a [String], index: &mut usize, option: &str) -> Result<&'a str, String> {
     let next = args
         .get(*index + 1)
@@ -438,6 +450,13 @@ pub fn parse_args() -> Result<CliOptions, String> {
             "--exit-after-screenshot" => opts.exit_after_screenshot = true,
             "-p" | "--path-trace" => opts.path_tracing = Some(true),
             "-P" | "--no-path-trace" => opts.path_tracing = Some(false),
+            "--pt-backend" => {
+                let raw = value(&args, &mut i, arg)?;
+                opts.pt_compute_backend = Some(
+                    parse_pt_backend(raw)
+                        .ok_or_else(|| format!("Invalid value '{raw}' for {arg}"))?,
+                );
+            }
             "-w" | "--wavefront" => opts.wavefront = Some(true),
             "-W" | "--no-wavefront" => opts.wavefront = Some(false),
             "-e" | "--env-map" => opts.env_map_enabled = Some(true),
@@ -519,6 +538,7 @@ pub fn parse_args() -> Result<CliOptions, String> {
             "--oidn-quality" => {
                 let raw = value(&args, &mut i, arg)?;
                 opts.pt_oidn_quality = Some(match raw.to_ascii_lowercase().as_str() {
+                    "large" | "high" => OidnQualityOption::Large,
                     "base" | "balanced" => OidnQualityOption::Base,
                     "small" | "fast" => OidnQualityOption::Small,
                     _ => return Err(format!("Invalid value '{raw}' for {arg}")),

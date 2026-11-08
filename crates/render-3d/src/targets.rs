@@ -49,7 +49,8 @@ impl RenderTargets {
             format: render_core::DISPLAY_TEXTURE_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::TEXTURE_BINDING, // For egui zero-copy
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING, // egui zero-copy + OcioPass compute write
             view_formats: &[],
         });
 

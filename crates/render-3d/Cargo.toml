@@ -19,6 +19,8 @@ render-core = { workspace = true }
 render-shared = { workspace = true }
 render-color = { workspace = true }
 render-color-gpu = { workspace = true }
+render-env = { workspace = true }
+render-settings = { workspace = true }
 pt-core = { workspace = true }
 pt-megakernel = { workspace = true }
 pt-cuda = { workspace = true, optional = true }

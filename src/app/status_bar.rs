@@ -189,15 +189,42 @@ impl App {
                         // doubles as a current-spp readout without re-
                         // borrowing `renderer_3d` here.
                         if self.render_3d_opts.path_tracing && self.render_3d_opts.pt_samples > 0 {
-                            let current = self.oidn_last_frame_count;
+                            let (current, backend_name, converged) = self
+                                .renderer_3d
+                                .as_ref()
+                                .map(|r| {
+                                    let spp = r.pt_frame_count();
+                                    (spp, r.active_backend().name(), spp > 0 && r.pt_is_converged())
+                                })
+                                .unwrap_or_else(|| {
+                                    (
+                                        self.oidn_last_frame_count,
+                                        self.render_3d_opts.pt_compute_backend.name(),
+                                        false,
+                                    )
+                                });
                             let target = self.render_3d_opts.pt_samples.max(1);
-                            let fraction = (current as f32 / target as f32).clamp(0.0, 1.0);
+                            let fraction = if converged {
+                                1.0
+                            } else {
+                                (current as f32 / target as f32).clamp(0.0, 1.0)
+                            };
+                            let text = if converged && current < target {
+                                format!("{backend_name}: {current}/{target} (conv)")
+                            } else {
+                                format!("{backend_name}: {current}/{target}")
+                            };
                             ui.add(
                                 egui::ProgressBar::new(fraction)
-                                    .desired_width(140.0)
-                                    .text(format!("samples: {}/{}", current, target)),
+                                    .desired_width(155.0)
+                                    .text(text),
                             );
                         }
+                    }
+                    if self.render_3d_opts.path_tracing
+                        && let Some(err) = &self.pt_render_error
+                    {
+                        ui.colored_label(ui.visuals().error_fg_color, err);
                     }
                     // OIDN stats: surface here so the user can see the
                     // last denoise cost without opening the Denoiser
@@ -213,7 +240,7 @@ impl App {
                         };
                         ui.label(format!(
                             "OIDN: {:.0} ms @ {} spp ({})",
-                            ms, self.oidn_last_interval_spp, state
+                            ms, self.oidn_last_denoised_spp, state
                         ));
                     }
                     if let Some(hover) = &self.hovered {

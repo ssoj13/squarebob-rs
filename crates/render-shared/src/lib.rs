@@ -15,6 +15,10 @@ pub mod physical_camera;
 pub use physical_camera::{
     CameraType, F_NUMBER_PRESETS, FOCAL_LENGTH_PRESETS_MM, PhysicalCamera, SENSOR_WIDTH_PRESETS_MM,
 };
+pub use render_settings::{
+    AdaptivePreset, DenoiserSettings, OidnModeOption, OidnQualityOption, PtComputeBackend,
+    PtSamplerMode, SpectralMode,
+};
 
 /// Available rendering backends
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -143,77 +147,6 @@ impl FolderColorMode {
             FolderColorMode::NameHash,
             FolderColorMode::PathHash,
         ]
-    }
-}
-
-/// Adaptive sampling preset (UI helper).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum AdaptivePreset {
-    #[default]
-    Custom,
-    Conservative,
-    Balanced,
-    Aggressive,
-}
-
-impl AdaptivePreset {
-    pub fn name(&self) -> &'static str {
-        match self {
-            AdaptivePreset::Custom => "Custom",
-            AdaptivePreset::Conservative => "Low",
-            AdaptivePreset::Balanced => "Medium",
-            AdaptivePreset::Aggressive => "High",
-        }
-    }
-    pub fn all() -> &'static [AdaptivePreset] {
-        &[
-            AdaptivePreset::Custom,
-            AdaptivePreset::Conservative,
-            AdaptivePreset::Balanced,
-            AdaptivePreset::Aggressive,
-        ]
-    }
-}
-
-/// Path tracing pixel sampler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum PtSamplerMode {
-    /// Per-sample PCG random numbers.
-    #[default]
-    Pcg,
-    /// R2 low-discrepancy pixel jitter with per-pixel scrambling.
-    R2,
-}
-
-impl PtSamplerMode {
-    pub fn name(&self) -> &'static str {
-        match self {
-            PtSamplerMode::Pcg => "PCG",
-            PtSamplerMode::R2 => "R2",
-        }
-    }
-}
-
-/// Spectral rendering mode (PT only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum SpectralMode {
-    #[default]
-    Off,
-    Hero,
-    Multi,
-}
-
-impl SpectralMode {
-    pub fn name(&self) -> &'static str {
-        match self {
-            SpectralMode::Off => "Off",
-            SpectralMode::Hero => "Hero",
-            SpectralMode::Multi => "Multi",
-        }
-    }
-
-    pub fn all() -> &'static [SpectralMode] {
-        &[SpectralMode::Off, SpectralMode::Hero, SpectralMode::Multi]
     }
 }
 
@@ -663,6 +596,8 @@ pub struct Render3DOptions {
     #[serde(default)]
     pub pt_spectral_dispersion: bool,
     // GPU acceleration options
+    #[serde(default)]
+    pub pt_compute_backend: PtComputeBackend,
     pub pt_gpu_bvh: bool,
     pub pt_bvh_refit: bool,
     pub pt_wavefront: bool,
@@ -880,31 +815,29 @@ impl Render3DOptions {
         };
         camera * self.color_pipeline.exposure.exp2()
     }
-}
+    /// Snapshot the flat OIDN fields into the shared [`DenoiserSettings`] contract.
+    pub fn denoiser_settings(&self) -> DenoiserSettings {
+        DenoiserSettings {
+            mode: self.pt_oidn_mode,
+            quality: self.pt_oidn_quality,
+            auto: self.pt_oidn_auto,
+            interval: self.pt_oidn_interval,
+            clamp: self.pt_oidn_clamp,
+            adaptive_clamp: self.pt_oidn_adaptive_clamp,
+            nan_protect: self.pt_oidn_nan_protect,
+        }
+    }
 
-/// String-serialised mirror of `pt_denoise_oidn::OidnMode`. Default is the
-/// production target (color+albedo+normal) so a fresh install denoises out
-/// of the box once accumulation completes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum OidnModeOption {
-    Off,
-    Color,
-    ColorAlbedo,
-    #[default]
-    ColorAlbedoNormal,
-}
-
-/// Model-size selector for OIDN, mapped onto render-rs `pt_denoise_oidn::Quality`:
-/// - `Base`   → `Quality::Balanced` → the base HDR network
-/// - `Small`  → `Quality::Fast`     → the `_small` HDR network (half the parameters)
-///
-/// Names match what the user actually controls (which TZA size to load). There is no `Large`: Intel ships no `_large`
-/// HDR colour network, so it could only run Base under another name (render-rs's denoiser does not express it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum OidnQualityOption {
-    #[default]
-    Base,
-    Small,
+    /// Apply a [`DenoiserSettings`] snapshot back onto the flat persisted fields.
+    pub fn apply_denoiser_settings(&mut self, settings: DenoiserSettings) {
+        self.pt_oidn_mode = settings.mode;
+        self.pt_oidn_quality = settings.quality;
+        self.pt_oidn_auto = settings.auto;
+        self.pt_oidn_interval = settings.interval;
+        self.pt_oidn_clamp = settings.clamp;
+        self.pt_oidn_adaptive_clamp = settings.adaptive_clamp;
+        self.pt_oidn_nan_protect = settings.nan_protect;
+    }
 }
 
 fn default_oidn_mode() -> OidnModeOption {
@@ -1114,6 +1047,7 @@ impl Default for Render3DOptions {
             pt_spectral_samples: default_spectral_samples(),
             pt_spectral_dispersion: false,
             // GPU acceleration
+            pt_compute_backend: PtComputeBackend::Auto,
             pt_gpu_bvh: true,
             pt_bvh_refit: true,
             pt_wavefront: false,
@@ -1172,7 +1106,10 @@ impl Default for Render3DOptions {
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 mod tests {
-    use super::{PtSamplerMode, Render3DOptions};
+    use super::{
+        DenoiserSettings, OidnModeOption, OidnQualityOption, PtComputeBackend, PtSamplerMode,
+        Render3DOptions,
+    };
 
     // Phase 11d removed every legacy ACES matrix-bake test that
     // referenced the deleted IDT/LMT/RRT/ODT enums and matrix
@@ -1211,6 +1148,29 @@ mod tests {
         assert!(restored.pt_emissive_sampling);
         assert_eq!(restored.pt_emissive_samples, 4);
         assert_eq!(restored.pt_emissive_min_weight, 0.01);
+    }
+
+    #[test]
+    fn render_3d_pt_backend_and_denoiser_settings_roundtrip() {
+        let mut opts = Render3DOptions {
+            pt_compute_backend: PtComputeBackend::Cuda,
+            ..Default::default()
+        };
+        let custom_denoise = DenoiserSettings {
+            mode: OidnModeOption::ColorAlbedo,
+            quality: OidnQualityOption::Large,
+            auto: false,
+            interval: 64,
+            clamp: 6.5,
+            adaptive_clamp: false,
+            nan_protect: true,
+        };
+        opts.apply_denoiser_settings(custom_denoise);
+
+        let json = serde_json::to_string(&opts).expect("serialize");
+        let restored: Render3DOptions = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.pt_compute_backend, PtComputeBackend::Cuda);
+        assert_eq!(restored.denoiser_settings(), custom_denoise);
     }
 }
 

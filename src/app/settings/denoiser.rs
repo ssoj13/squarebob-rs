@@ -38,12 +38,7 @@ impl App {
                         .width(220.0)
                         .selected_text(mode_label(*mode))
                         .show_ui(ui, |ui| {
-                            for opt in [
-                                OidnModeOption::Off,
-                                OidnModeOption::Color,
-                                OidnModeOption::ColorAlbedo,
-                                OidnModeOption::ColorAlbedoNormal,
-                            ] {
+                            for &opt in OidnModeOption::ALL {
                                 if ui
                                     .selectable_label(*mode == opt, mode_label(opt))
                                     .on_hover_text(mode_hover(opt))
@@ -65,7 +60,7 @@ impl App {
                         .width(220.0)
                         .selected_text(quality_label(*q))
                         .show_ui(ui, |ui| {
-                            for opt in [OidnQualityOption::Small, OidnQualityOption::Base] {
+                            for &opt in OidnQualityOption::ALL {
                                 if ui
                                     .selectable_label(*q == opt, quality_label(opt))
                                     .on_hover_text(quality_hover(opt))
@@ -274,6 +269,7 @@ fn mode_hover(m: OidnModeOption) -> &'static str {
 
 fn quality_label(q: OidnQualityOption) -> &'static str {
     match q {
+        OidnQualityOption::Large => "Large",
         OidnQualityOption::Base => "Base",
         OidnQualityOption::Small => "Small",
     }
@@ -281,6 +277,9 @@ fn quality_label(q: OidnQualityOption) -> &'static str {
 
 fn quality_hover(q: OidnQualityOption) -> &'static str {
     match q {
+        OidnQualityOption::Large => {
+            "Large preset (maps to reference Base HDR weights; Intel OIDN ships no _large HDR color weights)."
+        }
         OidnQualityOption::Base => "Default base model. ~1.8 MB per variant.",
         OidnQualityOption::Small => {
             "Load `_small` model — half the parameters, ~600 KB per variant, \

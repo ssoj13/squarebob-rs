@@ -28,6 +28,7 @@ pub(super) struct FrozenRenderSession {
     pub(super) render_options: Arc<Render3DOptions>,
     pub(super) selected_ids: std::collections::HashSet<u32>,
     pub(super) pipeline: render_color::ColorPipeline,
+    pub(super) canvas_processor: Option<render_color::vfx_ocio::Processor>,
     pub(super) display_light: video_io::export::DisplayLight,
     /// [`FrozenOutput::notice`]: shown in the export dialog for this export.
     pub(super) notice: Option<String>,
@@ -41,6 +42,9 @@ pub(super) struct FrozenRenderSession {
     pub(super) render_dirty: bool,
     pub(super) renderer_3d: Option<render_3d::Renderer3D>,
     pub(super) renderer_2d: Option<treemap::GpuRenderer2D>,
+    pub(super) pt_rgba_scratch: Vec<f32>,
+    pub(super) pt_rgb_scratch: Vec<f32>,
+    pub(super) readback_bytes_scratch: Vec<u8>,
 }
 
 impl FrozenRenderSession {
@@ -235,6 +239,7 @@ impl App {
         }
         let FrozenOutput {
             pipeline,
+            canvas_processor,
             light: display_light,
             notice,
         } = freeze_output_pipeline(&mut options.color_pipeline, encoding, white_nits)?;
@@ -264,6 +269,7 @@ impl App {
             camera,
             selected_ids: self.selected_3d_ids.clone(),
             pipeline,
+            canvas_processor,
             display_light,
             notice,
             extent: self.last_render_size,
@@ -277,6 +283,9 @@ impl App {
             render_dirty: true,
             renderer_3d: None,
             renderer_2d: None,
+            pt_rgba_scratch: Vec::new(),
+            pt_rgb_scratch: Vec::new(),
+            readback_bytes_scratch: Vec::new(),
         })
     }
 
@@ -576,39 +585,117 @@ impl App {
         height: u32,
         white_nits: f32,
     ) -> Result<Frame, String> {
-        let encoded = if self.render_mode_for_frame() == RenderMode::Mode3D {
-            let renderer = self
-                .renderer_3d_for_frame_mut()
+        let pixels = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or("Capture dimensions overflow")?;
+        let expected_floats = pixels.checked_mul(4).ok_or("Capture dimensions overflow")?;
+        if self.render_mode_for_frame() == RenderMode::Mode3D {
+            let denoised = self.oidn_display_is_denoised;
+            let session = self
+                .encode_render_session
+                .as_mut()
+                .ok_or("Export render session is unavailable")?;
+            let renderer = session
+                .renderer_3d
+                .as_mut()
                 .ok_or("3D renderer is unavailable")?;
-            let bytes = renderer
-                .readback_render_texture(true)
-                .map_err(|e| e.to_string())?;
-            let expected = (width as usize)
-                .checked_mul(height as usize)
-                .and_then(|n| n.checked_mul(8))
-                .ok_or("Capture dimensions overflow")?;
-            if bytes.len() != expected {
-                return Err(format!(
-                    "Invalid HDR readback: {} bytes, expected {expected}",
-                    bytes.len()
-                ));
+            let direct_pt_linear_ocio = session.render_options.path_tracing
+                && !denoised
+                && (session.selected_ids.is_empty()
+                    || session.render_options.hover_mode == crate::renderer::HoverMode::None)
+                && session.canvas_processor.is_some();
+            if direct_pt_linear_ocio {
+                let (pt_w, pt_h) = renderer
+                    .read_pt_linear_into(&mut session.pt_rgba_scratch)
+                    .map_err(|e| e.to_string())?;
+                if (pt_w, pt_h) != (width, height) || session.pt_rgba_scratch.len() != expected_floats {
+                    return Err(format!(
+                        "Invalid PT linear readback: {}x{} ({} floats), expected {}x{} ({expected_floats} floats)",
+                        pt_w,
+                        pt_h,
+                        session.pt_rgba_scratch.len(),
+                        width,
+                        height
+                    ));
+                }
+                let rgb_len = pixels.checked_mul(3).ok_or("Capture dimensions overflow")?;
+                let exposure = session.render_options.effective_exposure_multiplier();
+                session.pt_rgb_scratch.clear();
+                if session.pt_rgb_scratch.capacity() < rgb_len {
+                    session
+                        .pt_rgb_scratch
+                        .reserve(rgb_len - session.pt_rgb_scratch.capacity());
+                }
+                for px in session.pt_rgba_scratch.chunks_exact(4) {
+                    session.pt_rgb_scratch.extend_from_slice(&[
+                        px[0] * exposure,
+                        px[1] * exposure,
+                        px[2] * exposure,
+                    ]);
+                }
+                let canvas = session.canvas_processor.as_ref().expect("checked Some");
+                let rgb_triplets: &mut [[f32; 3]] =
+                    bytemuck::cast_slice_mut(session.pt_rgb_scratch.as_mut_slice());
+                canvas.apply_rgb(rgb_triplets);
+                for (rgba, rgb) in session
+                    .pt_rgba_scratch
+                    .chunks_exact_mut(4)
+                    .zip(rgb_triplets.iter())
+                {
+                    rgba[0] = rgb[0];
+                    rgba[1] = rgb[1];
+                    rgba[2] = rgb[2];
+                    rgba[3] = rgba[3].clamp(0.0, 1.0);
+                }
+            } else {
+                renderer
+                    .readback_render_texture_into(true, &mut session.readback_bytes_scratch)
+                    .map_err(|e| e.to_string())?;
+                let expected_bytes = pixels.checked_mul(8).ok_or("Capture dimensions overflow")?;
+                if session.readback_bytes_scratch.len() != expected_bytes {
+                    return Err(format!(
+                        "Invalid HDR readback: {} bytes, expected {expected_bytes}",
+                        session.readback_bytes_scratch.len()
+                    ));
+                }
+                session.pt_rgba_scratch.clear();
+                if session.pt_rgba_scratch.capacity() < expected_floats {
+                    session
+                        .pt_rgba_scratch
+                        .reserve(expected_floats - session.pt_rgba_scratch.capacity());
+                }
+                for b in session.readback_bytes_scratch.chunks_exact(2) {
+                    session
+                        .pt_rgba_scratch
+                        .push(half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32());
+                }
             }
-            bytes
-                .chunks_exact(2)
-                .map(|b| half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32())
-                .collect::<Vec<_>>()
-        } else {
-            self.capture_viewport(width, height)?
-                .into_iter()
-                .map(|v| f32::from(v) / 255.0)
-                .collect()
-        };
-        let kind = self
+            let kind = session.display_light;
+            return display_canvas_frame(
+                width,
+                height,
+                &session.pt_rgba_scratch,
+                kind,
+                white_nits,
+            );
+        }
+
+        let sdr_bytes = self.capture_viewport(width, height)?;
+        let session = self
             .encode_render_session
-            .as_ref()
-            .ok_or("Export render session is unavailable")?
-            .display_light;
-        display_canvas_frame(width, height, &encoded, kind, white_nits)
+            .as_mut()
+            .ok_or("Export render session is unavailable")?;
+        session.pt_rgba_scratch.clear();
+        if session.pt_rgba_scratch.capacity() < sdr_bytes.len() {
+            session
+                .pt_rgba_scratch
+                .reserve(sdr_bytes.len() - session.pt_rgba_scratch.capacity());
+        }
+        for v in sdr_bytes {
+            session.pt_rgba_scratch.push(f32::from(v) / 255.0);
+        }
+        let kind = session.display_light;
+        display_canvas_frame(width, height, &session.pt_rgba_scratch, kind, white_nits)
     }
 
     fn start_encode_frame(
@@ -661,7 +748,10 @@ impl App {
 
         let target_samples = options.pt_samples.max(1);
         self.renderer_3d_for_frame()
-            .map(|renderer| renderer.pt_frame_count() >= target_samples)
+            .map(|renderer| {
+                let spp = renderer.pt_frame_count();
+                spp >= target_samples || (spp > 0 && renderer.pt_is_converged())
+            })
             .unwrap_or(false)
     }
 
@@ -762,6 +852,7 @@ fn canvas_light(canvas: &render_color::vfx_ocio::Processor, pixels: &mut [[f32; 
 /// The colour an export is frozen to ([`freeze_output_pipeline`]).
 struct FrozenOutput {
     pipeline: render_color::ColorPipeline,
+    canvas_processor: Option<render_color::vfx_ocio::Processor>,
     light: video_io::export::DisplayLight,
     /// Set when the chosen OCIO view cannot be written to the file and another one renders it
     /// (`video_io::output_view::OutputChoice::note`): the export dialog must show it.
@@ -847,27 +938,31 @@ fn freeze_output_pipeline(
         pipeline = ColorPipeline::new(settings);
     }
     pipeline.validate_for_export(settings)?;
-    let light = if settings.mode == ColorMode::Ocio {
+    let (canvas_processor, light) = if settings.mode == ColorMode::Ocio {
         // The frames are rendered through this canvas processor: refuse now what cannot build.
         let canvas = pipeline
             .canvas_processor(hdr, white_nits)
             .map_err(|e| e.to_string())?;
-        if pipeline.output_encoding(&settings.ocio_display, &settings.ocio_view) == Encoding::Hdr {
-            video_io::export::DisplayLight::Absolute {
-                peak_nits: video_io::export::measure_display_peak(
-                    |pixels| canvas_light(&canvas, pixels),
-                    white_nits,
-                )
-                .map_err(|e| e.to_string())?,
-            }
-        } else {
-            video_io::export::DisplayLight::Relative
-        }
+        let light =
+            if pipeline.output_encoding(&settings.ocio_display, &settings.ocio_view) == Encoding::Hdr
+            {
+                video_io::export::DisplayLight::Absolute {
+                    peak_nits: video_io::export::measure_display_peak(
+                        |pixels| canvas_light(&canvas, pixels),
+                        white_nits,
+                    )
+                    .map_err(|e| e.to_string())?,
+                }
+            } else {
+                video_io::export::DisplayLight::Relative
+            };
+        (Some(canvas), light)
     } else {
-        video_io::export::DisplayLight::Relative
+        (None, video_io::export::DisplayLight::Relative)
     };
     Ok(FrozenOutput {
         pipeline,
+        canvas_processor,
         light,
         notice,
     })
@@ -1121,9 +1216,11 @@ mod tests {
         settings.ocio_view = view.clone();
         let FrozenOutput {
             pipeline,
+            canvas_processor,
             light,
             notice,
         } = freeze_output_pipeline(&mut settings, PngEncoding::Sdr8, 203.0).unwrap();
+        assert!(canvas_processor.is_some());
         pipeline.validate_for_export(&settings).unwrap();
         assert_eq!(light, DisplayLight::Relative);
         let notice = notice.expect("the replaced HDR view is reported");

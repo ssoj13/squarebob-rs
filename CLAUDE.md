@@ -50,3 +50,8 @@ This project is indexed by gitnexus-rs as **squarebob-rs** (5697 symbols, 13022 
   `egui_widgets_config::add_icon_font`. `tests/icons.rs` scans the app + widget crates for symbol-block glyphs.
 - TODO [ ] missing in `icons::*`, still raw `egui_phosphor::regular` in `src/app/toolbar.rs` (MOON, SUN theme toggle)
   and `src/app/settings/mod.rs` (FLOPPY_DISK); drop the `egui-phosphor` dependency once they exist.
+
+## 2026-11-08 — `render-rs@23c01af` dual-backend PT, SSOT & CUDA+OIDN interop
+- `crates/render-3d/src/env_map.rs` delegates equirectangular format detection, sRGB linearization, and spherical `sin(theta)` importance-sampling CDFs to `render_env`.
+- `crates/render-shared` re-exports `PtComputeBackend`, `PtSamplerMode`, `AdaptivePreset`, `SpectralMode`, `OidnModeOption`, `OidnQualityOption`, and `DenoiserSettings` from `render_settings` (`pt_compute_backend` defaults to `Auto`).
+- `crates/render-3d` enforces strict no-silent-fallback for `PtComputeBackend::Cuda` (reporting actual backend via `Renderer3D::active_backend()`), bridges CUDA linear beauty + on-demand primary-hit albedo/normal AOVs (`Renderer3D::sync_oidn_guides`) into `pt_denoise_oidn::OidnDenoiser` (`DenoiseInput::TexturesUntracked`), tracks full normalized `CudaAccumKey`, wires lazy `set_aovs_enabled`, zero-alloc `read_linear_into` / `read_pt_linear_into` / `readback_render_texture_into` (into `FrozenRenderSession` scratch buffers), GPU TLAS refit (`refit_scene_two_level_gpu` / `refit_two_level_instances_gpu`) on transform-only updates, `MaterialExt`, `set_emissive_sampling`, `OcioPass::new_with_adapter` (`gpu-mem` pipeline cache), and `pt_is_converged()`.

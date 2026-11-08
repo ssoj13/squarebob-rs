@@ -16,6 +16,7 @@ pub struct PtDisplayBlit {
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
+    adapter_info: Option<wgpu::AdapterInfo>,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group_layout: wgpu::BindGroupLayout,
     blit_sampler: wgpu::Sampler,
@@ -23,6 +24,9 @@ pub struct PtDisplayBlit {
     display_ocio: Option<Arc<render_color_gpu::OcioShader>>,
     cpu_color_readback: render_core::gpu::TextureReadback,
     cpu_color_output: Option<wgpu::Texture>,
+    cpu_pixels: Vec<[f32; 3]>,
+    cpu_alphas: Vec<f32>,
+    cpu_packed: Vec<[f32; 4]>,
 }
 
 impl PtDisplayBlit {
@@ -30,6 +34,29 @@ impl PtDisplayBlit {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        Self::new_inner(device, queue, None, width, height, format)
+    }
+
+    /// Create a new display blit using `adapter`'s persistent on-disk `wgpu::PipelineCache`.
+    pub fn new_with_adapter(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        adapter: &wgpu::AdapterInfo,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        Self::new_inner(device, queue, Some(adapter.clone()), width, height, format)
+    }
+
+    fn new_inner(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        adapter_info: Option<wgpu::AdapterInfo>,
         width: u32,
         height: u32,
         format: wgpu::TextureFormat,
@@ -104,13 +131,19 @@ impl PtDisplayBlit {
             bytemuck::cast_slice(&identity_mat3),
         );
 
-        let blit_pipeline =
-            make_blit_pipeline(device, &blit_bind_group_layout, format, None);
+        let blit_pipeline = make_blit_pipeline(
+            device,
+            adapter_info.as_ref(),
+            &blit_bind_group_layout,
+            format,
+            None,
+        );
 
         Self {
             width,
             height,
             format,
+            adapter_info,
             blit_pipeline,
             blit_bind_group_layout,
             blit_sampler,
@@ -118,6 +151,9 @@ impl PtDisplayBlit {
             display_ocio: None,
             cpu_color_readback: render_core::gpu::TextureReadback::default(),
             cpu_color_output: None,
+            cpu_pixels: Vec::new(),
+            cpu_alphas: Vec::new(),
+            cpu_packed: Vec::new(),
         }
     }
 
@@ -192,6 +228,7 @@ impl PtDisplayBlit {
     ) {
         self.blit_pipeline = make_blit_pipeline(
             device,
+            self.adapter_info.as_ref(),
             &self.blit_bind_group_layout,
             self.format,
             ocio.as_deref(),
@@ -248,10 +285,16 @@ impl PtDisplayBlit {
         ctx.queue.submit(std::iter::once(encoder.finish()));
 
         let raw = render_core::gpu::map_readback(ctx, &self.cpu_color_readback)?;
-        let mut pixels = Vec::new();
-        pixels.try_reserve_exact(texel_count)?;
-        let mut alphas = Vec::new();
-        alphas.try_reserve_exact(texel_count)?;
+        self.cpu_pixels.clear();
+        if self.cpu_pixels.capacity() < texel_count {
+            self.cpu_pixels
+                .try_reserve(texel_count - self.cpu_pixels.capacity())?;
+        }
+        self.cpu_alphas.clear();
+        if self.cpu_alphas.capacity() < texel_count {
+            self.cpu_alphas
+                .try_reserve(texel_count - self.cpu_alphas.capacity())?;
+        }
         for texel in raw.chunks_exact(BYTES_PER_PIXEL as usize) {
             let channel = |offset: usize| {
                 f32::from_ne_bytes([
@@ -261,16 +304,19 @@ impl PtDisplayBlit {
                     texel[offset + 3],
                 ])
             };
-            pixels.push([channel(0), channel(4), channel(8)]);
-            alphas.push(channel(12));
+            self.cpu_pixels.push([channel(0), channel(4), channel(8)]);
+            self.cpu_alphas.push(channel(12));
         }
 
-        apply(&mut pixels);
+        apply(&mut self.cpu_pixels);
 
-        let mut packed = Vec::new();
-        packed.try_reserve_exact(texel_count)?;
-        for (pixel, alpha) in pixels.into_iter().zip(alphas) {
-            packed.push([pixel[0], pixel[1], pixel[2], alpha]);
+        self.cpu_packed.clear();
+        if self.cpu_packed.capacity() < texel_count {
+            self.cpu_packed
+                .try_reserve(texel_count - self.cpu_packed.capacity())?;
+        }
+        for (&pixel, &alpha) in self.cpu_pixels.iter().zip(self.cpu_alphas.iter()) {
+            self.cpu_packed.push([pixel[0], pixel[1], pixel[2], alpha]);
         }
         if self
             .cpu_color_output
@@ -305,7 +351,7 @@ impl PtDisplayBlit {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(&packed),
+            bytemuck::cast_slice(&self.cpu_packed),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(layout.row_bytes()),
@@ -375,6 +421,7 @@ impl PtDisplayBlit {
 
 fn make_blit_pipeline(
     device: &wgpu::Device,
+    adapter_info: Option<&wgpu::AdapterInfo>,
     blit_bind_group_layout: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
     ocio: Option<&render_color_gpu::OcioShader>,
@@ -396,7 +443,8 @@ fn make_blit_pipeline(
         bind_group_layouts: &[Some(blit_bind_group_layout), g1, g2],
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let disk_cache = adapter_info.and_then(|adapter| gpu_mem::pipeline_cache(device, adapter));
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("pt_blit_pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -422,6 +470,10 @@ fn make_blit_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
-    })
+        cache: disk_cache.as_deref().map(gpu_mem::DiskPipelineCache::cache),
+    });
+    if let Some(cache) = disk_cache {
+        cache.save();
+    }
+    pipeline
 }

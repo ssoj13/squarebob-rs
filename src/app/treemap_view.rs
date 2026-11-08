@@ -1107,7 +1107,7 @@ impl App {
         let pt_throttled = self.encode_render_session.is_none()
             && options.path_tracing
             && (options.pt_auto_spp || options.pt_camera_snap);
-        let pt_tick_ready = !pt_throttled || self.render_tick_3d;
+        let pt_tick_ready = (!pt_throttled || self.render_tick_3d) && self.pt_render_error.is_none();
         let need_render =
             layout_dirty || render_dirty || size_changed || (options.path_tracing && pt_tick_ready);
 
@@ -1294,15 +1294,32 @@ impl App {
             }
 
             let t_render = match render_result {
-                Ok(duration) => duration,
+                Ok(duration) => {
+                    self.pt_render_error = None;
+                    duration
+                }
                 Err(error) => {
+                    if self.encode_render_session.is_some() {
+                        log::error!("3D render failed: {error}");
+                        self.fail_encode_render(format!("3D render failed: {error}"));
+                        ctx.request_repaint();
+                        return;
+                    }
+                    if options.path_tracing
+                        && matches!(error, render_core::ReadbackError::SceneBuild(_))
+                    {
+                        let message = error.to_string();
+                        if self.pt_render_error.as_deref() != Some(message.as_str()) {
+                            log::warn!("PT render error: {message}");
+                        }
+                        self.pt_render_error = Some(message);
+                        self.last_render_size = (w, h);
+                        self.finish_render_input_frame();
+                        return;
+                    }
                     log::error!("3D render failed: {error}");
                     let message = format!("3D render failed: {error}");
-                    if self.encode_render_session.is_some() {
-                        self.fail_encode_render(message);
-                    } else {
-                        let _ = self.wgpu_error_tx.send(message);
-                    }
+                    let _ = self.wgpu_error_tx.send(message);
                     ctx.request_repaint();
                     return;
                 }
@@ -1404,8 +1421,17 @@ impl App {
         }
 
         // Request repaint only for continuous modes
-        if options.path_tracing && !pt_throttled {
-            // PT: repaint continuously only when not throttled
+        let static_converged = !options.animate
+            && !self.oidn_run_requested
+            && self
+                .renderer_3d_for_frame()
+                .is_some_and(|r| r.pt_is_converged());
+        if options.path_tracing
+            && !pt_throttled
+            && !static_converged
+            && self.pt_render_error.is_none()
+        {
+            // PT: repaint continuously only when not throttled, converged, or halted on a backend/config error
             ctx.request_repaint();
         }
     }
@@ -1553,33 +1579,40 @@ impl App {
         };
         let current_spp = r.pt_frame_count();
         let target_spp = r.pt_target_spp();
+        let pt_converged = r.pt_is_converged();
         log::trace!(
-            "OIDN trigger eval: current_spp={} target_spp={} denoised_this_acc={} last_frame={}",
+            "OIDN trigger eval: current_spp={} target_spp={} converged={} denoised_this_acc={} last_frame={}",
             current_spp,
             target_spp,
+            pt_converged,
             self.oidn_denoised_this_accumulation,
             self.oidn_last_frame_count
         );
 
         // Detect accumulation reset (camera / scene change).
-        if current_spp < self.oidn_last_frame_count {
+        if current_spp == 0 || current_spp < self.oidn_last_frame_count {
             self.oidn_denoised_this_accumulation = false;
             self.oidn_display_is_denoised = false;
             self.oidn_last_interval_spp = 0;
+            self.oidn_last_denoised_spp = 0;
+        } else if current_spp > self.oidn_last_denoised_spp {
+            self.oidn_display_is_denoised = false;
         }
         self.oidn_last_frame_count = current_spp;
 
         let manual = self.encode_render_session.is_none() && self.oidn_run_requested;
+        let final_reached = (target_spp > 0 && current_spp >= target_spp)
+            || (current_spp > 0 && pt_converged);
         let auto_final = options.pt_oidn_auto
-            && target_spp > 0
-            && current_spp >= target_spp
-            && !self.oidn_denoised_this_accumulation;
+            && final_reached
+            && self.oidn_last_denoised_spp < current_spp;
         // Periodic re-run every N samples. Only when interval > 0 and PT
         // hasn't yet reached the final target (otherwise `auto_final` will
         // handle it). `current_spp - last_interval >= interval` keeps us
         // from re-firing on every frame past a multiple of interval.
         let interval = options.pt_oidn_interval;
         let auto_interval = options.pt_oidn_auto
+            && !final_reached
             && interval > 0
             && current_spp >= interval
             && current_spp.saturating_sub(self.oidn_last_interval_spp) >= interval;
@@ -1598,6 +1631,17 @@ impl App {
         let Some(gpu_ctx) = self.gpu_context.clone() else {
             return;
         };
+        if let Some(r) = self.renderer_3d_for_frame_mut()
+            && let Err(e) = r.sync_oidn_guides()
+        {
+            log::warn!("OIDN guide sync failed: {e}");
+            if let Some(session) = &mut self.encode_render_session {
+                session.error = Some(format!("OIDN guide sync failed: {e}"));
+            }
+            self.oidn_run_requested = false;
+            self.oidn_display_is_denoised = false;
+            return;
+        }
         let Some(r) = self.renderer_3d_for_frame() else {
             return;
         };
@@ -1710,6 +1754,7 @@ impl App {
                 self.oidn_run_requested = false;
                 self.oidn_display_is_denoised = true;
                 self.oidn_last_interval_spp = current_spp;
+                self.oidn_last_denoised_spp = current_spp;
             }
             Err(e) => {
                 log::warn!("OIDN denoise failed: {e}");
@@ -1738,13 +1783,13 @@ fn map_quality(q: render_shared::OidnQualityOption) -> pt_denoise_oidn::Quality 
     use pt_denoise_oidn::Quality;
     use render_shared::OidnQualityOption;
     match q {
-        OidnQualityOption::Base => Quality::Balanced,
+        OidnQualityOption::Large | OidnQualityOption::Base => Quality::Balanced,
         OidnQualityOption::Small => Quality::Fast,
     }
 }
 
-/// The richest mode the supplied guides support, at most `wanted` (albedo and normal buffers come from the wavefront
-/// PT only).
+/// The richest mode the supplied guides support, at most `wanted` (primary-hit albedo and normal
+/// AOV buffers come from both WGPU and CUDA PT when enabled).
 fn effective_mode(
     wanted: pt_denoise_oidn::OidnMode,
     albedo: bool,

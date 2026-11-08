@@ -6,7 +6,7 @@ use crate::app::App;
 use crate::app::helpers::{MultiButtonAxis, multibutton_exclusive, rfd_env_map_pick_start_dir};
 use crate::renderer::{
     AdaptivePreset, ColorMode, CubeHeightMode, FolderColorMode, HashTransformEffect, HoverMode,
-    PtSamplerMode, RenderMode, SpectralMode,
+    PtComputeBackend, PtSamplerMode, RenderMode, SpectralMode,
 };
 use eframe::egui;
 use pt_mats::{MaterialDistribution, MaterialSource, Palette};
@@ -1093,12 +1093,16 @@ impl App {
             |ui| self.ui_pt_advanced(ui, &mut pt_changed),
         );
 
-        if pt_changed && let Some(r) = &mut self.renderer_3d {
-            r.reset_pt_accumulation();
+        if pt_changed {
+            self.pt_render_error = None;
+            if let Some(r) = &mut self.renderer_3d {
+                r.reset_pt_accumulation();
+            }
         }
     }
 
     fn mark_pt_scene_dirty(&mut self) {
+        self.pt_render_error = None;
         if let Some(r) = &mut self.renderer_3d {
             r.mark_pt_scene_dirty();
         }
@@ -1480,10 +1484,17 @@ impl App {
         if let Some(r) = &self.renderer_3d {
             let current = r.pt_frame_count();
             let max = self.render_3d_opts.pt_samples.max(1);
-            let progress = current as f32 / max as f32;
-            let done = current >= max;
-            ui.add(egui::ProgressBar::new(progress.min(1.0)).text(if done {
+            let converged = current > 0 && r.pt_is_converged();
+            let done = current >= max || converged;
+            let progress = if done {
+                1.0
+            } else {
+                (current as f32 / max as f32).min(1.0)
+            };
+            ui.add(egui::ProgressBar::new(progress).text(if current >= max {
                 format!("{} samples (done)", current)
+            } else if converged {
+                format!("{} / {} samples (converged)", current, max)
             } else {
                 format!("{} / {} samples", current, max)
             }));
@@ -1608,42 +1619,31 @@ impl App {
     fn ui_pt_advanced(&mut self, ui: &mut egui::Ui, pt_changed: &mut bool) {
         settings_grid(ui, "pt_backend_grid", |ui| {
             control_label(ui, "Backend:");
-            *pt_changed |= ui
-                .checkbox(&mut self.render_3d_opts.pt_wavefront, "Wavefront")
-                .on_hover_text("Split path tracing into separate passes")
-                .changed();
+            let old_backend = self.render_3d_opts.pt_compute_backend;
+            ui.horizontal(|ui| {
+                if multibutton_exclusive(
+                    ui,
+                    &mut self.render_3d_opts.pt_compute_backend,
+                    &[
+                        (PtComputeBackend::Auto, "Auto"),
+                        (PtComputeBackend::Wgpu, "WGPU"),
+                        (PtComputeBackend::Cuda, "CUDA"),
+                    ],
+                    MultiButtonAxis::Horizontal,
+                ) || self.render_3d_opts.pt_compute_backend != old_backend
+                {
+                    *pt_changed = true;
+                    self.mark_pt_scene_dirty();
+                }
+                if let Some(r) = &self.renderer_3d {
+                    ui.small(format!("Active: {}", r.active_backend().name()));
+                }
+            });
             ui.end_row();
 
-            if self.render_3d_opts.pt_wavefront {
-                control_label(ui, "WF Tile:");
-                ui.horizontal(|ui| {
-                    let resp = ui.add(
-                        egui::DragValue::new(&mut self.render_3d_opts.pt_wavefront_tile_size)
-                            .range(0..=8192)
-                            .speed(16),
-                    );
-                    if resp.changed() {
-                        // Clamp to {0} ∪ [64, 8192]. 0 = full frame (no
-                        // tiling). Non-zero values below 64 produce so many
-                        // tiles that prepare_tiles trips its MAX_TILE_CAPACITY
-                        // (4096) assertion and panics — type 0 directly to
-                        // disable tiling. Drag-down halfway split (< 32 → 0,
-                        // 32..64 → 64) so 0 stays reachable via drag.
-                        let v = self.render_3d_opts.pt_wavefront_tile_size;
-                        if v != 0 && v < 64 {
-                            self.render_3d_opts.pt_wavefront_tile_size =
-                                if v < 32 { 0 } else { 64 };
-                        } else if v > 8192 {
-                            self.render_3d_opts.pt_wavefront_tile_size = 8192;
-                        }
-                        *pt_changed = true;
-                    }
-                    ui.small("0 = full frame, else 64..8192");
-                });
-                ui.end_row();
-
-                control_label(ui, "WF Scope:");
-                ui.small("R2/NEE direct use megakernel; ReSTIR uses wavefront.");
+            if let Some(err) = &self.pt_render_error {
+                control_label(ui, "");
+                ui.colored_label(ui.visuals().error_fg_color, err);
                 ui.end_row();
             }
 
@@ -1654,11 +1654,13 @@ impl App {
                 .changed();
             ui.end_row();
 
-            if self.render_3d_opts.pt_gpu_bvh {
+            if self.render_3d_opts.pt_gpu_bvh
+                || self.render_3d_opts.pt_compute_backend != PtComputeBackend::Wgpu
+            {
                 control_label(ui, "BVH Refit:");
                 *pt_changed |= ui
                     .checkbox(&mut self.render_3d_opts.pt_bvh_refit, "")
-                    .on_hover_text("Fast AABB update for animation")
+                    .on_hover_text("Fast GPU TLAS AABB refit for transform animations")
                     .changed();
                 ui.end_row();
             }

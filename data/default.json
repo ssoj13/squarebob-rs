@@ -273,6 +273,7 @@
   "pt_spectral_mode": "Off",
   "pt_spectral_samples": 5,
   "pt_spectral_dispersion": true,
+  "pt_compute_backend": "Auto",
   "pt_gpu_bvh": true,
   "pt_bvh_refit": true,
   "pt_wavefront": false,
