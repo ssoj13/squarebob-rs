@@ -127,7 +127,7 @@ impl App {
                 }
             },
             RenderMode::Mode3D => {
-                if self.last_render_frame_3d == self.frame_count
+                if self.last_render_frame_3d > 0
                     && self
                         .renderer_3d_for_frame()
                         .is_some_and(|r| !render_options.path_tracing || r.pt_frame_count() > 0)
@@ -141,28 +141,12 @@ impl App {
                         .render_root()
                         .ok_or("No display tree available for 3D capture")?
                         as *const _;
-                    let renderer = self
-                        .renderer_3d_for_frame_mut()
-                        .ok_or("3D renderer is unavailable")?;
-                    // SAFETY: root_ptr aliases self.tree; rendering reads it without mutation.
-                    let root = unsafe { &*root_ptr };
-                    renderer
-                        .render_to_view(
-                            root,
-                            w,
-                            h,
-                            &camera,
-                            &render_options,
-                            &options,
-                            Some(&mut selected_ids),
-                        )
-                        .map_err(|error| format!("3D capture render failed: {error}"))?;
-                    if render_options.path_tracing && renderer.pt_is_preparing_pipeline() {
-                        renderer
-                            .wait_for_pt_pipeline(std::time::Duration::from_secs(180))
-                            .map_err(|error| {
-                                format!("3D capture pipeline wait failed: {error}")
-                            })?;
+                    {
+                        let renderer = self
+                            .renderer_3d_for_frame_mut()
+                            .ok_or("3D renderer is unavailable")?;
+                        // SAFETY: root_ptr aliases self.tree; rendering reads it without mutation.
+                        let root = unsafe { &*root_ptr };
                         renderer
                             .render_to_view(
                                 root,
@@ -174,7 +158,42 @@ impl App {
                                 Some(&mut selected_ids),
                             )
                             .map_err(|error| format!("3D capture render failed: {error}"))?;
+                        if render_options.path_tracing && renderer.pt_is_preparing_pipeline() {
+                            renderer
+                                .wait_for_pt_pipeline(std::time::Duration::from_secs(180))
+                                .map_err(|error| {
+                                    format!("3D capture pipeline wait failed: {error}")
+                                })?;
+                            renderer
+                                .render_to_view(
+                                    root,
+                                    w,
+                                    h,
+                                    &camera,
+                                    &render_options,
+                                    &options,
+                                    Some(&mut selected_ids),
+                                )
+                                .map_err(|error| format!("3D capture render failed: {error}"))?;
+                        }
                     }
+                    if render_options.path_tracing
+                        && self
+                            .renderer_3d_for_frame()
+                            .and_then(|r| r.cached_instances())
+                            .is_some_and(|instances| !instances.is_empty())
+                    {
+                        self.maybe_run_oidn_denoise(w, h);
+                        let source = self.active_pt_display_texture().cloned();
+                        if let Some(renderer) = self.renderer_3d_for_frame_mut() {
+                            renderer
+                                .composite_overlay(source.as_ref(), &render_options)
+                                .map_err(|error| format!("3D capture composite failed: {error}"))?;
+                        }
+                    }
+                    let renderer = self
+                        .renderer_3d_for_frame_mut()
+                        .ok_or("3D renderer is unavailable")?;
                     let pixels = renderer
                         .readback_render_texture(false)
                         .map_err(|error| format!("3D capture readback failed: {error}"))?;
