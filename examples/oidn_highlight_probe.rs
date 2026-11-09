@@ -1,6 +1,6 @@
 //! Headless diagnostic of the production OIDN bridge on frozen HDR inputs.
 //! Run with: cargo run --locked --example oidn_highlight_probe
-//! This isolates sample-dependent input clamping; it does not reproduce a scene.
+//! Verifies deterministic, sample-independent unclamped HDR denoising.
 use anyhow::{Context, Result, ensure};
 use pt_denoise_oidn::{OidnDenoiser, OidnMode, Quality};
 use render_core::gpu::{
@@ -126,8 +126,11 @@ fn capture(ctx: &GpuContext, source: &wgpu::TextureView) -> Result<Vec<f32>> {
         "capture length mismatch"
     );
     Ok(bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_ne_bytes(b.try_into().expect("four-byte chunk")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(f32::from_ne_bytes)
         .collect())
 }
 
@@ -157,8 +160,10 @@ fn region_stats(data: &[f32], bright: bool) -> (f32, f32, f32) {
 }
 
 fn difference(a: &[f32], b: &[f32]) -> f32 {
-    a.chunks_exact(4)
-        .zip(b.chunks_exact(4))
+    a.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0.iter())
         .flat_map(|(a, b)| (0..3).map(move |c| (a[c] - b[c]).abs()))
         .fold(0.0, f32::max)
 }
@@ -244,22 +249,12 @@ fn main() -> Result<()> {
     denoiser.set_mode(OidnMode::ColorAlbedoNormal);
     denoiser.set_quality(Quality::Balanced);
     denoiser.set_external_input_scale(Some(0.02));
-    denoiser.set_input_clamp(10.0);
     println!(
-        "input=frozen synthetic HDR checkerboard; fixed_scale=0.02; clamp=10; mode=full_AOV; quality=Balanced"
+        "input=frozen synthetic HDR checkerboard; fixed_scale=0.02; mode=full_AOV; quality=Balanced"
     );
-    println!("case,spp,highlight_mean,highlight_sd,highlight_max,dark_mean");
+    println!("spp,highlight_mean,highlight_sd,highlight_max,dark_mean");
     let mut outputs = Vec::new();
-    for (adaptive, spp) in [
-        (true, 1),
-        (true, 64),
-        (true, 128),
-        (true, 256),
-        (true, 256),
-        (false, 1),
-        (false, 256),
-    ] {
-        denoiser.set_adaptive_clamp(adaptive);
+    for spp in [1_u32, 64, 128, 256, 256] {
         let encoder = ctx.device.create_command_encoder(&Default::default());
         let _submission = denoiser.denoise(pt_denoise_oidn::DenoiseInput::TexturesUntracked {
             encoder,
@@ -274,30 +269,20 @@ fn main() -> Result<()> {
         ensure!(output.iter().all(|x| x.is_finite()), "nonfinite output");
         let (mean, sd, max) = region_stats(&output, true);
         let (dark, _, _) = region_stats(&output, false);
-        println!(
-            "{},{spp},{mean:.6},{sd:.6},{max:.6},{dark:.6}",
-            if adaptive { "adaptive" } else { "fixed" }
-        );
+        println!("{spp},{mean:.6},{sd:.6},{max:.6},{dark:.6}");
         outputs.push(output);
     }
     let repeat = difference(&outputs[3], &outputs[4]);
-    let fixed = difference(&outputs[5], &outputs[6]);
-    let adaptive = difference(&outputs[0], &outputs[3]);
-    println!(
-        "max_abs_repeat={repeat:.9}; max_abs_fixed_spp={fixed:.9}; max_abs_adaptive_spp={adaptive:.9}"
-    );
-    let tolerance = 1e-4 * region_stats(&outputs[6], true).2.max(1.0);
+    let spp_drift = difference(&outputs[0], &outputs[3]);
+    println!("max_abs_repeat={repeat:.9}; max_abs_spp_drift={spp_drift:.9}");
+    let tolerance = 1e-4 * region_stats(&outputs[4], true).2.max(1.0);
     ensure!(
         repeat <= tolerance,
         "frozen repeated output changed beyond {tolerance}"
     );
     ensure!(
-        fixed <= tolerance,
-        "fixed-clamp output changed with spp beyond {tolerance}"
-    );
-    ensure!(
-        adaptive > tolerance,
-        "synthetic input did not expose sample-dependent clamp change"
+        spp_drift <= tolerance,
+        "unclamped output changed with spp beyond {tolerance}"
     );
     let mut repeated_max = 0.0_f32;
     for _ in 0..32 {
@@ -316,7 +301,7 @@ fn main() -> Result<()> {
             output.iter().all(|x| x.is_finite()),
             "nonfinite repeated output"
         );
-        repeated_max = repeated_max.max(difference(&outputs[6], &output));
+        repeated_max = repeated_max.max(difference(&outputs[4], &output));
     }
     println!("frozen_repeats=32; max_abs_repeated_series={repeated_max:.9}");
     ensure!(

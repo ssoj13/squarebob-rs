@@ -203,7 +203,7 @@ Checked bridge invariants:
 - Input and output share the renderer GPU device/queue in the normal path (`crates/pt-denoise-oidn/src/lib.rs:715-727`). Result goes to a separate texture (`:649-656`); display composition targets `render_view` (`crates/render-3d/src/lib.rs:1217-1222`). The inspected bridge contains no output-to-raw feedback.
 - AOVs are divided by their per-pixel count before channel conversion (`crates/pt-denoise-oidn/src/lib.rs:906-919`), rather than by global SPP.
 - The immutable committed model receives fresh input tensors per pass (`:559-561,627`). Historical comments claiming a buffer race (`:658-675`) are not proof of a present race. Checked pinned CubeCL `get_resource` executes pending streams and pins allocation while the external output copy submits; see the audit for exact dependency paths.
-- Public setters are `set_input_clamp`, `set_adaptive_clamp`, `set_nan_protect`, and `set_external_input_scale`. Public output is `result_view()`; `result_texture` is private.
+- Public setters are `set_mode`, `set_quality`, `set_primaries`, and `set_external_input_scale` (legacy pre-OIDN clamping/NaN setters were removed in 2026-11-09). Public output is `result_view()` / `result_view_untracked()`; `result_texture` is private.
 - `OIDN_STANDALONE_DEVICE` creates a different device but direct copies remain on the renderer device (`:707-711,392-422,953-1012`), so it is not a valid direct-copy A/B experiment.
 
 Open source findings:
@@ -291,3 +291,8 @@ Implemented [PLAN.md](PLAN.md) across `render-rs@35e38da` and `squarebob-rs`:
 - Removed eager `PipelineVariantKey::INITIAL` synchronous compilation from `PathTraceCompute::create` and moved `compile_megakernel_variant` + `gpu_mem::checked` onto a retained background worker thread (`PendingPipelineJob`, `pt-pipeline-compile`) in `PathTraceCompute` (`is_preparing_pipeline`, `preparing_pipeline_elapsed`, `poll_pipeline`, `wait_for_pipeline`, `set_blocking_pipeline_compile`).
 - Wired `Renderer3D::{pt_is_preparing_pipeline, pt_preparing_pipeline_elapsed, wait_for_pt_pipeline}` into `crates/render-3d/src/pt/megakernel/render.rs`, `src/app/{treemap_view, status_bar, screenshot}.rs`, and `src/cli_test.rs`, and fixed `try_reserve_exact(output_size)` after `clear()` in `crates/render-core/src/lib.rs` and `crates/render-3d/src/pt/blit.rs`.
 - Verified on `D:\temp` (`4,043` cubes, `1231x969`): cold cache ticks UI frames at `0.16ms–0.34ms` during `21.816s` background compile and renders frame 1 in `113.72ms`; warm cache loads in `17ms` (`4.59s` total process with `--screenshot 2`); `squarebob.exe test gpu-pt-smoke` and `cargo test -p render-core -p render-3d` pass.
+
+## Unclamped HDR OIDN primaries & canonical 3x3 ACES Fit — 2026-11-09
+
+- Removed pre-OIDN luminance clamping (`pt_oidn_clamp`, `pt_oidn_adaptive_clamp`, `pt_oidn_nan_protect`) across `crates/render-shared`, `src/app/settings/denoiser.rs`, `src/app/treemap_view.rs`, and `examples/oidn_highlight_probe.rs` while preserving serde ignore-unknown-fields compatibility for legacy `app.ron` / `presets.json` files, and wired automatic `Primaries::{AcesCg, Rec709}` from `options.color_pipeline.uses_acescg_primaries()`.
+- Replaced the 1D per-channel Narkowicz (`2.51`) curve in both `crates/render-3d/shaders/pt_blit.wgsl` (`aces_filmic` / `aces_rrt_fit`) and `crates/media-encoder/src/frame.rs` (`tonemap_rgb` / `FrameConversion::tonemap`) with Stephen Hill's canonical 3x3 matrix ACES RRT+ODT Fit so bright saturated highlights desaturate smoothly toward white without Notorious Six plaques.

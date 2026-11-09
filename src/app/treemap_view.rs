@@ -1738,9 +1738,11 @@ impl App {
         }
         denoiser.set_mode(mode);
         denoiser.set_quality(map_quality(options.pt_oidn_quality));
-        denoiser.set_input_clamp(options.pt_oidn_clamp);
-        denoiser.set_nan_protect(options.pt_oidn_nan_protect);
-        denoiser.set_adaptive_clamp(options.pt_oidn_adaptive_clamp);
+        denoiser.set_primaries(if options.color_pipeline.uses_acescg_primaries() {
+            pt_denoise_oidn::Primaries::AcesCg
+        } else {
+            pt_denoise_oidn::Primaries::Rec709
+        });
         // Physical-camera exposure: when in `Physical` mode we pin
         // OIDN's input_scale to the same multiplier the display
         // shader will apply, so OIDN's internal PU transfer is

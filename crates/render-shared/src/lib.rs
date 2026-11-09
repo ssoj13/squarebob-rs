@@ -667,44 +667,6 @@ pub struct Render3DOptions {
     /// the final-spp fire remains.
     #[serde(default = "default_oidn_interval")]
     pub pt_oidn_interval: u32,
-    /// Firefly clamp applied to the OIDN color input. Each RGB channel
-    /// is clamped to this value before the input bridge feeds OIDN.
-    /// `0.0` disables clamping (raw HDR input).
-    ///
-    /// Why this exists: PT path-tracing produces rare extreme samples
-    /// (a glancing specular bounce that catches the brightest part of
-    /// the env map) that survive sample-normalization and end up in
-    /// the accumulator as fireflies. OIDN's albedo+normal-guided UNet
-    /// keeps high-frequency content intact, which means it smears each
-    /// firefly across a halo of pixels instead of suppressing it —
-    /// the splotchy "noise that grows with samples" everyone gets to
-    /// hate at low SPP. Clamping just the OIDN input (not the PT
-    /// accumulator) gives the denoiser a temperate signal while the
-    /// underlying PT mean stays physically correct.
-    ///
-    /// Production default `10.0` matches Arnold's `indirect_clamp` /
-    /// V-Ray's secondary GI clamp — bright enough to keep area-light
-    /// + skybox contributions, low enough to suppress fireflies.
-    #[serde(default = "default_oidn_clamp")]
-    pub pt_oidn_clamp: f32,
-
-    /// Replace non-finite (`NaN` / ±`Inf`) samples on the colour /
-    /// albedo / normal inputs to OIDN with `0` before clamp +
-    /// transfer. Mirrors the reference C++ OIDN `nan_to_zero`
-    /// pre-step in every input kernel. Default `true` — strongly
-    /// recommended: without it, a single bad path-tracer sample can
-    /// poison the entire denoised output through the PU/exp
-    /// expansion in the inverse transfer.
-    #[serde(default = "default_oidn_nan_protect")]
-    pub pt_oidn_nan_protect: bool,
-
-    /// Adaptive firefly clamp: when on, the effective clamp ceiling
-    /// smooth-steps from a tight `EARLY_CLAMP_FLOOR` at spp=1 up to
-    /// `pt_oidn_clamp` at `ADAPTIVE_CLAMP_SPP` (currently 256). Cuts
-    /// halos around lights in early previews without sacrificing
-    /// dynamic range on the converged image. Default `true`.
-    #[serde(default = "default_oidn_adaptive_clamp")]
-    pub pt_oidn_adaptive_clamp: bool,
     /// When `true` (default), the viewport displays Buffer 2 (OIDN denoised)
     /// whenever a denoised pass is available; when `false`, it displays Buffer 1
     /// (raw progressive PT accumulation) without discarding Buffer 2.
@@ -827,9 +789,6 @@ impl Render3DOptions {
             quality: self.pt_oidn_quality,
             auto: self.pt_oidn_auto,
             interval: self.pt_oidn_interval,
-            clamp: self.pt_oidn_clamp,
-            adaptive_clamp: self.pt_oidn_adaptive_clamp,
-            nan_protect: self.pt_oidn_nan_protect,
             show_denoised: self.pt_oidn_show_denoised,
         }
     }
@@ -840,9 +799,6 @@ impl Render3DOptions {
         self.pt_oidn_quality = settings.quality;
         self.pt_oidn_auto = settings.auto;
         self.pt_oidn_interval = settings.interval;
-        self.pt_oidn_clamp = settings.clamp;
-        self.pt_oidn_adaptive_clamp = settings.adaptive_clamp;
-        self.pt_oidn_nan_protect = settings.nan_protect;
         self.pt_oidn_show_denoised = settings.show_denoised;
     }
 }
@@ -858,15 +814,6 @@ fn default_oidn_auto() -> bool {
 }
 fn default_oidn_interval() -> u32 {
     render_settings::DEFAULT_DENOISE_INTERVAL
-}
-fn default_oidn_clamp() -> f32 {
-    10.0
-}
-fn default_oidn_nan_protect() -> bool {
-    true
-}
-fn default_oidn_adaptive_clamp() -> bool {
-    true
 }
 fn default_polar_strength() -> f32 {
     1.0
@@ -1093,9 +1040,6 @@ impl Default for Render3DOptions {
             pt_oidn_quality: OidnQualityOption::Base,
             pt_oidn_auto: true,
             pt_oidn_interval: render_settings::DEFAULT_DENOISE_INTERVAL,
-            pt_oidn_clamp: 10.0,
-            pt_oidn_nan_protect: true,
-            pt_oidn_adaptive_clamp: true,
             pt_oidn_show_denoised: true,
             pt_camera_type: CameraType::Physical,
             pt_physical_camera: PhysicalCamera::default(),
@@ -1172,9 +1116,6 @@ mod tests {
             quality: OidnQualityOption::Large,
             auto: false,
             interval: 64,
-            clamp: 6.5,
-            adaptive_clamp: false,
-            nan_protect: true,
             show_denoised: false,
         };
         opts.apply_denoiser_settings(custom_denoise);
@@ -1183,6 +1124,21 @@ mod tests {
         let restored: Render3DOptions = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored.pt_compute_backend, PtComputeBackend::Cuda);
         assert_eq!(restored.denoiser_settings(), custom_denoise);
+    }
+
+    #[test]
+    fn render_3d_options_ignores_legacy_oidn_clamp_fields() {
+        let legacy_json = r#"{
+            "pt_oidn_mode": "ColorAlbedo",
+            "pt_oidn_interval": 48,
+            "pt_oidn_clamp": 10.0,
+            "pt_oidn_nan_protect": true,
+            "pt_oidn_adaptive_clamp": true
+        }"#;
+        let restored: Render3DOptions =
+            serde_json::from_str(legacy_json).expect("legacy preset with obsolete OIDN clamp keys");
+        assert_eq!(restored.pt_oidn_mode, OidnModeOption::ColorAlbedo);
+        assert_eq!(restored.pt_oidn_interval, 48);
     }
 }
 

@@ -469,19 +469,6 @@ impl FrameConversion for Frame {
         }
 
         let source_is_u8 = matches!(self.buffer.as_ref(), PixelBuffer::U8(_));
-        let map_channel = |index: usize, value: f32| {
-            if index % RGBA_CHANNELS == 3 {
-                value.clamp(0.0, 1.0)
-            } else if source_is_u8 {
-                value
-            } else if self.display.is_some() {
-                // A display transform has already been applied. Only encode its
-                // linear Rec.709 light for an SDR image; never tone map it twice.
-                video_io::color::oetf(value)
-            } else {
-                tonemap_value(value, mode)
-            }
-        };
         let values: Cow<'_, [f32]> = match self.buffer.as_ref() {
             PixelBuffer::U8(data) => {
                 Cow::Owned(data.iter().map(|&value| f32::from(value) / 255.0).collect())
@@ -493,37 +480,48 @@ impl FrameConversion for Frame {
             return Err("Tone mapping requires finite RGB and alpha".into());
         }
 
+        let map_pixel = |[r, g, b, a]: [f32; RGBA_CHANNELS]| -> [f32; RGBA_CHANNELS] {
+            let rgb = if source_is_u8 {
+                [r, g, b]
+            } else if self.display.is_some() {
+                // A display transform has already been applied. Only encode its
+                // linear Rec.709 light for an SDR image; never tone map it twice.
+                [
+                    video_io::color::oetf(r),
+                    video_io::color::oetf(g),
+                    video_io::color::oetf(b),
+                ]
+            } else {
+                tonemap_rgb([r, g, b], mode)
+            };
+            [rgb[0], rgb[1], rgb[2], a.clamp(0.0, 1.0)]
+        };
+
+        let (pixels, remainder) = values.as_chunks::<RGBA_CHANNELS>();
+        debug_assert!(remainder.is_empty());
+
         match output_format {
-            PixelFormat::Rgba8 => Frame::rgba8(
-                width,
-                height,
-                values
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(index, value)| float_to_u8(map_channel(index, value)))
-                    .collect(),
-            ),
-            PixelFormat::RgbaF16 => Frame::rgba_f16(
-                width,
-                height,
-                values
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(index, value)| F16::from_f32(map_channel(index, value)))
-                    .collect(),
-            ),
-            PixelFormat::RgbaF32 => Frame::rgba_f32(
-                width,
-                height,
-                values
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(index, value)| map_channel(index, value))
-                    .collect(),
-            ),
+            PixelFormat::Rgba8 => {
+                let mut out = Vec::with_capacity(values.len());
+                for &pixel in pixels {
+                    out.extend(map_pixel(pixel).map(float_to_u8));
+                }
+                Frame::rgba8(width, height, out)
+            }
+            PixelFormat::RgbaF16 => {
+                let mut out = Vec::with_capacity(values.len());
+                for &pixel in pixels {
+                    out.extend(map_pixel(pixel).map(F16::from_f32));
+                }
+                Frame::rgba_f16(width, height, out)
+            }
+            PixelFormat::RgbaF32 => {
+                let mut out = Vec::with_capacity(values.len());
+                for &pixel in pixels {
+                    out.extend(map_pixel(pixel));
+                }
+                Frame::rgba_f32(width, height, out)
+            }
         }
         .map_err(|error| error.to_string())
     }
@@ -540,7 +538,7 @@ impl FrameConversion for Frame {
             .elements_for(3, size_of::<u8>())
             .map_err(|error| error.to_string())?;
         let mut rgb = Vec::with_capacity(capacity);
-        for pixel in rgba.chunks_exact(RGBA_CHANNELS) {
+        for pixel in rgba.as_chunks::<RGBA_CHANNELS>().0 {
             rgb.extend_from_slice(&pixel[0..3]);
         }
         Ok(rgb)
@@ -554,21 +552,21 @@ impl FrameConversion for Frame {
         let mut rgb = Vec::with_capacity(capacity);
         match self.buffer.as_ref() {
             PixelBuffer::U8(data) => {
-                for pixel in data.chunks_exact(RGBA_CHANNELS) {
+                for pixel in data.as_chunks::<RGBA_CHANNELS>().0 {
                     rgb.push((pixel[0] as u16) * 257);
                     rgb.push((pixel[1] as u16) * 257);
                     rgb.push((pixel[2] as u16) * 257);
                 }
             }
             PixelBuffer::F16(data) => {
-                for pixel in data.chunks_exact(RGBA_CHANNELS) {
+                for pixel in data.as_chunks::<RGBA_CHANNELS>().0 {
                     rgb.push(float_to_u16(pixel[0].to_f32()));
                     rgb.push(float_to_u16(pixel[1].to_f32()));
                     rgb.push(float_to_u16(pixel[2].to_f32()));
                 }
             }
             PixelBuffer::F32(data) => {
-                for pixel in data.chunks_exact(RGBA_CHANNELS) {
+                for pixel in data.as_chunks::<RGBA_CHANNELS>().0 {
                     rgb.push(float_to_u16(pixel[0]));
                     rgb.push(float_to_u16(pixel[1]));
                     rgb.push(float_to_u16(pixel[2]));
@@ -650,19 +648,42 @@ fn float_to_u16(value: f32) -> u16 {
     (value.clamp(0.0, 1.0) * 65535.0).round() as u16
 }
 
-fn tonemap_value(value: f32, mode: TonemapMode) -> f32 {
-    let x = value.max(0.0);
+#[inline]
+fn rrt_and_odt_fit_f64(v: f64) -> f64 {
+    let x = v.max(0.0);
+    let a = x * (x + 0.0245786) - 0.000090537;
+    let b = x * (0.983729 * x + 0.4329510) + 0.238081;
+    (a / b).max(0.0)
+}
+
+fn tonemap_rgb(rgb: [f32; 3], mode: TonemapMode) -> [f32; 3] {
     match mode {
-        TonemapMode::Clamp => x.clamp(0.0, 1.0),
-        TonemapMode::Reinhard => (x / (1.0 + x)).clamp(0.0, 1.0),
+        TonemapMode::Clamp => rgb.map(|v| v.clamp(0.0, 1.0)),
+        TonemapMode::Reinhard => rgb.map(|v| {
+            let x = v.max(0.0);
+            (x / (1.0 + x)).clamp(0.0, 1.0)
+        }),
         TonemapMode::ACES => {
-            let x = f64::from(x);
-            let a = 2.51;
-            let b = 0.03;
-            let c = 2.43;
-            let d = 0.59;
-            let e = 0.14;
-            ((x * (a * x + b)) / (x * (c * x + d) + e)).clamp(0.0, 1.0) as f32
+            let c0 = f64::from(rgb[0]).max(0.0);
+            let c1 = f64::from(rgb[1]).max(0.0);
+            let c2 = f64::from(rgb[2]).max(0.0);
+            // ACESInputMat (sRGB / Rec.709 -> AP1 + RRT saturation)
+            let v0 = 0.59719 * c0 + 0.35458 * c1 + 0.04823 * c2;
+            let v1 = 0.07600 * c0 + 0.90834 * c1 + 0.01566 * c2;
+            let v2 = 0.02840 * c0 + 0.13383 * c1 + 0.83777 * c2;
+            // RRTAndODTFit
+            let u0 = rrt_and_odt_fit_f64(v0);
+            let u1 = rrt_and_odt_fit_f64(v1);
+            let u2 = rrt_and_odt_fit_f64(v2);
+            // ACESOutputMat (AP1 + ODT saturation -> sRGB / Rec.709)
+            let out0 = 1.60475 * u0 - 0.53108 * u1 - 0.07367 * u2;
+            let out1 = -0.10208 * u0 + 1.10813 * u1 - 0.00605 * u2;
+            let out2 = -0.00327 * u0 - 0.07276 * u1 + 1.07602 * u2;
+            [
+                out0.clamp(0.0, 1.0) as f32,
+                out1.clamp(0.0, 1.0) as f32,
+                out2.clamp(0.0, 1.0) as f32,
+            ]
         }
     }
 }
@@ -728,6 +749,24 @@ mod tests {
             panic!("float output");
         };
         assert_eq!(pixels, &[1.0, 1.0, 1.0, 0.5]);
+    }
+
+    #[test]
+    fn aces_tonemap_desaturates_bright_saturated_highlights_toward_white() {
+        let frame = Frame::rgba_f32(1, 1, vec![0.0, 45.0, 50.0, 1.0]).unwrap();
+        let mapped = frame
+            .tonemap(TonemapMode::ACES, PixelFormat::RgbaF32)
+            .unwrap();
+        let buffer = mapped.buffer();
+        let PixelBuffer::F32(pixels) = buffer.as_ref() else {
+            panic!("float output");
+        };
+        let [r, g, b, a] = [pixels[0], pixels[1], pixels[2], pixels[3]];
+        assert!(
+            r > 0.90 && g > 0.98 && b > 0.98,
+            "expected Path-to-White desaturation on overbright cyan, got [{r}, {g}, {b}]"
+        );
+        assert_eq!(a, 1.0);
     }
 
     #[test]

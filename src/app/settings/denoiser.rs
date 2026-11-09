@@ -14,12 +14,11 @@ use soluwell_config::icons;
 
 impl App {
     /// Denoise (OIDN) section. Every control here adjusts a post-process
-    /// hyper-param — mode / quality / auto-trigger / interval / clamp /
-    /// adaptive-clamp / NaN-protect — and none of them affect cube layout
-    /// or PT samples. They are uniformly marked `dirty.preset()` so the
-    /// preset autosave fires but the treemap is not rebuilt and PT
-    /// accumulation is not reset. Fixes the long-standing surprise where
-    /// nudging "Interval" restarted the render from spp=0.
+    /// hyper-param — mode / quality / auto-trigger / interval / display-buffer —
+    /// and none of them affect cube layout or PT samples. They are uniformly
+    /// marked `dirty.preset()` so the preset autosave fires but the treemap is
+    /// not rebuilt and PT accumulation is not reset. Fixes the long-standing
+    /// surprise where nudging "Interval" restarted the render from spp=0.
     pub(super) fn ui_settings_denoiser(&mut self, ui: &mut egui::Ui, dirty: &mut SettingsDirty) {
         tinted_section(
             ui,
@@ -150,66 +149,6 @@ impl App {
                             }
                         }
                     });
-                    ui.end_row();
-
-                    // Row 5 — HDR firefly clamp on the OIDN input. Caps
-                    // luminance before the UNet sees it; the raw PT
-                    // accumulator stays unclamped. `0.0` = off.
-                    control_label(ui, "Clamp:");
-                    ui.horizontal(|ui| {
-                        let clamp_resp = ui
-                            .add(
-                                egui::Slider::new(
-                                    &mut self.render_3d_opts.pt_oidn_clamp,
-                                    0.0..=100.0,
-                                )
-                                .logarithmic(true)
-                                .clamping(egui::SliderClamping::Never),
-                            )
-                            .on_hover_text(
-                                "Luminance-preserving HDR clamp on the \
-                                 OIDN colour input. Hue-preserving \
-                                 (scales all 3 channels by the same \
-                                 factor). 10.0 is the production \
-                                 default; set to 0 to disable. Doesn't \
-                                 touch the raw PT accumulator.",
-                            );
-                        if clamp_resp.changed() {
-                            dirty.preset();
-                        }
-                        let adaptive_resp = ui
-                            .checkbox(&mut self.render_3d_opts.pt_oidn_adaptive_clamp, "Adaptive")
-                            .on_hover_text(
-                                "Smoothly tighten the clamp ceiling at low \
-                                 sample counts (smooth-step 0..256 spp), \
-                                 then relax to the slider value. Suppresses \
-                                 halos around lights in early previews \
-                                 without robbing the converged image of \
-                                 dynamic range.",
-                            );
-                        if adaptive_resp.changed() {
-                            dirty.preset();
-                        }
-                    });
-                    ui.end_row();
-
-                    // Row 6 — NaN/Inf protect. Mirrors reference C++
-                    // `nan_to_zero` pre-step in every input kernel.
-                    control_label(ui, "NaN protect:");
-                    let nan_resp = ui
-                        .checkbox(&mut self.render_3d_opts.pt_oidn_nan_protect, "")
-                        .on_hover_text(
-                            "Replace non-finite (NaN / ±Inf) samples on \
-                             colour / albedo / normal inputs with 0 \
-                             before clamp + transfer. Matches the \
-                             reference C++ OIDN contract. Without this, \
-                             a single bad path-tracer sample can poison \
-                             the entire denoised output through the \
-                             PU/exp expansion in the inverse transfer.",
-                        );
-                    if nan_resp.changed() {
-                        dirty.preset();
-                    }
                     ui.end_row();
                 });
 

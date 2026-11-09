@@ -16,7 +16,7 @@
 // exposure.y = legacy ACES ODT tag. Retained in ABI for preset parity;
 //              SDR composition never applies transfer encoding here.
 // exposure.z = ACES RRT tag (`AcesRrt::gpu_tag`).
-//              0 = Standard (Narkowicz ACES 1.0 fit).
+//              0 = Standard (Stephen Hill ACES RRT+ODT fit).
 //              1 = A1.1     (tighter highlight rolloff).
 //              2 = Off      (skip the filmic curve — debug).
 // exposure.w = 1.0 when pt_texture already holds canvas-encoded values (the OCIO CPU
@@ -59,25 +59,50 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VsOut {
     return out;
 }
 
-// ACES filmic tone mapping (Narkowicz 2015 fit). Matches the pre-C-2
-// behaviour exactly when called with the same input.
-fn aces_filmic(color: vec3<f32>) -> vec3<f32> {
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    return saturate((color * (a * color + b)) / (color * (c * color + d) + e));
+// Bit-exact IEEE-754 HDR input sanitizer (immune to WGSL fast-math NaN/Inf folding).
+// Maps NaN and negative values to 0.0, and caps +Inf / extreme finite highlights at 65504.0
+// so rational polynomial evaluation and downstream ODT/gamut matrices never leak NaN.
+fn sanitize_hdr(v: vec3<f32>) -> vec3<f32> {
+    let bits = bitcast<vec3<u32>>(v);
+    let is_nan = (bits & vec3<u32>(0x7fffffffu)) > vec3<u32>(0x7f800000u);
+    let is_neg = (bits & vec3<u32>(0x80000000u)) != vec3<u32>(0u);
+    let is_pos_inf = bits == vec3<u32>(0x7f800000u);
+    let clean = select(select(v, vec3<f32>(65504.0), is_pos_inf), vec3<f32>(0.0), is_nan | is_neg);
+    return min(clean, vec3<f32>(65504.0));
 }
 
-// ACES 1.1-ish variant: same Narkowicz fit but with input gained +10 %
-// and output trimmed −7 %. Net effect is a slightly tighter highlight
-// shoulder and a marginally darker midtone — the visual delta the
-// ACES 1.1 RRT introduced over 1.0. Not a literal port of the Hable
-// blue-light-artifact patch, but distinguishable enough that flipping
-// the dropdown is a meaningful operation.
-fn aces_filmic_a11(color: vec3<f32>) -> vec3<f32> {
-    return aces_filmic(color * 1.10) * 0.93;
+// Stephen Hill's ACES RRT+ODT rational polynomial fit in AP1 space.
+fn aces_rrt_fit(v: vec3<f32>) -> vec3<f32> {
+    let x = sanitize_hdr(v);
+    let a = x * (x + 0.0245786) - vec3<f32>(0.000090537);
+    let b = x * (0.983729 * x + 0.4329510) + vec3<f32>(0.238081);
+    return max(a / b, vec3<f32>(0.0));
+}
+
+// ACES 1.1-ish variant in AP1 space: input gained +10 % and output trimmed
+// -7 % for a slightly tighter highlight shoulder and marginally darker midtone.
+fn aces_rrt_fit_a11(v: vec3<f32>) -> vec3<f32> {
+    return aces_rrt_fit(sanitize_hdr(v) * 1.10) * 0.93;
+}
+
+// ACES filmic tone mapping (Stephen Hill's canonical 3x3 matrix ACES RRT+ODT fit).
+fn aces_filmic(color: vec3<f32>) -> vec3<f32> {
+    let c = sanitize_hdr(color);
+    // ACESInputMat (sRGB / Rec.709 -> AP1 + RRT saturation)
+    let v = vec3<f32>(
+        dot(vec3<f32>(0.59719, 0.35458, 0.04823), c),
+        dot(vec3<f32>(0.07600, 0.90834, 0.01566), c),
+        dot(vec3<f32>(0.02840, 0.13383, 0.83777), c),
+    );
+    // RRTAndODTFit
+    let curved = aces_rrt_fit(v);
+    // ACESOutputMat (AP1 + ODT saturation -> sRGB / Rec.709)
+    let out = vec3<f32>(
+        dot(vec3<f32>( 1.60475, -0.53108, -0.07367), curved),
+        dot(vec3<f32>(-0.10208,  1.10813, -0.00605), curved),
+        dot(vec3<f32>(-0.00327, -0.07276,  1.07602), curved),
+    );
+    return saturate(out);
 }
 
 // AgX (Eary Chow). Modern open-source filmic transform that
@@ -236,8 +261,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // produce the same image as the pre-C-2 shader.
     //
     // AcesFull (kind == 4): scene-linear → ACEScg (pre IDT∘LMT) →
-    // filmic RRT → display (post ODT). When CPU writes identity for
-    // both matrices the result is algebraically equal to AcesFilmic.
+    // AP1 RRT+ODT rational fit → display (post ODT). Uses `aces_rrt_fit`
+    // directly so caller-supplied `aces_pre` / `aces_post` matrices are
+    // never double-applied alongside `aces_filmic`'s built-in Rec.709↔AP1 matrices.
     let kind = u32(blit_params.color.x);
     var mapped: vec3<f32>;
     switch kind {
@@ -252,10 +278,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let rrt_tag = u32(blit_params.exposure.z);
             var curved: vec3<f32>;
             switch rrt_tag {
-                case 0u: { curved = aces_filmic(working);     }   // Standard
-                case 1u: { curved = aces_filmic_a11(working); }   // A1.1
-                case 2u: { curved = saturate(working);        }   // Off — bypass curve
-                default: { curved = aces_filmic(working);     }
+                case 0u: { curved = aces_rrt_fit(working);     }   // Standard
+                case 1u: { curved = aces_rrt_fit_a11(working); }   // A1.1
+                case 2u: { curved = saturate(sanitize_hdr(working)); }   // Off — bypass curve
+                default: { curved = aces_rrt_fit(working);     }
             }
             let displayed  = blit_params.aces_post * curved;
             // Gamut compression operates in display gamut, BEFORE
