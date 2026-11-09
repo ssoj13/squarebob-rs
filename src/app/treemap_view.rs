@@ -702,23 +702,30 @@ impl App {
     /// after click / shift-click / marquee-complete so the new
     /// highlight shows up immediately without spending a PT sample or
     /// invalidating the accumulator.
-    fn refresh_selection_overlay(&mut self, ctx: &egui::Context) {
+    /// Returns `Some(oidn_result_texture)` when the second (denoised) buffer is
+    /// populated for the current accumulation and selected for viewport display,
+    /// or `None` to display the first (raw progressive PT) buffer.
+    pub(super) fn active_pt_display_texture(&self) -> Option<&wgpu::Texture> {
+        if self.oidn_display_is_denoised && self.oidn_show_denoised {
+            self.oidn_denoiser
+                .as_ref()
+                .map(|d| d.result_texture_untracked())
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn refresh_selection_overlay(&mut self, ctx: &egui::Context) {
         if let Some(r) = &mut self.renderer_3d {
             r.set_selected_ids(&self.selected_3d_ids);
         }
         if self.render_3d_opts.path_tracing {
-            // PT path: re-composite render_view from the latest colour
-            // source (OIDN result if denoised, raw PT accumulator
-            // otherwise) plus the outline overlay. No fresh PT sample.
-            let source = if self.oidn_display_is_denoised {
-                self.oidn_denoiser
-                    .as_ref()
-                    .map(|d| d.result_texture_untracked())
-            } else {
-                None
-            };
+            // PT path: re-composite render_view from the selected colour
+            // buffer (OIDN denoised buffer or raw PT accumulator) plus the
+            // outline overlay. No fresh PT sample.
+            let source = self.active_pt_display_texture().cloned();
             if let Some(r) = self.renderer_3d.as_mut()
-                && let Err(error) = r.composite_overlay(source, &self.render_3d_opts)
+                && let Err(error) = r.composite_overlay(source.as_ref(), &self.render_3d_opts)
             {
                 log::error!("PT display composite failed: {error}");
             }
@@ -1229,22 +1236,17 @@ impl App {
                         .and_then(|r| r.cached_instances())
                         .is_some_and(|instances| !instances.is_empty())
                 {
-                    let source = if self.oidn_display_is_denoised {
-                        self.oidn_denoiser
-                            .as_ref()
-                            .map(|d| d.result_texture_untracked())
-                    } else {
-                        None
-                    };
+                    let source = self.active_pt_display_texture().cloned();
                     let renderer = match &mut self.encode_render_session {
                         Some(session) => session.renderer_3d.as_mut(),
                         None => self.renderer_3d.as_mut(),
                     };
                     if let Some(r) = renderer {
-                        r.composite_overlay(source, &options)?;
+                        r.composite_overlay(source.as_ref(), &options)?;
                     }
                 }
-                self.oidn_last_display_was_denoised = self.oidn_display_is_denoised;
+                self.oidn_last_display_was_denoised =
+                    self.oidn_display_is_denoised && self.oidn_show_denoised;
 
                 // Register/update the PT render-target texture with egui. Same
                 // texture every frame regardless of denoise state — display
@@ -1620,8 +1622,6 @@ impl App {
             self.oidn_display_is_denoised = false;
             self.oidn_last_interval_spp = 0;
             self.oidn_last_denoised_spp = 0;
-        } else if current_spp > self.oidn_last_denoised_spp {
-            self.oidn_display_is_denoised = false;
         }
         self.oidn_last_frame_count = current_spp;
 

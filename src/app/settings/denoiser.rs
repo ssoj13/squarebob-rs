@@ -98,6 +98,20 @@ impl App {
                             );
                         if btn.clicked() {
                             self.oidn_run_requested = true;
+                            self.oidn_show_denoised = true;
+                        }
+                        let show_resp = ui
+                            .add_enabled(
+                                !off,
+                                egui::Checkbox::new(&mut self.oidn_show_denoised, "Show denoised"),
+                            )
+                            .on_hover_text(
+                                "Switch viewport display between the OIDN denoised buffer \
+                                 and the raw progressive PT accumulator without resetting samples.",
+                            );
+                        if show_resp.changed() {
+                            let ctx = ui.ctx().clone();
+                            self.refresh_selection_overlay(&ctx);
                         }
                     });
                     ui.end_row();
@@ -208,10 +222,15 @@ impl App {
                     if self.render_3d_opts.pt_oidn_mode == OidnModeOption::Off {
                         (visuals.weak_text_color(), "Disabled".to_string())
                     } else if self.oidn_display_is_denoised {
+                        let view_label = if self.oidn_show_denoised {
+                            "Denoised"
+                        } else {
+                            "Raw PT (denoised ready)"
+                        };
                         (
                             egui::Color32::from_rgb(140, 200, 140),
                             format!(
-                                "Denoised{}",
+                                "{view_label}{}",
                                 self.oidn_last_latency_ms
                                     .map(|ms| format!(" ({:.0} ms)", ms))
                                     .unwrap_or_default()

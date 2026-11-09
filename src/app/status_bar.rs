@@ -251,15 +251,29 @@ impl App {
                     if self.render_3d_opts.pt_oidn_mode != render_shared::OidnModeOption::Off
                         && let Some(ms) = self.oidn_last_latency_ms
                     {
-                        let state = if self.oidn_display_is_denoised {
+                        let state = if !self.oidn_display_is_denoised {
+                            "stale"
+                        } else if self.oidn_show_denoised {
                             "shown"
                         } else {
-                            "stale"
+                            "raw"
                         };
-                        ui.label(format!(
-                            "OIDN: {:.0} ms @ {} spp ({})",
-                            ms, self.oidn_last_denoised_spp, state
-                        ));
+                        let resp = ui
+                            .add(
+                                egui::Label::new(format!(
+                                    "OIDN: {:.0} ms @ {} spp ({})",
+                                    ms, self.oidn_last_denoised_spp, state
+                                ))
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_text(
+                                "Click to toggle viewport between Denoised buffer and Raw PT accumulator",
+                            );
+                        if resp.clicked() && self.oidn_display_is_denoised {
+                            self.oidn_show_denoised = !self.oidn_show_denoised;
+                            let ctx = ui.ctx().clone();
+                            self.refresh_selection_overlay(&ctx);
+                        }
                     }
                     if let Some(hover) = &self.hovered {
                         ui.label(format!("{} ({})", hover.path, fmt_size(hover.size)));

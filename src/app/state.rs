@@ -340,11 +340,13 @@ pub struct App {
     pub(super) oidn_denoised_this_accumulation: bool,
     /// Last observed PT frame counter — used to detect accumulation resets.
     pub(super) oidn_last_frame_count: u32,
-    /// True when the egui-registered texture currently points at the OIDN
-    /// result rather than the raw PT target. Drives transition logic in
-    /// `treemap_view::render_3d_callback` so we re-`update_egui_texture`
-    /// only on the raw↔oidn edge.
+    /// True when the OIDN denoiser buffer holds a valid denoised image for
+    /// the current accumulation (`oidn_last_denoised_spp > 0`).
     pub(super) oidn_display_is_denoised: bool,
+    /// User toggle selecting whether the viewport displays the OIDN denoised
+    /// buffer (`true`, default) or the raw progressive PT buffer (`false`)
+    /// when `oidn_display_is_denoised` is true.
+    pub(super) oidn_show_denoised: bool,
     /// Mirror of `oidn_display_is_denoised` from the previous frame, used
     /// to detect raw↔oidn transitions even when this frame chose the same
     /// state again.
@@ -567,6 +569,7 @@ impl Default for App {
             oidn_denoised_this_accumulation: false,
             oidn_last_frame_count: 0,
             oidn_display_is_denoised: false,
+            oidn_show_denoised: true,
             oidn_last_display_was_denoised: false,
             oidn_last_interval_spp: 0,
             oidn_last_denoised_spp: 0,
