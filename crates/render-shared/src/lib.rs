@@ -705,6 +705,11 @@ pub struct Render3DOptions {
     /// dynamic range on the converged image. Default `true`.
     #[serde(default = "default_oidn_adaptive_clamp")]
     pub pt_oidn_adaptive_clamp: bool,
+    /// When `true` (default), the viewport displays Buffer 2 (OIDN denoised)
+    /// whenever a denoised pass is available; when `false`, it displays Buffer 1
+    /// (raw progressive PT accumulation) without discarding Buffer 2.
+    #[serde(default = "default_true")]
+    pub pt_oidn_show_denoised: bool,
 
     /// Camera model selector: `Manual` reads the legacy raw-aperture
     /// and orbit-fov pair; `Physical` swaps in derived values from
@@ -825,6 +830,7 @@ impl Render3DOptions {
             clamp: self.pt_oidn_clamp,
             adaptive_clamp: self.pt_oidn_adaptive_clamp,
             nan_protect: self.pt_oidn_nan_protect,
+            show_denoised: self.pt_oidn_show_denoised,
         }
     }
 
@@ -837,6 +843,7 @@ impl Render3DOptions {
         self.pt_oidn_clamp = settings.clamp;
         self.pt_oidn_adaptive_clamp = settings.adaptive_clamp;
         self.pt_oidn_nan_protect = settings.nan_protect;
+        self.pt_oidn_show_denoised = settings.show_denoised;
     }
 }
 
@@ -850,7 +857,7 @@ fn default_oidn_auto() -> bool {
     true
 }
 fn default_oidn_interval() -> u32 {
-    128
+    render_settings::DEFAULT_DENOISE_INTERVAL
 }
 fn default_oidn_clamp() -> f32 {
     10.0
@@ -1029,8 +1036,8 @@ impl Default for Render3DOptions {
             background_color: [0.1, 0.1, 0.1],
             path_tracing: true,
             pt_max_bounces: 4,
-            pt_samples: 3500,
-            pt_samples_per_update: 25,
+            pt_samples: render_settings::DEFAULT_PT_MAX_SAMPLES,
+            pt_samples_per_update: 4,
             pt_max_transmission_depth: 8,
             pt_dof_enabled: true,
             pt_aperture: 2.0,
@@ -1085,10 +1092,11 @@ impl Default for Render3DOptions {
             pt_oidn_mode: OidnModeOption::ColorAlbedoNormal,
             pt_oidn_quality: OidnQualityOption::Base,
             pt_oidn_auto: true,
-            pt_oidn_interval: 128,
+            pt_oidn_interval: render_settings::DEFAULT_DENOISE_INTERVAL,
             pt_oidn_clamp: 10.0,
             pt_oidn_nan_protect: true,
             pt_oidn_adaptive_clamp: true,
+            pt_oidn_show_denoised: true,
             pt_camera_type: CameraType::Physical,
             pt_physical_camera: PhysicalCamera::default(),
             // Colour pipeline defaults: tonemap = current blit shader's
@@ -1122,6 +1130,9 @@ mod tests {
         let json = "{}";
         let opts: Render3DOptions = serde_json::from_str(json).expect("deserialize");
         let defaults = Render3DOptions::default();
+        assert_eq!(defaults.pt_samples, 128);
+        assert_eq!(defaults.pt_oidn_interval, 32);
+        assert!(defaults.pt_oidn_show_denoised);
         assert_eq!(opts.pt_max_bounces, defaults.pt_max_bounces);
         assert_eq!(opts.pt_samples, defaults.pt_samples);
         assert_eq!(opts.pt_gpu_bvh, defaults.pt_gpu_bvh);
@@ -1164,6 +1175,7 @@ mod tests {
             clamp: 6.5,
             adaptive_clamp: false,
             nan_protect: true,
+            show_denoised: false,
         };
         opts.apply_denoiser_settings(custom_denoise);
 

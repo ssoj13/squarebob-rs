@@ -256,7 +256,7 @@
   ],
   "path_tracing": true,
   "pt_max_bounces": 20,
-  "pt_samples": 4096,
+  "pt_samples": 128,
   "pt_samples_per_update": 1,
   "pt_max_transmission_depth": 20,
   "pt_dof_enabled": false,
@@ -281,7 +281,7 @@
   "pt_russian_roulette": true,
   "pt_adaptive_sampling": true,
   "pt_adaptive_preset": "Custom",
-  "pt_adaptive_variance": 2.5e-05,
+  "pt_adaptive_variance": 0.0141,
   "pt_adaptive_interval": 4,
   "pt_restir_di": true,
   "pt_restir_gi": true,
@@ -309,5 +309,5 @@
   "pt_oidn_mode": "ColorAlbedoNormal",
   "pt_oidn_quality": "Base",
   "pt_oidn_auto": true,
-  "pt_oidn_interval": 128
+  "pt_oidn_interval": 32
 }

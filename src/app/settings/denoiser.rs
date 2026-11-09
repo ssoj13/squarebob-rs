@@ -132,13 +132,13 @@ impl App {
                             .on_hover_text(
                                 "Re-run OIDN every N accumulated samples during the \
                                  render, on top of the final-spp fire. 0 disables \
-                                 periodic re-runs. Default 128 — gives smoothed \
+                                 periodic re-runs. Default 32 — gives smoothed \
                                  intermediate previews without hammering inference.",
                             );
                         if interval_resp.changed() {
                             dirty.preset();
                         }
-                        for preset in [32_u32, 64, 128, 256, 512, 1024] {
+                        for preset in [16_u32, 32, 64, 128, 256, 512] {
                             let selected = self.render_3d_opts.pt_oidn_interval == preset;
                             if ui
                                 .selectable_label(selected, preset.to_string())
