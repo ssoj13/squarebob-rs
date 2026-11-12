@@ -258,3 +258,11 @@ minimum-system-version = "13.0"
 
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
+
+# naga 30 with the `rayQueryGenerateIntersection` committed-t fix (gfx-rs/wgpu#10698): render-rs
+# pt-megakernel's hardware traversal relies on it and fails to compile without it (its
+# `naga::RAY_QUERY_GENERATE_COMMITTED_T` marker). Patch both crates from one source, so the graph
+# keeps a single naga and a single naga-types. Drop once a naga release carries the fix.
+[patch.crates-io]
+naga = { git = "ssh://git@github.com/ssoj13/naga_b.git", branch = "main" }
+naga-types = { git = "ssh://git@github.com/ssoj13/naga_b.git", branch = "main" }
