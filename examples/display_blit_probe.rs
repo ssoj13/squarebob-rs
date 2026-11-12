@@ -103,7 +103,9 @@ fn main() -> Result<()> {
         let bytes = map_readback(&ctx, &staging)?;
         ensure!(bytes.len() == 32, "unexpected raw RGBA16Float capture size");
         let output = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| half::f16::from_bits(u16::from_le_bytes([c[0], c[1]])).to_f32())
             .collect();
         // Both PT and OIDN source contracts are immutable scene-linear RGBA32F.
@@ -131,13 +133,15 @@ fn main() -> Result<()> {
         ensure!(pipeline.error().is_none(), "OCIO processor failed");
         let canvas = pipeline.canvas_processor(true, 203.0)?;
         let mut expected: Vec<[f32; 3]> = input
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| [pixel[0] * 2.0, pixel[1] * 2.0, pixel[2] * 2.0])
             .collect();
         canvas.apply_rgb(&mut expected);
         // Canvas-encoded values come out of the blit as they are: compare them directly.
         let check = |bytes: &[u8], what: &str| -> Result<()> {
-            for (pixel, expected) in bytes.chunks_exact(8).zip(&expected) {
+            for (pixel, expected) in bytes.as_chunks::<8>().0.iter().zip(&expected) {
                 for channel in 0..3 {
                     let actual = half::f16::from_bits(u16::from_le_bytes([
                         pixel[channel * 2],

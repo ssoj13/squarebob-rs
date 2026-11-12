@@ -265,7 +265,7 @@ impl App {
     pub(crate) fn apply_font_size(&self, ctx: &egui::Context) {
         let mut style = (*ctx.global_style()).clone();
         // Scale all text styles
-        for (_text_style, font_id) in style.text_styles.iter_mut() {
+        for font_id in style.text_styles.values_mut() {
             font_id.size = self.font_size;
         }
         ctx.set_global_style(style);

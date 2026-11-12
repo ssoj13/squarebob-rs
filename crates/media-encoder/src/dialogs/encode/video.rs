@@ -235,7 +235,7 @@ fn video_pixels(frame: &Frame, input: PackedInput) -> Result<PackedPixels, Encod
     let buffer = frame.buffer();
     match buffer.as_ref() {
         PixelBuffer::U8(data) => {
-            for p in data.chunks_exact(4) {
+            for p in data.as_chunks::<4>().0 {
                 push([
                     lut[usize::from(p[0]) * 257],
                     lut[usize::from(p[1]) * 257],
@@ -251,7 +251,7 @@ fn video_pixels(frame: &Frame, input: PackedInput) -> Result<PackedPixels, Encod
                     "SDR video requires an SDR display view".into(),
                 ));
             }
-            for p in light.chunks_exact(4) {
+            for p in light.as_chunks::<4>().0 {
                 push([
                     float_to_u16(bt1886_code(p[0])),
                     float_to_u16(bt1886_code(p[1])),

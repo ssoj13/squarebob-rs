@@ -626,7 +626,7 @@ impl App {
                         .pt_rgb_scratch
                         .reserve(rgb_len - session.pt_rgb_scratch.capacity());
                 }
-                for px in session.pt_rgba_scratch.chunks_exact(4) {
+                for px in session.pt_rgba_scratch.as_chunks::<4>().0 {
                     session.pt_rgb_scratch.extend_from_slice(&[
                         px[0] * exposure,
                         px[1] * exposure,
@@ -639,7 +639,9 @@ impl App {
                 canvas.apply_rgb(rgb_triplets);
                 for (rgba, rgb) in session
                     .pt_rgba_scratch
-                    .chunks_exact_mut(4)
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
                     .zip(rgb_triplets.iter())
                 {
                     rgba[0] = rgb[0];
@@ -664,7 +666,7 @@ impl App {
                         .pt_rgba_scratch
                         .reserve(expected_floats - session.pt_rgba_scratch.capacity());
                 }
-                for b in session.readback_bytes_scratch.chunks_exact(2) {
+                for b in session.readback_bytes_scratch.as_chunks::<2>().0 {
                     session
                         .pt_rgba_scratch
                         .push(half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32());
@@ -824,13 +826,15 @@ fn display_canvas_frame(
         ));
     }
     let mut light: Vec<f32> = encoded
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|pixel| {
             video_io::color::display_encoded_to_linear([pixel[0], pixel[1], pixel[2], pixel[3]])
         })
         .collect();
     if matches!(kind, video_io::export::DisplayLight::Absolute { .. }) {
-        for pixel in light.chunks_exact_mut(4) {
+        for pixel in light.as_chunks_mut::<4>().0 {
             for channel in &mut pixel[..3] {
                 *channel *= white_nits / 100.0;
             }

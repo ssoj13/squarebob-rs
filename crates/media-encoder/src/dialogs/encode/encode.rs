@@ -1592,7 +1592,7 @@ fn encode_hdr_sequence(
 /// Strip alpha channel from RGBA interleaved data.
 fn strip_alpha<T: Copy>(rgba: &[T]) -> Vec<T> {
     let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
-    for chunk in rgba.chunks_exact(4) {
+    for chunk in rgba.as_chunks::<4>().0 {
         rgb.push(chunk[0]);
         rgb.push(chunk[1]);
         rgb.push(chunk[2]);

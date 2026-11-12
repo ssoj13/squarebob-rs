@@ -124,7 +124,9 @@ fn render_motion() -> RenderedMotion {
         let bytes = renderer.readback_render_texture(true).unwrap();
         assert_eq!(bytes.len(), WIDTH as usize * HEIGHT as usize * 8);
         let encoded: Vec<_> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|channel| {
                 half::f16::from_bits(u16::from_le_bytes([channel[0], channel[1]])).to_f32()
             })
@@ -143,8 +145,10 @@ fn render_motion() -> RenderedMotion {
     let first = frames.first().unwrap().hdr_light().unwrap().0;
     let last = frames.last().unwrap().hdr_light().unwrap().0;
     let changed = first
-        .chunks_exact(4)
-        .zip(last.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(last.as_chunks::<4>().0)
         .filter(|(first, last)| {
             first[..3]
                 .iter()

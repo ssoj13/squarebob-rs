@@ -548,8 +548,8 @@ pub fn render(
                         (rect.color[1] as f64 * factor) as i32,
                         (rect.color[2] as f64 * factor) as i32,
                     );
-                    for pixel in row[rect.lx * 4..rect.rx * 4].chunks_exact_mut(4) {
-                        pixel.copy_from_slice(&[r, g, b, 255]);
+                    for pixel in row[rect.lx * 4..rect.rx * 4].as_chunks_mut::<4>().0 {
+                        *pixel = [r, g, b, 255];
                     }
                 }
             });

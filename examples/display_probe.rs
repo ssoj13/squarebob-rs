@@ -77,7 +77,7 @@ fn main() -> Result<()> {
         };
         let expected_pq = soluwell_viewport::display::pq(stored_linear * target.white);
         let mut max_pq_error = 0.0_f32;
-        for pixel in pq_pixels.chunks_exact(4) {
+        for pixel in pq_pixels.as_chunks::<4>().0 {
             ensure!(pixel[3] == u16::MAX, "PQ alpha changed");
             for channel in &pixel[..3] {
                 let signal = *channel as f32 / u16::MAX as f32;
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
         };
         let expected_sdr = transfer::oetf(stored_linear).clamp(0.0, 1.0);
         let mut max_sdr_error = 0.0_f32;
-        for pixel in sdr_pixels.chunks_exact(4) {
+        for pixel in sdr_pixels.as_chunks::<4>().0 {
             ensure!(pixel[3] == u8::MAX, "SDR alpha changed");
             for channel in &pixel[..3] {
                 max_sdr_error = max_sdr_error.max((*channel as f32 / 255.0 - expected_sdr).abs());
@@ -129,7 +129,9 @@ fn main() -> Result<()> {
         };
         let expected_scrgb = stored_linear * target.white / soluwell_viewport::display::SCRGB_NITS;
         let max_scrgb_error = scrgb_pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|pixel| pixel[..3].iter())
             .map(|value| (value.to_f32() - expected_scrgb).abs())
             .fold(0.0_f32, f32::max);
@@ -158,7 +160,7 @@ fn main() -> Result<()> {
                 anyhow::bail!("PQ primary capture is not 10-bit");
             };
             let mut max_error = 0.0_f32;
-            for pixel in pixels.chunks_exact(4) {
+            for pixel in pixels.as_chunks::<4>().0 {
                 for channel in 0..3 {
                     max_error = max_error
                         .max((pixel[channel] as f32 / u16::MAX as f32 - expected[channel]).abs());
