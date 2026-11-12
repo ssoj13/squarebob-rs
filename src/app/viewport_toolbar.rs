@@ -1,5 +1,5 @@
 use eframe::egui;
-use render_shared::{CameraType, RenderMode};
+use render_shared::{CameraType, PtComputeBackend, RenderMode};
 use soluwell_config::icons;
 use soluwell_viewport::toolbar::{ToolbarEdge, ToolbarResponse, ViewportToolbar};
 
@@ -32,11 +32,19 @@ impl App {
         .show(ui, rect, &mut state, |ui| {
             ui.add_enabled_ui(!self.encode_dialog.is_encoding(), |ui| {
                 ui.horizontal(|ui| {
+                    // The PT backend is part of the mode: "PT" path-traces on WGPU, "CUDA" on the
+                    // cuda-oxide tracer. Both write `pt_compute_backend`, the one setting the
+                    // Settings backend selector and `--pt-backend` also edit.
                     let previous_mode = (
                         self.render_mode,
                         self.render_3d_opts.path_tracing,
                         self.render_3d_opts.show_wireframe,
+                        self.render_3d_opts.pt_compute_backend,
                     );
+                    let path_tracing =
+                        self.render_mode == RenderMode::Mode3D && self.render_3d_opts.path_tracing;
+                    let cuda_selected =
+                        self.render_3d_opts.pt_compute_backend == PtComputeBackend::Cuda;
                     if ui
                         .selectable_label(self.render_mode == RenderMode::Mode2D, "2D")
                         .clicked()
@@ -57,22 +65,38 @@ impl App {
                         self.render_3d_opts.show_wireframe = false;
                     }
                     if ui
-                        .selectable_label(
-                            self.render_mode == RenderMode::Mode3D
-                                && self.render_3d_opts.path_tracing,
-                            "PT",
-                        )
+                        .selectable_label(path_tracing && !cuda_selected, "PT")
+                        .on_hover_text("Path tracing on WGPU")
                         .clicked()
                     {
                         self.render_mode = RenderMode::Mode3D;
                         self.render_3d_opts.path_tracing = true;
                         self.render_3d_opts.show_wireframe = false;
+                        if cuda_selected {
+                            self.render_3d_opts.pt_compute_backend = PtComputeBackend::Wgpu;
+                        }
+                    }
+                    // Built without the `cuda` feature the tracer does not exist: the button says
+                    // so instead of producing a "CUDA compiled out" render error.
+                    let cuda_button = ui
+                        .add_enabled(
+                            cfg!(feature = "cuda"),
+                            egui::Button::selectable(path_tracing && cuda_selected, "CUDA"),
+                        )
+                        .on_hover_text("Path tracing on CUDA (cuda-oxide)")
+                        .on_disabled_hover_text("Built without the `cuda` feature");
+                    if cuda_button.clicked() {
+                        self.render_mode = RenderMode::Mode3D;
+                        self.render_3d_opts.path_tracing = true;
+                        self.render_3d_opts.show_wireframe = false;
+                        self.render_3d_opts.pt_compute_backend = PtComputeBackend::Cuda;
                     }
                     if previous_mode
                         != (
                             self.render_mode,
                             self.render_3d_opts.path_tracing,
                             self.render_3d_opts.show_wireframe,
+                            self.render_3d_opts.pt_compute_backend,
                         )
                     {
                         self.on_render_mode_changed(previous_mode.0);
@@ -289,6 +313,9 @@ pub(super) mod tests {
             toolbar_frame(&ctx, &mut app, 1200.0, vec![]);
         }
         let (wide_output, _) = toolbar_frame(&ctx, &mut app, 1200.0, vec![]);
+        // The render-mode toggle carries both path-tracing backends.
+        assert!(visible_text(&wide_output, "PT"));
+        assert!(visible_text(&wide_output, "CUDA"));
         let samples = text_rect(&wide_output, |label| label.ends_with(" spp"));
         let camera = text_rect(&wide_output, |label| label == "CamClip:");
         assert!(
