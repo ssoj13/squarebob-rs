@@ -1658,7 +1658,7 @@ dependencies = [
 [[package]]
 name = "burn-device"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "burn",
  "cubecl-runtime",
@@ -1893,7 +1893,7 @@ dependencies = [
 [[package]]
 name = "bvh-gpu"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "bytemuck",
  "glam",
@@ -3161,7 +3161,7 @@ dependencies = [
 [[package]]
 name = "cuda-artifact-finalizer"
 version = "0.2.1"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "libnvvm-sys",
  "nvjitlink-sys",
@@ -3173,7 +3173,7 @@ dependencies = [
 [[package]]
 name = "cuda-bindings"
 version = "0.4.0"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "libloading 0.8.9",
  "serde_json",
@@ -3182,7 +3182,7 @@ dependencies = [
 [[package]]
 name = "cuda-core"
 version = "0.4.0"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "anyhow",
  "cuda-bindings",
@@ -3194,7 +3194,7 @@ dependencies = [
 [[package]]
 name = "cuda-core-derive"
 version = "0.4.0"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3204,7 +3204,7 @@ dependencies = [
 [[package]]
 name = "cuda-device"
 version = "0.2.1"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "cuda-macros",
 ]
@@ -3212,7 +3212,7 @@ dependencies = [
 [[package]]
 name = "cuda-host"
 version = "0.2.1"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "cuda-artifact-finalizer",
  "cuda-core",
@@ -3228,7 +3228,7 @@ dependencies = [
 [[package]]
 name = "cuda-macros"
 version = "0.2.1"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3239,12 +3239,12 @@ dependencies = [
 [[package]]
 name = "cuda-target-spec"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 
 [[package]]
 name = "cuda-toolkit-discovery"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 
 [[package]]
 name = "cudarc"
@@ -5823,7 +5823,7 @@ dependencies = [
 [[package]]
 name = "libnvvm-sys"
 version = "0.2.1"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "cuda-target-spec",
  "cuda-toolkit-discovery",
@@ -6434,7 +6434,7 @@ dependencies = [
 [[package]]
 name = "nvjitlink-sys"
 version = "0.2.1"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 dependencies = [
  "cuda-toolkit-discovery",
  "libloading 0.8.9",
@@ -7490,7 +7490,7 @@ dependencies = [
 [[package]]
 name = "pt-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "bytemuck",
  "cuda-core",
@@ -7501,7 +7501,7 @@ dependencies = [
 [[package]]
 name = "pt-cuda"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "bytemuck",
  "cuda-core",
@@ -7518,7 +7518,7 @@ dependencies = [
 [[package]]
 name = "pt-denoise-oidn"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "anyhow",
  "burn",
@@ -7535,7 +7535,7 @@ dependencies = [
 [[package]]
 name = "pt-integrator"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "cuda-device",
  "half",
@@ -7546,7 +7546,7 @@ dependencies = [
 [[package]]
 name = "pt-material"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "bytemuck",
  "glam",
@@ -7560,7 +7560,7 @@ dependencies = [
 [[package]]
 name = "pt-mats"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "pt-core",
  "serde",
@@ -7569,7 +7569,7 @@ dependencies = [
 [[package]]
 name = "pt-megakernel"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "bvh-gpu",
  "bytemuck",
@@ -7588,7 +7588,7 @@ dependencies = [
 [[package]]
 name = "ptx-parse"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 
 [[package]]
 name = "pulp"
@@ -8027,7 +8027,7 @@ dependencies = [
 [[package]]
 name = "render-color"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "log",
  "serde",
@@ -8038,7 +8038,7 @@ dependencies = [
 [[package]]
 name = "render-color-gpu"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "bytemuck",
  "gpu-info-rs",
@@ -8061,7 +8061,7 @@ dependencies = [
 [[package]]
 name = "render-env"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8076,7 +8076,7 @@ dependencies = [
 [[package]]
 name = "render-settings"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "serde",
 ]
@@ -8099,7 +8099,7 @@ dependencies = [
 [[package]]
 name = "render-sky"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 
 [[package]]
 name = "renderdoc-sys"
@@ -8110,7 +8110,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 [[package]]
 name = "reserved-oxide-symbols"
 version = "0.2.1"
-source = "git+ssh://git@github.com/ssoj13/cuda-rust-windows.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
+source = "git+ssh://git@github.com/ssoj13/cuda-rust_b.git?branch=main#9370f8c91eba499a880a5769ecd11f39fa65ffbb"
 
 [[package]]
 name = "rfd"
@@ -8903,7 +8903,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "standard-surface"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "bytemuck",
  "glam",
@@ -8916,7 +8916,7 @@ dependencies = [
 [[package]]
 name = "standard-surface-bsdf"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#474a50c5be8f00910a7e65ad6a40225337efc8b4"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#e585d728a39b4546c7c3b631f2f402d38635d4ad"
 dependencies = [
  "cuda-device",
  "libm",
