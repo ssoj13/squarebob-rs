@@ -349,6 +349,8 @@ fn render_cuda_frame(
         samples_per_launch: spp_per_update,
         max_bounces: opts.pt_max_bounces,
         max_transmission_depth: opts.pt_max_transmission_depth,
+        // Same budget as the WGSL megakernel: equal to `max_bounces` disables truncation.
+        max_diffuse_bounces: opts.pt_max_bounces,
         sampler_mode: opts.pt_sampler_mode.as_u32(),
         two_level: true,
         dof_enabled: opts.pt_dof_enabled,

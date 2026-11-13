@@ -176,7 +176,7 @@ fn gpu_pt_smoke() -> anyhow::Result<()> {
                 inv_view: view.inverse().to_cols_array_2d(),
                 inv_proj: projection.inverse().to_cols_array_2d(),
                 position: position.to_array(),
-                _pad0: 0,
+                max_diffuse_bounces: 4,
                 frame_count: 1,
                 max_bounces: 4,
                 max_transmission_depth: 4,

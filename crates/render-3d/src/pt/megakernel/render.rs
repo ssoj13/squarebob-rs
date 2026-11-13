@@ -325,7 +325,9 @@ pub(super) fn render_path_traced_frame(
         inv_view: inv_view.to_cols_array_2d(),
         inv_proj: inv_proj.to_cols_array_2d(),
         position: pos.to_array(),
-        _pad0: 0,
+        // squarebob has no separate diffuse depth: `max_bounces` disables the diffuse
+        // budget (a zeroed field would drop all diffuse indirect light).
+        max_diffuse_bounces: opts.pt_max_bounces,
         frame_count: 1,
         max_bounces: opts.pt_max_bounces,
         max_transmission_depth: opts.pt_max_transmission_depth,
