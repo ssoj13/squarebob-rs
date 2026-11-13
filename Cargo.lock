@@ -1658,7 +1658,7 @@ dependencies = [
 [[package]]
 name = "burn-device"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "burn",
  "cubecl-runtime",
@@ -1893,7 +1893,7 @@ dependencies = [
 [[package]]
 name = "bvh-gpu"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "bytemuck",
  "glam",
@@ -7484,7 +7484,7 @@ dependencies = [
 [[package]]
 name = "pt-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "bytemuck",
  "cuda-core",
@@ -7495,7 +7495,7 @@ dependencies = [
 [[package]]
 name = "pt-cuda"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "bytemuck",
  "cuda-core",
@@ -7512,7 +7512,7 @@ dependencies = [
 [[package]]
 name = "pt-denoise-oidn"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "anyhow",
  "burn",
@@ -7529,7 +7529,7 @@ dependencies = [
 [[package]]
 name = "pt-integrator"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "cuda-device",
  "half",
@@ -7540,7 +7540,7 @@ dependencies = [
 [[package]]
 name = "pt-material"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "bytemuck",
  "glam",
@@ -7555,7 +7555,7 @@ dependencies = [
 [[package]]
 name = "pt-mats"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "pt-core",
  "serde",
@@ -7564,7 +7564,7 @@ dependencies = [
 [[package]]
 name = "pt-megakernel"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "bvh-gpu",
  "bytemuck",
@@ -7574,6 +7574,7 @@ dependencies = [
  "naga",
  "pt-core",
  "pt-integrator",
+ "render-settings",
  "render-env",
  "render-sky",
  "standard-surface",
@@ -8023,7 +8024,7 @@ dependencies = [
 [[package]]
 name = "render-color"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "log",
  "serde",
@@ -8034,7 +8035,7 @@ dependencies = [
 [[package]]
 name = "render-color-gpu"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "bytemuck",
  "gpu-info-rs",
@@ -8057,7 +8058,7 @@ dependencies = [
 [[package]]
 name = "render-env"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -8072,7 +8073,7 @@ dependencies = [
 [[package]]
 name = "render-settings"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "serde",
 ]
@@ -8095,7 +8096,7 @@ dependencies = [
 [[package]]
 name = "render-sky"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 
 [[package]]
 name = "renderdoc-sys"
@@ -8899,7 +8900,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "standard-surface"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "bytemuck",
  "glam",
@@ -8912,7 +8913,7 @@ dependencies = [
 [[package]]
 name = "standard-surface-bsdf"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#d1f7719d7ab21377fe580fd3e9a506d21d236a50"
+source = "git+ssh://git@github.com/ssoj13/render-rs.git?branch=main#b917f61f87b61a85806a9347b75629bac67bc969"
 dependencies = [
  "cuda-device",
  "libm",
