@@ -439,8 +439,7 @@ pub(crate) fn expand_pt_materials_and_ids(
     let mut materials = Vec::with_capacity(cap);
     let mut materials_ext = Vec::with_capacity(cap);
     if lib_size > 0 && opts.mat_source != MaterialSource::None {
-        for slot_idx in 0..lib_size {
-            let mat = &library.materials[slot_idx];
+        for mat in library.materials.iter().take(lib_size) {
             let slot_ext = resolve_slot_ext(&mat.name);
             for v in 0..PT_VARIANTS_PER_SLOT {
                 let resolved = mat.resolve_for_cube(u64::from(v) + 1).sanitized_for_gpu();

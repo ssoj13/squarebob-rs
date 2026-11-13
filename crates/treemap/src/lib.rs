@@ -238,9 +238,9 @@ fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
             .map(|c| c.size as f64)
             .sum();
 
-        for i in *start..*end {
+        for (i, child) in parent.children.iter().enumerate().take(*end).skip(*start) {
             let child_frac = if row_size > 0.0 {
-                parent.children[i].size as f64 / row_size
+                child.size as f64 / row_size
             } else {
                 1.0 / (*end - *start) as f64
             };
@@ -268,7 +268,7 @@ fn layout_kdirstat(parent: &DirEntry, opts: &TreeMapOptions) {
                 )
             };
 
-            layout(&parent.children[i], cx, cy, cw, ch, opts);
+            layout(child, cx, cy, cw, ch, opts);
             left = right;
         }
         top = bottom;
@@ -376,8 +376,8 @@ fn layout_sequoia(parent: &DirEntry, opts: &TreeMapOptions) {
         let mut pos = if horizontal { ry } else { rx };
         let row_len = if horizontal { rh } else { rw };
 
-        for i in head..row_end.min(n) {
-            let cs = parent.children[i].size as f64;
+        for (i, child) in parent.children.iter().enumerate().take(row_end.min(n)).skip(head) {
+            let cs = child.size as f64;
             let frac = cs / sum;
             let child_len = frac as f32 * row_len;
             let end = if i == row_end - 1 {
@@ -402,7 +402,7 @@ fn layout_sequoia(parent: &DirEntry, opts: &TreeMapOptions) {
                 )
             };
 
-            layout(&parent.children[i], cx, cy, cw, ch, opts);
+            layout(child, cx, cy, cw, ch, opts);
             pos = end;
         }
 
