@@ -375,6 +375,8 @@ fn render_cuda_frame(
         pick_x: 0.0,
         pick_y: 0.0,
         instance_tint_mix,
+        // No shadow-mode option here yet: exact shadows, same as pt-renderer's `Auto` on CUDA.
+        opaque_shadows: false,
         inv_view,
         inv_proj,
         env_to_world: glam::Mat4::from_rotation_y(opts.env_map_rotation).to_cols_array_2d(),

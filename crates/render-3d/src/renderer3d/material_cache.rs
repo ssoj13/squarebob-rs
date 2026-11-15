@@ -554,8 +554,8 @@ mod tests {
     fn gpu_material_stride_and_pt_expansion_parity() {
         assert_eq!(
             std::mem::size_of::<GpuMaterial>(),
-            160,
-            "GpuMaterial must match 160B (10 x vec4<f32>) shader layout"
+            176,
+            "GpuMaterial must match 176B (11 x vec4<f32>) shader layout"
         );
         assert_eq!(
             std::mem::size_of::<StandardSurfaceParams>(),

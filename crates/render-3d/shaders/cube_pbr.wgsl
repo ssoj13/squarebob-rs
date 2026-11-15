@@ -52,7 +52,8 @@ struct GpuMaterial {
     opacity: vec4<f32>,                   // rgb=opacity (PT), a unused
     params1: vec4<f32>,                   // x=diff_rough, y=metal, z=spec_rough, w=spec_IOR
     params2: vec4<f32>,                   // x=spec_aniso, y=coat_rough, z=coat_IOR, w=visible
-    maps: vec4<f32>,                      // texture map indices (-1 = unbound); 160B stride matching StandardSurfaceParams
+    maps: vec4<f32>,                      // params3: primary texture map indices (-1 = unbound)
+    params4: vec4<f32>,                   // extended texture map indices (-1 = unbound); 176B stride matching pt_core::GpuMaterial
 };
 
 // Global material params shared by all instances — kept tiny so the materialize

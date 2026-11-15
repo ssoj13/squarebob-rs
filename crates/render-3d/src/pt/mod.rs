@@ -25,12 +25,14 @@ pub enum PtBackendKind {
     CudaAuto,
     CudaExplicit,
     CpuUnsupported,
+    OptixUnsupported,
 }
 
 pub fn backend_from_opts(opts: &Render3DOptions) -> PtBackendKind {
     match opts.pt_compute_backend {
         PtComputeBackend::Cuda => PtBackendKind::CudaExplicit,
         PtComputeBackend::Cpu => PtBackendKind::CpuUnsupported,
+        PtComputeBackend::Optix => PtBackendKind::OptixUnsupported,
         PtComputeBackend::Wgpu => {
             if opts.pt_spectral_mode != SpectralMode::Off {
                 PtBackendKind::WgpuSpectral
@@ -51,6 +53,13 @@ pub fn backend_from_opts(opts: &Render3DOptions) -> PtBackendKind {
 fn cpu_backend_unsupported() -> render_core::ReadbackError {
     render_core::ReadbackError::SceneBuild(
         "CPU path-tracing backend is not supported in Renderer3D; select Auto, WGPU, or CUDA"
+            .into(),
+    )
+}
+
+fn optix_backend_unsupported() -> render_core::ReadbackError {
+    render_core::ReadbackError::SceneBuild(
+        "OptiX path-tracing backend is not wired in Renderer3D; select Auto, WGPU, or CUDA"
             .into(),
     )
 }
@@ -78,6 +87,7 @@ pub fn render_path_traced_no_readback(
             renderer, instances, camera, opts, width, height, true,
         ),
         PtBackendKind::CpuUnsupported => Err(cpu_backend_unsupported()),
+        PtBackendKind::OptixUnsupported => Err(optix_backend_unsupported()),
     }
 }
 
@@ -104,6 +114,7 @@ pub fn render_path_traced(
             wavefront::render_path_traced(renderer, instances, camera, opts, width, height, true)
         }
         PtBackendKind::CpuUnsupported => Err(cpu_backend_unsupported()),
+        PtBackendKind::OptixUnsupported => Err(optix_backend_unsupported()),
     }
 }
 
@@ -112,7 +123,7 @@ pub fn frame_count(kind: PtBackendKind, renderer: &Renderer3D) -> u32 {
         PtBackendKind::WgpuMegakernel => megakernel::frame_count(renderer),
         PtBackendKind::WgpuSpectral => spectral::frame_count(renderer),
         PtBackendKind::CudaAuto | PtBackendKind::CudaExplicit => wavefront::frame_count(renderer),
-        PtBackendKind::CpuUnsupported => 0,
+        PtBackendKind::CpuUnsupported | PtBackendKind::OptixUnsupported => 0,
     }
 }
 
@@ -128,6 +139,6 @@ pub fn pick(
         PtBackendKind::CudaAuto | PtBackendKind::CudaExplicit => {
             wavefront::pick(renderer, origin, dir)
         }
-        PtBackendKind::CpuUnsupported => None,
+        PtBackendKind::CpuUnsupported | PtBackendKind::OptixUnsupported => None,
     }
 }

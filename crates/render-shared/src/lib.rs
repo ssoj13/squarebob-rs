@@ -790,6 +790,7 @@ impl Render3DOptions {
             auto: self.pt_oidn_auto,
             interval: self.pt_oidn_interval,
             show_denoised: self.pt_oidn_show_denoised,
+            ..DenoiserSettings::default()
         }
     }
 

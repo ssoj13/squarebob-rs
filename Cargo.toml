@@ -120,10 +120,6 @@ vfx-io = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main", def
 # removed 2026-10-23.
 render-color = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 render-color-gpu = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
-# LUT baker / loader counterpart — same crate family, separate
-# split so callers can pull just LUT IO without dragging the whole
-# OCIO config machinery.
-vfx-lut = { git = "ssh://git@github.com/ssoj13/oiio-rs.git", branch = "main" }
 
 # Internal crate paths and shared cglibs crates (render-rs + gpu-info-rs)
 squarebob-core = { path = "crates/squarebob-core" }
@@ -139,7 +135,7 @@ pt-cuda = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 render-env = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main", default-features = false }
 render-settings = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 bvh-gpu = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
-gpu-mem = { package = "gpu-info-rs", git = "ssh://git@github.com/ssoj13/gpu-info-rs.git", branch = "main", features = ["wgpu"] }
+gpu-mem = { package = "gpu-info-rs", version = "0.1.1", features = ["wgpu"] }
 media-encoder = { path = "crates/media-encoder" }
 standard-surface = { git = "ssh://git@github.com/ssoj13/render-rs.git", branch = "main" }
 squarebob-widgets = { path = "crates/squarebob-widgets" }
