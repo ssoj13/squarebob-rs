@@ -62,8 +62,8 @@ impl App {
     pub(super) fn sync_display(&mut self, ctx: &egui::Context) {
         let output = ctx
             .data(|d| {
-                d.get_temp::<soluwell_viewport::display::DisplayState>(
-                    soluwell_viewport::display::state_id(),
+                d.get_temp::<sl_viewport::display::DisplayState>(
+                    sl_viewport::display::state_id(),
                 )
             })
             .map(|state| (state.target.hdr, state.target.white));
@@ -365,7 +365,7 @@ impl App {
         }
 
         let mut fonts = egui::FontDefinitions::default();
-        soluwell_config::add_icon_font(&mut fonts);
+        sl_config::add_icon_font(&mut fonts);
         cc.egui_ctx.set_fonts(fonts);
 
         // Apply theme

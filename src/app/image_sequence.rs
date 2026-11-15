@@ -1362,9 +1362,9 @@ mod tests {
     fn float_sdr_canvas_preserves_sub_byte_precision_highlights_and_alpha() {
         let linear = [0.123456, 0.003123, 4.5, 0.375];
         let encoded = [
-            soluwell_viewport::display::transfer::oetf(linear[0]),
-            soluwell_viewport::display::transfer::oetf(linear[1]),
-            soluwell_viewport::display::transfer::oetf(linear[2]),
+            sl_viewport::display::transfer::oetf(linear[0]),
+            sl_viewport::display::transfer::oetf(linear[1]),
+            sl_viewport::display::transfer::oetf(linear[2]),
             linear[3],
         ];
         let frame = display_canvas_frame(1, 1, &encoded, DisplayLight::Relative, 203.0).unwrap();

@@ -9,7 +9,7 @@
 //! UI groups them automatically.
 
 use egui::Ui;
-use soluwell_config::icons;
+use sl_config::icons;
 
 use crate::attrs::Attrs;
 use crate::presets::{ApplyReport, PresetBank};

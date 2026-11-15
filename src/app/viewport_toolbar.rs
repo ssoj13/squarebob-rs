@@ -1,7 +1,7 @@
 use eframe::egui;
 use render_shared::{CameraType, PtComputeBackend, RenderMode};
-use soluwell_config::icons;
-use soluwell_viewport::toolbar::{ToolbarEdge, ToolbarResponse, ViewportToolbar};
+use sl_config::icons;
+use sl_viewport::toolbar::{ToolbarEdge, ToolbarResponse, ViewportToolbar};
 
 use super::App;
 
@@ -119,7 +119,7 @@ impl App {
                     let mut exposure_changed = false;
                     ui.add_enabled_ui(physical, |ui| {
                         // Live, Done and a cancel (value restored) all change the render.
-                        exposure_changed = soluwell_viewport::toolbar::exposure_control(
+                        exposure_changed = sl_viewport::toolbar::exposure_control(
                             ui,
                             &mut self
                                 .render_3d_opts
@@ -130,7 +130,7 @@ impl App {
                             None,
                         )
                         .phase
-                            != soluwell_config::edit::EditPhase::Idle;
+                            != sl_config::edit::EditPhase::Idle;
                     })
                     .response
                     .on_disabled_hover_text("Exposure compensation requires a physical 3D camera.");
@@ -280,7 +280,7 @@ pub(super) mod tests {
     #[test]
     fn narrow_viewport_toolbar_horizontal_scroll_reaches_camera_slots() {
         let ctx = egui::Context::default();
-        soluwell_config::ensure_icon_font(&ctx);
+        sl_config::ensure_icon_font(&ctx);
         let mut app = App {
             render_mode: RenderMode::Mode3D,
             ..App::default()

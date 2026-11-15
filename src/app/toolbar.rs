@@ -6,7 +6,7 @@ use super::App;
 use super::helpers::rfd_pick_folder;
 use crate::events::{NavigateUpEvent, ZoomResetEvent};
 use crate::renderer::{RenderBackend, RenderMode};
-use soluwell_config::icons;
+use sl_config::icons;
 
 impl App {
     /// Render top toolbar panel

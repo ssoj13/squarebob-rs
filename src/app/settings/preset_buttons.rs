@@ -1,5 +1,5 @@
 use eframe::egui;
-use soluwell_config::icons;
+use sl_config::icons;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Action {
@@ -192,10 +192,10 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let gpu = render_core::gpu::GpuContext::new().expect("GPU adapter");
         let ctx = egui::Context::default();
-        soluwell_config::ensure_icon_font(&ctx);
+        sl_config::ensure_icon_font(&ctx);
         let mut renderer = egui_wgpu::Renderer::new(
             &gpu.device,
-            soluwell_viewport::display::CANVAS_FORMAT,
+            sl_viewport::display::CANVAS_FORMAT,
             egui_wgpu::RendererOptions {
                 dithering: false,
                 ..Default::default()
@@ -270,7 +270,7 @@ mod tests {
             (1000, false, "viewport-toolbar-collapsed.png"),
         ] {
             let ctx = egui::Context::default();
-            soluwell_config::ensure_icon_font(&ctx);
+            sl_config::ensure_icon_font(&ctx);
             let mut app = crate::app::App {
                 render_mode: render_shared::RenderMode::Mode3D,
                 ..crate::app::App::default()
@@ -374,10 +374,10 @@ mod tests {
             size_in_pixels: size,
             pixels_per_point: 1.0,
         };
-        let mut present = soluwell_viewport::display::PresentPass::new(
+        let mut present = sl_viewport::display::PresentPass::new(
             &gpu.device,
             wgpu::TextureFormat::Rgba8Unorm,
-            soluwell_viewport::display::Output::Sdr8,
+            sl_viewport::display::Output::Sdr8,
         );
         present.dither = false;
         let canvas = present
@@ -411,8 +411,8 @@ mod tests {
             .capture(
                 &gpu.device,
                 &gpu.queue,
-                soluwell_viewport::display::Output::Sdr8,
-                soluwell_viewport::display::Target {
+                sl_viewport::display::Output::Sdr8,
+                sl_viewport::display::Target {
                     hdr: false,
                     white: 203.0,
                     peak: 1000.0,

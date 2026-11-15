@@ -13,7 +13,7 @@ use render_color::{
     BuiltInTonemap, ColorCodepath, ColorMode, ConfigSource, CustomLutStatus, vfx_ocio,
     vfx_ocio::Encoding,
 };
-use soluwell_config::icons;
+use sl_config::icons;
 
 impl App {
     /// Colour pipeline section. Every control here is a display-side

@@ -10,7 +10,7 @@ use super::{SettingsDirty, control_label, settings_grid, tinted_section};
 use crate::app::App;
 use eframe::egui;
 use render_shared::{OidnModeOption, OidnQualityOption};
-use soluwell_config::icons;
+use sl_config::icons;
 
 impl App {
     /// Denoise (OIDN) section. Every control here adjusts a post-process

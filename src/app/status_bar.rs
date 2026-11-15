@@ -5,15 +5,15 @@ use eframe::egui;
 use super::App;
 use super::helpers::{disk_free_info, fmt_size};
 use crate::cache;
-use soluwell_config::icons;
+use sl_config::icons;
 
 impl App {
     /// Render bottom status bar
     pub(super) fn ui_status_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("status").show(ui, |ui| {
             if let Some(state) = ui.ctx().data(|d| {
-                d.get_temp::<soluwell_viewport::display::DisplayState>(
-                    soluwell_viewport::display::state_id(),
+                d.get_temp::<sl_viewport::display::DisplayState>(
+                    sl_viewport::display::state_id(),
                 )
             }) {
                 ui.horizontal_wrapped(|ui| {
