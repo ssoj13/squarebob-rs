@@ -2024,7 +2024,7 @@ dependencies = [
 [[package]]
 name = "camera"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/camera-rs.git?branch=main#3ae2e8556b0cccb7515e6b94558f3a6a02e0dcfe"
+source = "git+ssh://git@github.com/ssoj13/camera-rs.git?branch=main#ab89440ab5b662a5a15e7cc7814aadee19f8d139"
 dependencies = [
  "camera-core",
  "camera-egui",
@@ -2033,7 +2033,7 @@ dependencies = [
 [[package]]
 name = "camera-core"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/camera-rs.git?branch=main#3ae2e8556b0cccb7515e6b94558f3a6a02e0dcfe"
+source = "git+ssh://git@github.com/ssoj13/camera-rs.git?branch=main#ab89440ab5b662a5a15e7cc7814aadee19f8d139"
 dependencies = [
  "glam",
 ]
@@ -2041,7 +2041,7 @@ dependencies = [
 [[package]]
 name = "camera-egui"
 version = "0.1.0"
-source = "git+ssh://git@github.com/ssoj13/camera-rs.git?branch=main#3ae2e8556b0cccb7515e6b94558f3a6a02e0dcfe"
+source = "git+ssh://git@github.com/ssoj13/camera-rs.git?branch=main#ab89440ab5b662a5a15e7cc7814aadee19f8d139"
 dependencies = [
  "camera-core",
  "egui",
